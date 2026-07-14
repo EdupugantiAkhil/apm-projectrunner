@@ -1,3 +1,4 @@
+# The build context is the archived demo directory.
 .git
 .gitignore
 .env

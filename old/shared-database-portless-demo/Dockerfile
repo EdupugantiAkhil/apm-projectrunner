@@ -1,3 +1,4 @@
+# Archived Portless/shared-database demonstration image.
 FROM node:24-alpine
 
 WORKDIR /app

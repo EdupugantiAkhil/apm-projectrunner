@@ -1,4 +1,5 @@
 #!/bin/sh
+# Starts the archived Portless proof-of-concept.
 set -eu
 
 portless_port=${PORTLESS_PORT:-1355}

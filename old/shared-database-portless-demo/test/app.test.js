@@ -1,3 +1,4 @@
+// Tests for the archived proof-of-concept only.
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer } from 'node:http';

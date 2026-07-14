@@ -1,3 +1,4 @@
+// Archived proof-of-concept application.
 import { randomUUID } from 'node:crypto';
 
 function sendJson(response, status, body) {

@@ -1,4 +1,4 @@
-name: shared-pods-demo
+name: switchyard-old-shared-pods-demo
 
 x-app: &app
   image: shared-pods-demo-app:local

@@ -9,9 +9,14 @@ independent Git repositories.
 
 ## 1. Purpose
 
-Switchyard is a local-first deployment orchestrator. It lets a developer define
-reusable startup blocks, create multiple instances of those blocks from different source
-trees, and explicitly choose which instances communicate.
+Switchyard is a local-first deployment and topology orchestrator. It lets a developer
+define reusable startup blocks, create multiple instances from different source trees,
+combine providers into named service groups, and choose which group each consumer uses.
+
+Existing application code must not require modification. A containerized consumer may
+continue calling fixed dependency addresses such as `localhost:8001`; Switchyard routes
+those calls to the selected provider group inside the consumer's isolated network
+namespace.
 
 Switchyard's core is solution-agnostic. Java, Python, JAS, UI, and database terminology
 in this document describes the first reference fixture only. The runtime must work with
@@ -43,10 +48,10 @@ The system must support sources from:
    to be available. Its selected dependencies are visible and inspectable.
 4. **Keep source separate from runtime.** A source identifies code; a block describes
    how to run it; an instance combines them for a deployment.
-5. **Make the execution boundary visible.** Container and runner-script blocks are the
-   safe default. Explicitly trusted host-command blocks are supported for existing Nix,
-   Gradle, gcloud, and Process Compose development workflows. The plan and GUI must make
-   host execution unmistakable before it starts.
+5. **Use containers as the first isolation boundary.** Phase 1 wraps every long-running
+   instance in a container-backed network namespace. This makes repeated fixed ports
+   safe and enables transparent loopback routing. Other execution adapters remain part
+   of the product model but are deferred until this path is proven.
 6. **Fail before mutation.** Validate paths, names, ports, route targets, dependency
    cycles, Dockerfiles, and required variables before starting a deployment.
 7. **Local first, LAN optional.** `.localhost` is the safe default. mDNS LAN exposure is
@@ -65,6 +70,8 @@ The core understands only these concepts:
 - A **capability** is something a component provides, identified by a user-defined name.
 - A **slot** consumes a compatible capability.
 - A **route adapter** connects a slot to a provider.
+- A **service group** is a named, reusable selection of providers.
+- A **binding** selects one service group for a consumer instance.
 - A **probe** observes readiness or health.
 - A **deployment** selects instances and connections.
 
@@ -86,6 +93,18 @@ ProbeAdapter      http | tcp | command | log-pattern | process | future plugin
 Adapters publish JSON Schema for configuration and capabilities. The CLI validates that
 schema, and the GUI renders controls from it. Adding an adapter must not require a custom
 GUI screen for basic operation.
+
+### Delivery staging
+
+The final architecture includes the daemon/API, SQLite state and recovery, adapter SDK,
+live route control, schema-driven GUI, and managed Git/worktrees. They are core product
+capabilities, but they are not prerequisites for validating the routing model.
+
+Phase 1 is a vertical routing proof built as a one-shot CLI over generated Compose,
+Docker network namespaces, and the Switchyard Router in native-host and per-consumer
+sidecar modes. The router, rather than Portless, is the authoritative routing layer.
+Phase 2 promotes that proven behavior into the persistent control plane and GUI without
+changing the human-authored topology model.
 
 ## 3. Domain model
 
@@ -119,6 +138,9 @@ worktree creation should be added only after the execution model is stable.
 
 A reusable startup definition. A block may contain one service or a coordinated suite.
 Each service chooses one of three execution modes:
+
+Phase 1 implements `container` and `script`. The `host` mode below is part of the Phase
+2 adapter model and is not required for the routing proof.
 
 - `container`: build a Dockerfile or run an existing image as a normal service.
 - `script`: mount the selected source into a runner image and execute a declared command
@@ -179,7 +201,7 @@ A block may mix execution modes. For example, a Python suite may build two produ
 containers while starting three development services through scripts in Python runner
 containers.
 
-Trusted host script:
+Phase 2 trusted host script:
 
 ```yaml
 apiVersion: switchyard.dev/v1alpha1
@@ -372,16 +394,16 @@ consumes:
       variable: QUERY_API_URL
 ```
 
-### Reference fixture: JAS mixed-runtime deployment
+### Reference fixture: JAS legacy deployment
 
 The parent workspace provides the first real integration fixture. It deliberately mixes
 execution mechanisms, but none of its details belong in the product core:
 
-| Block | Current entry point | Execution model |
+| Block | Current entry point | Phase 1 treatment |
 |---|---|---|
-| JAS databases | `/zfs/projects/FR/jasBase/start-local-jas.sh` | Host script controlling Docker Compose resources |
-| Java JAS service | `/zfs/projects/FR/jasBase/start-jas-service.sh` | Long-running trusted host script using Nix/Gradle |
-| Python AI suite | `process-compose -f ai-services.process-compose.yaml up` in `/zfs/projects/FR/jasBase` | Long-running trusted Process Compose suite |
+| JAS databases | decomposed commands from `/zfs/projects/FR/jasBase/start-local-jas.sh` | database containers plus runner-container tasks |
+| Java JAS service | `/zfs/projects/FR/jasBase/start-jas-service.sh` | runner image containing the required Nix/Gradle tooling |
+| Python AI suite | `process-compose -f ai-services.process-compose.yaml up` in `/zfs/projects/FR/jasBase` | Process Compose inside an AI runner container |
 | UI | Worktree-specific Dockerfile or runner script | Container or containerized script |
 
 The desired topology is expressed through typed slots rather than being embedded in the
@@ -398,7 +420,7 @@ ui-b ──java────► jas-feature ─database► db-main
 ```
 
 The routing layer owns the selections. A block does not need to know whether its target
-was started by Docker, a runner script, a host script, or Process Compose.
+uses an image-backed container, runner script, or supervised Process Compose suite.
 
 All files for this integration belong under `examples/jas-base/` as ordinary source,
 block, adapter-configuration, and deployment definitions. Automated tests must prove
@@ -545,9 +567,62 @@ routes:
 Blocks declare the slots they consume and capabilities they provide. Validation rejects
 invalid connections, such as routing a `database` slot to a UI.
 
+Slots may also declare the address already used by an unchanged application:
+
+```yaml
+consumes:
+  ai-ingest:
+    accepts: [ai-ingest]
+    routeAdapter: loopback-proxy
+    address: { host: 127.0.0.1, port: 8001 }
+  ai-analysis:
+    accepts: [ai-analysis]
+    routeAdapter: loopback-proxy
+    address: { host: 127.0.0.1, port: 8002 }
+```
+
+The address is the consumer contract, not the provider's runtime address. A proxy
+sidecar sharing the consumer's container network namespace binds the declared loopback
+ports and forwards them to the selected providers.
+
+### Service group and binding
+
+A service group selects providers as one reusable unit. It can inherit a shared baseline
+and replace only selected services.
+
+```yaml
+groups:
+  ai-main:
+    providers:
+      ai-ingest: ai-main/ingest
+      ai-analysis: ai-main/analysis
+      ai-reports: ai-main/reports
+      ai-scheduler: ai-main/scheduler
+      ai-worker: ai-main/worker
+
+  ai-feature:
+    extends: ai-main
+    providers:
+      ai-analysis: ai-feature/analysis
+      ai-reports: ai-feature/reports
+```
+
+A binding selects the group used by one consumer:
+
+```yaml
+bindings:
+  jas-main: ai-main
+  jas-feature: ai-feature
+```
+
+The resolved topology still consists of ordinary typed routes. Group switching replaces
+the consumer's complete route table as one operation; partial group application is
+invalid.
+
 ### Deployment
 
-The desired combination of sources, instances, parameters, and routes.
+The desired combination of sources, instances, parameters, groups, bindings, and any
+direct route overrides.
 
 ```yaml
 apiVersion: switchyard.dev/v1alpha1
@@ -697,32 +772,70 @@ claims do not collide.
 ## 4. System architecture
 
 ```text
-                         ┌─────────────────────────────┐
-                         │ Web GUI                     │
-                         │ canvas, logs, sources       │
-                         └──────────────┬──────────────┘
-                                        │ HTTP + SSE
-┌──────────────┐          ┌──────────────▼──────────────┐
-│ CLI          ├─────────►│ Switchyard control plane   │
-└──────────────┘          │ validation + desired state │
-                          └───┬──────────┬──────────┬───┘
-                              │          │          │
-                         Git/worktrees   │       SQLite
-                                         │
-                              Compose generator
-                                         │
-                    ┌────────────────────▼────────────────────┐
-                    │ Docker Engine                           │
-                    │ generated services, networks, volumes   │
-                    └────────────────────┬────────────────────┘
-                                         │
-                              internal route gateway
-                                         │
-                    ┌────────────────────▼────────────────────┐
-                    │ Portless ingress                        │
-                    │ *.localhost, optional *.local LAN mode  │
-                    └─────────────────────────────────────────┘
+ Browser / CLI / GUI
+          │
+          ▼
+ ┌─────────────────────────────────────────────────────────┐
+ │ Native Switchyard Router                               │
+ │ custom domains + TLS + legacy localhost listeners      │
+ │ Origin/header/profile identity + CORS/preflight         │
+ └──────────────────────────┬──────────────────────────────┘
+                            │ loopback-only published ports
+                            ▼
+ ┌─────────────────────────────────────────────────────────┐
+ │ Docker Engine: one private bridge network per deployment│
+ │ UI instances     backend instances       service groups │
+ │                         │                               │
+ │                         ▼                               │
+ │              Switchyard Router sidecar                  │
+ │              shared consumer network namespace          │
+ │              owns localhost:8001, ...                   │
+ └──────────────────────────┬──────────────────────────────┘
+                            │
+                            ▼
+             selected providers / shared services
+
+ CLI / Web GUI ──HTTP+SSE──► Switchyard control plane
+                              ├── planner + Compose generator
+                              ├── router configuration
+                              ├── Git/worktrees
+                              └── SQLite
 ```
+
+### Runtime and isolation
+
+Docker Engine is the Phase 1 container runtime. Switchyard generates Docker Compose as
+an internal lifecycle artifact; users do not have to author Compose and the domain model
+does not depend on it. Every deployment receives a private Docker bridge network.
+Provider instances receive deterministic internal DNS aliases, while host exposure is
+loopback-only.
+
+Every application instance runs in a container and therefore has its own Linux network
+namespace. A router sidecar uses `network_mode: service:<consumer>` to join the exact
+same namespace as its consumer. The sidecar can consequently bind
+`127.0.0.1:8001` for one backend while another sidecar independently binds the same
+address for another backend. No application-code or address changes are required.
+
+The host router runs as a native process. Browser `localhost` refers to the developer
+host, and native execution gives consistent access to host listeners and Docker's
+loopback-published ports on Linux, macOS, and Windows. A Linux-only host-network
+container may be offered later, but is not the portable default.
+
+The initial stack is therefore:
+
+| Concern | Phase 1 choice |
+| --- | --- |
+| Container lifecycle | Docker Engine through generated Docker Compose |
+| Container isolation | Docker-provided Linux network namespaces |
+| Internal fixed-port routing | Switchyard Router sidecars |
+| Browser, custom-domain, and TLS routing | Native Switchyard Router |
+| Desired state | Versioned YAML |
+| Observed/control state | Generated manifests and Docker labels; SQLite in Phase 2 |
+| Application data | Docker named volumes or explicitly declared external services |
+
+Runtime adapters for Podman, Kubernetes, containerd, or Nomad may be added later. They
+must preserve the same isolation and routing contracts and are not required by the core
+model.
 
 ### Control plane
 
@@ -730,10 +843,18 @@ A long-running local process owns deployment operations and exposes an API used 
 the CLI and GUI. Only one operation may mutate a deployment at a time. Other deployments
 may build or start concurrently within a configurable concurrency limit.
 
+This is the Phase 2 product shape. Phase 1 uses the same planner in one-shot CLI mode,
+writes generated manifests, and derives observed state from Docker labels. This avoids
+building persistence and concurrency machinery before the routing approach is proven.
+
 Recommended implementation:
 
-- Node.js 24 and TypeScript.
-- Fastify or the Node HTTP API for the control API.
+- A Rust workspace for the router and its shared route/configuration types.
+- [Cloudflare Pingora](https://github.com/cloudflare/pingora) for programmable HTTP/1,
+  HTTP/2, TLS, gRPC, WebSocket proxying, and graceful reload behavior.
+- Tokio listeners for raw TCP forwarding where HTTP semantics are unavailable.
+- The control API may initially remain a separate TypeScript service; it communicates
+  with routers only through the versioned configuration contract.
 - SQLite for runtime metadata, locks, operation history, and GUI preferences.
 - Server-Sent Events for build output, logs, health changes, and operation progress.
 - Docker Compose CLI as the first runtime adapter; Docker Engine API can follow later.
@@ -747,9 +868,11 @@ The generator expands every block instance into concrete Compose services. It as
 - Health checks and dependency conditions.
 - Source-specific build contexts.
 - Deployment and instance labels for discovery and cleanup.
-- Loopback-only host ports where Portless requires them.
+- Ephemeral loopback-only host ports used as native-router upstreams.
 - Read-only or read-write source mounts for script runners, as explicitly declared.
 - One-shot dependency conditions for successful `task` scripts.
+- One Switchyard Router sidecar for each consumer with loopback-proxy slots. It uses
+  `network_mode: service:<consumer>` so it shares that consumer's isolated localhost.
 
 Host commands are not emitted as Compose services. The control plane supervises them in
 parallel with the Compose runtime and includes them in the same dependency graph.
@@ -763,48 +886,143 @@ Generated output belongs under:
 .switchyard/generated/<deployment>/compose.yaml
 .switchyard/generated/<deployment>/resolved-deployment.yaml
 .switchyard/generated/<deployment>/manifest.json
+.switchyard/generated/<deployment>/routes/<consumer>.cfg
 ```
 
 Only human-authored definitions are committed. `.switchyard/generated` is ignored.
 
-### Routing
+### Switchyard Router
 
-There are two routing layers:
+One Rust codebase provides three modes with the same configuration and route-table
+semantics:
 
-1. **Ingress routing** gives humans stable addresses such as
-   `ui-2.comparison.localhost:1355`. Portless remains suitable for local access.
-2. **Service routing** gives containers stable dependency endpoints. A small dynamic
-   gateway maps consumer-specific aliases to selected provider instances.
+1. **Host gateway** owns custom local domains, TLS, browser-facing legacy localhost
+   ports, CORS/preflight handling, and routes to loopback-published container ports.
+2. **Container sidecar** shares a consumer's network namespace, binds fixed addresses
+   such as `127.0.0.1:8001`, and forwards to providers on the deployment network.
+3. **Forward proxy** gives a managed browser profile an explicit routing identity when
+   neither a request header nor `Origin` is sufficient.
+
+Route tables are validated as complete immutable snapshots and swapped atomically.
+Updates never expose a partially changed five-service group. HTTP connections can drain
+under the previous snapshot; new connections use the new snapshot. Raw TCP routes have
+an explicit close, drain, or pin policy. The router also owns health checks, structured
+access logs, and route inspection. It must never silently choose a target for an
+ambiguous request.
+
+Portless was useful for the original hostname proof-of-concept but is not part of the
+authoritative runtime. It cannot provide consumer-specific browser identity and
+container-local fixed-port routing under one configuration contract.
+
+Ingress names are desired state, not transient CLI output:
+
+```yaml
+ingress:
+  ui-a:
+    instance: ui-a
+    domain: ui-a.comparison.localhost
+  ui-b:
+    instance: ui-b
+    domain: feature-b.product.test
+```
+
+Phase 1 persists these declarations in deployment YAML and generated manifests. Phase 2
+also records their applied and observed state in SQLite for recovery and the GUI.
 
 Example:
 
 ```text
-ui-2 requests java.ui-2.internal
-                       │
-                       └──► comparison--backend-a--api
+jas-main requests 127.0.0.1:8001
+                           │
+                           └──► comparison--ai-feature--ingest
 
-ui-2 requests analysis.python.ui-2.internal
-                       │
-                       └──► comparison--python-feature--analysis
+jas-feature requests 127.0.0.1:8001
+                              │
+                              └──► comparison--ai-main--ingest
 ```
 
-Changing a route should update the gateway atomically. Rebuilding or restarting the UI
-must not be required unless that UI embeds upstream URLs at compile time. The GUI must
-identify those compile-time routes and require a rebuild explicitly.
+In Phase 1, changing a binding renders and validates a complete replacement router
+configuration, then atomically reloads only the router sidecar. The application
+container is not restarted; applying slots one at a time is forbidden.
 
-HTTP routes can usually switch live. Database protocols and applications that read
-dependency URLs only at startup may require a controlled restart of the consumer. The
-route plan must state `live`, `restart consumer`, or `rebuild consumer` before applying
-each change.
+Phase 2 adds versioned live route snapshots, acknowledgements, history in SQLite, and
+graceful connection policies. The route plan states whether existing connections drain,
+close, or remain pinned while new connections use the new group.
+
+### Browser routing identity
+
+Browser JavaScript calling `localhost:<port>` connects to the native host router, not
+the UI container. The router selects a backend using this precedence:
+
+1. `X-Switchyard-Route`, injected per tab by the optional Switchyard browser extension.
+2. The request's `Origin`, mapped from the UI's custom domain.
+3. The identity of a dedicated forward-proxy listener used by a managed browser profile.
+
+For example, all three unchanged UIs may call `http://localhost:10081` while the router
+uses their origins to select a backend:
+
+```text
+Origin: https://ui-1.comparison.localhost ──► backend-1
+Origin: https://ui-2.comparison.localhost ──► backend-2
+Origin: https://ui-3.comparison.localhost ──► backend-1
+```
+
+```yaml
+browserRoutes:
+  - origin: https://ui-1.comparison.localhost
+    destination: http://localhost:10081
+    provider: backend-1
+  - origin: https://ui-2.comparison.localhost
+    destination: http://localhost:10081
+    provider: backend-2
+  - origin: https://ui-3.comparison.localhost
+    destination: http://localhost:10081
+    provider: backend-1
+```
+
+The host gateway answers preflight requests and adds narrowly scoped CORS response
+headers for configured UI origins. The [Fetch standard](https://fetch.spec.whatwg.org/)
+defines the `Origin` behavior used by this mode. Requests that lack usable identity are
+rejected with a diagnostic response instead of being routed arbitrarily.
+
+The extension can associate routing rules with tabs and attach the explicit header
+without application changes; see Chrome's
+[declarative request API](https://developer.chrome.com/docs/extensions/reference/api/declarativeNetRequest).
+For an extension-free guaranteed mode, `switchyard open <ui>` launches an isolated
+browser profile with `--proxy-server=<listener>` and
+`--proxy-bypass-list=<-loopback>`, as supported by
+[Chromium's proxy configuration](https://chromium.googlesource.com/chromium/src/+/HEAD/net/docs/proxy.md).
+
+### Downstream group invariant
+
+A backend instance has exactly one selected downstream group at a time. Two UIs can
+share a backend only when they also share that backend's downstream group. If two UIs
+need the same backend source with different groups, Switchyard runs two backend
+instances:
+
+```text
+ui-1 ──► backend-1a ──► group-a
+ui-3 ──► backend-1b ──► group-b
+```
+
+Without application-level context propagation, a single backend cannot associate an
+outbound `localhost:8001` connection with the inbound UI request that caused it. This is
+a fundamental boundary, not a router implementation limitation.
 
 ### State and ownership
 
-SQLite records observations, not the only copy of desired state. Deployment YAML remains
-portable and reviewable. Docker labels allow recovery if the database is deleted.
+Deployment YAML remains the portable, reviewable source of desired state. SQLite stores
+the last applied resolved snapshot as well as observations, but is never the only copy
+of user intent. Docker labels allow runtime recovery if the database is deleted.
+
+SQLite is introduced in Phase 2. Phase 1 preserves the same stable deployment and
+operation identifiers in generated manifests and Docker labels so the database can be
+added without changing resource identity.
 
 The control plane records:
 
 - Deployment state and last applied definition hash.
+- Last applied resolved desired-state snapshot.
 - Container, image, network, and volume identifiers.
 - Current dynamic route table.
 - Build/start/stop operation history.
@@ -974,6 +1192,8 @@ switchyard overlay diff <deployment> --with <overlay...>
 switchyard build <deployment> [--instance <name>]
 switchyard up <deployment>
 switchyard status [deployment]
+switchyard group list <deployment>
+switchyard bind <consumer> <group>
 switchyard route set <consumer> <slot> <provider>
 switchyard logs <deployment> [instance[/service]]
 switchyard open <instance>
@@ -992,6 +1212,8 @@ Initial API groups:
 /api/deployments
 /api/deployments/:name/plan
 /api/deployments/:name/operations
+/api/deployments/:name/groups
+/api/deployments/:name/bindings
 /api/deployments/:name/routes
 /api/deployments/:name/events
 /api/blocks
@@ -1079,12 +1301,15 @@ with different migration fingerprints share a schema.
 
 ## 10. Remote access
 
-Local mode uses `*.localhost` through an unprivileged Portless port.
+Local mode uses custom `*.localhost` names through the native Switchyard Router. The
+router may use an unprivileged HTTP port by default or a locally trusted certificate and
+platform-specific privileged-port setup for HTTPS. Domain and certificate ownership is
+explicit desired state and can be inspected from the CLI and GUI.
 
 Optional LAN mode uses `*.local` and mDNS:
 
-- The Docker host advertises instance names through Portless LAN mode.
-- TCP port `1355` and mDNS UDP port `5353` must be permitted.
+- A future publication adapter advertises Switchyard gateway instance names.
+- The configured gateway TCP port and mDNS UDP port `5353` must be permitted.
 - Linux requires `avahi-publish-address` from `avahi-utils`.
 - The GUI shows whether mDNS publication and remote reachability checks pass.
 - mDNS is not assumed to cross subnets, VLANs, VPNs, or guest Wi-Fi isolation.
@@ -1117,13 +1342,18 @@ The GUI and CLI expose:
 Proposed layout:
 
 ```text
+Cargo.toml                    Rust workspace for routing components
 blocks/                       reusable block definitions
 deployments/                  saved deployment definitions
+crates/
+  router-core/                route identity, matching, snapshots, and policy
+  router-pingora/             HTTP/TLS/gRPC/WebSocket gateway implementation
+  router-tcp/                 Tokio raw TCP forwarding
+  router-config/              versioned router configuration protocol
 packages/
   core/                       schemas, planner, naming, validation
   compose-runtime/            Compose generation and execution
   source-manager/             Git and worktree inspection
-  router/                     internal dynamic routing
   server/                     API, state, operations, event streams
   cli/                        command-line client
   web/                        React GUI
@@ -1135,58 +1365,63 @@ adapters/
   execution-runner-script/    scripts isolated in runner containers
   execution-host/             explicitly trusted host commands
   supervisor-process-compose/ Process Compose inspection and lifecycle
-  route-http/                 hostname/path HTTP routing
+  route-switchyard/           native gateway and sidecar lifecycle
   route-binding/              environment and rendered-config bindings
 examples/
-  shared-database-demo/       current small integration fixture
-  jas-base/                   mixed-runtime parent-workspace fixture
+  routing-matrix/             3 UIs, 2 backends, and switchable service groups
+  jas-base/                   containerized legacy parent-workspace fixture
+old/
+  shared-database-portless-demo/ archived hostname/database proof-of-concept
 scripts/                      bootstrap and development scripts
 .switchyard/                  ignored generated state
 ```
 
-The existing three-container demonstration becomes the first integration fixture rather
-than the permanent application structure.
+The existing three-container Portless demonstration is archived under `old/`. It remains
+runnable for historical comparison but is not a template for the new implementation.
 
 ## 13. Delivery phases
 
-### Phase 1: definitions and deterministic planning
+### Phase 1: routing proof
 
-- Versioned schemas for sources, blocks, instances, routes, and deployments.
-- Existing local paths and worktrees.
-- Validation, naming, planning, and generated Compose.
-- Container, containerized-script, and trusted host-command execution modes, including
-  one-shot tasks and host resource-conflict detection.
-- Golden-file tests for the example deployment.
-- Adapter SDK and registry with JSON Schema-driven configuration.
-- A core test fixture using invented capability names to prevent accidental assumptions
-  about languages or common web application roles.
-- Ordered overlay resolution for environment, dotenv files, injected files, parameters,
-  and routes, including origin traces and deterministic resolved hashes.
+- Minimal schemas for existing sources, blocks, instances, groups, bindings, and routes.
+- Container and containerized-script execution only, including Process Compose inside a
+  runner container.
+- Deterministic planning and generated Compose as an internal runtime implementation.
+- Rust Switchyard Router in native host-gateway and per-consumer sidecar modes.
+- Pingora HTTP/TLS/gRPC/WebSocket proxying plus Tokio raw TCP forwarding.
+- Custom local domains and browser legacy-localhost routing by explicit header, Origin,
+  or managed-profile proxy identity.
+- Explicit rejection and diagnostics when browser routing identity is ambiguous.
+- Per-consumer sidecars sharing Docker network namespaces for fixed
+  `localhost:<port>` slots.
+- One-shot CLI commands: validate, plan, up, bind, status, logs, and down.
+- Generated manifests and Docker ownership labels; no daemon or SQLite dependency.
+- Golden tests plus a real fixture with three UIs, two backends, and two five-service
+  groups. All unchanged consumers use the same localhost ports while reaching their
+  selected providers.
+- Group switching through validated, complete, atomic router snapshot replacement.
 
-### Phase 2: lifecycle CLI
+Phase 1 is a technical proof, not the complete product MVP.
 
-- Build, up, status, logs, and down.
-- Health-aware ordering and operation events.
-- Portless local ingress.
-- Static routes selected at deployment time.
-- Host process-group supervision and the Process Compose adapter.
+### Phase 2: product MVP
 
-### Phase 3: GUI foundation
+- Long-running control-plane daemon and HTTP/SSE API shared by CLI and GUI.
+- SQLite state, operation locking, history, recovery metadata, route history, and GUI
+  preferences. Desired state remains in portable YAML.
+- Versioned live route snapshots with acknowledgement and connection-drain policies.
+- Adapter SDK and registry with JSON Schema validation.
+- Schema-driven GUI with the deployment builder, patch-bay topology, instance inspector,
+  logs, health, group switching, and custom-domain management.
+- First-class source inspection plus managed Git clones and worktree creation, while
+  preserving non-destructive behavior for unmanaged worktrees.
+- Ordered overlays, resolved-value origins, secret-safe file injection, and variation
+  comparison.
+- Additional execution adapters, including explicitly trusted host execution, only
+  after they meet the same ownership and isolation contracts.
 
-- Deployment list, route canvas, instance inspector, logs, and health.
-- Deployment builder using existing blocks and sources.
-- Plan/apply workflow with diffs.
-- Overlay editor, ordering controls, resolved-value origins, and variation comparison.
+### Phase 3: LAN and team workflows
 
-### Phase 4: live routing and source management
-
-- Atomic route switching without full redeployment.
-- Worktree creation and managed repository clones.
-- Dirty-source protections and source comparison.
-
-### Phase 5: LAN and team workflows
-
-- Portless LAN/mDNS preflight and publication.
+- Switchyard gateway LAN/mDNS preflight and publication.
 - Import/exportable deployment bundles without secrets.
 - Optional Tailscale or private-DNS adapter.
 
@@ -1196,21 +1431,34 @@ The first complete version is successful when a developer can:
 
 1. Register a monorepo and at least two existing worktrees.
 2. Define database, UI, Java, and five-service Python blocks.
-   The fixtures must cover a Dockerfile, a containerized script, a trusted host script,
-   and a Process Compose suite.
+   The fixtures must cover a Dockerfile, a containerized legacy script, and a Process
+   Compose suite inside a runner container.
 3. Create one database, five UI instances, two Python suites, and three Java suites.
 4. Preview exactly which containers, images, volumes, and routes will be created.
 5. Start the deployment and wait for health-based readiness.
 6. Open each UI at a stable hostname.
 7. See the source path, branch, and commit behind every running instance.
 8. Select which Java and Python instances each UI uses.
-9. View combined and per-service logs.
-10. Stop the deployment without deleting database state.
-11. Perform all common operations from both the CLI and GUI.
-12. Replace the JAS example with an unrelated generic fixture without changing core,
+9. Define named five-service groups assembled from one or several source variants.
+10. Run two consumers that both call the same `localhost:8001` while reaching different
+    provider groups.
+11. Switch a consumer's complete group without restarting the application container.
+12. Assign and persist custom domains for human-facing instances through the native
+    Switchyard Router.
+13. Recover observed deployment and route state through SQLite and Docker labels after a
+    control-plane restart.
+14. View combined and per-service logs.
+15. Stop the deployment without deleting database state.
+16. Perform all common operations from both the CLI and schema-driven GUI.
+17. Replace the JAS example with an unrelated generic fixture without changing core,
     API, CLI, or GUI code.
-13. Apply two different overlay sets to one base deployment and run both variations
+18. Apply two different overlay sets to one base deployment and run both variations
     concurrently without modifying either source worktree.
+19. Route three unchanged browser UIs that all call `localhost:10081` to independently
+    selected backend instances using Origin, an extension header, or managed profiles.
+20. Reject an ambiguous browser request with an actionable diagnostic.
+21. Run duplicate backend instances when two UIs require the same backend source but
+    different downstream service groups.
 
 ## 15. Explicit non-goals for the MVP
 

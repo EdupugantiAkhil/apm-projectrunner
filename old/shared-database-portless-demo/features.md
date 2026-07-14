@@ -1,4 +1,4 @@
-# Features
+# Archived proof-of-concept features
 
 - Keep the orchestration engine solution-agnostic. Sources, blocks, capabilities, route
   slots, lifecycles, probes, and deployments are generic concepts; Java, Python, UI,

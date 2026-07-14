@@ -1,4 +1,5 @@
 #!/bin/sh
+# Stops the archived Portless proof-of-concept.
 set -eu
 
 PORTLESS_SYNC_HOSTS=0 npx portless alias --remove app-one >/dev/null 2>&1 || true

@@ -1,3 +1,4 @@
+// Archived proof-of-concept server.
 import { createServer } from 'node:http';
 import pg from 'pg';
 import { createHandler } from './app.js';

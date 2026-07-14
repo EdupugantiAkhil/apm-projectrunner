@@ -1,55 +1,48 @@
-# Shared database, duplicated service
+# Switchyard
 
-This is a working implementation of [`features.md`](features.md). It runs three
-containers:
+Switchyard is a local development topology orchestrator for running multiple instances
+of unchanged application components and selecting how they connect.
 
-The proposed full project architecture, worktree orchestration model, and GUI are
-documented in [`DESIGN.md`](DESIGN.md).
+The central use case is a topology such as:
 
-1. `database` — one PostgreSQL database, available only on the private Compose network.
-2. `app-one` — the first copy of the service.
-3. `app-two` — a second copy built from exactly the same image.
-
-Both application copies listen on container port `8080`. The Vercel Labs
-[Portless](https://github.com/vercel-labs/portless) development proxy gives them stable
-virtual hostnames on the same host port without adding another runtime container:
-
-- <http://app-one.localhost:1355> (`app-one`)
-- <http://app-two.localhost:1355> (`app-two`)
-
-Each request to `/` records which copy handled it and returns all visits. Calling one
-address and then the other demonstrates that both copies use the same persistent data.
-
-## Run it
-
-```sh
-cp .env.example .env       # optional; development defaults are built in
-npm install
-npm run compose:up
-npm run smoke
-npm run compose:down
+```text
+ui-1 ──► backend-1 ──► feature service group
+ui-2 ──► backend-2 ──► main service group
+ui-3 ──► backend-1 ──► feature service group
 ```
 
-This configuration does not need root. Portless uses plain HTTP on unprivileged port
-`1355`, disables `/etc/hosts` synchronization, and relies on the special `.localhost`
-domain. It does not use mDNS or an external DNS service. The applications' direct
-fallback URLs are `http://127.0.0.1:18081` and `http://127.0.0.1:18082`.
+Applications may keep calling fixed addresses such as `localhost:8001`. Switchyard uses
+Docker network namespaces and a Rust router sidecar per consumer to intercept those
+addresses without source-code changes. A native host router handles custom local
+domains, TLS, and browser calls to legacy localhost ports using an explicit route
+header, the UI origin, or an isolated browser-profile proxy.
 
-Use `docker compose down --volumes` when you also want to delete the database data.
+## Status
 
-## Configuration
+This repository is currently design-first. The authoritative specification, delivery
+phases, constraints, and acceptance criteria are in [DESIGN.md](DESIGN.md).
 
-Copy `.env.example` to `.env` and change values as needed. The checked-in credentials
-are local-development defaults only. The database port is not published to the host.
+The implementation target is:
 
-`PORTLESS_PORT` controls the shared public proxy port. `APP_ONE_HOST_PORT` and
-`APP_TWO_HOST_PORT` are loopback-only upstream ports used by Portless.
+- Docker Engine with generated Docker Compose for Phase 1 lifecycle management.
+- A Rust `switchyard-router` built on Pingora for HTTP-family traffic and Tokio for raw
+  TCP.
+- Native host-gateway and container-sidecar modes from one router codebase.
+- Versioned YAML desired state plus SQLite-backed applied snapshots, control state, and
+  observations in the product phase.
+- Docker named volumes for persistent application data.
 
-## Verify
+## Repository structure
 
-```sh
-npm install
-npm test
-docker compose config --quiet
-npm run compose:up && npm run smoke
+```text
+DESIGN.md   authoritative architecture and roadmap
+old/        archived experiments; not the current implementation
 ```
+
+The previous shared-PostgreSQL/Portless demo has moved to
+[`old/shared-database-portless-demo/`](old/shared-database-portless-demo/). Run its npm
+and Compose commands from that directory if you need the historical proof-of-concept.
+
+New implementation directories will be added according to the repository layout in
+`DESIGN.md`; empty scaffolding is intentionally not committed before implementation
+starts.
