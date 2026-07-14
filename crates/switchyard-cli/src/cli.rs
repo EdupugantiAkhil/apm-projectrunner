@@ -27,6 +27,10 @@ pub enum CliCommand {
         bundle: PathBuf,
         target: Option<String>,
     },
+    Open {
+        bundle: PathBuf,
+        ui: String,
+    },
     Down {
         bundle: PathBuf,
     },
@@ -57,6 +61,7 @@ Usage:
   switchyard status <deployment.yaml> [--routes]
   switchyard routes <deployment.yaml>
   switchyard logs <deployment.yaml> [instance[/service]]
+  switchyard open <deployment.yaml> <ui>
   switchyard down <deployment.yaml>
   switchyard cleanup <deployment.yaml> --yes
 ";
@@ -103,6 +108,10 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
         "logs" if (1..=2).contains(&rest.len()) => Ok(CliCommand::Logs {
             bundle: bundle()?,
             target: rest.get(1).cloned(),
+        }),
+        "open" if rest.len() == 2 => Ok(CliCommand::Open {
+            bundle: bundle()?,
+            ui: rest[1].clone(),
         }),
         "down" if rest.len() == 1 => Ok(CliCommand::Down { bundle: bundle()? }),
         "cleanup" if rest.len() == 1 => Ok(CliCommand::Cleanup {
@@ -153,5 +162,16 @@ mod tests {
     #[test]
     fn rejects_volume_deletion_through_down() {
         assert!(parse(args(&["down", "demo.yaml", "--volumes"])).is_err());
+    }
+
+    #[test]
+    fn parses_managed_profile_open() {
+        assert_eq!(
+            parse(args(&["open", "demo.yaml", "ui-1"])).unwrap(),
+            CliCommand::Open {
+                bundle: "demo.yaml".into(),
+                ui: "ui-1".into(),
+            }
+        );
     }
 }

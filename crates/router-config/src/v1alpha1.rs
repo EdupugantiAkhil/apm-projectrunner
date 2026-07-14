@@ -84,6 +84,60 @@ impl RouterConfig {
         let mut slots = BTreeMap::new();
         for (index, listener) in self.spec.listeners.iter().enumerate() {
             let path = format!("spec.listeners[{index}]");
+            if listener.bind.port == 0 {
+                errors.push(ValidationError::new(
+                    ValidationCode::InvalidListener,
+                    &format!("{path}.bind.port"),
+                    "listener port must be nonzero",
+                ));
+            }
+            if listener.destinations.is_empty() {
+                errors.push(ValidationError::new(
+                    ValidationCode::InvalidListener,
+                    &format!("{path}.destinations"),
+                    "listener must declare at least one destination",
+                ));
+            }
+            if matches!(listener.protocol, Protocol::Https) != listener.tls.is_some() {
+                errors.push(ValidationError::new(
+                    ValidationCode::InvalidListener,
+                    &format!("{path}.tls"),
+                    "HTTPS listeners require TLS and non-HTTPS listeners must not declare TLS",
+                ));
+            }
+            if let Some(tls) = &listener.tls {
+                if tls.certificate.as_os_str().is_empty() || tls.private_key.as_os_str().is_empty()
+                {
+                    errors.push(ValidationError::new(
+                        ValidationCode::InvalidListener,
+                        &format!("{path}.tls"),
+                        "TLS certificate and private-key paths must be nonempty",
+                    ));
+                }
+            }
+            if let Some(authentication) = &listener.proxy_authentication {
+                if authentication.credential_file.as_os_str().is_empty() {
+                    errors.push(ValidationError::new(
+                        ValidationCode::InvalidListener,
+                        &format!("{path}.proxyAuthentication.credentialFile"),
+                        "proxy credential path must be nonempty",
+                    ));
+                }
+                if listener.protocol != Protocol::Http {
+                    errors.push(ValidationError::new(
+                        ValidationCode::InvalidListener,
+                        &format!("{path}.proxyAuthentication"),
+                        "proxy authentication requires a cleartext HTTP listener",
+                    ));
+                }
+            }
+            if listener.proxy_identity.is_some() && listener.proxy_authentication.is_none() {
+                errors.push(ValidationError::new(
+                    ValidationCode::InvalidListener,
+                    &format!("{path}.proxyAuthentication"),
+                    "managed proxy listeners require proxy authentication",
+                ));
+            }
             if let Some(consumer) = &listener.consumer {
                 validate_identifier(
                     consumer.as_str(),
@@ -122,6 +176,30 @@ impl RouterConfig {
                         .context("first", first.1),
                     ),
                     _ => {}
+                }
+                match (listener.proxy_identity.is_some(), destination) {
+                    (true, ListenerDestination::ProxyTarget { host, port, .. }) => {
+                        if *port == 0 || !is_local_host(host) {
+                            errors.push(ValidationError::new(
+                                ValidationCode::InvalidListener,
+                                &format!("{path}.destinations"),
+                                "managed proxy targets require a nonzero port and local host",
+                            ));
+                        }
+                    }
+                    (true, _) => errors.push(ValidationError::new(
+                        ValidationCode::InvalidListener,
+                        &format!("{path}.destinations"),
+                        "managed proxy listeners require exact host-and-port proxy targets",
+                    )),
+                    (false, ListenerDestination::ProxyTarget { .. }) => {
+                        errors.push(ValidationError::new(
+                            ValidationCode::InvalidListener,
+                            &format!("{path}.destinations"),
+                            "proxy targets are valid only on managed proxy listeners",
+                        ));
+                    }
+                    (false, _) => {}
                 }
             }
         }
@@ -247,7 +325,14 @@ impl RouterConfig {
         for (index, route) in self.spec.browser_routes.iter().enumerate() {
             let path = format!("spec.browserRoutes[{index}]");
             let identity = match &route.identity {
-                BrowserIdentity::ExplicitHeader { value } => format!("header:{value}"),
+                BrowserIdentity::ExplicitHeader { value } => {
+                    validate_route_header_value(
+                        value.as_str(),
+                        &format!("{path}.identity.value"),
+                        &mut errors,
+                    );
+                    format!("header:{value}")
+                }
                 BrowserIdentity::Origin { origin } => format!("origin:{origin}"),
                 BrowserIdentity::ProxyListener { listener } => format!("proxy:{listener}"),
             };
@@ -370,6 +455,21 @@ pub struct Listener {
     pub destinations: Vec<ListenerDestination>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_identity: Option<BindingId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_authentication: Option<ProxyAuthentication>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProxyAuthentication {
+    pub scheme: ProxyAuthenticationScheme,
+    pub credential_file: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyAuthenticationScheme {
+    Basic,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -382,9 +482,22 @@ pub struct TlsIdentity {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ListenerDestination {
-    CustomDomain { slot: RouteSlotId, domain: String },
-    LegacyLocalhost { slot: RouteSlotId, host: String },
-    Loopback { slot: RouteSlotId },
+    CustomDomain {
+        slot: RouteSlotId,
+        domain: String,
+    },
+    LegacyLocalhost {
+        slot: RouteSlotId,
+        host: String,
+    },
+    Loopback {
+        slot: RouteSlotId,
+    },
+    ProxyTarget {
+        slot: RouteSlotId,
+        host: String,
+        port: u16,
+    },
 }
 
 impl ListenerDestination {
@@ -392,7 +505,8 @@ impl ListenerDestination {
         match self {
             Self::CustomDomain { slot, .. }
             | Self::LegacyLocalhost { slot, .. }
-            | Self::Loopback { slot } => slot,
+            | Self::Loopback { slot }
+            | Self::ProxyTarget { slot, .. } => slot,
         }
     }
 }
@@ -404,6 +518,10 @@ pub struct Provider {
     pub endpoint: UpstreamEndpoint,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check: Option<HealthCheck>,
+    /// Allows this provider to receive the internal browser route header when the
+    /// router-wide stripping policy is also disabled.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub receive_identity_header: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -505,6 +623,7 @@ impl Default for IdentityPolicy {
 pub enum ValidationCode {
     UnsupportedSchema,
     InvalidIdentifier,
+    InvalidListener,
     DuplicateIdentifier,
     DuplicateListener,
     MissingProvider,
@@ -608,6 +727,15 @@ fn protocols_compatible(listener: Protocol, provider: Protocol) -> bool {
         )
 }
 
+fn is_local_host(host: &str) -> bool {
+    let normalized = host.trim_end_matches('.').to_ascii_lowercase();
+    normalized == "localhost"
+        || normalized.ends_with(".localhost")
+        || normalized
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
 fn validate_identifier(
     value: &str,
     allow_path: bool,
@@ -644,4 +772,28 @@ fn validate_identifier(
             .context("value", value),
         );
     }
+}
+
+fn validate_route_header_value(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
+    let bytes = value.as_bytes();
+    let valid = (1..=128).contains(&bytes.len())
+        && bytes
+            .first()
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && bytes[1..].iter().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'.' | b'_' | b':' | b'-')
+        });
+    if !valid {
+        errors.push(ValidationError::new(
+            ValidationCode::InvalidIdentifier,
+            path,
+            "route header value must be 1-128 lowercase ASCII letters, digits, `.`, `_`, `:`, or `-`, starting with a letter or digit",
+        ));
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }

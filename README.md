@@ -54,6 +54,8 @@ platforms and individual commands. The router binary and authenticated local con
 protocol are documented in [docs/router.md](docs/router.md). The runnable planner/CLI
 proof is documented in
 [examples/routing-matrix/README.md](examples/routing-matrix/README.md).
+Browser tab identity, the unpacked Chromium extension, and managed-profile fallback are
+documented in [docs/browser-routing.md](docs/browser-routing.md).
 
 The previous shared-PostgreSQL/Portless demo has moved to
 [`old/shared-database-portless-demo/`](old/shared-database-portless-demo/). Run its npm

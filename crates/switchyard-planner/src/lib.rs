@@ -96,6 +96,12 @@ pub struct Plan {
     pub manifest_json: String,
     pub route_configs: BTreeMap<String, String>,
     pub sidecars: BTreeMap<String, SidecarPlan>,
+    #[serde(default)]
+    pub managed_profiles: BTreeMap<String, ManagedProfilePlan>,
+    #[serde(default)]
+    pub host_router_config: Option<String>,
+    #[serde(default)]
+    pub host_upstreams: BTreeMap<String, HostUpstreamPlan>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -106,12 +112,31 @@ pub struct SidecarPlan {
     pub config_path: PathBuf,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedProfilePlan {
+    pub api_version: String,
+    pub deployment: String,
+    pub ui: String,
+    pub route: String,
+    pub proxy_address: String,
+    pub start_url: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostUpstreamPlan {
+    pub compose_service: String,
+    pub container_port: u16,
+}
+
 /// Loads one self-contained deployment bundle without changing runtime state.
 pub fn load_bundle(path: &Path) -> Result<Bundle, PlannerError> {
     let input = fs::read_to_string(path)?;
     let mut bundle: Bundle = serde_yaml::from_str(&input)?;
     bundle.definition_dir = path
         .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."))
         .canonicalize()?;
     bundle.workspace_root = bundle
@@ -170,6 +195,26 @@ pub fn write_plan(workspace_root: &Path, plan: &Plan) -> io::Result<PathBuf> {
             &artifact_dir.join("routes").join(format!("{consumer}.json")),
             config.as_bytes(),
         )?;
+    }
+    let managed_profiles_dir = artifact_dir.join("managed-profiles");
+    if managed_profiles_dir.exists() {
+        fs::remove_dir_all(&managed_profiles_dir)?;
+    }
+    if !plan.managed_profiles.is_empty() {
+        fs::create_dir_all(&managed_profiles_dir)?;
+        for (ui, profile) in &plan.managed_profiles {
+            let encoded = serde_json::to_vec_pretty(profile).map_err(io::Error::other)?;
+            write_atomic(&managed_profiles_dir.join(format!("{ui}.json")), &encoded)?;
+        }
+    }
+    if let Some(config) = &plan.host_router_config {
+        write_atomic(&artifact_dir.join("host-router.json"), config.as_bytes())?;
+    } else {
+        match fs::remove_file(artifact_dir.join("host-router.json")) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
     }
     Ok(artifact_dir)
 }
@@ -327,6 +372,70 @@ fn validate(
     let resolved_groups = resolve_groups(&bundle.spec.groups, &mut errors);
     validate_expanded_dependencies(bundle, &instances, &mut errors);
     validate_routes(bundle, &instances, &resolved_groups, &mut errors);
+    for (ui, profile) in &bundle.spec.managed_profiles {
+        let path = format!("spec.managedProfiles.{ui}");
+        validate_name(ui, &path, &mut errors);
+        validate_name(&profile.route, format!("{path}.route"), &mut errors);
+        if !instances.contains_key(ui.as_str()) {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::MissingReference,
+                &path,
+                "managed profile UI must name a declared instance",
+            ));
+        }
+        let valid_start_url = is_local_http_url(&profile.start_url);
+        if !valid_start_url {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::InvalidPath,
+                format!("{path}.startUrl"),
+                "managed profiles currently require a local http:// URL (localhost, loopback, or *.localhost); use Origin or explicit-header routing for HTTPS",
+            ));
+        }
+        let Some(host_router) = &bundle.spec.host_router else {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::MissingReference,
+                &path,
+                "managed profiles require spec.hostRouter",
+            ));
+            continue;
+        };
+        if valid_start_url {
+            if let Err(message) =
+                managed_profile_destinations(host_router, &profile.route, &profile.start_url)
+            {
+                errors.push(Diagnostic::new(
+                    DiagnosticCode::MissingReference,
+                    format!("{path}.route"),
+                    message,
+                ));
+            }
+        }
+    }
+    if let Some(host_router) = &bundle.spec.host_router {
+        if host_router.metadata.deployment.as_str() != bundle.metadata.name {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::MissingReference,
+                "spec.hostRouter.metadata.deployment",
+                "host router deployment must match deployment metadata.name",
+            ));
+        }
+        if let Err(router_errors) = host_router.validate() {
+            errors.extend(router_errors.into_iter().map(|error| {
+                Diagnostic::new(
+                    DiagnosticCode::MissingReference,
+                    format!("spec.hostRouter.{}", error.path),
+                    error.message,
+                )
+            }));
+        }
+        validate_host_upstreams(bundle, host_router, &instances, &mut errors);
+    } else if !bundle.spec.host_upstreams.is_empty() {
+        errors.push(Diagnostic::new(
+            DiagnosticCode::MissingReference,
+            "spec.hostUpstreams",
+            "published host upstreams require spec.hostRouter",
+        ));
+    }
 
     if errors.is_empty() {
         Ok(resolved_groups)
@@ -395,6 +504,85 @@ fn validate_execution(
         }
     }
     let _ = bundle;
+}
+
+fn validate_host_upstreams(
+    bundle: &Bundle,
+    host_router: &router_config::RouterConfig,
+    instances: &BTreeMap<&str, &Instance>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for provider in &host_router.spec.providers {
+        let id = provider.id.as_str();
+        let loopback = provider.endpoint.host.eq_ignore_ascii_case("localhost")
+            || provider
+                .endpoint
+                .host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback());
+        if !loopback {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::InvalidPath,
+                format!("spec.hostRouter.providers.{id}.endpoint.host"),
+                "host-router providers must use localhost or a loopback IP address",
+            ));
+        }
+        if provider.endpoint.port == 0 && !bundle.spec.host_upstreams.contains_key(id) {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::MissingReference,
+                format!("spec.hostRouter.providers.{id}"),
+                "provider port 0 requires one spec.hostUpstreams mapping",
+            ));
+        }
+    }
+    for (provider, upstream) in &bundle.spec.host_upstreams {
+        let path = format!("spec.hostUpstreams.{provider}");
+        if upstream.port == 0 {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::InvalidPath,
+                format!("{path}.port"),
+                "mapped container port must be nonzero",
+            ));
+        }
+        if !host_router
+            .spec
+            .providers
+            .iter()
+            .any(|candidate| candidate.id.as_str() == provider)
+        {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::MissingReference,
+                &path,
+                "mapping refers to an unknown host-router provider",
+            ));
+        }
+        let Some(instance) = instances.get(upstream.instance.as_str()) else {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::MissingReference,
+                format!("{path}.instance"),
+                "mapping refers to an unknown instance",
+            ));
+            continue;
+        };
+        let Some(service) = bundle.spec.blocks[&instance.block]
+            .services
+            .get(&upstream.service)
+        else {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::MissingReference,
+                format!("{path}.service"),
+                "mapping refers to an unknown instance service",
+            ));
+            continue;
+        };
+        if !service.publish.contains(&upstream.port) {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::MissingReference,
+                format!("{path}.port"),
+                "mapped container port is not declared in service.publish",
+            ));
+        }
+    }
 }
 
 fn validate_local_dependencies(block_name: &str, block: &Block, errors: &mut Vec<Diagnostic>) {
@@ -745,6 +933,9 @@ fn generate(
     let mut resource_definition = bundle.clone();
     resource_definition.spec.bindings.clear();
     resource_definition.spec.routes.clear();
+    resource_definition.spec.managed_profiles.clear();
+    resource_definition.spec.host_router = None;
+    resource_definition.spec.host_upstreams.clear();
     let resource_hash = format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&resource_definition)?)
@@ -762,6 +953,9 @@ fn generate(
     let mut manifest_services = Vec::new();
     let mut route_configs = BTreeMap::new();
     let mut sidecars = BTreeMap::new();
+    let managed_profiles = managed_profiles(bundle);
+    let host_router_config = generate_host_router_config(bundle, &managed_profiles)?;
+    let host_upstreams = host_upstreams(bundle);
 
     for instance in &bundle.spec.instances {
         let mut instance_labels = labels.clone();
@@ -920,6 +1114,9 @@ fn generate(
         "network": network,
         "services": manifest_services,
         "sidecars": sidecars,
+        "managedProfiles": managed_profiles,
+        "hostRouterConfig": host_router_config.as_ref().map(|_| artifact_dir.join("host-router.json")),
+        "hostUpstreams": host_upstreams,
         "ownershipLabels": labels,
     });
     let manifest_json = serde_json::to_string_pretty(&manifest)?;
@@ -935,7 +1132,240 @@ fn generate(
         manifest_json,
         route_configs,
         sidecars,
+        managed_profiles,
+        host_router_config,
+        host_upstreams,
     })
+}
+
+fn managed_profiles(bundle: &Bundle) -> BTreeMap<String, ManagedProfilePlan> {
+    const FIRST_PORT: u16 = 24_000;
+    const PORT_COUNT: u16 = 8_000;
+    let mut used = BTreeSet::new();
+    let mut result = BTreeMap::new();
+    for (ui, profile) in &bundle.spec.managed_profiles {
+        let digest = Sha256::digest(format!("{}\0{ui}", bundle.metadata.name));
+        let offset = u16::from_be_bytes([digest[0], digest[1]]) % PORT_COUNT;
+        let mut port = FIRST_PORT + offset;
+        while !used.insert(port) {
+            port = FIRST_PORT + ((port - FIRST_PORT + 1) % PORT_COUNT);
+        }
+        result.insert(
+            ui.clone(),
+            ManagedProfilePlan {
+                api_version: "switchyard.dev/managed-profile/v1alpha1".into(),
+                deployment: bundle.metadata.name.clone(),
+                ui: ui.clone(),
+                route: profile.route.clone(),
+                proxy_address: format!("127.0.0.1:{port}"),
+                start_url: profile.start_url.clone(),
+            },
+        );
+    }
+    result
+}
+
+fn host_upstreams(bundle: &Bundle) -> BTreeMap<String, HostUpstreamPlan> {
+    bundle
+        .spec
+        .host_upstreams
+        .iter()
+        .map(|(provider, upstream)| {
+            (
+                provider.clone(),
+                HostUpstreamPlan {
+                    compose_service: service_name_for(
+                        &bundle.metadata.name,
+                        &upstream.instance,
+                        &upstream.service,
+                    ),
+                    container_port: upstream.port,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Returns whether a managed-profile start URL is a strict local HTTP URI.
+pub fn is_local_http_url(value: &str) -> bool {
+    local_http_target(value).is_some()
+}
+
+fn local_http_target(value: &str) -> Option<(String, u16)> {
+    if value.chars().any(char::is_whitespace) || value.contains('#') {
+        return None;
+    }
+    let uri = value.parse::<http::Uri>().ok()?;
+    if uri.scheme_str() != Some("http") {
+        return None;
+    }
+    let authority = uri.authority()?;
+    if authority.as_str().contains('@') {
+        return None;
+    }
+    let authority_text = authority.as_str();
+    let explicit_port = if authority_text.starts_with('[') {
+        authority_text
+            .find(']')
+            .is_some_and(|end| authority_text[end + 1..].starts_with(':'))
+    } else {
+        authority_text.contains(':')
+    };
+    if explicit_port && authority.port_u16().is_none() {
+        return None;
+    }
+    let host = authority.host();
+    let normalized = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host)
+        .to_ascii_lowercase();
+    let local = normalized == "localhost"
+        || normalized.ends_with(".localhost")
+        || normalized
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    let port = authority.port_u16().unwrap_or(80);
+    (local && port != 0).then_some((normalized, port))
+}
+
+fn managed_profile_destinations(
+    config: &router_config::RouterConfig,
+    route_identity: &str,
+    start_url: &str,
+) -> Result<Vec<router_config::ListenerDestination>, String> {
+    let start_target =
+        local_http_target(start_url).ok_or("managed profile start URL is invalid")?;
+    let identity = router_config::RouteSlotId::from(route_identity);
+    let mut destinations = Vec::new();
+    for route in &config.spec.browser_routes {
+        if !matches!(
+            &route.identity,
+            router_config::BrowserIdentity::ProxyListener { listener }
+                if listener == &identity
+        ) {
+            continue;
+        }
+        let sources = config
+            .spec
+            .listeners
+            .iter()
+            .filter(|listener| {
+                listener.proxy_identity.is_none()
+                    && listener.protocol == router_config::Protocol::Http
+            })
+            .flat_map(|listener| {
+                listener
+                    .destinations
+                    .iter()
+                    .filter(move |destination| destination.slot() == &route.destination)
+                    .map(move |destination| (listener, destination))
+            })
+            .collect::<Vec<_>>();
+        if sources.len() != 1 {
+            return Err(format!(
+                "proxy destination `{}` maps to {} cleartext HTTP source destinations; expected exactly one",
+                route.destination,
+                sources.len()
+            ));
+        }
+        let (listener, destination) = sources[0];
+        let host = match destination {
+            router_config::ListenerDestination::CustomDomain { domain, .. } => domain,
+            router_config::ListenerDestination::LegacyLocalhost { host, .. } => host,
+            router_config::ListenerDestination::Loopback { .. }
+            | router_config::ListenerDestination::ProxyTarget { .. } => {
+                return Err(format!(
+                    "proxy destination `{}` does not declare an exact local host",
+                    route.destination
+                ));
+            }
+        };
+        let normalized = host.trim_end_matches('.').to_ascii_lowercase();
+        let local = normalized == "localhost"
+            || normalized.ends_with(".localhost")
+            || normalized
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback());
+        if !local {
+            return Err(format!(
+                "proxy destination `{}` host `{host}` is not local",
+                route.destination
+            ));
+        }
+        destinations.push(router_config::ListenerDestination::ProxyTarget {
+            slot: route.destination.clone(),
+            host: normalized,
+            port: listener.bind.port,
+        });
+    }
+    if destinations.is_empty() {
+        return Err("managed profile route has no proxy-listener browser routes".into());
+    }
+    let start_matches = destinations
+        .iter()
+        .filter(|destination| {
+            matches!(
+                destination,
+                router_config::ListenerDestination::ProxyTarget { host, port, .. }
+                    if host == &start_target.0 && port == &start_target.1
+            )
+        })
+        .count();
+    if start_matches != 1 {
+        return Err(format!(
+            "managed profile start target `{}:{}` maps to {start_matches} declared proxy destinations; expected exactly one",
+            start_target.0, start_target.1
+        ));
+    }
+    Ok(destinations)
+}
+
+fn generate_host_router_config(
+    bundle: &Bundle,
+    profiles: &BTreeMap<String, ManagedProfilePlan>,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let Some(mut config) = bundle.spec.host_router.clone() else {
+        return Ok(None);
+    };
+    for profile in profiles.values() {
+        let destinations =
+            managed_profile_destinations(&config, &profile.route, &profile.start_url)?;
+        let port = profile
+            .proxy_address
+            .rsplit_once(':')
+            .and_then(|(_, port)| port.parse::<u16>().ok())
+            .ok_or("planner produced an invalid managed proxy address")?;
+        let credential_file = bundle
+            .workspace_root
+            .join(".switchyard/run")
+            .join(&bundle.metadata.name)
+            .join("managed-profiles")
+            .join(format!("{}.credential", profile.ui));
+        config.spec.listeners.push(router_config::Listener {
+            consumer: None,
+            bind: router_config::SocketAddress {
+                host: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                port,
+            },
+            protocol: router_config::Protocol::Http,
+            tls: None,
+            destinations,
+            proxy_identity: Some(router_config::BindingId::from(profile.route.as_str())),
+            proxy_authentication: Some(router_config::ProxyAuthentication {
+                scheme: router_config::ProxyAuthenticationScheme::Basic,
+                credential_file,
+            }),
+        });
+    }
+    config.validate().map_err(|errors| {
+        errors
+            .into_iter()
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>()
+            .join("; ")
+    })?;
+    Ok(Some(serde_json::to_string_pretty(&config)?))
 }
 
 fn compose_namespace_service(

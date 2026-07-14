@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use router_config::{BindingId, BrowserIdentity, InstanceId, RouteSlotId, RouterConfig};
+use router_config::{
+    BindingId, BrowserIdentity, BrowserRoute, ComponentId, InstanceId, RouteSlotId, RouterConfig,
+};
 use router_core::{ActivationStatus, BrowserLookup, LookupError, RouteEngine};
 
 fn config() -> RouterConfig {
@@ -139,5 +141,91 @@ fn explicit_header_identity_can_be_compiled() {
             .provider
             .as_str(),
         "backend-1"
+    );
+}
+
+#[test]
+fn header_and_origin_must_select_the_same_provider() {
+    let mut value = config();
+    value.spec.browser_routes.push(BrowserRoute {
+        identity: BrowserIdentity::ExplicitHeader {
+            value: BindingId::from("tab-two"),
+        },
+        destination: RouteSlotId::from("browser-backend"),
+        provider: ComponentId::from("backend-2"),
+    });
+    let engine = RouteEngine::new(value).unwrap();
+    let destination = RouteSlotId::from("browser-backend");
+
+    assert_eq!(
+        engine.snapshot().lookup_browser(BrowserLookup {
+            destination: &destination,
+            explicit_header: Some("tab-two"),
+            origin: Some("https://ui-1.comparison.localhost"),
+            proxy_listener: None,
+        }),
+        Err(LookupError::ConflictingIdentity)
+    );
+    assert_eq!(
+        engine
+            .snapshot()
+            .lookup_browser(BrowserLookup {
+                destination: &destination,
+                explicit_header: Some("tab-two"),
+                origin: Some("https://ui-2.comparison.localhost"),
+                proxy_listener: None,
+            })
+            .unwrap()
+            .provider
+            .as_str(),
+        "backend-2"
+    );
+    assert_eq!(
+        engine
+            .snapshot()
+            .lookup_browser(BrowserLookup {
+                destination: &destination,
+                explicit_header: Some("tab-two"),
+                origin: Some("https://unknown.example"),
+                proxy_listener: None,
+            })
+            .unwrap()
+            .provider
+            .as_str(),
+        "backend-2"
+    );
+}
+
+#[test]
+fn origin_matching_is_exact_and_scoped_to_the_destination() {
+    let engine = RouteEngine::new(config()).unwrap();
+    let snapshot = engine.snapshot();
+    let destination = RouteSlotId::from("browser-backend");
+    let other_destination = RouteSlotId::from("catalog");
+
+    assert_eq!(
+        snapshot.lookup_browser(BrowserLookup {
+            destination: &destination,
+            explicit_header: None,
+            origin: Some("https://UI-2.comparison.localhost"),
+            proxy_listener: None,
+        }),
+        Err(LookupError::UnknownIdentity)
+    );
+    assert_eq!(
+        snapshot.lookup_browser(BrowserLookup {
+            destination: &other_destination,
+            explicit_header: None,
+            origin: Some("https://ui-2.comparison.localhost"),
+            proxy_listener: None,
+        }),
+        Err(LookupError::UnknownIdentity)
+    );
+    assert_eq!(snapshot.browser_candidates(&other_destination), []);
+    assert!(
+        snapshot
+            .browser_candidates(&destination)
+            .iter()
+            .any(|candidate| candidate.identity == "origin:https://ui-2.comparison.localhost")
     );
 }

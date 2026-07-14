@@ -1,6 +1,9 @@
 use std::{fs, path::Path};
 
-use switchyard_planner::{DiagnosticCode, load_bundle, plan, plan_with_binding, write_plan};
+use switchyard_planner::{
+    DiagnosticCode, ManagedProfile, PublishedUpstream, load_bundle, plan, plan_with_binding,
+    write_plan,
+};
 
 fn bundle() -> switchyard_planner::Bundle {
     load_bundle(Path::new("tests/fixtures/deployment.yaml")).expect("fixture should load")
@@ -80,6 +83,149 @@ fn writes_recovery_artifacts_under_generated_directory() {
     assert!(output.join("resolved-deployment.yaml").is_file());
     assert!(output.join("manifest.json").is_file());
     assert!(output.join("routes/consumer-a.json").is_file());
+}
+
+#[test]
+fn writes_deterministic_credential_free_managed_profile_metadata() {
+    let mut bundle = bundle();
+    bundle.spec.managed_profiles.insert(
+        "consumer-a".into(),
+        ManagedProfile {
+            route: "consumer-a".into(),
+            start_url: "http://consumer-a.comparison.localhost:10081".into(),
+        },
+    );
+    bundle.spec.host_router = Some(
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "switchyard.dev/router/v1alpha1",
+            "kind": "RouterConfiguration",
+            "metadata": { "deployment": "comparison" },
+            "spec": {
+                "snapshot": {
+                    "id": "host-1", "version": 1,
+                    "transitions": {
+                        "http": { "strategy": "close" }, "https": { "strategy": "close" },
+                        "websocket": { "strategy": "close" }, "grpc": { "strategy": "close" },
+                        "tcp": { "strategy": "close" }
+                    }
+                },
+                "listeners": [{
+                    "bind": { "host": "127.0.0.1", "port": 10081 }, "protocol": "http",
+                    "destinations": [
+                        { "kind": "legacy_localhost", "slot": "backend", "host": "localhost" },
+                        { "kind": "custom_domain", "slot": "ui-start", "domain": "consumer-a.comparison.localhost" }
+                    ]
+                }],
+                "providers": [{ "id": "backend", "endpoint": { "protocol": "http", "host": "127.0.0.1", "port": 0 } }],
+                "groups": [], "bindings": [], "routes": [],
+                "browserRoutes": [
+                    {
+                        "identity": { "source": "proxy_listener", "listener": "consumer-a" },
+                        "destination": "backend", "provider": "backend"
+                    },
+                    {
+                        "identity": { "source": "proxy_listener", "listener": "consumer-a" },
+                        "destination": "ui-start", "provider": "backend"
+                    }
+                ],
+                "identity": { "explicitHeader": "X-Switchyard-Route", "stripBeforeForwarding": true }
+            }
+        }))
+        .unwrap(),
+    );
+    bundle.spec.host_upstreams.insert(
+        "backend".into(),
+        PublishedUpstream {
+            instance: "provider-main".into(),
+            service: "api".into(),
+            port: 8080,
+        },
+    );
+    let first = plan(&bundle).expect("managed profile should plan");
+    let second = plan(&bundle).expect("managed profile should be deterministic");
+    assert_eq!(first.managed_profiles, second.managed_profiles);
+    let profile = &first.managed_profiles["consumer-a"];
+    assert_eq!(profile.proxy_address.split(':').next(), Some("127.0.0.1"));
+    assert!(!serde_json::to_string(profile).unwrap().contains("token"));
+    let host_config: router_config::RouterConfig =
+        serde_json::from_str(first.host_router_config.as_ref().unwrap()).unwrap();
+    let proxy = host_config
+        .spec
+        .listeners
+        .iter()
+        .find(|listener| {
+            listener
+                .proxy_identity
+                .as_ref()
+                .is_some_and(|value| value.as_str() == "consumer-a")
+        })
+        .unwrap();
+    assert_eq!(
+        format!("{}:{}", proxy.bind.host, proxy.bind.port),
+        profile.proxy_address
+    );
+    assert!(proxy.proxy_authentication.is_some());
+    assert_eq!(proxy.destinations.len(), 2);
+    assert!(proxy.destinations.iter().all(|destination| {
+        matches!(
+            destination,
+            router_config::ListenerDestination::ProxyTarget { port: 10081, .. }
+        )
+    }));
+    assert_eq!(first.host_upstreams["backend"].container_port, 8080);
+    assert_eq!(
+        first.host_upstreams["backend"].compose_service,
+        "comparison--provider-main--api"
+    );
+
+    let workspace = tempfile::tempdir().unwrap();
+    let output = write_plan(workspace.path(), &first).unwrap();
+    let artifact = output.join("managed-profiles/consumer-a.json");
+    assert!(output.join("host-router.json").is_file());
+    let written: serde_json::Value = serde_json::from_slice(&fs::read(artifact).unwrap()).unwrap();
+    assert_eq!(written["route"], "consumer-a");
+    assert_eq!(written["startUrl"], profile.start_url);
+
+    let mut invalid_mapping = bundle.clone();
+    invalid_mapping
+        .spec
+        .host_upstreams
+        .get_mut("backend")
+        .unwrap()
+        .port = 8081;
+    let errors = plan(&invalid_mapping).expect_err("unpublished upstream port must fail");
+    assert!(errors.iter().any(|error| {
+        error.code == DiagnosticCode::MissingReference
+            && error.path == "spec.hostUpstreams.backend.port"
+    }));
+
+    let mut ambiguous = bundle.clone();
+    let mut duplicate = ambiguous.spec.host_router.as_ref().unwrap().spec.listeners[0].clone();
+    duplicate.bind.port += 1;
+    ambiguous
+        .spec
+        .host_router
+        .as_mut()
+        .unwrap()
+        .spec
+        .listeners
+        .push(duplicate);
+    let errors = plan(&ambiguous).expect_err("ambiguous profile destination must fail");
+    assert!(errors.iter().any(|error| {
+        error.path == "spec.managedProfiles.consumer-a.route"
+            && error.message.contains("expected exactly one")
+    }));
+
+    bundle
+        .spec
+        .managed_profiles
+        .get_mut("consumer-a")
+        .unwrap()
+        .start_url = "https://consumer-a.comparison.localhost".into();
+    let errors = plan(&bundle).expect_err("managed proxy HTTPS must fail closed");
+    assert!(errors.iter().any(|error| {
+        error.code == DiagnosticCode::InvalidPath && error.path.ends_with(".startUrl")
+    }));
 }
 
 #[test]

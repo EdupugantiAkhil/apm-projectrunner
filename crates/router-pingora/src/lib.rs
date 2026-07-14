@@ -16,6 +16,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use bytes::Bytes;
 use pingora::{
     apps::HttpServerOptions,
@@ -27,10 +28,13 @@ use pingora::{
 };
 use router_config::{
     ComponentId, HealthCheck, HealthCheckProtocol, IdentityPolicy, Listener, ListenerDestination,
-    Protocol, RouteSlotId, UpstreamEndpoint,
+    Protocol, ProxyAuthentication, ProxyAuthenticationScheme, RouteSlotId, UpstreamEndpoint,
 };
-use router_core::{BrowserLookup, CompiledSnapshot, RouteEngine, RouteTarget};
+use router_core::{
+    BrowserLookup, BrowserRouteCandidate, CompiledSnapshot, LookupError, RouteEngine, RouteTarget,
+};
 use serde::Serialize;
+use subtle::ConstantTimeEq;
 use tokio::sync::Notify;
 
 /// Operational limits which intentionally do not alter the versioned route contract.
@@ -59,6 +63,7 @@ pub enum BuildErrorCode {
     UnsupportedListener,
     MissingDestination,
     InvalidTlsIdentity,
+    InvalidProxyAuthentication,
     ServerInitialization,
 }
 
@@ -84,6 +89,104 @@ impl fmt::Display for BuildError {
 }
 
 impl std::error::Error for BuildError {}
+
+struct ProxyCredential {
+    authorization: Box<[u8]>,
+}
+
+const MAX_PROXY_CREDENTIAL_BYTES: u64 = 256;
+
+fn load_proxy_credential(
+    authentication: &ProxyAuthentication,
+) -> Result<ProxyCredential, BuildError> {
+    match authentication.scheme {
+        ProxyAuthenticationScheme::Basic => {}
+    }
+    let metadata = std::fs::symlink_metadata(&authentication.credential_file).map_err(|error| {
+        BuildError::new(
+            BuildErrorCode::InvalidProxyAuthentication,
+            format!(
+                "could not inspect proxy credential file {}: {error}",
+                authentication.credential_file.display()
+            ),
+        )
+    })?;
+    if !metadata.file_type().is_file()
+        || metadata.len() == 0
+        || metadata.len() > MAX_PROXY_CREDENTIAL_BYTES
+    {
+        return Err(BuildError::new(
+            BuildErrorCode::InvalidProxyAuthentication,
+            "proxy credential must be a regular file of 1 to 256 bytes",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.mode() & 0o777 != 0o600 {
+            return Err(BuildError::new(
+                BuildErrorCode::InvalidProxyAuthentication,
+                "proxy credential file must have mode 0600",
+            ));
+        }
+    }
+    let file = std::fs::File::open(&authentication.credential_file).map_err(|error| {
+        BuildError::new(
+            BuildErrorCode::InvalidProxyAuthentication,
+            format!(
+                "could not read proxy credential file {}: {error}",
+                authentication.credential_file.display()
+            ),
+        )
+    })?;
+    let mut token = Vec::with_capacity(metadata.len() as usize);
+    use std::io::Read as _;
+    file.take(MAX_PROXY_CREDENTIAL_BYTES + 1)
+        .read_to_end(&mut token)
+        .map_err(|error| {
+            BuildError::new(
+                BuildErrorCode::InvalidProxyAuthentication,
+                format!(
+                    "could not read proxy credential file {}: {error}",
+                    authentication.credential_file.display()
+                ),
+            )
+        })?;
+    if token.len() as u64 > MAX_PROXY_CREDENTIAL_BYTES {
+        token.fill(0);
+        return Err(BuildError::new(
+            BuildErrorCode::InvalidProxyAuthentication,
+            "proxy credential must be a regular file of 1 to 256 bytes",
+        ));
+    }
+    if token.last() == Some(&b'\n') {
+        token.pop();
+        if token.last() == Some(&b'\r') {
+            token.pop();
+        }
+    }
+    if token.is_empty() || token.iter().any(|byte| matches!(byte, b'\r' | b'\n')) {
+        token.fill(0);
+        return Err(BuildError::new(
+            BuildErrorCode::InvalidProxyAuthentication,
+            "proxy credential file must contain one non-empty token",
+        ));
+    }
+
+    let mut cleartext = b"switchyard:".to_vec();
+    cleartext.extend_from_slice(&token);
+    token.fill(0);
+    let encoded = BASE64_STANDARD.encode(&cleartext);
+    cleartext.fill(0);
+    Ok(ProxyCredential {
+        authorization: format!("Basic {encoded}").into_bytes().into_boxed_slice(),
+    })
+}
+
+/// Loads the exact Basic authorization value used by authenticated proxy listeners.
+pub fn proxy_authorization(authentication: &ProxyAuthentication) -> Result<Box<[u8]>, BuildError> {
+    load_proxy_credential(authentication).map(|credential| credential.authorization)
+}
 
 /// A cheap snapshot of data-plane counters.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
@@ -191,6 +294,7 @@ impl Default for DataPlaneTelemetry {
 pub struct HttpDataPlane {
     engine: Arc<RouteEngine>,
     listeners: Vec<Listener>,
+    proxy_credentials: Vec<Option<ProxyCredential>>,
     identity: IdentityPolicy,
     options: ProxyOptions,
     telemetry: DataPlaneTelemetry,
@@ -203,6 +307,7 @@ impl HttpDataPlane {
         identity: IdentityPolicy,
         options: ProxyOptions,
     ) -> Result<Self, BuildError> {
+        let mut proxy_credentials = Vec::with_capacity(listeners.len());
         for listener in &listeners {
             if !matches!(
                 listener.protocol,
@@ -225,16 +330,24 @@ impl HttpDataPlane {
                     ),
                 ));
             }
-            if matches!(listener.protocol, Protocol::Https) || listener.tls.is_some() {
+            if matches!(listener.protocol, Protocol::Https) != listener.tls.is_some() {
                 return Err(BuildError::new(
                     BuildErrorCode::UnsupportedListener,
-                    "TLS termination belongs to the Phase 3 host gateway",
+                    "HTTPS listeners require a TLS identity and non-HTTPS listeners must not declare one",
                 ));
             }
+            proxy_credentials.push(
+                listener
+                    .proxy_authentication
+                    .as_ref()
+                    .map(load_proxy_credential)
+                    .transpose()?,
+            );
         }
         Ok(Self {
             engine,
             listeners,
+            proxy_credentials,
             identity,
             options,
             telemetry: DataPlaneTelemetry::default(),
@@ -265,10 +378,16 @@ impl HttpDataPlane {
             .map(|listener| SocketAddr::new(listener.bind.host, listener.bind.port))
             .collect::<Vec<_>>();
 
-        for (index, listener) in self.listeners.into_iter().enumerate() {
+        for (index, (listener, proxy_credential)) in self
+            .listeners
+            .into_iter()
+            .zip(self.proxy_credentials)
+            .enumerate()
+        {
             let app = SwitchyardProxy {
                 engine: self.engine.clone(),
                 listener: listener.clone(),
+                proxy_credential,
                 identity: self.identity.clone(),
                 options: self.options.clone(),
                 telemetry: self.telemetry.clone(),
@@ -280,7 +399,27 @@ impl HttpDataPlane {
                 .server_options(server_options)
                 .build();
             let address = format!("{}:{}", listener.bind.host, listener.bind.port);
-            service.add_tcp(&address);
+            if let Some(tls) = &listener.tls {
+                let certificate = tls.certificate.to_str().ok_or_else(|| {
+                    BuildError::new(
+                        BuildErrorCode::ServerInitialization,
+                        "TLS certificate path must be valid UTF-8",
+                    )
+                })?;
+                let private_key = tls.private_key.to_str().ok_or_else(|| {
+                    BuildError::new(
+                        BuildErrorCode::ServerInitialization,
+                        "TLS private key path must be valid UTF-8",
+                    )
+                })?;
+                service
+                    .add_tls(&address, certificate, private_key)
+                    .map_err(|error| {
+                        BuildError::new(BuildErrorCode::ServerInitialization, error.to_string())
+                    })?;
+            } else {
+                service.add_tcp(&address);
+            }
             server.add_service(service);
         }
 
@@ -371,6 +510,8 @@ impl ShutdownSignalWatch for NotifyShutdown {
 struct RequestContext {
     snapshot: Option<Arc<CompiledSnapshot>>,
     target: Option<RouteTarget>,
+    cors_origin: Option<String>,
+    browser_routed: bool,
     body_bytes: usize,
     rejection: Option<ProxyRejection>,
     started: bool,
@@ -380,12 +521,28 @@ struct RequestContext {
 struct SwitchyardProxy {
     engine: Arc<RouteEngine>,
     listener: Listener,
+    proxy_credential: Option<ProxyCredential>,
     identity: IdentityPolicy,
     options: ProxyOptions,
     telemetry: DataPlaneTelemetry,
 }
 
 impl SwitchyardProxy {
+    async fn reject_proxy_authentication(
+        &self,
+        session: &mut Session,
+        ctx: &mut RequestContext,
+    ) -> PingoraResult<bool> {
+        self.telemetry.error();
+        ctx.error_counted = true;
+        self.telemetry.record(DataPlaneEvent::Rejection {
+            status: 407,
+            code: "proxy_authentication_required".into(),
+        });
+        respond_proxy_authentication_required(session).await?;
+        Ok(true)
+    }
+
     async fn reject(
         &self,
         session: &mut Session,
@@ -400,7 +557,34 @@ impl SwitchyardProxy {
             status,
             code: code.into(),
         });
-        respond_json(session, status, code, message).await?;
+        respond_json(session, status, code, message, ctx.cors_origin.as_deref()).await?;
+        Ok(true)
+    }
+
+    async fn reject_browser_route(
+        &self,
+        session: &mut Session,
+        ctx: &mut RequestContext,
+        status: u16,
+        code: &'static str,
+        message: &str,
+        candidates: &[BrowserRouteCandidate],
+    ) -> PingoraResult<bool> {
+        self.telemetry.error();
+        ctx.error_counted = true;
+        self.telemetry.record(DataPlaneEvent::Rejection {
+            status,
+            code: code.into(),
+        });
+        respond_route_json(
+            session,
+            status,
+            code,
+            message,
+            candidates,
+            ctx.cors_origin.as_deref(),
+        )
+        .await?;
         Ok(true)
     }
 }
@@ -431,6 +615,16 @@ impl ProxyHttp for SwitchyardProxy {
                 )
                 .await;
         }
+        if let Some(credential) = &self.proxy_credential {
+            let supplied = session.req_header().headers.get("proxy-authorization");
+            let authorized = header_count(session.req_header(), "proxy-authorization") == 1
+                && supplied.is_some_and(|value| {
+                    bool::from(value.as_bytes().ct_eq(credential.authorization.as_ref()))
+                });
+            if !authorized {
+                return self.reject_proxy_authentication(session, ctx).await;
+            }
+        }
 
         let Some(slot) = destination_slot(&self.listener, session.req_header()) else {
             return self
@@ -447,8 +641,49 @@ impl ProxyHttp for SwitchyardProxy {
         let target = if let Some(consumer) = &self.listener.consumer {
             snapshot.lookup_consumer(consumer, slot).cloned()
         } else {
+            ctx.browser_routed = true;
+            if header_count(session.req_header(), &self.identity.explicit_header) > 1
+                || header_count(session.req_header(), "origin") > 1
+            {
+                let candidates = snapshot.browser_candidates(slot);
+                return self
+                    .reject_browser_route(
+                        session,
+                        ctx,
+                        400,
+                        "conflicting_route_identity",
+                        "routing identity headers must occur at most once",
+                        &candidates,
+                    )
+                    .await;
+            }
             let explicit = header_text(session.req_header(), &self.identity.explicit_header);
             let origin = header_text(session.req_header(), "origin");
+            ctx.cors_origin = origin
+                .filter(|origin| {
+                    snapshot
+                        .lookup_browser(BrowserLookup {
+                            destination: slot,
+                            explicit_header: None,
+                            origin: Some(origin),
+                            proxy_listener: None,
+                        })
+                        .is_ok()
+                })
+                .map(str::to_owned);
+            if explicit.is_some() && !self.listener.bind.host.is_loopback() {
+                let candidates = snapshot.browser_candidates(slot);
+                return self
+                    .reject_browser_route(
+                        session,
+                        ctx,
+                        403,
+                        "untrusted_identity_header",
+                        "the explicit route header is accepted only on loopback listeners",
+                        &candidates,
+                    )
+                    .await;
+            }
             let proxy_listener = self
                 .listener
                 .proxy_identity
@@ -462,8 +697,27 @@ impl ProxyHttp for SwitchyardProxy {
             }) {
                 Ok(target) => Some(target.clone()),
                 Err(error) => {
+                    let (status, code) = match error {
+                        LookupError::MissingIdentity => (400, "missing_route_identity"),
+                        LookupError::UnknownIdentity if explicit.is_some() => {
+                            (403, "unknown_route_identity")
+                        }
+                        LookupError::UnknownIdentity if origin.is_some() => {
+                            (403, "disallowed_origin")
+                        }
+                        LookupError::UnknownIdentity => (403, "unknown_route_identity"),
+                        LookupError::ConflictingIdentity => (400, "conflicting_route_identity"),
+                    };
+                    let candidates = snapshot.browser_candidates(slot);
                     return self
-                        .reject(session, ctx, 400, "ambiguous_route", &error.to_string())
+                        .reject_browser_route(
+                            session,
+                            ctx,
+                            status,
+                            code,
+                            &error.to_string(),
+                            &candidates,
+                        )
                         .await;
                 }
             }
@@ -485,6 +739,36 @@ impl ProxyHttp for SwitchyardProxy {
             snapshot_version: snapshot.version(),
         });
 
+        ctx.snapshot = Some(snapshot);
+        ctx.target = Some(target);
+        if ctx.browser_routed && is_cors_preflight(session.req_header()) {
+            if ctx.cors_origin.is_none() {
+                return self
+                    .reject(
+                        session,
+                        ctx,
+                        403,
+                        "disallowed_origin",
+                        "CORS preflight Origin is not configured for this destination",
+                    )
+                    .await;
+            }
+            let preflight = match parse_cors_preflight(session.req_header()) {
+                Ok(preflight) => preflight,
+                Err(message) => {
+                    return self
+                        .reject(session, ctx, 400, "invalid_cors_preflight", message)
+                        .await;
+                }
+            };
+            let origin = ctx
+                .cors_origin
+                .as_deref()
+                .expect("a routed CORS preflight has an Origin");
+            respond_preflight(session, origin, &preflight).await?;
+            return Ok(true);
+        }
+        let target = ctx.target.as_ref().expect("route target was just stored");
         if let Some(check) = &target.health_check {
             if let Err(error) = probe_endpoint(&target.endpoint, check).await {
                 return self
@@ -492,8 +776,6 @@ impl ProxyHttp for SwitchyardProxy {
                     .await;
             }
         }
-        ctx.snapshot = Some(snapshot);
-        ctx.target = Some(target);
         Ok(false)
     }
 
@@ -526,11 +808,17 @@ impl ProxyHttp for SwitchyardProxy {
         &self,
         session: &mut Session,
         request: &mut RequestHeader,
-        _ctx: &mut Self::CTX,
+        ctx: &mut Self::CTX,
     ) -> PingoraResult<()> {
-        if self.identity.strip_before_forwarding {
+        let preserve_identity = !self.identity.strip_before_forwarding
+            && ctx
+                .target
+                .as_ref()
+                .is_some_and(|target| target.receive_identity_header);
+        if !preserve_identity {
             request.remove_header(&self.identity.explicit_header);
         }
+        request.remove_header("proxy-authorization");
         if let Some(host) = header_text(session.req_header(), "host") {
             request.insert_header("x-forwarded-host", host)?;
         }
@@ -546,6 +834,18 @@ impl ProxyHttp for SwitchyardProxy {
             if let Some(inet) = address.as_inet() {
                 request.append_header("x-forwarded-for", inet.ip().to_string())?;
             }
+        }
+        Ok(())
+    }
+
+    async fn response_filter(
+        &self,
+        _session: &mut Session,
+        response: &mut ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> PingoraResult<()> {
+        if ctx.browser_routed {
+            apply_cors_response_headers(response, ctx.cors_origin.as_deref())?;
         }
         Ok(())
     }
@@ -608,6 +908,7 @@ impl ProxyHttp for SwitchyardProxy {
             rejection.status,
             rejection.code,
             &rejection.message,
+            ctx.cors_origin.as_deref(),
         )
         .await;
         FailToProxy {
@@ -642,6 +943,33 @@ struct ProxyRejection {
 struct ErrorBody<'a> {
     code: &'a str,
     message: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    candidates: Option<Vec<RouteCandidateBody<'a>>>,
+}
+
+#[derive(Serialize)]
+struct RouteCandidateBody<'a> {
+    identity: &'a str,
+    provider: &'a ComponentId,
+}
+
+async fn respond_proxy_authentication_required(session: &mut Session) -> PingoraResult<()> {
+    let body = serde_json::to_vec(&ErrorBody {
+        code: "proxy_authentication_required",
+        message: "valid managed-profile proxy credentials are required",
+        candidates: None,
+    })
+    .map_err(|error| Error::because(ErrorType::InternalError, "serialize proxy error", error))?;
+    let mut header = ResponseHeader::build(407, Some(4))?;
+    header.insert_header("content-type", "application/json")?;
+    header.insert_header("content-length", body.len().to_string())?;
+    header.insert_header("proxy-authenticate", "Basic realm=\"Switchyard\"")?;
+    session
+        .write_response_header(Box::new(header), false)
+        .await?;
+    session
+        .write_response_body(Some(Bytes::from(body)), true)
+        .await
 }
 
 async fn respond_json(
@@ -649,19 +977,192 @@ async fn respond_json(
     status: u16,
     code: &str,
     message: &str,
+    allowed_origin: Option<&str>,
 ) -> PingoraResult<()> {
-    let body = serde_json::to_vec(&ErrorBody { code, message }).map_err(|error| {
+    respond_error_json(
+        session,
+        status,
+        ErrorBody {
+            code,
+            message,
+            candidates: None,
+        },
+        allowed_origin,
+    )
+    .await
+}
+
+async fn respond_route_json(
+    session: &mut Session,
+    status: u16,
+    code: &str,
+    message: &str,
+    candidates: &[BrowserRouteCandidate],
+    allowed_origin: Option<&str>,
+) -> PingoraResult<()> {
+    respond_error_json(
+        session,
+        status,
+        ErrorBody {
+            code,
+            message,
+            candidates: Some(
+                candidates
+                    .iter()
+                    .map(|candidate| RouteCandidateBody {
+                        identity: &candidate.identity,
+                        provider: &candidate.provider,
+                    })
+                    .collect(),
+            ),
+        },
+        allowed_origin,
+    )
+    .await
+}
+
+async fn respond_error_json(
+    session: &mut Session,
+    status: u16,
+    error_body: ErrorBody<'_>,
+    allowed_origin: Option<&str>,
+) -> PingoraResult<()> {
+    let body = serde_json::to_vec(&error_body).map_err(|error| {
         Error::because(ErrorType::InternalError, "serialize proxy error", error)
     })?;
-    let mut header = ResponseHeader::build(status, Some(3))?;
+    let mut header = ResponseHeader::build(status, Some(5))?;
     header.insert_header("content-type", "application/json")?;
     header.insert_header("content-length", body.len().to_string())?;
+    if let Some(origin) = allowed_origin {
+        header.insert_header("access-control-allow-origin", origin)?;
+        header.insert_header("vary", "Origin")?;
+    }
     session
         .write_response_header(Box::new(header), false)
         .await?;
     session
         .write_response_body(Some(Bytes::from(body)), true)
         .await
+}
+
+fn is_cors_preflight(request: &RequestHeader) -> bool {
+    request.method.as_str() == "OPTIONS"
+        && header_text(request, "origin").is_some()
+        && header_text(request, "access-control-request-method").is_some()
+}
+
+struct CorsPreflight {
+    requested_method: String,
+    requested_headers: Option<String>,
+    private_network: bool,
+}
+
+fn parse_cors_preflight(request: &RequestHeader) -> Result<CorsPreflight, &'static str> {
+    if header_count(request, "access-control-request-method") != 1
+        || header_count(request, "access-control-request-headers") > 1
+        || header_count(request, "access-control-request-private-network") > 1
+    {
+        return Err("CORS preflight headers must occur at most once");
+    }
+    let requested_method = header_text(request, "access-control-request-method")
+        .filter(|value| value.len() <= 32 && is_http_token(value))
+        .ok_or("CORS preflight method must be a valid HTTP token of at most 32 bytes")?;
+    let requested_headers = header_text(request, "access-control-request-headers");
+    if requested_headers.is_some_and(|value| {
+        value.len() > 1024
+            || value.split(',').count() > 32
+            || value.split(',').any(|name| !is_http_token(name.trim()))
+    }) {
+        return Err("CORS preflight may request at most 32 valid header names in 1024 bytes");
+    }
+    let private_network = match header_text(request, "access-control-request-private-network") {
+        None => false,
+        Some(value) if value.eq_ignore_ascii_case("true") => true,
+        Some(_) => return Err("private-network preflight must request the value `true`"),
+    };
+    Ok(CorsPreflight {
+        requested_method: requested_method.to_owned(),
+        requested_headers: requested_headers.map(str::to_owned),
+        private_network,
+    })
+}
+
+fn is_http_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
+}
+
+/// Reflect only bounded, syntactically valid preflight fields after exact Origin and route checks.
+async fn respond_preflight(
+    session: &mut Session,
+    origin: &str,
+    preflight: &CorsPreflight,
+) -> PingoraResult<()> {
+    let mut header = ResponseHeader::build(204, Some(7))?;
+    header.insert_header("content-length", "0")?;
+    header.insert_header("access-control-allow-origin", origin)?;
+    header.insert_header("access-control-allow-methods", &preflight.requested_method)?;
+    if let Some(requested_headers) = &preflight.requested_headers {
+        header.insert_header("access-control-allow-headers", requested_headers)?;
+    }
+    if preflight.private_network {
+        header.insert_header("access-control-allow-private-network", "true")?;
+    }
+    header.insert_header(
+        "vary",
+        "Origin, Access-Control-Request-Method, Access-Control-Request-Headers, Access-Control-Request-Private-Network",
+    )?;
+    session.write_response_header(Box::new(header), true).await
+}
+
+fn apply_cors_response_headers(
+    response: &mut ResponseHeader,
+    allowed_origin: Option<&str>,
+) -> PingoraResult<()> {
+    for name in [
+        "access-control-allow-origin",
+        "access-control-allow-methods",
+        "access-control-allow-headers",
+        "access-control-allow-private-network",
+        "access-control-allow-credentials",
+        "access-control-expose-headers",
+        "access-control-max-age",
+    ] {
+        response.remove_header(name);
+    }
+    if let Some(origin) = allowed_origin {
+        response.insert_header("access-control-allow-origin", origin)?;
+    }
+    let vary_has_origin = response
+        .headers
+        .get_all("vary")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|value| value.trim().eq_ignore_ascii_case("origin"));
+    if !vary_has_origin {
+        response.append_header("vary", "Origin")?;
+    }
+    Ok(())
 }
 
 fn destination_slot<'a>(
@@ -680,12 +1181,19 @@ fn destination_slot<'a>(
                 expected.eq_ignore_ascii_case(host)
             }
             ListenerDestination::Loopback { .. } => listener.destinations.len() == 1,
+            ListenerDestination::ProxyTarget { host: expected, .. } => {
+                expected.eq_ignore_ascii_case(host)
+            }
         })
         .map(ListenerDestination::slot)
 }
 
 fn header_text<'a>(request: &'a RequestHeader, name: &str) -> Option<&'a str> {
     request.headers.get(name)?.to_str().ok()
+}
+
+fn header_count(request: &RequestHeader, name: &str) -> usize {
+    request.headers.get_all(name).iter().count()
 }
 
 fn request_header_bytes(request: &RequestHeader) -> usize {
@@ -805,6 +1313,7 @@ mod tests {
             tls: None,
             destinations: vec![destination],
             proxy_identity: None,
+            proxy_authentication: None,
         }
     }
 
@@ -854,5 +1363,46 @@ mod tests {
                 .collect::<Vec<_>>(),
             [404, 503]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn proxy_credentials_reject_symlinks_and_oversized_files() {
+        use std::{
+            os::unix::fs::{PermissionsExt, symlink},
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        let directory = std::env::temp_dir().join(format!(
+            "switchyard-invalid-proxy-auth-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let target = directory.join("target");
+        std::fs::write(&target, b"token").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let credential_file = directory.join("credential");
+        symlink(&target, &credential_file).unwrap();
+        let authentication = ProxyAuthentication {
+            scheme: ProxyAuthenticationScheme::Basic,
+            credential_file: credential_file.clone(),
+        };
+        let Err(error) = load_proxy_credential(&authentication) else {
+            panic!("proxy credential symlink was accepted");
+        };
+        assert_eq!(error.code, BuildErrorCode::InvalidProxyAuthentication);
+
+        std::fs::remove_file(&credential_file).unwrap();
+        std::fs::write(&credential_file, vec![b'x'; 257]).unwrap();
+        std::fs::set_permissions(&credential_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let Err(error) = load_proxy_credential(&authentication) else {
+            panic!("oversized proxy credential was accepted");
+        };
+        assert_eq!(error.code, BuildErrorCode::InvalidProxyAuthentication);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

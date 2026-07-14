@@ -46,6 +46,11 @@ case "$host_os" in
     else
       fail "Linux network namespace support is unavailable at /proc/self/ns/net"
     fi
+    if command -v setsid >/dev/null 2>&1; then
+      pass "setsid is available for native host-router lifecycle"
+    else
+      fail "setsid is missing; install util-linux for native host-router lifecycle"
+    fi
     ;;
   Darwin)
     note "macOS detected (${host_arch}); use Docker Desktop with Linux containers (Linux is the primary development platform)"

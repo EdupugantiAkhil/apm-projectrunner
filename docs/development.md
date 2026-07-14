@@ -41,10 +41,23 @@ cargo install cargo-audit --locked
 ./scripts/check.sh audit
 ```
 
-The shared command and CI temporarily ignore `RUSTSEC-2024-0437`: Pingora 0.8.1 uses
-the affected protobuf crate only through Prometheus metrics encoding, so Switchyard
-does not expose the vulnerable protobuf decoder to untrusted input. Remove the exception
-when Pingora upgrades its Prometheus dependency.
+The shared command and CI temporarily ignore two narrowly scoped advisories:
+
+- `RUSTSEC-2024-0437`: Pingora 0.8.1 uses the affected protobuf crate only through
+  Prometheus metrics encoding, so Switchyard does not expose the vulnerable protobuf
+  decoder to untrusted input. Remove this exception when Pingora upgrades its Prometheus
+  dependency.
+- `RUSTSEC-2026-0009`: the first fixed `time` release, 0.3.47, requires Rust 1.88 while
+  Switchyard supports Rust 1.85. Switchyard's direct use is limited to clock arithmetic
+  for certificate validity timestamps, and neither Switchyard nor a reachable dependency
+  path parses untrusted input with `time`'s RFC 2822 parser, the only affected API. Remove
+  this exception when Switchyard's MSRV reaches 1.88 or a Rust-1.85-compatible backport is
+  available.
+
+Phase 3's Pingora Rustls support also inherits the unmaintained `rustls-pemfile` crate
+through the latest `pingora-rustls` 0.8.1 and `rustls-native-certs`. This is an allowed
+maintenance warning, not a known vulnerability; remove it when Pingora upgrades that
+dependency chain.
 
 No elevated privileges are expected for builds or unit tests. Configure Docker so the
 current user or Docker context can reach the daemon instead of routinely invoking

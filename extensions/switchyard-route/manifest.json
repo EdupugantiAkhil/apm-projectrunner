@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Switchyard Tab Route",
+  "description": "Connect the current tab to one declared local Switchyard route.",
+  "version": "0.1.0",
+  "permissions": [
+    "activeTab",
+    "declarativeNetRequestWithHostAccess",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://localhost:10081/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "Connect this tab",
+    "default_popup": "popup.html"
+  }
+}

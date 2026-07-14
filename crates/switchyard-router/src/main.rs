@@ -1,6 +1,12 @@
 use std::{env, path::PathBuf, process::ExitCode};
 
-use switchyard_router::{AdminOptions, RouterProcess};
+use switchyard_router::{
+    AdminOptions, RouterProcess,
+    host_gateway::{
+        cleanup_certificates, cleanup_proxy_credentials, ensure_certificates,
+        ensure_proxy_credentials, preflight, trust_guidance,
+    },
+};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -14,20 +20,48 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let mut arguments = env::args_os().skip(1);
-    let config_path = arguments
-        .next()
-        .ok_or("usage: switchyard-router <config.json> <admin.socket>")?;
-    let socket_path = arguments
-        .next()
-        .ok_or("usage: switchyard-router <config.json> <admin.socket>")?;
-    if arguments.next().is_some() {
-        return Err("usage: switchyard-router <config.json> <admin.socket>".into());
+    let arguments = env::args_os().skip(1).collect::<Vec<_>>();
+    if arguments.len() == 3 && arguments[0] == "certificates" && arguments[1] == "trust" {
+        let config = read_config(&arguments[2]).await?;
+        println!("{}", trust_guidance(&config));
+        return Ok(());
     }
+    if arguments.len() == 3 && arguments[0] == "certificates" && arguments[1] == "cleanup" {
+        let config = read_config(&arguments[2]).await?;
+        for path in cleanup_certificates(&config)? {
+            println!("removed {}", path.display());
+        }
+        for path in cleanup_proxy_credentials(&config)? {
+            println!("removed {}", path.display());
+        }
+        return Ok(());
+    }
+    let (host_mode, config_path, socket_path) = match arguments.as_slice() {
+        [mode, config, socket] if mode == "host" => (true, config, socket),
+        [mode, config, socket] if mode == "sidecar" => (false, config, socket),
+        // Backwards-compatible Phase 1/2 sidecar invocation.
+        [config, socket] => (false, config, socket),
+        _ => return Err(usage().into()),
+    };
+    // Validate authentication before host preflight can create or renew any
+    // managed certificate or proxy credential. Certificate maintenance commands
+    // return above and intentionally remain tokenless.
     let token =
         env::var("SWITCHYARD_ROUTER_TOKEN").map_err(|_| "SWITCHYARD_ROUTER_TOKEN must be set")?;
-    let bytes = tokio::fs::read(config_path).await?;
-    let config = serde_json::from_slice(&bytes)?;
+    let config = read_config(config_path).await?;
+    if host_mode {
+        preflight(&config)?;
+        let report = ensure_certificates(&config)?;
+        for path in ensure_proxy_credentials(&config)? {
+            eprintln!("generated managed-profile credential {}", path.display());
+        }
+        for path in report.generated {
+            eprintln!("generated local certificate {}", path.display());
+        }
+        for path in report.renewed {
+            eprintln!("renewed local certificate {}", path.display());
+        }
+    }
     let process = RouterProcess::start(
         config,
         AdminOptions {
@@ -48,4 +82,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     });
     process.wait().await?;
     Ok(())
+}
+
+async fn read_config(
+    path: &std::ffi::OsStr,
+) -> Result<router_config::RouterConfig, Box<dyn std::error::Error>> {
+    let bytes = tokio::fs::read(path).await?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+fn usage() -> &'static str {
+    "usage:\n  switchyard-router [sidecar] <config.json> <admin.socket>\n  switchyard-router host <config.json> <admin.socket>\n  switchyard-router certificates trust|cleanup <config.json>"
 }

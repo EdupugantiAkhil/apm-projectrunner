@@ -1,7 +1,9 @@
 #![cfg(unix)]
 
 mod admin;
+mod browser;
 mod cli;
+mod host_runtime;
 mod runtime;
 
 use std::{env, fmt, fs, io, path::Path, process::ExitCode};
@@ -45,9 +47,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let (_, plan) = load_and_plan(&bundle)?;
             let runtime_plan = runtime_plan(&workspace_root, &plan);
             refuse_runtime_drift(&runtime.status(&runtime_plan)?)?;
-            if !plan.sidecars.is_empty() && env::var_os("SWITCHYARD_ROUTER_TOKEN").is_none() {
+            let host_runtime = host_runtime::HostRuntime::new(&workspace_root, &plan);
+            let host_needs_token = host_runtime.requires_token_for_start()?;
+            if (!plan.sidecars.is_empty() || host_needs_token)
+                && env::var_os("SWITCHYARD_ROUTER_TOKEN").is_none()
+            {
                 return Err(MessageError(
-                    "SWITCHYARD_ROUTER_TOKEN must be set when starting router sidecars".into(),
+                    "SWITCHYARD_ROUTER_TOKEN must be set when starting routers".into(),
                 )
                 .into());
             }
@@ -60,6 +66,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("wrote {}", artifact_dir.display());
             println!("building `{}`", plan.deployment);
             runtime.up(&runtime_plan)?;
+            let host = host_runtime.start().map_err(|error| {
+                    MessageError(format!(
+                        "{error}; Compose resources may still be running for inspection—run `switchyard down {}` or `switchyard cleanup {} --yes`",
+                        bundle.display(),
+                        bundle.display()
+                    ))
+                })?;
+            println!("host gateway: {host}");
             println!("deployment `{}` is healthy", plan.deployment);
         }
         CliCommand::Bind {
@@ -77,6 +91,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let (_, plan) = load_and_plan(&bundle)?;
             let status = runtime.status(&runtime_plan(&workspace_root, &plan))?;
             print_status(&status);
+            println!(
+                "Host gateway: {}",
+                host_runtime::HostRuntime::new(&workspace_root, &plan).status()?
+            );
             if routes {
                 print_routes(&workspace_root, &plan)?;
             }
@@ -94,8 +112,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_default();
             runtime.logs(&runtime_plan(&workspace_root, &plan), &services)?;
         }
+        CliCommand::Open { bundle, ui } => {
+            let (_, plan) = load_and_plan(&bundle)?;
+            let profile = browser::load_managed_profile(
+                &workspace_root,
+                &plan.artifact_dir,
+                &plan.deployment,
+                &ui,
+            )?;
+            let profile_dir = browser::open_managed_profile(&workspace_root, &profile)?;
+            println!(
+                "opened `{ui}` through route `{}` using profile {}",
+                profile.route,
+                profile_dir.display()
+            );
+        }
         CliCommand::Down { bundle } => {
             let (_, plan) = load_and_plan(&bundle)?;
+            host_runtime::HostRuntime::new(&workspace_root, &plan).stop()?;
             runtime.down(&runtime_plan(&workspace_root, &plan))?;
             println!(
                 "deployment `{}` stopped; volumes were preserved",
@@ -104,7 +138,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         CliCommand::Cleanup { bundle, confirmed } => {
             let (_, plan) = load_and_plan(&bundle)?;
-            runtime.cleanup(&runtime_plan(&workspace_root, &plan), confirmed)?;
+            if !confirmed {
+                runtime.cleanup(&runtime_plan(&workspace_root, &plan), false)?;
+                unreachable!("unconfirmed cleanup always returns an error");
+            }
+            host_runtime::HostRuntime::new(&workspace_root, &plan).cleanup()?;
+            runtime.cleanup(&runtime_plan(&workspace_root, &plan), true)?;
             println!(
                 "deployment `{}` stopped and its owned volumes were deleted",
                 plan.deployment

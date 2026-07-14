@@ -20,6 +20,7 @@ pub struct RouteTarget {
     pub provider: ComponentId,
     pub endpoint: UpstreamEndpoint,
     pub health_check: Option<HealthCheck>,
+    pub receive_identity_header: bool,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -75,21 +76,67 @@ impl CompiledSnapshot {
     }
 
     /// Resolves browser identity in the fixed header, Origin, proxy-listener order.
-    /// If a higher-precedence identity is supplied but unknown, lookup fails closed.
+    /// An unknown higher-precedence identity fails closed; an unknown lower-precedence
+    /// Origin does not override a known header, while two known conflicting identities fail.
     pub fn lookup_browser(&self, lookup: BrowserLookup<'_>) -> Result<&RouteTarget, LookupError> {
-        let key = if let Some(header) = lookup.explicit_header {
-            BrowserKey::Header(BindingId::from(header))
-        } else if let Some(origin) = lookup.origin {
-            BrowserKey::Origin(origin.to_owned())
-        } else if let Some(proxy) = lookup.proxy_listener {
-            BrowserKey::Proxy(proxy.clone())
-        } else {
-            return Err(LookupError::MissingIdentity);
-        };
+        if let Some(header) = lookup.explicit_header {
+            let header_target = self
+                .browser_routes
+                .get(&(
+                    lookup.destination.clone(),
+                    BrowserKey::Header(BindingId::from(header)),
+                ))
+                .ok_or(LookupError::UnknownIdentity)?;
+            if let Some(origin) = lookup.origin {
+                if let Some(origin_target) = self.browser_routes.get(&(
+                    lookup.destination.clone(),
+                    BrowserKey::Origin(origin.to_owned()),
+                )) {
+                    if header_target.provider != origin_target.provider {
+                        return Err(LookupError::ConflictingIdentity);
+                    }
+                }
+            }
+            return Ok(header_target);
+        }
+        if let Some(origin) = lookup.origin {
+            return self
+                .browser_routes
+                .get(&(
+                    lookup.destination.clone(),
+                    BrowserKey::Origin(origin.to_owned()),
+                ))
+                .ok_or(LookupError::UnknownIdentity);
+        }
+        if let Some(proxy) = lookup.proxy_listener {
+            return self
+                .browser_routes
+                .get(&(lookup.destination.clone(), BrowserKey::Proxy(proxy.clone())))
+                .ok_or(LookupError::UnknownIdentity);
+        }
+        Err(LookupError::MissingIdentity)
+    }
 
-        self.browser_routes
-            .get(&(lookup.destination.clone(), key))
-            .ok_or(LookupError::UnknownIdentity)
+    /// Returns configured routes for an actionable browser-routing error.
+    pub fn browser_candidates(&self, destination: &RouteSlotId) -> Vec<BrowserRouteCandidate> {
+        self.config
+            .spec
+            .browser_routes
+            .iter()
+            .filter(|route| &route.destination == destination)
+            .map(|route| BrowserRouteCandidate {
+                identity: match &route.identity {
+                    BrowserIdentity::ExplicitHeader { value } => {
+                        format!("header:{value}")
+                    }
+                    BrowserIdentity::Origin { origin } => format!("origin:{origin}"),
+                    BrowserIdentity::ProxyListener { listener } => {
+                        format!("proxy:{listener}")
+                    }
+                },
+                provider: route.provider.clone(),
+            })
+            .collect()
     }
 
     pub fn consumer_route_count(&self) -> usize {
@@ -99,6 +146,13 @@ impl CompiledSnapshot {
     pub fn browser_route_count(&self) -> usize {
         self.browser_routes.len()
     }
+}
+
+/// A configured option shown when browser identity cannot select a route.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserRouteCandidate {
+    pub identity: String,
+    pub provider: ComponentId,
 }
 
 pub struct BrowserLookup<'a> {
@@ -112,6 +166,7 @@ pub struct BrowserLookup<'a> {
 pub enum LookupError {
     MissingIdentity,
     UnknownIdentity,
+    ConflictingIdentity,
 }
 
 impl fmt::Display for LookupError {
@@ -119,6 +174,9 @@ impl fmt::Display for LookupError {
         match self {
             Self::MissingIdentity => formatter.write_str("request has no usable routing identity"),
             Self::UnknownIdentity => formatter.write_str("request routing identity is unknown"),
+            Self::ConflictingIdentity => {
+                formatter.write_str("request header and Origin select different routes")
+            }
         }
     }
 }
@@ -307,5 +365,6 @@ fn target(
         provider: provider.id.clone(),
         endpoint: provider.endpoint.clone(),
         health_check: provider.health_check.clone(),
+        receive_identity_header: provider.receive_identity_header,
     }
 }

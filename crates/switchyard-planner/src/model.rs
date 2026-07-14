@@ -39,6 +39,12 @@ pub struct DeploymentSpec {
     pub bindings: BTreeMap<String, String>,
     #[serde(default)]
     pub routes: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(default)]
+    pub managed_profiles: BTreeMap<String, ManagedProfile>,
+    #[serde(default)]
+    pub host_router: Option<router_config::RouterConfig>,
+    #[serde(default)]
+    pub host_upstreams: BTreeMap<String, PublishedUpstream>,
     #[serde(default = "default_router_image")]
     pub router_image: String,
 }
@@ -281,4 +287,23 @@ pub struct ServiceGroup {
     pub extends: Option<String>,
     #[serde(default)]
     pub providers: BTreeMap<String, String>,
+}
+
+/// Declares a UI which may be opened in an isolated managed browser profile.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedProfile {
+    /// Explicit route identity supplied by this profile's dedicated proxy listener.
+    pub route: String,
+    /// Initial page opened by the managed browser.
+    pub start_url: String,
+}
+
+/// Resolves one host-router provider from a dynamically published Compose port.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublishedUpstream {
+    pub instance: String,
+    pub service: String,
+    pub port: u16,
 }

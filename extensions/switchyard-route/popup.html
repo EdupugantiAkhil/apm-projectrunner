@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Switchyard route</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <header class="masthead">
+        <span class="mark" aria-hidden="true">SY</span>
+        <div>
+          <p class="eyebrow">Switchyard / tab patch</p>
+          <h1>Connect this tab</h1>
+        </div>
+      </header>
+
+      <section class="tab-panel" aria-labelledby="tab-label">
+        <div class="jack jack-source" aria-hidden="true"></div>
+        <div>
+          <p id="tab-label" class="eyebrow">This tab</p>
+          <p id="tab-title" class="tab-title">Reading active tab…</p>
+        </div>
+        <p id="connection-status" class="status" role="status" aria-live="polite">Not connected</p>
+      </section>
+
+      <div class="cable" aria-hidden="true">
+        <svg viewBox="0 0 320 42" preserveAspectRatio="none">
+          <path class="cable-shadow" d="M24 2 C24 28, 80 28, 80 40 H296"></path>
+          <path id="signal-cable" d="M24 2 C24 28, 80 28, 80 40 H296"></path>
+        </svg>
+      </div>
+
+      <section class="route-bay" aria-labelledby="routes-label">
+        <div class="bay-heading">
+          <h2 id="routes-label">Declared routes</h2>
+          <button id="disconnect" class="disconnect" type="button" hidden>Disconnect</button>
+        </div>
+        <div id="routes" class="routes"></div>
+      </section>
+
+      <p id="error" class="error" role="alert" hidden></p>
+      <footer>Header applies only to this tab and configured local endpoints.</footer>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

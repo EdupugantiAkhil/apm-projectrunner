@@ -2,6 +2,9 @@
 
 #![cfg(unix)]
 
+mod forward_proxy;
+pub mod host_gateway;
+
 use std::{
     collections::{BTreeMap, VecDeque},
     fmt, io,
@@ -179,6 +182,7 @@ struct ControlState {
 pub struct RouterProcess {
     state: Arc<ControlState>,
     http: Option<RunningHttpDataPlane>,
+    forward_proxies: Vec<forward_proxy::ForwardProxyBinding>,
     admin_task: Option<JoinHandle<io::Result<()>>>,
     admin_path: PathBuf,
     shutdown_rx: watch::Receiver<bool>,
@@ -211,7 +215,9 @@ impl RouterProcess {
             .spec
             .listeners
             .iter()
-            .filter(|listener| listener.protocol != Protocol::Tcp)
+            .filter(|listener| {
+                listener.protocol != Protocol::Tcp && listener.proxy_identity.is_none()
+            })
             .cloned()
             .collect::<Vec<_>>();
         let (http, http_telemetry) = if http_listeners.is_empty() {
@@ -226,6 +232,24 @@ impl RouterProcess {
             let telemetry = data_plane.telemetry();
             (Some(data_plane.spawn()?), telemetry)
         };
+
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        let mut forward_proxies = Vec::new();
+        for listener in config
+            .spec
+            .listeners
+            .iter()
+            .filter(|listener| listener.proxy_identity.is_some())
+        {
+            forward_proxies.push(
+                forward_proxy::ForwardProxyBinding::bind(
+                    listener.clone(),
+                    Arc::clone(&engine),
+                    shutdown.subscribe(),
+                )
+                .await?,
+            );
+        }
 
         let mut tcp = Vec::new();
         for listener in config
@@ -244,7 +268,6 @@ impl RouterProcess {
         }
 
         let listener = bind_admin(&admin.socket_path).await?;
-        let (shutdown, shutdown_rx) = watch::channel(false);
         let state = Arc::new(ControlState {
             engine,
             initial_listeners: config.spec.listeners,
@@ -261,6 +284,7 @@ impl RouterProcess {
         Ok(Self {
             state,
             http,
+            forward_proxies,
             admin_task: Some(admin_task),
             admin_path: admin.socket_path,
             shutdown_rx,
@@ -287,6 +311,9 @@ impl RouterProcess {
 
         for binding in &self.state.tcp {
             binding.proxy.shutdown().await?;
+        }
+        for binding in self.forward_proxies.drain(..) {
+            binding.wait().await?;
         }
         if let Some(http) = self.http.take() {
             tokio::task::spawn_blocking(move || http.shutdown())
@@ -665,7 +692,7 @@ fn validate_runtime_config(config: &RouterConfig) -> Result<(), ProcessError> {
         .spec
         .listeners
         .iter()
-        .filter(|listener| listener.protocol != Protocol::Tcp)
+        .filter(|listener| listener.protocol != Protocol::Tcp && listener.proxy_identity.is_none())
         .cloned()
         .collect::<Vec<_>>();
     if !http.is_empty() {

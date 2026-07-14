@@ -187,50 +187,50 @@ Entry gate: Docker instances and sidecar routing work end to end.
 
 ### Host gateway
 
-- [ ] Add native host-gateway mode to the Switchyard Router binary.
-- [ ] Bind configured custom-domain and legacy localhost listeners on the host.
-- [ ] Route custom domains to loopback-only container upstream ports.
-- [ ] Add configurable local HTTP and HTTPS modes.
-- [ ] Implement local certificate generation, trust setup guidance, renewal, and cleanup.
-- [ ] Detect host-port and domain conflicts before applying configuration.
-- [ ] Preserve WebSocket, gRPC, streaming, and raw TCP behavior through the host gateway.
+- [x] Add native host-gateway mode to the Switchyard Router binary.
+- [x] Bind configured custom-domain and legacy localhost listeners on the host.
+- [x] Route custom domains to loopback-only container upstream ports.
+- [x] Add configurable local HTTP and HTTPS modes.
+- [x] Implement local certificate generation, trust setup guidance, renewal, and cleanup.
+- [x] Detect host-port and domain conflicts before applying configuration.
+- [x] Preserve WebSocket, gRPC, streaming, and raw TCP behavior through the host gateway.
 
 ### Origin routing and browser safety
 
-- [ ] Match browser requests by exact configured Origin and destination listener.
-- [ ] Handle CORS preflight requests in the gateway.
-- [ ] Add narrowly scoped CORS response headers for configured origins only.
-- [ ] Handle browser private-network preflight requirements where the target browser
+- [x] Match browser requests by exact configured Origin and destination listener.
+- [x] Handle CORS preflight requests in the gateway.
+- [x] Add narrowly scoped CORS response headers for configured origins only.
+- [x] Handle browser private-network preflight requirements where the target browser
       requires them.
-- [ ] Reject missing, unknown, conflicting, or spoofed routing identity according to the
+- [x] Reject missing, unknown, conflicting, or spoofed routing identity according to the
       configured trust policy.
-- [ ] Return an actionable ambiguity page or JSON error with candidate routes.
-- [ ] Add tests for requests with Origin, without Origin, and with disallowed origins.
+- [x] Return an actionable ambiguity page or JSON error with candidate routes.
+- [x] Add tests for requests with Origin, without Origin, and with disallowed origins.
 
 ### Explicit per-tab identity
 
-- [ ] Specify the `X-Switchyard-Route` header format and trust boundary.
-- [ ] Build a minimal Chromium extension that associates an allowed route with a tab.
-- [ ] Ensure extension rules cannot target undeclared Switchyard deployments.
-- [ ] Strip the identity header before forwarding unless a provider explicitly opts in.
-- [ ] Document extension installation, permissions, and disable/remove behavior.
-- [ ] Test multiple UI tabs making identical localhost requests concurrently.
+- [x] Specify the `X-Switchyard-Route` header format and trust boundary.
+- [x] Build a minimal Chromium extension that associates an allowed route with a tab.
+- [x] Ensure extension rules cannot target undeclared Switchyard deployments.
+- [x] Strip the identity header before forwarding unless a provider explicitly opts in.
+- [x] Document extension installation, permissions, and disable/remove behavior.
+- [x] Test multiple UI tabs making identical localhost requests concurrently.
 
 ### Managed profile fallback
 
-- [ ] Implement `switchyard open <ui>`.
-- [ ] Allocate a dedicated authenticated forward-proxy listener per managed profile.
-- [ ] Launch Chromium with the required proxy and loopback-bypass arguments.
-- [ ] Store browser data in deployment-scoped, removable profile directories.
-- [ ] Detect unsupported browsers and provide an actionable fallback message.
-- [ ] Test guaranteed routing with no extension and no usable Origin.
+- [x] Implement `switchyard open <ui>`.
+- [x] Allocate a dedicated authenticated forward-proxy listener per managed profile.
+- [x] Launch Chromium with the required proxy and loopback-bypass arguments.
+- [x] Store browser data in deployment-scoped, removable profile directories.
+- [x] Detect unsupported browsers and provide an actionable fallback message.
+- [x] Test guaranteed routing with no extension and no usable Origin.
 
 ### Phase 3 exit gate
 
-- [ ] Three unchanged UIs can all call `localhost:10081` while routing to independently
+- [x] Three unchanged UIs can all call `localhost:10081` while routing to independently
       selected backend instances.
-- [ ] Header, Origin, and managed-profile modes each pass end-to-end tests.
-- [ ] An unidentifiable request is rejected rather than sent to an arbitrary backend.
+- [x] Header, Origin, and managed-profile modes each pass end-to-end tests.
+- [x] An unidentifiable request is rejected rather than sent to an arbitrary backend.
 
 ## Phase 4 — Complete routing proof and hard boundary tests
 

@@ -1,6 +1,8 @@
 use std::{
+    fs::OpenOptions,
     io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -9,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use router_config::RouterConfig;
+use router_config::{ProxyAuthentication, ProxyAuthenticationScheme, RouterConfig};
 use router_core::RouteEngine;
 use router_pingora::{DataPlaneEvent, HttpDataPlane, ProxyOptions};
 use serde_json::json;
@@ -99,7 +101,7 @@ fn handle_connection(mut stream: TcpStream, healthy: &AtomicBool) {
         let body = request_text.as_bytes();
         write!(
             stream,
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
             body.len()
         )
         .unwrap();
@@ -113,6 +115,36 @@ fn unused_port() -> u16 {
         .local_addr()
         .unwrap()
         .port()
+}
+
+struct CredentialFile(PathBuf);
+
+impl CredentialFile {
+    fn create(port: u16) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "switchyard-proxy-auth-{}-{port}",
+            std::process::id()
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options
+            .open(&path)
+            .unwrap()
+            .write_all(b"test-token\n")
+            .unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for CredentialFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 fn config(proxy_port: u16, upstream_port: u16) -> RouterConfig {
@@ -144,6 +176,65 @@ fn config(proxy_port: u16, upstream_port: u16) -> RouterConfig {
                 "healthCheck": { "protocol": "http", "path": "/health", "intervalMs": 1000, "timeoutMs": 500 }
             }],
             "routes": [{ "consumer": "test-client", "slot": "api", "provider": "test-upstream" }],
+            "identity": { "explicitHeader": "X-Switchyard-Route", "stripBeforeForwarding": true }
+        }
+    }))
+    .unwrap()
+}
+
+fn browser_config(proxy_port: u16, upstream_port: u16) -> RouterConfig {
+    serde_json::from_value(json!({
+        "apiVersion": "switchyard.dev/router/v1alpha1",
+        "kind": "RouterConfiguration",
+        "metadata": { "deployment": "browser-test" },
+        "spec": {
+            "snapshot": {
+                "id": "browser-test-1",
+                "version": 1,
+                "transitions": {
+                    "http": { "strategy": "close" },
+                    "https": { "strategy": "close" },
+                    "websocket": { "strategy": "pin" },
+                    "grpc": { "strategy": "close" },
+                    "tcp": { "strategy": "close" }
+                }
+            },
+            "listeners": [{
+                "bind": { "host": "127.0.0.1", "port": proxy_port },
+                "protocol": "http",
+                "destinations": [{
+                    "kind": "legacy_localhost",
+                    "slot": "browser-backend",
+                    "host": "localhost"
+                }]
+            }],
+            "providers": [
+                {
+                    "id": "backend-one",
+                    "endpoint": { "protocol": "http", "host": "127.0.0.1", "port": upstream_port }
+                },
+                {
+                    "id": "backend-two",
+                    "endpoint": { "protocol": "http", "host": "127.0.0.1", "port": upstream_port }
+                }
+            ],
+            "browserRoutes": [
+                {
+                    "identity": { "source": "origin", "origin": "https://ui-one.test" },
+                    "destination": "browser-backend",
+                    "provider": "backend-one"
+                },
+                {
+                    "identity": { "source": "explicit_header", "value": "tab-one" },
+                    "destination": "browser-backend",
+                    "provider": "backend-one"
+                },
+                {
+                    "identity": { "source": "explicit_header", "value": "tab-two" },
+                    "destination": "browser-backend",
+                    "provider": "backend-two"
+                }
+            ],
             "identity": { "explicitHeader": "X-Switchyard-Route", "stripBeforeForwarding": true }
         }
     }))
@@ -229,6 +320,249 @@ fn proxies_http_and_websocket_and_rejects_unhealthy_provider() {
             code
         } if code == "provider_unhealthy"
     )));
+
+    running.shutdown();
+}
+
+#[test]
+fn browser_routes_enforce_origin_and_answer_cors_preflight() {
+    let upstream = TestUpstream::start();
+    let proxy_port = unused_port();
+    let config = browser_config(proxy_port, upstream.address.port());
+    let engine = Arc::new(RouteEngine::new(config.clone()).unwrap());
+    let running = HttpDataPlane::new(
+        engine,
+        config.spec.listeners.clone(),
+        config.spec.identity.clone(),
+        ProxyOptions::default(),
+    )
+    .unwrap()
+    .spawn()
+    .unwrap();
+    assert!(running.wait_ready(Duration::from_secs(2)));
+    let proxy = SocketAddr::from(([127, 0, 0, 1], proxy_port));
+
+    let response = String::from_utf8(request(
+        proxy,
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nConnection: close\r\n\r\n",
+    ))
+    .unwrap()
+    .to_ascii_lowercase();
+    assert!(response.starts_with("http/1.1 200"));
+    assert!(response.contains("access-control-allow-origin: https://ui-one.test"));
+    assert!(!response.contains("access-control-allow-origin: *"));
+    assert!(response.contains("vary: origin"));
+
+    let response = String::from_utf8(request(
+        proxy,
+        b"OPTIONS /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: X-Demo\r\nAccess-Control-Request-Private-Network: true\r\nConnection: close\r\n\r\n",
+    ))
+    .unwrap()
+    .to_ascii_lowercase();
+    assert!(response.starts_with("http/1.1 204"));
+    assert!(response.contains("access-control-allow-origin: https://ui-one.test"));
+    assert!(response.contains("access-control-allow-methods: post"));
+    assert!(response.contains("access-control-allow-headers: x-demo"));
+    assert!(response.contains("access-control-allow-private-network: true"));
+    assert!(response.contains(
+        "vary: origin, access-control-request-method, access-control-request-headers, access-control-request-private-network"
+    ));
+
+    let response = String::from_utf8(request(
+        proxy,
+        b"OPTIONS /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nAccess-Control-Request-Method: POST GET\r\nConnection: close\r\n\r\n",
+    ))
+    .unwrap();
+    assert!(response.starts_with("HTTP/1.1 400"));
+    assert!(response.contains("\"code\":\"invalid_cors_preflight\""));
+
+    let response = String::from_utf8(request(
+        proxy,
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://unknown.test\r\nConnection: close\r\n\r\n",
+    ))
+    .unwrap();
+    assert!(response.starts_with("HTTP/1.1 403"));
+    assert!(response.contains("\"code\":\"disallowed_origin\""));
+    assert!(response.contains("origin:https://ui-one.test"));
+    assert!(
+        !response
+            .to_ascii_lowercase()
+            .contains("access-control-allow-origin")
+    );
+
+    let response = String::from_utf8(request(
+        proxy,
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    ))
+    .unwrap();
+    assert!(response.starts_with("HTTP/1.1 400"));
+    assert!(response.contains("\"code\":\"missing_route_identity\""));
+
+    let response = String::from_utf8(request(
+        proxy,
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nX-Switchyard-Route: tab-one\r\nConnection: close\r\n\r\n",
+    ))
+    .unwrap()
+    .to_ascii_lowercase();
+    assert!(response.starts_with("http/1.1 200"));
+    assert!(!response.contains("x-switchyard-route"));
+
+    let response = String::from_utf8(request(
+        proxy,
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://unknown.test\r\nX-Switchyard-Route: tab-one\r\nConnection: close\r\n\r\n",
+    ))
+    .unwrap()
+    .to_ascii_lowercase();
+    assert!(response.starts_with("http/1.1 200"));
+    assert!(!response.contains("access-control-allow-origin"));
+    assert!(!response.contains("x-switchyard-route"));
+
+    let response = String::from_utf8(request(
+        proxy,
+        b"OPTIONS /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://unknown.test\r\nX-Switchyard-Route: tab-one\r\nAccess-Control-Request-Method: GET\r\nConnection: close\r\n\r\n",
+    ))
+    .unwrap()
+    .to_ascii_lowercase();
+    assert!(response.starts_with("http/1.1 403"));
+    assert!(!response.contains("access-control-allow-origin"));
+
+    let response = String::from_utf8(request(
+        proxy,
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nX-Switchyard-Route: unknown\r\nConnection: close\r\n\r\n",
+    ))
+    .unwrap();
+    assert!(response.starts_with("HTTP/1.1 403"));
+    assert!(response.contains("\"code\":\"unknown_route_identity\""));
+
+    let response = String::from_utf8(request(
+        proxy,
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nX-Switchyard-Route: tab-two\r\nConnection: close\r\n\r\n",
+    ))
+    .unwrap();
+    assert!(response.starts_with("HTTP/1.1 400"));
+    assert!(response.contains("\"code\":\"conflicting_route_identity\""));
+
+    running.shutdown();
+}
+
+#[test]
+fn identity_header_preservation_requires_selected_provider_opt_in() {
+    let upstream = TestUpstream::start();
+    let proxy_port = unused_port();
+    let mut config = browser_config(proxy_port, upstream.address.port());
+    config.spec.identity.strip_before_forwarding = false;
+    config.spec.providers[0].receive_identity_header = true;
+    let engine = Arc::new(RouteEngine::new(config.clone()).unwrap());
+    let running = HttpDataPlane::new(
+        engine,
+        config.spec.listeners.clone(),
+        config.spec.identity.clone(),
+        ProxyOptions::default(),
+    )
+    .unwrap()
+    .spawn()
+    .unwrap();
+    assert!(running.wait_ready(Duration::from_secs(2)));
+    let proxy = SocketAddr::from(([127, 0, 0, 1], proxy_port));
+
+    let opted_in = String::from_utf8(request(
+        proxy,
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nX-Switchyard-Route: tab-one\r\nConnection: close\r\n\r\n",
+    ))
+    .unwrap()
+    .to_ascii_lowercase();
+    assert!(opted_in.contains("x-switchyard-route: tab-one"));
+
+    let not_opted_in = String::from_utf8(request(
+        proxy,
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nX-Switchyard-Route: tab-two\r\nConnection: close\r\n\r\n",
+    ))
+    .unwrap()
+    .to_ascii_lowercase();
+    assert!(!not_opted_in.contains("x-switchyard-route"));
+
+    running.shutdown();
+}
+
+#[test]
+fn explicit_identity_is_rejected_on_non_loopback_listener() {
+    let upstream = TestUpstream::start();
+    let proxy_port = unused_port();
+    let mut config = browser_config(proxy_port, upstream.address.port());
+    config.spec.listeners[0].bind.host = "0.0.0.0".parse().unwrap();
+    let engine = Arc::new(RouteEngine::new(config.clone()).unwrap());
+    let running = HttpDataPlane::new(
+        engine,
+        config.spec.listeners.clone(),
+        config.spec.identity.clone(),
+        ProxyOptions::default(),
+    )
+    .unwrap()
+    .spawn()
+    .unwrap();
+    assert!(running.wait_ready(Duration::from_secs(2)));
+
+    let response = String::from_utf8(request(
+        SocketAddr::from(([127, 0, 0, 1], proxy_port)),
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nX-Switchyard-Route: tab-one\r\nConnection: close\r\n\r\n",
+    ))
+    .unwrap()
+    .to_ascii_lowercase();
+    assert!(response.starts_with("http/1.1 403"));
+    assert!(response.contains("\"code\":\"untrusted_identity_header\""));
+    assert!(response.contains("access-control-allow-origin: https://ui-one.test"));
+
+    running.shutdown();
+}
+
+#[test]
+fn managed_profile_listener_requires_and_strips_proxy_credentials() {
+    let upstream = TestUpstream::start();
+    let proxy_port = unused_port();
+    let credential = CredentialFile::create(proxy_port);
+    let mut config = browser_config(proxy_port, upstream.address.port());
+    config.spec.listeners[0].proxy_authentication = Some(ProxyAuthentication {
+        scheme: ProxyAuthenticationScheme::Basic,
+        credential_file: credential.0.clone(),
+    });
+    let engine = Arc::new(RouteEngine::new(config.clone()).unwrap());
+    let running = HttpDataPlane::new(
+        engine,
+        config.spec.listeners.clone(),
+        config.spec.identity.clone(),
+        ProxyOptions::default(),
+    )
+    .unwrap()
+    .spawn()
+    .unwrap();
+    assert!(running.wait_ready(Duration::from_secs(2)));
+    let proxy = SocketAddr::from(([127, 0, 0, 1], proxy_port));
+
+    let response = String::from_utf8(request(
+        proxy,
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nConnection: close\r\n\r\n",
+    ))
+    .unwrap()
+    .to_ascii_lowercase();
+    assert!(response.starts_with("http/1.1 407"));
+    assert!(response.contains("proxy-authenticate: basic realm=\"switchyard\""));
+
+    let response = String::from_utf8(request(
+        proxy,
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nProxy-Authorization: Basic wrong\r\nConnection: close\r\n\r\n",
+    ))
+    .unwrap();
+    assert!(response.starts_with("HTTP/1.1 407"));
+    assert!(!response.contains("test-token"));
+
+    let response = String::from_utf8(request(
+        proxy,
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nProxy-Authorization: Basic c3dpdGNoeWFyZDp0ZXN0LXRva2Vu\r\nConnection: close\r\n\r\n",
+    ))
+    .unwrap()
+    .to_ascii_lowercase();
+    assert!(response.starts_with("http/1.1 200"));
+    assert!(!response.contains("proxy-authorization"));
 
     running.shutdown();
 }

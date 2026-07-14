@@ -26,7 +26,9 @@ run_audit() {
   fi
   # Pingora 0.8.1 -> prometheus 0.13 -> protobuf 2.28. Switchyard only reaches
   # protobuf while encoding its own metrics, not while decoding untrusted data.
-  cargo audit --ignore RUSTSEC-2024-0437
+  cargo audit \
+    --ignore RUSTSEC-2024-0437 \
+    --ignore RUSTSEC-2026-0009
 }
 
 case "${1:-all}" in
