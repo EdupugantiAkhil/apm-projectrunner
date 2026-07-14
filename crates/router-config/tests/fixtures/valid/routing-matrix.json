@@ -1,0 +1,77 @@
+{
+  "apiVersion": "switchyard.dev/router/v1alpha1",
+  "kind": "RouterConfiguration",
+  "metadata": { "deployment": "comparison" },
+  "spec": {
+    "snapshot": {
+      "id": "routing-matrix-1", "version": 1,
+      "transitions": {
+        "http": { "strategy": "drain", "timeoutMs": 5000 },
+        "https": { "strategy": "drain", "timeoutMs": 5000 },
+        "websocket": { "strategy": "pin" },
+        "grpc": { "strategy": "drain", "timeoutMs": 5000 },
+        "tcp": { "strategy": "close" }
+      }
+    },
+    "identity": { "explicitHeader": "X-Switchyard-Route", "stripBeforeForwarding": true },
+    "listeners": [
+      {
+        "bind": { "host": "127.0.0.1", "port": 8443 }, "protocol": "https",
+        "tls": { "certificate": ".switchyard/certs/comparison.pem", "privateKey": ".switchyard/certs/comparison-key.pem" },
+        "destinations": [
+          { "kind": "custom_domain", "slot": "ui-1-domain", "domain": "ui-1.comparison.localhost" },
+          { "kind": "custom_domain", "slot": "ui-2-domain", "domain": "ui-2.comparison.localhost" },
+          { "kind": "custom_domain", "slot": "ui-3-domain", "domain": "ui-3.comparison.localhost" }
+        ]
+      },
+      {
+        "bind": { "host": "127.0.0.1", "port": 10081 }, "protocol": "http",
+        "destinations": [{ "kind": "legacy_localhost", "slot": "browser-backend", "host": "localhost" }]
+      },
+      { "consumer": "backend-1", "bind": { "host": "127.0.0.1", "port": 8001 }, "protocol": "http", "destinations": [{ "kind": "loopback", "slot": "catalog" }] },
+      { "consumer": "backend-1", "bind": { "host": "127.0.0.1", "port": 8002 }, "protocol": "http", "destinations": [{ "kind": "loopback", "slot": "search" }] },
+      { "consumer": "backend-1", "bind": { "host": "127.0.0.1", "port": 8003 }, "protocol": "http", "destinations": [{ "kind": "loopback", "slot": "reports" }] },
+      { "consumer": "backend-1", "bind": { "host": "127.0.0.1", "port": 8004 }, "protocol": "http", "destinations": [{ "kind": "loopback", "slot": "scheduler" }] },
+      { "consumer": "backend-1", "bind": { "host": "127.0.0.1", "port": 8005 }, "protocol": "http", "destinations": [{ "kind": "loopback", "slot": "audit" }] },
+      { "consumer": "backend-2", "bind": { "host": "127.0.0.1", "port": 8001 }, "protocol": "http", "destinations": [{ "kind": "loopback", "slot": "catalog" }] },
+      { "consumer": "backend-2", "bind": { "host": "127.0.0.1", "port": 8002 }, "protocol": "http", "destinations": [{ "kind": "loopback", "slot": "search" }] },
+      { "consumer": "backend-2", "bind": { "host": "127.0.0.1", "port": 8003 }, "protocol": "http", "destinations": [{ "kind": "loopback", "slot": "reports" }] },
+      { "consumer": "backend-2", "bind": { "host": "127.0.0.1", "port": 8004 }, "protocol": "http", "destinations": [{ "kind": "loopback", "slot": "scheduler" }] },
+      { "consumer": "backend-2", "bind": { "host": "127.0.0.1", "port": 8005 }, "protocol": "http", "destinations": [{ "kind": "loopback", "slot": "audit" }] }
+    ],
+    "providers": [
+      { "id": "ui-1", "endpoint": { "protocol": "http", "host": "comparison--ui-1", "port": 3000 }, "healthCheck": { "protocol": "http", "path": "/health", "intervalMs": 1000, "timeoutMs": 500 } },
+      { "id": "ui-2", "endpoint": { "protocol": "http", "host": "comparison--ui-2", "port": 3000 } },
+      { "id": "ui-3", "endpoint": { "protocol": "http", "host": "comparison--ui-3", "port": 3000 } },
+      { "id": "backend-1", "endpoint": { "protocol": "http", "host": "127.0.0.1", "port": 11081 } },
+      { "id": "backend-2", "endpoint": { "protocol": "http", "host": "127.0.0.1", "port": 11082 } },
+      { "id": "services-main/catalog", "endpoint": { "protocol": "http", "host": "comparison--services-main--catalog", "port": 8080 } },
+      { "id": "services-main/search", "endpoint": { "protocol": "http", "host": "comparison--services-main--search", "port": 8080 } },
+      { "id": "services-main/reports", "endpoint": { "protocol": "http", "host": "comparison--services-main--reports", "port": 8080 } },
+      { "id": "services-main/scheduler", "endpoint": { "protocol": "http", "host": "comparison--services-main--scheduler", "port": 8080 } },
+      { "id": "services-feature/catalog", "endpoint": { "protocol": "http", "host": "comparison--services-feature--catalog", "port": 8080 } },
+      { "id": "services-feature/search", "endpoint": { "protocol": "http", "host": "comparison--services-feature--search", "port": 8080 } },
+      { "id": "services-feature/reports", "endpoint": { "protocol": "http", "host": "comparison--services-feature--reports", "port": 8080 } },
+      { "id": "services-feature/scheduler", "endpoint": { "protocol": "http", "host": "comparison--services-feature--scheduler", "port": 8080 } },
+      { "id": "services-shared/audit", "endpoint": { "protocol": "http", "host": "comparison--services-shared--audit", "port": 8080 } }
+    ],
+    "groups": [
+      { "id": "main-services", "providers": { "catalog": "services-main/catalog", "search": "services-main/search", "reports": "services-main/reports", "scheduler": "services-main/scheduler", "audit": "services-shared/audit" } },
+      { "id": "feature-services", "providers": { "catalog": "services-feature/catalog", "search": "services-feature/search", "reports": "services-feature/reports", "scheduler": "services-feature/scheduler", "audit": "services-shared/audit" } }
+    ],
+    "bindings": [
+      { "id": "backend-1-services", "consumer": "backend-1", "group": "feature-services", "requiredSlots": ["catalog", "search", "reports", "scheduler", "audit"] },
+      { "id": "backend-2-services", "consumer": "backend-2", "group": "main-services", "requiredSlots": ["catalog", "search", "reports", "scheduler", "audit"] }
+    ],
+    "routes": [
+      { "consumer": "gateway", "slot": "ui-1-domain", "provider": "ui-1" },
+      { "consumer": "gateway", "slot": "ui-2-domain", "provider": "ui-2" },
+      { "consumer": "gateway", "slot": "ui-3-domain", "provider": "ui-3" }
+    ],
+    "browserRoutes": [
+      { "identity": { "source": "origin", "origin": "https://ui-1.comparison.localhost" }, "destination": "browser-backend", "provider": "backend-1" },
+      { "identity": { "source": "origin", "origin": "https://ui-2.comparison.localhost" }, "destination": "browser-backend", "provider": "backend-2" },
+      { "identity": { "source": "origin", "origin": "https://ui-3.comparison.localhost" }, "destination": "browser-backend", "provider": "backend-1" }
+    ]
+  }
+}

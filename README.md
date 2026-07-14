@@ -19,9 +19,9 @@ header, the UI origin, or an isolated browser-profile proxy.
 
 ## Status
 
-This repository is currently design-first. The authoritative specification, constraints,
-and acceptance criteria are in [DESIGN.md](DESIGN.md). Implementation progress is tracked
-as markable phase checklists in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+Implementation is proceeding from the authoritative specification and constraints in
+[DESIGN.md](DESIGN.md). Progress is tracked as markable phase checklists in
+[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 The implementation target is:
 
@@ -36,10 +36,21 @@ The implementation target is:
 ## Repository structure
 
 ```text
-DESIGN.md   authoritative architecture and roadmap
+Cargo.toml               Rust workspace for routing components
+crates/                  router configuration and data-plane crates
+docs/                    development and platform documentation
+scripts/                 bootstrap and shared development checks
+DESIGN.md                authoritative architecture and roadmap
 IMPLEMENTATION_PLAN.md   phased implementation checklist
-old/        archived experiments; not the current implementation
+old/                     archived experiments; not the current implementation
 ```
+
+## Development
+
+Run `./scripts/bootstrap` to check the pinned Rust toolchain, Docker, Compose, and host
+capabilities. Then run all formatting, lint, unit-test, and documentation checks with
+`./scripts/check.sh`. See [docs/development.md](docs/development.md) for supported host
+platforms and individual commands.
 
 The previous shared-PostgreSQL/Portless demo has moved to
 [`old/shared-database-portless-demo/`](old/shared-database-portless-demo/). Run its npm

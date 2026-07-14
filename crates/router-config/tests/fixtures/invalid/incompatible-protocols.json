@@ -1,0 +1,6 @@
+{
+  "apiVersion":"switchyard.dev/router/v1alpha1","kind":"RouterConfiguration","metadata":{"deployment":"test"},
+  "spec":{"snapshot":{"id":"one","version":1,"transitions":{"http":{"strategy":"close"},"https":{"strategy":"close"},"websocket":{"strategy":"close"},"grpc":{"strategy":"close"},"tcp":{"strategy":"close"}}},
+  "listeners":[{"bind":{"host":"127.0.0.1","port":9000},"protocol":"tcp","destinations":[{"kind":"loopback","slot":"database"}]}],
+  "providers":[{"id":"database","endpoint":{"protocol":"http","host":"db","port":5432}}],
+  "routes":[{"consumer":"client","slot":"database","provider":"database"}]}}

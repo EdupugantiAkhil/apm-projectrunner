@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+failures=0
+
+pass() {
+  printf 'ok: %s\n' "$1"
+}
+
+fail() {
+  printf 'error: %s\n' "$1" >&2
+  failures=$((failures + 1))
+}
+
+note() {
+  printf 'note: %s\n' "$1"
+}
+
+expected_rust="$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)"
+if command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+  actual_rust="$(rustc --version 2>/dev/null | awk '{print $2}')"
+  if [[ "$actual_rust" == "$expected_rust" ]]; then
+    pass "Rust ${actual_rust} matches rust-toolchain.toml"
+  else
+    fail "Rust ${expected_rust} is required (found ${actual_rust:-unavailable}); run 'rustup toolchain install ${expected_rust}'"
+  fi
+else
+  fail "Rust is missing; install rustup and run 'rustup toolchain install ${expected_rust}'"
+fi
+
+host_os="$(uname -s)"
+host_arch="$(uname -m)"
+case "$host_os" in
+  Linux)
+    pass "Linux host detected (${host_arch})"
+    if [[ -e /proc/self/ns/net ]]; then
+      pass "Linux network namespaces are available"
+    else
+      fail "Linux network namespace support is unavailable at /proc/self/ns/net"
+    fi
+    ;;
+  Darwin)
+    note "macOS detected (${host_arch}); use Docker Desktop with Linux containers (Linux is the primary development platform)"
+    ;;
+  *)
+    fail "unsupported host '${host_os}'; use native Linux or a Linux WSL2 environment"
+    ;;
+esac
+
+if ! command -v docker >/dev/null 2>&1; then
+  fail "Docker CLI is missing"
+else
+  pass "$(docker --version 2>/dev/null || printf 'Docker CLI found')"
+
+  docker_os="$(docker info --format '{{.OSType}}' 2>/dev/null)"
+  if [[ "$docker_os" == "linux" ]]; then
+    pass "Docker Engine is reachable and runs Linux containers"
+  elif [[ -n "$docker_os" ]]; then
+    fail "Docker Engine must run Linux containers (found ${docker_os})"
+  else
+    fail "Docker Engine is not reachable; start it and ensure the current user can access it"
+  fi
+
+  if compose_version="$(docker compose version 2>/dev/null)"; then
+    pass "$compose_version"
+  else
+    fail "Docker Compose v2 is unavailable; install the Docker Compose plugin"
+  fi
+fi
+
+if ((failures > 0)); then
+  printf '\nbootstrap found %d problem(s)\n' "$failures" >&2
+  exit 1
+fi
+
+printf '\ndevelopment prerequisites are ready\n'

@@ -27,42 +27,42 @@ Goal: establish stable contracts and test fixtures before implementing network b
 
 ### Workspace
 
-- [ ] Create the root Rust workspace and pin the supported Rust toolchain.
-- [ ] Create `router-core`, `router-config`, `router-pingora`, and `router-tcp` crates.
-- [ ] Add shared formatting, linting, dependency-audit, and test commands.
-- [ ] Add CI for Rust formatting, Clippy, unit tests, and documentation checks.
-- [ ] Add a development bootstrap command that checks Rust, Docker Engine, Docker
+- [x] Create the root Rust workspace and pin the supported Rust toolchain.
+- [x] Create `router-core`, `router-config`, `router-pingora`, and `router-tcp` crates.
+- [x] Add shared formatting, linting, dependency-audit, and test commands.
+- [x] Add CI for Rust formatting, Clippy, unit tests, and documentation checks.
+- [x] Add a development bootstrap command that checks Rust, Docker Engine, Docker
       Compose, and required host capabilities.
-- [ ] Document supported host platforms and the initial Linux-first development path.
+- [x] Document supported host platforms and the initial Linux-first development path.
 
 ### Configuration contracts
 
-- [ ] Define versioned identifiers for deployments, instances, components, groups,
+- [x] Define versioned identifiers for deployments, instances, components, groups,
       bindings, route slots, and route snapshots.
-- [ ] Define the versioned router configuration schema.
-- [ ] Represent HTTP, HTTPS, WebSocket, gRPC, and raw TCP listeners explicitly.
-- [ ] Represent custom domains, legacy localhost destinations, providers, health checks,
+- [x] Define the versioned router configuration schema.
+- [x] Represent HTTP, HTTPS, WebSocket, gRPC, and raw TCP listeners explicitly.
+- [x] Represent custom domains, legacy localhost destinations, providers, health checks,
       and connection transition policies explicitly.
-- [ ] Define browser identity precedence: explicit header, Origin, then proxy listener.
-- [ ] Define validation errors with stable machine-readable codes and human-readable
+- [x] Define browser identity precedence: explicit header, Origin, then proxy listener.
+- [x] Define validation errors with stable machine-readable codes and human-readable
       context.
-- [ ] Add serialization round-trip and schema compatibility tests.
-- [ ] Add invalid-configuration fixtures for duplicate listeners, missing providers,
+- [x] Add serialization round-trip and schema compatibility tests.
+- [x] Add invalid-configuration fixtures for duplicate listeners, missing providers,
       incompatible protocols, and incomplete groups.
 
 ### Initial fixture contracts
 
-- [ ] Specify the `routing-matrix` fixture with three UIs, two backend instances, two
+- [x] Specify the `routing-matrix` fixture with three UIs, two backend instances, two
       five-service groups, and at least one shared service.
-- [ ] Ensure fixture applications use fixed localhost addresses and require no
+- [x] Ensure fixture applications use fixed localhost addresses and require no
       Switchyard-specific code.
-- [ ] Define observable responses that identify the selected backend and every selected
+- [x] Define observable responses that identify the selected backend and every selected
       downstream service.
 
 ### Phase 0 exit gate
 
-- [ ] A clean checkout can run all contract tests with one documented command.
-- [ ] The schemas can express the complete routing-matrix topology without runtime code.
+- [x] A clean checkout can run all contract tests with one documented command.
+- [x] The schemas can express the complete routing-matrix topology without runtime code.
 
 ## Phase 1 — Rust router engine
 

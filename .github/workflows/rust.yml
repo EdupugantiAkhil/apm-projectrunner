@@ -1,0 +1,36 @@
+name: Rust
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Formatting
+        run: ./scripts/check.sh fmt
+      - name: Clippy
+        run: ./scripts/check.sh lint
+      - name: Unit and documentation tests
+        run: ./scripts/check.sh test
+      - name: Documentation
+        run: ./scripts/check.sh doc
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

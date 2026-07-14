@@ -1,0 +1,18 @@
+{
+  "apiVersion": "switchyard.dev/router/v1alpha1",
+  "kind": "RouterConfiguration",
+  "metadata": { "deployment": "comparison" },
+  "spec": {
+    "snapshot": {
+      "id": "initial",
+      "version": 1,
+      "transitions": {
+        "http": { "strategy": "drain", "timeoutMs": 5000 },
+        "https": { "strategy": "drain", "timeoutMs": 5000 },
+        "websocket": { "strategy": "pin" },
+        "grpc": { "strategy": "drain", "timeoutMs": 5000 },
+        "tcp": { "strategy": "close" }
+      }
+    }
+  }
+}

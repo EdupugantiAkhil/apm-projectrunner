@@ -1,0 +1,156 @@
+apiVersion: switchyard.dev/v1alpha1
+kind: FixtureContract
+metadata:
+  name: routing-matrix
+spec:
+  applicationContract:
+    switchyardAware: false
+    uiBackendRequest:
+      method: GET
+      url: http://localhost:10081/identity
+    backendServiceRequests:
+      catalog:
+        method: GET
+        url: http://localhost:8001/identity
+      search:
+        method: GET
+        url: http://localhost:8002/identity
+      reports:
+        method: GET
+        url: http://localhost:8003/identity
+      scheduler:
+        method: GET
+        url: http://localhost:8004/identity
+      audit:
+        method: GET
+        url: http://localhost:8005/identity
+
+  instances:
+    uis:
+      - name: ui-1
+        source: ui-one
+      - name: ui-2
+        source: ui-two
+      - name: ui-3
+        source: ui-three
+    backends:
+      - name: backend-1
+        source: backend-one
+      - name: backend-2
+        source: backend-two
+    serviceSuites:
+      - name: services-main
+        source: services-main
+        components: [catalog, search, reports, scheduler]
+      - name: services-feature
+        source: services-feature
+        components: [catalog, search, reports, scheduler]
+      - name: services-shared
+        source: services-shared
+        components: [audit]
+
+  groups:
+    main-services:
+      providers:
+        catalog: services-main/catalog
+        search: services-main/search
+        reports: services-main/reports
+        scheduler: services-main/scheduler
+        audit: services-shared/audit
+    feature-services:
+      providers:
+        catalog: services-feature/catalog
+        search: services-feature/search
+        reports: services-feature/reports
+        scheduler: services-feature/scheduler
+        audit: services-shared/audit
+
+  bindings:
+    ui-1:
+      backend: backend-1
+    ui-2:
+      backend: backend-2
+    ui-3:
+      backend: backend-1
+    backend-1:
+      services: feature-services
+    backend-2:
+      services: main-services
+
+  identityResponses:
+    providers:
+      services-main/catalog:
+        service: catalog
+        provider: services-main/catalog
+      services-main/search:
+        service: search
+        provider: services-main/search
+      services-main/reports:
+        service: reports
+        provider: services-main/reports
+      services-main/scheduler:
+        service: scheduler
+        provider: services-main/scheduler
+      services-feature/catalog:
+        service: catalog
+        provider: services-feature/catalog
+      services-feature/search:
+        service: search
+        provider: services-feature/search
+      services-feature/reports:
+        service: reports
+        provider: services-feature/reports
+      services-feature/scheduler:
+        service: scheduler
+        provider: services-feature/scheduler
+      services-shared/audit:
+        service: audit
+        provider: services-shared/audit
+    backends:
+      backend-1:
+        backend: backend-1
+        services:
+          catalog: { service: catalog, provider: services-feature/catalog }
+          search: { service: search, provider: services-feature/search }
+          reports: { service: reports, provider: services-feature/reports }
+          scheduler: { service: scheduler, provider: services-feature/scheduler }
+          audit: { service: audit, provider: services-shared/audit }
+      backend-2:
+        backend: backend-2
+        services:
+          catalog: { service: catalog, provider: services-main/catalog }
+          search: { service: search, provider: services-main/search }
+          reports: { service: reports, provider: services-main/reports }
+          scheduler: { service: scheduler, provider: services-main/scheduler }
+          audit: { service: audit, provider: services-shared/audit }
+    uis:
+      ui-1:
+        ui: ui-1
+        backendResponse:
+          backend: backend-1
+          services:
+            catalog: { service: catalog, provider: services-feature/catalog }
+            search: { service: search, provider: services-feature/search }
+            reports: { service: reports, provider: services-feature/reports }
+            scheduler: { service: scheduler, provider: services-feature/scheduler }
+            audit: { service: audit, provider: services-shared/audit }
+      ui-2:
+        ui: ui-2
+        backendResponse:
+          backend: backend-2
+          services:
+            catalog: { service: catalog, provider: services-main/catalog }
+            search: { service: search, provider: services-main/search }
+            reports: { service: reports, provider: services-main/reports }
+            scheduler: { service: scheduler, provider: services-main/scheduler }
+            audit: { service: audit, provider: services-shared/audit }
+      ui-3:
+        ui: ui-3
+        backendResponse:
+          backend: backend-1
+          services:
+            catalog: { service: catalog, provider: services-feature/catalog }
+            search: { service: search, provider: services-feature/search }
+            reports: { service: reports, provider: services-feature/reports }
+            scheduler: { service: scheduler, provider: services-feature/scheduler }
+            audit: { service: audit, provider: services-shared/audit }
