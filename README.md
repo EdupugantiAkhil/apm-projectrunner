@@ -3,6 +3,9 @@
 This is a working implementation of [`features.md`](features.md). It runs three
 containers:
 
+The proposed full project architecture, worktree orchestration model, and GUI are
+documented in [`DESIGN.md`](DESIGN.md).
+
 1. `database` — one PostgreSQL database, available only on the private Compose network.
 2. `app-one` — the first copy of the service.
 3. `app-two` — a second copy built from exactly the same image.
