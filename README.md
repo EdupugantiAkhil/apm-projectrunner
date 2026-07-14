@@ -19,8 +19,9 @@ header, the UI origin, or an isolated browser-profile proxy.
 
 ## Status
 
-This repository is currently design-first. The authoritative specification, delivery
-phases, constraints, and acceptance criteria are in [DESIGN.md](DESIGN.md).
+This repository is currently design-first. The authoritative specification, constraints,
+and acceptance criteria are in [DESIGN.md](DESIGN.md). Implementation progress is tracked
+as markable phase checklists in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 The implementation target is:
 
@@ -36,6 +37,7 @@ The implementation target is:
 
 ```text
 DESIGN.md   authoritative architecture and roadmap
+IMPLEMENTATION_PLAN.md   phased implementation checklist
 old/        archived experiments; not the current implementation
 ```
 

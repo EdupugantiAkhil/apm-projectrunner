@@ -1381,6 +1381,10 @@ runnable for historical comparison but is not a template for the new implementat
 
 ## 13. Delivery phases
 
+Task-level progress and phase exit gates are tracked in
+[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md). This section defines product scope;
+the implementation plan is the markable execution checklist.
+
 ### Phase 1: routing proof
 
 - Minimal schemas for existing sources, blocks, instances, groups, bindings, and routes.
