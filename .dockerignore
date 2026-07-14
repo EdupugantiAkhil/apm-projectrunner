@@ -1,0 +1,10 @@
+.git
+.gitignore
+.env
+features.md
+README.md
+compose.yaml
+scripts/
+test/
+node_modules/
+npm-debug.log*

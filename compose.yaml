@@ -1,0 +1,67 @@
+name: shared-pods-demo
+
+x-app: &app
+  image: shared-pods-demo-app:local
+  build:
+    context: .
+  restart: unless-stopped
+  environment:
+    PORT: "8080"
+    DATABASE_URL: postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app-dev-password}@database:5432/${POSTGRES_DB:-shared_app}
+  depends_on:
+    database:
+      condition: service_healthy
+  healthcheck:
+    test:
+      - CMD
+      - node
+      - -e
+      - fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+    interval: 5s
+    timeout: 3s
+    retries: 10
+    start_period: 5s
+  networks:
+    - shared
+
+services:
+  database:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-shared_app}
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app-dev-password}
+    volumes:
+      - database-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - shared
+
+  app-one:
+    <<: *app
+    environment:
+      PORT: "8080"
+      INSTANCE_NAME: app-one
+      DATABASE_URL: postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app-dev-password}@database:5432/${POSTGRES_DB:-shared_app}
+    ports:
+      - "127.0.0.1:${APP_ONE_HOST_PORT:-18081}:8080"
+
+  app-two:
+    <<: *app
+    environment:
+      PORT: "8080"
+      INSTANCE_NAME: app-two
+      DATABASE_URL: postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app-dev-password}@database:5432/${POSTGRES_DB:-shared_app}
+    ports:
+      - "127.0.0.1:${APP_TWO_HOST_PORT:-18082}:8080"
+
+volumes:
+  database-data:
+
+networks:
+  shared:

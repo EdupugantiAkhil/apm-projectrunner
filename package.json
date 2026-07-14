@@ -1,0 +1,26 @@
+{
+  "name": "shared-database-pods-demo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Two identical service instances backed by one shared PostgreSQL database",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "compose:up": "./scripts/start-compose.sh",
+    "compose:down": "./scripts/stop-compose.sh",
+    "smoke": "./scripts/smoke-test.sh",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "portless": "^0.15.1"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "portless": "^0.15.1"
+  }
+}
