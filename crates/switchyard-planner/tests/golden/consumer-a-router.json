@@ -1,0 +1,69 @@
+{
+  "apiVersion": "switchyard.dev/router/v1alpha1",
+  "kind": "RouterConfiguration",
+  "metadata": {
+    "deployment": "comparison"
+  },
+  "spec": {
+    "listeners": [
+      {
+        "bind": {
+          "host": "127.0.0.1",
+          "port": 8001
+        },
+        "consumer": "consumer-a",
+        "destinations": [
+          {
+            "kind": "loopback",
+            "slot": "search"
+          }
+        ],
+        "protocol": "http"
+      }
+    ],
+    "providers": [
+      {
+        "endpoint": {
+          "host": "comparison--provider-main--api",
+          "port": 8080,
+          "protocol": "http"
+        },
+        "healthCheck": {
+          "intervalMs": 1000,
+          "path": "/health",
+          "protocol": "http",
+          "timeoutMs": 500
+        },
+        "id": "provider-main/api--search"
+      }
+    ],
+    "routes": [
+      {
+        "consumer": "consumer-a",
+        "provider": "provider-main/api--search",
+        "slot": "search"
+      }
+    ],
+    "snapshot": {
+      "id": "comparison--consumer-a--initial",
+      "transitions": {
+        "grpc": {
+          "strategy": "close"
+        },
+        "http": {
+          "strategy": "close"
+        },
+        "https": {
+          "strategy": "close"
+        },
+        "tcp": {
+          "strategy": "close"
+        },
+        "websocket": {
+          "strategy": "close"
+        }
+      },
+      "version": 1
+    }
+  }
+}

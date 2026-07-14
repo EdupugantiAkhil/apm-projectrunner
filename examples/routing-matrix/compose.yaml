@@ -1,0 +1,191 @@
+name: switchyard-routing-matrix
+
+x-labels: &labels
+  dev.switchyard.deployment: routing-matrix
+  dev.switchyard.managed: "true"
+
+x-provider: &provider
+  image: switchyard-routing-matrix:local
+  pull_policy: never
+  restart: unless-stopped
+  labels: *labels
+  networks:
+    routing-matrix: {}
+  healthcheck:
+    test: ["CMD", "/usr/local/bin/routing-fixture", "probe", "127.0.0.1:8080"]
+    interval: 1s
+    timeout: 2s
+    retries: 30
+
+x-namespace: &namespace
+  image: switchyard-routing-matrix:local
+  pull_policy: never
+  command: ["/usr/local/bin/routing-fixture", "hold"]
+  restart: unless-stopped
+  labels: *labels
+  networks:
+    routing-matrix: {}
+
+x-backend: &backend
+  image: switchyard-routing-matrix:local
+  pull_policy: never
+  restart: unless-stopped
+  labels: *labels
+  healthcheck:
+    test: ["CMD", "/usr/local/bin/routing-fixture", "probe", "127.0.0.1:8080"]
+    interval: 1s
+    timeout: 2s
+    retries: 30
+
+x-sidecar: &sidecar
+  image: switchyard-routing-matrix:local
+  pull_policy: never
+  restart: unless-stopped
+  environment:
+    SWITCHYARD_ROUTER_TOKEN: routing-matrix-fixture
+  user: "${SWITCHYARD_UID:-65532}:${SWITCHYARD_GID:-65532}"
+  labels: *labels
+  healthcheck:
+    test:
+      [
+        "CMD", "/usr/local/bin/routing-fixture", "probe",
+        "127.0.0.1:8001", "127.0.0.1:8002", "127.0.0.1:8003",
+        "127.0.0.1:8004", "127.0.0.1:8005"
+      ]
+    interval: 1s
+    timeout: 10s
+    retries: 30
+
+services:
+  services-main-catalog:
+    <<: *provider
+    build:
+      context: ../..
+      dockerfile: examples/routing-matrix/Dockerfile
+    command: ["/usr/local/bin/routing-fixture", "provider", "0.0.0.0:8080", "catalog", "services-main/catalog"]
+    networks:
+      routing-matrix:
+        aliases: [routing-matrix--services-main--catalog]
+
+  services-main-search:
+    <<: *provider
+    command: ["/usr/local/bin/routing-fixture", "provider", "0.0.0.0:8080", "search", "services-main/search"]
+    networks:
+      routing-matrix:
+        aliases: [routing-matrix--services-main--search]
+
+  services-main-reports:
+    <<: *provider
+    command: ["/usr/local/bin/routing-fixture", "provider", "0.0.0.0:8080", "reports", "services-main/reports"]
+    networks:
+      routing-matrix:
+        aliases: [routing-matrix--services-main--reports]
+
+  services-main-scheduler:
+    <<: *provider
+    command: ["/usr/local/bin/routing-fixture", "provider", "0.0.0.0:8080", "scheduler", "services-main/scheduler"]
+    networks:
+      routing-matrix:
+        aliases: [routing-matrix--services-main--scheduler]
+
+  services-feature-catalog:
+    <<: *provider
+    command: ["/usr/local/bin/routing-fixture", "provider", "0.0.0.0:8080", "catalog", "services-feature/catalog"]
+    networks:
+      routing-matrix:
+        aliases: [routing-matrix--services-feature--catalog]
+
+  services-feature-search:
+    <<: *provider
+    command: ["/usr/local/bin/routing-fixture", "provider", "0.0.0.0:8080", "search", "services-feature/search"]
+    networks:
+      routing-matrix:
+        aliases: [routing-matrix--services-feature--search]
+
+  services-feature-reports:
+    <<: *provider
+    command: ["/usr/local/bin/routing-fixture", "provider", "0.0.0.0:8080", "reports", "services-feature/reports"]
+    networks:
+      routing-matrix:
+        aliases: [routing-matrix--services-feature--reports]
+
+  services-feature-scheduler:
+    <<: *provider
+    command: ["/usr/local/bin/routing-fixture", "provider", "0.0.0.0:8080", "scheduler", "services-feature/scheduler"]
+    networks:
+      routing-matrix:
+        aliases: [routing-matrix--services-feature--scheduler]
+
+  services-shared-audit:
+    <<: *provider
+    command: ["/usr/local/bin/routing-fixture", "provider", "0.0.0.0:8080", "audit", "services-shared/audit"]
+    networks:
+      routing-matrix:
+        aliases: [routing-matrix--services-shared--audit]
+
+  backend-1-namespace:
+    <<: *namespace
+    ports: ["127.0.0.1::8080"]
+
+  backend-1-sidecar:
+    <<: *sidecar
+    command: ["/usr/local/bin/switchyard-router", "/etc/switchyard/router.json", "/run/switchyard/router-admin.socket"]
+    network_mode: service:backend-1-namespace
+    volumes:
+      - ./router-backend-1.json:/etc/switchyard/router.json:ro
+      - ${SWITCHYARD_RUN_DIR:-./.run}/backend-1:/run/switchyard
+    depends_on:
+      backend-1-namespace: { condition: service_started }
+      services-feature-catalog: { condition: service_healthy }
+      services-feature-search: { condition: service_healthy }
+      services-feature-reports: { condition: service_healthy }
+      services-feature-scheduler: { condition: service_healthy }
+      services-shared-audit: { condition: service_healthy }
+
+  backend-1:
+    <<: *backend
+    command: ["/usr/local/bin/routing-fixture", "backend", "0.0.0.0:8080", "backend-1", "/data/request-count"]
+    network_mode: service:backend-1-namespace
+    volumes: [backend-1-data:/data]
+    depends_on:
+      backend-1-sidecar: { condition: service_healthy }
+
+  backend-2-namespace:
+    <<: *namespace
+    ports: ["127.0.0.1::8080"]
+
+  backend-2-sidecar:
+    <<: *sidecar
+    command: ["/usr/local/bin/switchyard-router", "/etc/switchyard/router.json", "/run/switchyard/router-admin.socket"]
+    network_mode: service:backend-2-namespace
+    volumes:
+      - ./router-backend-2.json:/etc/switchyard/router.json:ro
+      - ${SWITCHYARD_RUN_DIR:-./.run}/backend-2:/run/switchyard
+    depends_on:
+      backend-2-namespace: { condition: service_started }
+      services-main-catalog: { condition: service_healthy }
+      services-main-search: { condition: service_healthy }
+      services-main-reports: { condition: service_healthy }
+      services-main-scheduler: { condition: service_healthy }
+      services-shared-audit: { condition: service_healthy }
+
+  backend-2:
+    <<: *backend
+    command: ["/usr/local/bin/routing-fixture", "backend", "0.0.0.0:8080", "backend-2", "/data/request-count"]
+    network_mode: service:backend-2-namespace
+    volumes: [backend-2-data:/data]
+    depends_on:
+      backend-2-sidecar: { condition: service_healthy }
+
+networks:
+  routing-matrix:
+    name: switchyard-routing-matrix-network
+    labels: *labels
+
+volumes:
+  backend-1-data:
+    name: switchyard-routing-matrix-backend-1-data
+    labels: *labels
+  backend-2-data:
+    name: switchyard-routing-matrix-backend-2-data
+    labels: *labels

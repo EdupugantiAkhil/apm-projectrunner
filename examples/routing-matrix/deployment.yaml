@@ -1,0 +1,115 @@
+apiVersion: switchyard.dev/v1alpha1
+kind: Deployment
+metadata:
+  name: routing-matrix
+spec:
+  routerImage: &fixture-image switchyard-routing-matrix:local
+  sources:
+    repository:
+      path: ../..
+  blocks:
+    catalog-provider:
+      services:
+        app:
+          execution:
+            type: container
+            image: *fixture-image
+            build: &fixture-build
+              context: .
+              dockerfile: examples/routing-matrix/Dockerfile
+            command: ["/usr/local/bin/routing-fixture", "provider-instance", "0.0.0.0:8080", "catalog"]
+          provides:
+            catalog: { protocol: http, port: 8080 }
+          probe: { type: command, command: ["/usr/local/bin/routing-fixture", "probe", "127.0.0.1:8080"] }
+    search-provider:
+      services:
+        app:
+          execution:
+            type: container
+            image: *fixture-image
+            build: *fixture-build
+            command: ["/usr/local/bin/routing-fixture", "provider-instance", "0.0.0.0:8080", "search"]
+          provides:
+            search: { protocol: http, port: 8080 }
+          probe: { type: command, command: ["/usr/local/bin/routing-fixture", "probe", "127.0.0.1:8080"] }
+    reports-provider:
+      services:
+        app:
+          execution:
+            type: container
+            image: *fixture-image
+            build: *fixture-build
+            command: ["/usr/local/bin/routing-fixture", "provider-instance", "0.0.0.0:8080", "reports"]
+          provides:
+            reports: { protocol: http, port: 8080 }
+          probe: { type: command, command: ["/usr/local/bin/routing-fixture", "probe", "127.0.0.1:8080"] }
+    scheduler-provider:
+      services:
+        app:
+          execution:
+            type: container
+            image: *fixture-image
+            build: *fixture-build
+            command: ["/usr/local/bin/routing-fixture", "provider-instance", "0.0.0.0:8080", "scheduler"]
+          provides:
+            scheduler: { protocol: http, port: 8080 }
+          probe: { type: command, command: ["/usr/local/bin/routing-fixture", "probe", "127.0.0.1:8080"] }
+    audit-provider:
+      services:
+        app:
+          execution:
+            type: container
+            image: *fixture-image
+            build: *fixture-build
+            command: ["/usr/local/bin/routing-fixture", "provider-instance", "0.0.0.0:8080", "audit"]
+          provides:
+            audit: { protocol: http, port: 8080 }
+          probe: { type: command, command: ["/usr/local/bin/routing-fixture", "probe", "127.0.0.1:8080"] }
+    backend:
+      services:
+        app:
+          execution:
+            type: container
+            image: *fixture-image
+            build: *fixture-build
+            command: ["/usr/local/bin/routing-fixture", "backend-instance", "0.0.0.0:8080", "/data/request-count"]
+          consumes:
+            catalog: { protocol: http, address: { host: 127.0.0.1, port: 8001 } }
+            search: { protocol: http, address: { host: 127.0.0.1, port: 8002 } }
+            reports: { protocol: http, address: { host: 127.0.0.1, port: 8003 } }
+            scheduler: { protocol: http, address: { host: 127.0.0.1, port: 8004 } }
+            audit: { protocol: http, address: { host: 127.0.0.1, port: 8005 } }
+          publish: [8080]
+          volumes:
+            - { name: data, target: /data }
+          probe: { type: command, command: ["/usr/local/bin/routing-fixture", "probe", "127.0.0.1:8080"] }
+  instances:
+    - { name: services-main-catalog, block: catalog-provider, source: repository }
+    - { name: services-main-search, block: search-provider, source: repository }
+    - { name: services-main-reports, block: reports-provider, source: repository }
+    - { name: services-main-scheduler, block: scheduler-provider, source: repository }
+    - { name: services-feature-catalog, block: catalog-provider, source: repository }
+    - { name: services-feature-search, block: search-provider, source: repository }
+    - { name: services-feature-reports, block: reports-provider, source: repository }
+    - { name: services-feature-scheduler, block: scheduler-provider, source: repository }
+    - { name: services-shared-audit, block: audit-provider, source: repository }
+    - { name: backend-1, block: backend, source: repository }
+    - { name: backend-2, block: backend, source: repository }
+  groups:
+    main-services:
+      providers:
+        catalog: services-main-catalog/app
+        search: services-main-search/app
+        reports: services-main-reports/app
+        scheduler: services-main-scheduler/app
+        audit: services-shared-audit/app
+    feature-services:
+      providers:
+        catalog: services-feature-catalog/app
+        search: services-feature-search/app
+        reports: services-feature-reports/app
+        scheduler: services-feature-scheduler/app
+        audit: services-shared-audit/app
+  bindings:
+    backend-1: feature-services
+    backend-2: main-services

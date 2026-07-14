@@ -1,0 +1,71 @@
+apiVersion: switchyard.dev/v1alpha1
+kind: Deployment
+metadata:
+  name: comparison
+spec:
+  sources:
+    app:
+      path: .
+  blocks:
+    provider:
+      services:
+        api:
+          execution:
+            type: container
+            image: example/provider:1
+            command: ["serve", "--port", "8080"]
+          provides:
+            search: { protocol: http, port: 8080 }
+          publish: [8080]
+          volumes:
+            - { name: data, target: /data }
+          probe: { type: http, path: /health, port: 8080 }
+    consumer:
+      parameters:
+        LOG_LEVEL: { required: true }
+      services:
+        api:
+          execution:
+            type: script
+            image: example/consumer:1
+            command: ["./start"]
+            workingDirectory: /workspace
+            environment: { STATIC_VALUE: yes }
+          consumes:
+            search:
+              protocol: http
+              address: { host: 127.0.0.1, port: 8001 }
+          hooks:
+            prepare: [["./prepare"]]
+            postReady: [["./seed"]]
+          probe: { type: tcp, port: 3000 }
+    suite:
+      services:
+        processes:
+          execution:
+            type: processCompose
+            image: example/process-compose:1
+            file: process-compose.yaml
+          provides:
+            events: { protocol: tcp, port: 9000 }
+  instances:
+    - { name: provider-main, block: provider, source: app }
+    - name: consumer-a
+      block: consumer
+      source: app
+      parameters: { LOG_LEVEL: debug }
+    - name: consumer-b
+      block: consumer
+      source: app
+      parameters: { LOG_LEVEL: info }
+    - { name: suite-main, block: suite, source: app }
+  groups:
+    base:
+      providers:
+        search: provider-main/api
+    feature:
+      extends: base
+      providers: {}
+  bindings:
+    consumer-a: base
+    consumer-b: feature

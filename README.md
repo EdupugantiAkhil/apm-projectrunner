@@ -25,7 +25,7 @@ Implementation is proceeding from the authoritative specification and constraint
 
 The implementation target is:
 
-- Docker Engine with generated Docker Compose for Phase 1 lifecycle management.
+- Docker Engine with generated Docker Compose for container lifecycle management.
 - A Rust `switchyard-router` built on Pingora for HTTP-family traffic and Tokio for raw
   TCP.
 - Native host-gateway and container-sidecar modes from one router codebase.
@@ -51,12 +51,10 @@ Run `./scripts/bootstrap` to check the pinned Rust toolchain, Docker, Compose, a
 capabilities. Then run all formatting, lint, unit-test, and documentation checks with
 `./scripts/check.sh`. See [docs/development.md](docs/development.md) for supported host
 platforms and individual commands. The router binary and authenticated local control
-protocol are documented in [docs/router.md](docs/router.md).
+protocol are documented in [docs/router.md](docs/router.md). The runnable planner/CLI
+proof is documented in
+[examples/routing-matrix/README.md](examples/routing-matrix/README.md).
 
 The previous shared-PostgreSQL/Portless demo has moved to
 [`old/shared-database-portless-demo/`](old/shared-database-portless-demo/). Run its npm
 and Compose commands from that directory if you need the historical proof-of-concept.
-
-New implementation directories will be added according to the repository layout in
-`DESIGN.md`; empty scaffolding is intentionally not committed before implementation
-starts.

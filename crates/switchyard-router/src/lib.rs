@@ -6,7 +6,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     fmt, io,
     net::SocketAddr,
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{FileTypeExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -312,6 +312,28 @@ impl Drop for RouterProcess {
 }
 
 async fn bind_admin(path: &Path) -> io::Result<UnixListener> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_socket() => {
+            if UnixStream::connect(path).await.is_ok() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    format!(
+                        "administration socket is already active: {}",
+                        path.display()
+                    ),
+                ));
+            }
+            std::fs::remove_file(path)?;
+        }
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("administration path is not a socket: {}", path.display()),
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
     let listener = UnixListener::bind(path)?;
     if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
         let _ = std::fs::remove_file(path);

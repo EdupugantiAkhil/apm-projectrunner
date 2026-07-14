@@ -1,0 +1,43 @@
+{
+  "apiVersion": "switchyard.dev/router/v1alpha1",
+  "kind": "RouterConfiguration",
+  "metadata": { "deployment": "routing-matrix" },
+  "spec": {
+    "snapshot": {
+      "id": "backend-1-routes", "version": 1,
+      "transitions": {
+        "http": { "strategy": "drain", "timeoutMs": 5000 },
+        "https": { "strategy": "drain", "timeoutMs": 5000 },
+        "websocket": { "strategy": "pin" },
+        "grpc": { "strategy": "drain", "timeoutMs": 5000 },
+        "tcp": { "strategy": "close" }
+      }
+    },
+    "listeners": [
+      { "consumer": "backend-1", "bind": { "host": "127.0.0.1", "port": 8001 }, "protocol": "http", "destinations": [{ "kind": "loopback", "slot": "catalog" }] },
+      { "consumer": "backend-1", "bind": { "host": "127.0.0.1", "port": 8002 }, "protocol": "http", "destinations": [{ "kind": "loopback", "slot": "search" }] },
+      { "consumer": "backend-1", "bind": { "host": "127.0.0.1", "port": 8003 }, "protocol": "http", "destinations": [{ "kind": "loopback", "slot": "reports" }] },
+      { "consumer": "backend-1", "bind": { "host": "127.0.0.1", "port": 8004 }, "protocol": "http", "destinations": [{ "kind": "loopback", "slot": "scheduler" }] },
+      { "consumer": "backend-1", "bind": { "host": "127.0.0.1", "port": 8005 }, "protocol": "http", "destinations": [{ "kind": "loopback", "slot": "audit" }] }
+    ],
+    "providers": [
+      { "id": "services-feature/catalog", "endpoint": { "protocol": "http", "host": "routing-matrix--services-feature--catalog", "port": 8080 } },
+      { "id": "services-feature/search", "endpoint": { "protocol": "http", "host": "routing-matrix--services-feature--search", "port": 8080 } },
+      { "id": "services-feature/reports", "endpoint": { "protocol": "http", "host": "routing-matrix--services-feature--reports", "port": 8080 } },
+      { "id": "services-feature/scheduler", "endpoint": { "protocol": "http", "host": "routing-matrix--services-feature--scheduler", "port": 8080 } },
+      { "id": "services-shared/audit", "endpoint": { "protocol": "http", "host": "routing-matrix--services-shared--audit", "port": 8080 } }
+    ],
+    "groups": [{
+      "id": "feature-services",
+      "providers": {
+        "catalog": "services-feature/catalog", "search": "services-feature/search",
+        "reports": "services-feature/reports", "scheduler": "services-feature/scheduler",
+        "audit": "services-shared/audit"
+      }
+    }],
+    "bindings": [{
+      "id": "backend-1-services", "consumer": "backend-1", "group": "feature-services",
+      "requiredSlots": ["catalog", "search", "reports", "scheduler", "audit"]
+    }]
+  }
+}

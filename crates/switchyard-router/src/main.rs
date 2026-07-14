@@ -38,10 +38,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
 
     let shutdown = process.shutdown_handle();
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            shutdown.request();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
         }
+        shutdown.request();
     });
     process.wait().await?;
     Ok(())

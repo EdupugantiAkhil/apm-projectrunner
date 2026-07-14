@@ -128,55 +128,55 @@ Entry gate: the Phase 1 router engine is stable.
 
 ### Planner and generated Compose
 
-- [ ] Implement minimal YAML schemas for sources, blocks, instances, service groups,
+- [x] Implement minimal YAML schemas for sources, blocks, instances, service groups,
       bindings, routes, lifecycle hooks, and probes.
-- [ ] Validate names, paths, required variables, dependency cycles, listener conflicts,
+- [x] Validate names, paths, required variables, dependency cycles, listener conflicts,
       and missing providers before mutation.
-- [ ] Resolve a deployment into deterministic container, network, volume, DNS, and route
+- [x] Resolve a deployment into deterministic container, network, volume, DNS, and route
       names.
-- [ ] Generate Docker Compose as an internal artifact under `.switchyard/generated`.
-- [ ] Create one private bridge network per deployment.
-- [ ] Add stable ownership labels to every generated Docker resource.
-- [ ] Publish human-facing container ports only on host loopback using dynamically
+- [x] Generate Docker Compose as an internal artifact under `.switchyard/generated`.
+- [x] Create one private bridge network per deployment.
+- [x] Add stable ownership labels to every generated Docker resource.
+- [x] Publish human-facing container ports only on host loopback using dynamically
       allocated ports.
-- [ ] Support image-backed containers and containerized legacy scripts.
-- [ ] Support Process Compose inside an isolated runner container.
+- [x] Support image-backed containers and containerized legacy scripts.
+- [x] Support Process Compose inside an isolated runner container.
 
 ### Sidecar namespace model
 
-- [ ] Generate one router sidecar for each consumer with loopback route slots.
-- [ ] Join the consumer namespace with `network_mode: service:<consumer>`.
-- [ ] Bind the consumer's declared fixed addresses such as `127.0.0.1:8001`.
-- [ ] Resolve provider targets through deterministic private-network DNS aliases.
-- [ ] Confirm that two consumers can independently bind identical localhost ports.
-- [ ] Ensure sidecar readiness gates consumer startup when the application would
+- [x] Generate one router sidecar for each consumer with loopback route slots.
+- [x] Join the consumer namespace with `network_mode: service:<consumer>`.
+- [x] Bind the consumer's declared fixed addresses such as `127.0.0.1:8001`.
+- [x] Resolve provider targets through deterministic private-network DNS aliases.
+- [x] Confirm that two consumers can independently bind identical localhost ports.
+- [x] Ensure sidecar readiness gates consumer startup when the application would
       otherwise race its dependencies.
-- [ ] Reload a sidecar route snapshot without restarting its application container.
+- [x] Reload a sidecar route snapshot without restarting its application container.
 
 ### One-shot CLI
 
-- [ ] Implement `switchyard validate`.
-- [ ] Implement `switchyard plan` with a complete mutation and route preview.
-- [ ] Implement `switchyard up` with build and health progress.
-- [ ] Implement `switchyard bind` with validation and atomic snapshot application.
-- [ ] Implement `switchyard status` and route inspection.
-- [ ] Implement combined and per-instance `switchyard logs`.
-- [ ] Implement `switchyard down` without deleting persistent volumes by default.
-- [ ] Implement explicit destructive cleanup with confirmation and ownership checks.
+- [x] Implement `switchyard validate`.
+- [x] Implement `switchyard plan` with a complete mutation and route preview.
+- [x] Implement `switchyard up` with build and health progress.
+- [x] Implement `switchyard bind` with validation and atomic snapshot application.
+- [x] Implement `switchyard status` and route inspection.
+- [x] Implement combined and per-instance `switchyard logs`.
+- [x] Implement `switchyard down` without deleting persistent volumes by default.
+- [x] Implement explicit destructive cleanup with confirmation and ownership checks.
 
 ### Recovery without SQLite
 
-- [ ] Write a resolved deployment manifest for each apply operation.
-- [ ] Discover running resources from Docker ownership labels.
-- [ ] Detect manifest/runtime drift and report it without silently mutating resources.
-- [ ] Prove stop and cleanup work after the original CLI process exits.
+- [x] Write a resolved deployment manifest for each apply operation.
+- [x] Discover running resources from Docker ownership labels.
+- [x] Detect manifest/runtime drift and report it without silently mutating resources.
+- [x] Prove stop and cleanup work after the original CLI process exits.
 
 ### Phase 2 exit gate
 
-- [ ] Two unchanged backend containers both call the same localhost ports and reach
+- [x] Two unchanged backend containers both call the same localhost ports and reach
       different provider groups.
-- [ ] Switching one backend's five-service group does not restart either backend.
-- [ ] Persistent application data survives `switchyard down` and a later `up`.
+- [x] Switching one backend's five-service group does not restart either backend.
+- [x] Persistent application data survives `switchyard down` and a later `up`.
 
 ## Phase 3 — Native host gateway and browser routing
 
