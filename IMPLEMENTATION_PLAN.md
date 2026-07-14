@@ -73,51 +73,51 @@ Entry gate: Phase 0 is complete.
 
 ### Route compilation and snapshots
 
-- [ ] Parse and validate a complete router configuration.
-- [ ] Compile configuration into an immutable runtime route snapshot.
-- [ ] Atomically replace the active snapshot without exposing partial group updates.
-- [ ] Retain the previous snapshot long enough to apply the configured connection policy.
-- [ ] Reject stale or out-of-order snapshot versions.
-- [ ] Return an acknowledgement containing version, checksum, and activation status.
-- [ ] Add deterministic route matching and precedence tests.
-- [ ] Add concurrent lookup/reload stress tests.
+- [x] Parse and validate a complete router configuration.
+- [x] Compile configuration into an immutable runtime route snapshot.
+- [x] Atomically replace the active snapshot without exposing partial group updates.
+- [x] Retain the previous snapshot long enough to apply the configured connection policy.
+- [x] Reject stale or out-of-order snapshot versions.
+- [x] Return an acknowledgement containing version, checksum, and activation status.
+- [x] Add deterministic route matching and precedence tests.
+- [x] Add concurrent lookup/reload stress tests.
 
 ### HTTP-family data plane
 
-- [ ] Integrate Pingora without exposing Pingora types in the public configuration
+- [x] Integrate Pingora without exposing Pingora types in the public configuration
       contract.
-- [ ] Implement HTTP/1.1 reverse proxying.
-- [ ] Implement HTTP/2 and gRPC proxying.
-- [ ] Implement WebSocket upgrade and long-lived connection proxying.
-- [ ] Preserve required forwarding metadata while removing internal Switchyard headers
+- [x] Implement HTTP/1.1 reverse proxying.
+- [x] Implement HTTP/2 and gRPC proxying.
+- [x] Implement WebSocket upgrade and long-lived connection proxying.
+- [x] Preserve required forwarding metadata while removing internal Switchyard headers
       before provider delivery where configured.
-- [ ] Implement upstream connection timeouts, request limits, and structured errors.
-- [ ] Implement provider readiness and health checks.
-- [ ] Add HTTP, gRPC, WebSocket, and unhealthy-provider integration tests.
+- [x] Implement upstream connection timeouts, request limits, and structured errors.
+- [x] Implement provider readiness and health checks.
+- [x] Add HTTP, gRPC, WebSocket, and unhealthy-provider integration tests.
 
 ### Raw TCP data plane
 
-- [ ] Implement Tokio-based TCP listeners and bidirectional forwarding.
-- [ ] Implement connect, idle, and shutdown timeouts.
-- [ ] Implement close, drain, and pin behavior for existing connections during a route
+- [x] Implement Tokio-based TCP listeners and bidirectional forwarding.
+- [x] Implement connect, idle, and shutdown timeouts.
+- [x] Implement close, drain, and pin behavior for existing connections during a route
       change.
-- [ ] Add TCP reload and long-lived-connection integration tests.
+- [x] Add TCP reload and long-lived-connection integration tests.
 
 ### Router control and inspection
 
-- [ ] Implement a local authenticated administration channel.
-- [ ] Support configuration validate, apply, current-version, routes, health, and drain
+- [x] Implement a local authenticated administration channel.
+- [x] Support configuration validate, apply, current-version, routes, health, and drain
       operations.
-- [ ] Emit structured access, routing-decision, health, reload, and rejection events.
-- [ ] Expose counters for requests, connections, errors, and active snapshot version.
-- [ ] Ensure secrets and sensitive headers are redacted from logs.
-- [ ] Implement graceful process shutdown.
+- [x] Emit structured access, routing-decision, health, reload, and rejection events.
+- [x] Expose counters for requests, connections, errors, and active snapshot version.
+- [x] Ensure secrets and sensitive headers are redacted from logs.
+- [x] Implement graceful process shutdown.
 
 ### Phase 1 exit gate
 
-- [ ] One router process can proxy every supported protocol in automated tests.
-- [ ] Route snapshots switch atomically under concurrent traffic.
-- [ ] Invalid or ambiguous routing input fails closed with an actionable diagnostic.
+- [x] One router process can proxy every supported protocol in automated tests.
+- [x] Route snapshots switch atomically under concurrent traffic.
+- [x] Invalid or ambiguous routing input fails closed with an actionable diagnostic.
 
 ## Phase 2 — Docker runtime and container-local routing
 

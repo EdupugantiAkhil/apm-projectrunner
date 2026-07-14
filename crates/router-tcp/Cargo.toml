@@ -6,5 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[dependencies]
+tokio = { version = "1.45.1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1.45.1", features = ["rt-multi-thread"] }
+
 [lints]
 workspace = true

@@ -160,6 +160,7 @@ impl RouterConfig {
             }
         }
 
+        let mut bound_consumers = BTreeMap::new();
         for (index, binding) in self.spec.bindings.iter().enumerate() {
             let path = format!("spec.bindings[{index}]");
             validate_identifier(
@@ -174,6 +175,17 @@ impl RouterConfig {
                 &format!("{path}.consumer"),
                 &mut errors,
             );
+            if let Some(first) = bound_consumers.insert(binding.consumer.clone(), path.clone()) {
+                errors.push(
+                    ValidationError::new(
+                        ValidationCode::AmbiguousRoute,
+                        &path,
+                        "consumer has more than one selected service group",
+                    )
+                    .context("consumer", binding.consumer.to_string())
+                    .context("first", first),
+                );
+            }
             match groups.get(&binding.group) {
                 None => errors.push(
                     ValidationError::new(
@@ -205,9 +217,25 @@ impl RouterConfig {
             }
         }
 
+        let mut direct_routes = BTreeMap::new();
         for (index, route) in self.spec.routes.iter().enumerate() {
+            let path = format!("spec.routes[{index}]");
+            if let Some(first) =
+                direct_routes.insert((route.consumer.clone(), route.slot.clone()), path.clone())
+            {
+                errors.push(
+                    ValidationError::new(
+                        ValidationCode::AmbiguousRoute,
+                        &path,
+                        "consumer route is declared more than once",
+                    )
+                    .context("consumer", route.consumer.to_string())
+                    .context("slot", route.slot.to_string())
+                    .context("first", first),
+                );
+            }
             validate_provider_reference(
-                &format!("spec.routes[{index}]"),
+                &path,
                 &route.slot,
                 &route.provider,
                 &slots,
@@ -215,9 +243,30 @@ impl RouterConfig {
                 &mut errors,
             );
         }
+        let mut browser_routes = BTreeMap::new();
         for (index, route) in self.spec.browser_routes.iter().enumerate() {
+            let path = format!("spec.browserRoutes[{index}]");
+            let identity = match &route.identity {
+                BrowserIdentity::ExplicitHeader { value } => format!("header:{value}"),
+                BrowserIdentity::Origin { origin } => format!("origin:{origin}"),
+                BrowserIdentity::ProxyListener { listener } => format!("proxy:{listener}"),
+            };
+            if let Some(first) =
+                browser_routes.insert((route.destination.clone(), identity.clone()), path.clone())
+            {
+                errors.push(
+                    ValidationError::new(
+                        ValidationCode::AmbiguousRoute,
+                        &path,
+                        "browser identity route is declared more than once",
+                    )
+                    .context("destination", route.destination.to_string())
+                    .context("identity", identity)
+                    .context("first", first),
+                );
+            }
             validate_provider_reference(
-                &format!("spec.browserRoutes[{index}]"),
+                &path,
                 &route.destination,
                 &route.provider,
                 &slots,
@@ -463,6 +512,7 @@ pub enum ValidationCode {
     MissingRouteSlot,
     IncompatibleProtocol,
     IncompleteGroup,
+    AmbiguousRoute,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

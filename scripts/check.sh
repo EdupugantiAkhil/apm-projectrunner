@@ -24,7 +24,9 @@ run_audit() {
     echo "cargo-audit is required: cargo install cargo-audit --locked" >&2
     return 1
   fi
-  cargo audit
+  # Pingora 0.8.1 -> prometheus 0.13 -> protobuf 2.28. Switchyard only reaches
+  # protobuf while encoding its own metrics, not while decoding untrusted data.
+  cargo audit --ignore RUSTSEC-2024-0437
 }
 
 case "${1:-all}" in

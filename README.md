@@ -50,7 +50,8 @@ old/                     archived experiments; not the current implementation
 Run `./scripts/bootstrap` to check the pinned Rust toolchain, Docker, Compose, and host
 capabilities. Then run all formatting, lint, unit-test, and documentation checks with
 `./scripts/check.sh`. See [docs/development.md](docs/development.md) for supported host
-platforms and individual commands.
+platforms and individual commands. The router binary and authenticated local control
+protocol are documented in [docs/router.md](docs/router.md).
 
 The previous shared-PostgreSQL/Portless demo has moved to
 [`old/shared-database-portless-demo/`](old/shared-database-portless-demo/). Run its npm

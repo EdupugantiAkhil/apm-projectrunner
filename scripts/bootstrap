@@ -30,6 +30,12 @@ else
   fail "Rust is missing; install rustup and run 'rustup toolchain install ${expected_rust}'"
 fi
 
+if command -v cmake >/dev/null 2>&1; then
+  pass "$(cmake --version | head -n 1)"
+else
+  fail "CMake is missing; Pingora's compression dependency requires it during builds"
+fi
+
 host_os="$(uname -s)"
 host_arch="$(uname -m)"
 case "$host_os" in
