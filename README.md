@@ -19,9 +19,9 @@ header, the UI origin, or an isolated browser-profile proxy.
 
 ## Status
 
-Implementation is proceeding from the authoritative specification and constraints in
-[DESIGN.md](DESIGN.md). Progress is tracked as markable phase checklists in
-[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+The Phase 4 routing proof is complete. It demonstrates the full unchanged-application
+topology before the persistent control-plane work begins. Progress is tracked in
+[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) and [PROGRESS.md](PROGRESS.md).
 
 The implementation target is:
 
@@ -56,6 +56,11 @@ proof is documented in
 [examples/routing-matrix/README.md](examples/routing-matrix/README.md).
 Browser tab identity, the unpacked Chromium extension, and managed-profile fallback are
 documented in [docs/browser-routing.md](docs/browser-routing.md).
+
+Run the routing-proof release gate from a clean checkout with
+`./scripts/phase4-proof.sh`; see the
+[routing-matrix guide](examples/routing-matrix/README.md) for its topology, failure
+coverage, and backend-group boundary.
 
 The previous shared-PostgreSQL/Portless demo has moved to
 [`old/shared-database-portless-demo/`](old/shared-database-portless-demo/). Run its npm

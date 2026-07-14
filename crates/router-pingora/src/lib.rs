@@ -510,6 +510,7 @@ impl ShutdownSignalWatch for NotifyShutdown {
 struct RequestContext {
     snapshot: Option<Arc<CompiledSnapshot>>,
     target: Option<RouteTarget>,
+    upstream_address: Option<SocketAddr>,
     cors_origin: Option<String>,
     browser_routed: bool,
     body_bytes: usize,
@@ -770,12 +771,21 @@ impl ProxyHttp for SwitchyardProxy {
         }
         let target = ctx.target.as_ref().expect("route target was just stored");
         if let Some(check) = &target.health_check {
-            if let Err(error) = probe_endpoint(&target.endpoint, check).await {
+            if let Err(error) = probe_safely(target.endpoint.clone(), check.clone()).await {
                 return self
                     .reject(session, ctx, 503, "provider_unhealthy", &error.message)
                     .await;
             }
         }
+        ctx.upstream_address =
+            match resolve_endpoint(&target.endpoint, self.options.connect_timeout).await {
+                Ok(address) => Some(address),
+                Err(error) => {
+                    return self
+                        .reject(session, ctx, 503, "provider_unavailable", &error.message)
+                        .await;
+                }
+            };
         Ok(false)
     }
 
@@ -791,11 +801,13 @@ impl ProxyHttp for SwitchyardProxy {
             )
         })?;
         let tls = matches!(target.endpoint.protocol, Protocol::Https);
-        let mut peer = HttpPeer::new(
-            (&*target.endpoint.host, target.endpoint.port),
-            tls,
-            target.endpoint.host.clone(),
-        );
+        let address = ctx.upstream_address.ok_or_else(|| {
+            Error::explain(
+                ErrorType::InternalError,
+                "resolved upstream address missing after request filter",
+            )
+        })?;
+        let mut peer = HttpPeer::new(address, tls, target.endpoint.host.clone());
         peer.options.connection_timeout = Some(self.options.connect_timeout);
         peer.options.total_connection_timeout = Some(self.options.total_connect_timeout);
         if matches!(target.endpoint.protocol, Protocol::Grpc) {
@@ -1225,9 +1237,9 @@ pub async fn probe_endpoint(
     check: &HealthCheck,
 ) -> Result<(), HealthError> {
     let timeout = Duration::from_millis(check.timeout_ms);
-    let address = format!("{}:{}", endpoint.host, endpoint.port);
+    let address = resolve_endpoint(endpoint, timeout).await?;
     if matches!(check.protocol, HealthCheckProtocol::Tcp) {
-        return tokio::time::timeout(timeout, tokio::net::TcpStream::connect(&address))
+        return tokio::time::timeout(timeout, tokio::net::TcpStream::connect(address))
             .await
             .map_err(|_| health_error("health check timed out"))?
             .map(|_| ())
@@ -1236,7 +1248,7 @@ pub async fn probe_endpoint(
 
     let tls = matches!(check.protocol, HealthCheckProtocol::Https);
     let connector = Connector::new(None);
-    let peer = HttpPeer::new((&*endpoint.host, endpoint.port), tls, endpoint.host.clone());
+    let peer = HttpPeer::new(address, tls, endpoint.host.clone());
     let path = check.path.as_deref().unwrap_or("/");
     tokio::time::timeout(timeout, async {
         let (mut session, _) = connector
@@ -1280,6 +1292,30 @@ fn health_error(message: impl Into<String>) -> HealthError {
     }
 }
 
+async fn resolve_endpoint(
+    endpoint: &UpstreamEndpoint,
+    timeout: Duration,
+) -> Result<SocketAddr, HealthError> {
+    tokio::time::timeout(
+        timeout,
+        tokio::net::lookup_host((endpoint.host.as_str(), endpoint.port)),
+    )
+    .await
+    .map_err(|_| health_error("upstream DNS resolution timed out"))?
+    .map_err(|error| health_error(format!("upstream DNS resolution failed: {error}")))?
+    .next()
+    .ok_or_else(|| health_error("upstream DNS resolution returned no addresses"))
+}
+
+async fn probe_safely(endpoint: UpstreamEndpoint, check: HealthCheck) -> Result<(), HealthError> {
+    match tokio::spawn(async move { probe_endpoint(&endpoint, &check).await }).await {
+        Ok(status) => status,
+        Err(error) => Err(health_error(format!(
+            "health check task failed without affecting the router: {error}"
+        ))),
+    }
+}
+
 /// Probes all health-checked targets in the active snapshot once.
 pub async fn readiness(
     targets: impl IntoIterator<Item = (ComponentId, UpstreamEndpoint, Option<HealthCheck>)>,
@@ -1287,7 +1323,7 @@ pub async fn readiness(
     let mut result = BTreeMap::new();
     for (provider, endpoint, check) in targets {
         let status = match check {
-            Some(check) => probe_endpoint(&endpoint, &check).await,
+            Some(check) => probe_safely(endpoint, check).await,
             None => Ok(()),
         };
         result.insert(provider, status);
@@ -1300,7 +1336,9 @@ mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
 
-    use router_config::{InstanceId, SocketAddress};
+    use router_config::{
+        ComponentId, HealthCheck, HealthCheckProtocol, InstanceId, SocketAddress, UpstreamEndpoint,
+    };
 
     fn listener(destination: ListenerDestination) -> Listener {
         Listener {
@@ -1363,6 +1401,29 @@ mod tests {
                 .collect::<Vec<_>>(),
             [404, 503]
         );
+    }
+
+    #[tokio::test]
+    async fn readiness_reports_unresolvable_upstreams_as_health_failures() {
+        let provider = ComponentId::from("unresolvable");
+        let result = readiness([(
+            provider.clone(),
+            UpstreamEndpoint {
+                protocol: Protocol::Http,
+                host: "missing.invalid".into(),
+                port: 8080,
+            },
+            Some(HealthCheck {
+                protocol: HealthCheckProtocol::Http,
+                path: Some("/health".into()),
+                interval_ms: 1000,
+                timeout_ms: 100,
+            }),
+        )])
+        .await;
+        let _error = result[&provider]
+            .as_ref()
+            .expect_err("unresolvable providers must be unhealthy");
     }
 
     #[cfg(unix)]

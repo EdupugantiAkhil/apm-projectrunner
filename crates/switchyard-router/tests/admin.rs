@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use switchyard_router::{AdminOptions, RouterProcess};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
+    net::{TcpListener, UnixStream},
 };
 
 fn config(version: u64) -> RouterConfig {
@@ -109,4 +109,62 @@ async fn authenticates_inspects_applies_and_drains() {
         .expect("router did not shut down after drain")
         .unwrap();
     assert!(!socket.exists());
+}
+
+#[tokio::test]
+async fn unhealthy_candidate_rolls_back_without_displacing_active_snapshot() {
+    let health = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let unavailable_port = health.local_addr().unwrap().port();
+    drop(health);
+    let socket = std::env::temp_dir().join(format!(
+        "switchyard-router-rollback-{}-{}.sock",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let process = RouterProcess::start(
+        config(1),
+        AdminOptions {
+            socket_path: socket.clone(),
+            token: "test-secret".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let mut candidate = config(2);
+    candidate.spec.providers.push(
+        serde_json::from_value(json!({
+            "id": "unavailable",
+            "endpoint": { "protocol": "http", "host": "127.0.0.1", "port": unavailable_port },
+            "healthCheck": { "protocol": "http", "path": "/health", "intervalMs": 1000, "timeoutMs": 100 }
+        }))
+        .unwrap(),
+    );
+
+    let rejected = request(
+        &socket,
+        json!({"token": "test-secret", "operation": "apply", "config": candidate}),
+    )
+    .await;
+    assert_eq!(rejected["error"]["code"], "provider_unhealthy");
+    assert_eq!(rejected["error"]["status"], "rolled_back");
+    assert_eq!(rejected["error"]["activeVersion"], 1);
+
+    let current = request(
+        &socket,
+        json!({"token": "test-secret", "operation": "current-version"}),
+    )
+    .await;
+    assert_eq!(current["result"]["version"], 1);
+    let events = request(
+        &socket,
+        json!({"token": "test-secret", "operation": "events"}),
+    )
+    .await;
+    assert!(events.to_string().contains("rolled_back"));
+
+    process.request_shutdown();
+    process.wait().await.unwrap();
 }

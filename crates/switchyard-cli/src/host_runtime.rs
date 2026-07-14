@@ -114,6 +114,11 @@ impl<'a> HostRuntime<'a> {
                 }
             }
         }
+        if matches!(status, HostGatewayStatus::Running { .. })
+            && !self.running_config_matches_published_upstreams()?
+        {
+            return Ok(true);
+        }
         Ok(host_token_required(true, &status))
     }
 
@@ -127,7 +132,13 @@ impl<'a> HostRuntime<'a> {
         };
         match status {
             HostGatewayStatus::Running { pid } => {
-                return Ok(HostGatewayStatus::Running { pid });
+                if self.running_config_matches_published_upstreams()? {
+                    return Ok(HostGatewayStatus::Running { pid });
+                }
+                self.stop()?;
+                eprintln!(
+                    "switchyard: refreshing host gateway after published Docker ports changed"
+                );
             }
             HostGatewayStatus::Drifted { detail } => {
                 self.recover_stale_state()?;
@@ -464,6 +475,22 @@ impl<'a> HostRuntime<'a> {
             }
         }
         Ok(())
+    }
+
+    fn running_config_matches_published_upstreams(&self) -> Result<bool, HostRuntimeError> {
+        let Some(encoded) = &self.plan.host_router_config else {
+            return Ok(false);
+        };
+        let paths = self.runtime_paths(false)?;
+        if !require_missing_or_regular(&paths.config, "runtime configuration")? {
+            return Ok(false);
+        }
+        let current: RouterConfig = serde_json::from_slice(&fs::read(&paths.config)?)
+            .map_err(|error| HostRuntimeError::InvalidPlan(error.to_string()))?;
+        let mut desired: RouterConfig = serde_json::from_str(encoded)
+            .map_err(|error| HostRuntimeError::InvalidPlan(error.to_string()))?;
+        self.resolve_published_upstreams(&mut desired)?;
+        Ok(current == desired)
     }
 
     fn published_address(

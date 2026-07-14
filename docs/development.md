@@ -25,6 +25,24 @@ pinned Rust compiler, CMake (required to build Pingora), Docker daemon access, D
 Compose v2, Linux-container mode, and, on native Linux, network namespace availability.
 Follow any reported remediation and rerun it until all checks pass.
 
+## Routing-proof platforms
+
+The Phase 4 release gate supports native Linux `x86_64` and `aarch64`, both using Linux
+containers, Docker Engine, and Compose v2. The dependency-free fixture and Rust router
+build for the host architecture; no architecture-specific image is downloaded. CI runs
+the complete proof on `x86_64`, and the same command is verified on `aarch64` during
+development. macOS, native Windows, and public/LAN exposure remain outside this gate.
+
+Run the clean-checkout release proof with:
+
+```sh
+./scripts/phase4-proof.sh
+```
+
+The command needs unoccupied loopback ports `10081` and `18080`, and Docker access for
+the current user. It refuses an existing ownership-labelled `routing-matrix` deployment
+instead of replacing it.
+
 ## Shared checks
 
 Run the local CI-equivalent checks with:

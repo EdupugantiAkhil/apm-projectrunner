@@ -57,6 +57,7 @@ pub enum DiagnosticCode {
     MissingProvider,
     IncompatibleProtocol,
     IncompleteGroup,
+    BackendGroupInvariant,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -171,6 +172,14 @@ pub fn plan_with_binding(
         .spec
         .bindings
         .insert(consumer.to_owned(), group.to_owned());
+    for route in updated
+        .spec
+        .ui_routes
+        .values_mut()
+        .filter(|route| route.backend == consumer)
+    {
+        route.downstream_group = group.to_owned();
+    }
     plan(&updated)
 }
 
@@ -372,6 +381,7 @@ fn validate(
     let resolved_groups = resolve_groups(&bundle.spec.groups, &mut errors);
     validate_expanded_dependencies(bundle, &instances, &mut errors);
     validate_routes(bundle, &instances, &resolved_groups, &mut errors);
+    validate_ui_routes(bundle, &instances, &resolved_groups, &mut errors);
     for (ui, profile) in &bundle.spec.managed_profiles {
         let path = format!("spec.managedProfiles.{ui}");
         validate_name(ui, &path, &mut errors);
@@ -785,6 +795,136 @@ fn validate_routes(
     }
 }
 
+fn validate_ui_routes(
+    bundle: &Bundle,
+    instances: &BTreeMap<&str, &Instance>,
+    groups: &BTreeMap<String, BTreeMap<String, String>>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let mut backend_requirements = BTreeMap::<&str, (&str, &str)>::new();
+    for (ui, route) in &bundle.spec.ui_routes {
+        let path = format!("spec.uiRoutes.{ui}");
+        validate_name(ui, &path, errors);
+        if !instances.contains_key(ui.as_str()) {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::MissingReference,
+                &path,
+                "UI route names an unknown UI instance",
+            ));
+        }
+        let backend = instances.get(route.backend.as_str());
+        if backend.is_none() {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::MissingReference,
+                format!("{path}.backend"),
+                format!("backend instance {} does not exist", route.backend),
+            ));
+        }
+        if !groups.contains_key(&route.downstream_group) {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::MissingReference,
+                format!("{path}.downstreamGroup"),
+                format!("service group {} does not exist", route.downstream_group),
+            ));
+        }
+
+        if let Some((first_ui, first_group)) =
+            backend_requirements.insert(&route.backend, (ui, &route.downstream_group))
+        {
+            if first_group != route.downstream_group {
+                errors.push(Diagnostic::new(
+                    DiagnosticCode::BackendGroupInvariant,
+                    format!("{path}.downstreamGroup"),
+                    format!(
+                        "UI `{ui}` requests backend `{}` with group `{}`, but UI `{first_ui}` requests the same backend with group `{first_group}`; duplicate the backend instance (the copies may select the same source) because one backend cannot infer per-request downstream context",
+                        route.backend, route.downstream_group
+                    ),
+                ));
+            }
+        }
+
+        if backend.is_some() && groups.contains_key(&route.downstream_group) {
+            match bundle.spec.bindings.get(&route.backend) {
+                Some(selected) if selected == &route.downstream_group => {}
+                Some(selected) => errors.push(Diagnostic::new(
+                    DiagnosticCode::BackendGroupInvariant,
+                    format!("{path}.downstreamGroup"),
+                    format!(
+                        "UI `{ui}` requests backend `{}` with group `{}`, but that backend is bound to `{selected}`; duplicate the backend instance to select a different downstream group",
+                        route.backend, route.downstream_group
+                    ),
+                )),
+                None => errors.push(Diagnostic::new(
+                    DiagnosticCode::BackendGroupInvariant,
+                    format!("{path}.backend"),
+                    format!(
+                        "backend `{}` has no complete downstream group binding",
+                        route.backend
+                    ),
+                )),
+            }
+        }
+
+        validate_ui_host_route(bundle, ui, route, &path, errors);
+    }
+}
+
+fn validate_ui_host_route(
+    bundle: &Bundle,
+    ui: &str,
+    route: &UiRoute,
+    path: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let Some(host_router) = &bundle.spec.host_router else {
+        errors.push(Diagnostic::new(
+            DiagnosticCode::MissingReference,
+            path,
+            "UI routes require spec.hostRouter browser routing",
+        ));
+        return;
+    };
+    let matching = host_router
+        .spec
+        .browser_routes
+        .iter()
+        .filter(|candidate| {
+            matches!(
+                &candidate.identity,
+                router_config::BrowserIdentity::Origin { origin } if origin == &route.origin
+            )
+        })
+        .collect::<Vec<_>>();
+    if matching.len() != 1 {
+        errors.push(Diagnostic::new(
+            DiagnosticCode::MissingReference,
+            format!("{path}.origin"),
+            format!(
+                "UI `{ui}` origin `{}` matches {} host-router browser routes; expected exactly one",
+                route.origin,
+                matching.len()
+            ),
+        ));
+        return;
+    }
+    let provider = matching[0].provider.as_str();
+    let mapped_backend = bundle
+        .spec
+        .host_upstreams
+        .get(provider)
+        .map(|upstream| upstream.instance.as_str());
+    if mapped_backend != Some(route.backend.as_str()) {
+        errors.push(Diagnostic::new(
+            DiagnosticCode::MissingReference,
+            format!("{path}.backend"),
+            format!(
+                "origin `{}` selects host provider `{provider}`, which does not map to backend `{}`",
+                route.origin, route.backend
+            ),
+        ));
+    }
+}
+
 fn validate_expanded_dependencies(
     bundle: &Bundle,
     instances: &BTreeMap<&str, &Instance>,
@@ -933,6 +1073,7 @@ fn generate(
     let mut resource_definition = bundle.clone();
     resource_definition.spec.bindings.clear();
     resource_definition.spec.routes.clear();
+    resource_definition.spec.ui_routes.clear();
     resource_definition.spec.managed_profiles.clear();
     resource_definition.spec.host_router = None;
     resource_definition.spec.host_upstreams.clear();
@@ -1376,6 +1517,7 @@ fn compose_namespace_service(
     json!({
         "image": "alpine:3.22",
         "command": ["sleep", "infinity"],
+        "restart": "unless-stopped",
         "networks": { network: { "aliases": [name] } },
         "labels": labels,
     })
@@ -1393,6 +1535,15 @@ fn compose_application(
     let mut value = serde_json::Map::new();
     value.insert("labels".into(), json!(labels));
     value.insert("networks".into(), json!([network]));
+    if !matches!(
+        &service.execution,
+        Execution::Script {
+            lifecycle: ScriptLifecycle::Task,
+            ..
+        }
+    ) {
+        value.insert("restart".into(), json!("unless-stopped"));
+    }
     match &service.execution {
         Execution::Container {
             image,
@@ -1636,6 +1787,7 @@ fn compose_sidecar(
     json!({
         "image": image,
         "user": "${SWITCHYARD_UID:-1000}:${SWITCHYARD_GID:-1000}",
+        "restart": "unless-stopped",
         "network_mode": format!("service:{namespace_service}"),
         "command": [
             "/usr/local/bin/switchyard-router",

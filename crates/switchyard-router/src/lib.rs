@@ -534,13 +534,72 @@ async fn execute(command: AdminCommand, state: &Arc<ControlState>) -> (bool, Val
         },
         AdminCommand::Apply { config } => {
             let _guard = state.apply_lock.lock().await;
-            if let Err(message) = validate_candidate(state, &config) {
-                rejection(state, "invalid_configuration", "apply");
-                return (
-                    false,
-                    json!({"code": "invalid_configuration", "message": message}),
-                    false,
-                );
+            let candidate = match validate_candidate(state, &config) {
+                Ok(candidate) => candidate,
+                Err(message) => {
+                    rejection(state, "invalid_configuration", "apply");
+                    return (
+                        false,
+                        json!({"code": "invalid_configuration", "message": message}),
+                        false,
+                    );
+                }
+            };
+            let active_version = state.engine.snapshot().version();
+            if candidate.snapshot().version() > active_version {
+                let targets = candidate
+                    .snapshot()
+                    .config()
+                    .spec
+                    .providers
+                    .iter()
+                    .map(|provider| {
+                        (
+                            provider.id.clone(),
+                            provider.endpoint.clone(),
+                            provider.health_check.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let failed = readiness(targets)
+                    .await
+                    .into_iter()
+                    .filter_map(|(provider, result)| {
+                        result
+                            .err()
+                            .map(|error| (provider.to_string(), error.message))
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                if !failed.is_empty() {
+                    let mut fields = BTreeMap::new();
+                    fields.insert("activeVersion".into(), json!(active_version));
+                    fields.insert(
+                        "candidateVersion".into(),
+                        json!(candidate.snapshot().version()),
+                    );
+                    fields.insert("providers".into(), json!(failed));
+                    state.observations.emit(
+                        EventKind::Health,
+                        "candidate_unhealthy",
+                        fields.clone(),
+                    );
+                    state
+                        .observations
+                        .emit(EventKind::Reload, "rolled_back", fields);
+                    rejection(state, "provider_unhealthy", "apply");
+                    return (
+                        false,
+                        json!({
+                            "code": "provider_unhealthy",
+                            "message": "candidate snapshot failed provider readiness; the previous snapshot remains active",
+                            "status": "rolled_back",
+                            "activeVersion": active_version,
+                            "candidateVersion": candidate.snapshot().version(),
+                            "providers": failed,
+                        }),
+                        false,
+                    );
+                }
             }
             match state.engine.apply(config) {
                 Ok(ack) => {

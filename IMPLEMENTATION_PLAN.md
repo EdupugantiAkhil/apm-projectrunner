@@ -17,7 +17,7 @@ work can be marked without rewriting the specification.
 
 ## Release map
 
-- [ ] **Routing proof:** Phases 0–4 demonstrate the zero-application-change topology.
+- [x] **Routing proof:** Phases 0–4 demonstrate the zero-application-change topology.
 - [ ] **Product MVP:** Phases 5–6 add persistent state, APIs, adapters, and the GUI.
 - [ ] **Team release:** Phase 7 adds LAN workflows and production-quality hardening.
 
@@ -240,50 +240,50 @@ Entry gate: Phases 0–3 are complete.
 
 ### Routing-matrix fixture
 
-- [ ] Implement three UI instances from independently selectable sources.
-- [ ] Implement two backend instances from independently selectable sources.
-- [ ] Implement two named groups containing five independently observable services each.
-- [ ] Add at least one provider shared between both groups.
-- [ ] Configure `ui-1 → backend-1 → feature-services`.
-- [ ] Configure `ui-2 → backend-2 → main-services`.
-- [ ] Configure `ui-3 → backend-1 → feature-services`.
-- [ ] Verify custom domains for every UI.
-- [ ] Verify all fixed browser and backend localhost addresses remain unchanged.
+- [x] Implement three UI instances from independently selectable sources.
+- [x] Implement two backend instances from independently selectable sources.
+- [x] Implement two named groups containing five independently observable services each.
+- [x] Add at least one provider shared between both groups.
+- [x] Configure `ui-1 → backend-1 → feature-services`.
+- [x] Configure `ui-2 → backend-2 → main-services`.
+- [x] Configure `ui-3 → backend-1 → feature-services`.
+- [x] Verify custom domains for every UI.
+- [x] Verify all fixed browser and backend localhost addresses remain unchanged.
 
 ### Dynamic switching
 
-- [ ] Switch a UI between backend instances without restarting the UI container.
-- [ ] Switch a backend between complete five-service groups without restarting the
+- [x] Switch a UI between backend instances without restarting the UI container.
+- [x] Switch a backend between complete five-service groups without restarting the
       backend container.
-- [ ] Verify no request observes a partially switched group.
-- [ ] Verify existing connections follow their declared close, drain, or pin policy.
-- [ ] Verify rollback to the previous snapshot after provider health failure.
-- [ ] Record routing decisions and snapshot versions in test output.
+- [x] Verify no request observes a partially switched group.
+- [x] Verify existing connections follow their declared close, drain, or pin policy.
+- [x] Verify rollback to the previous snapshot after provider health failure.
+- [x] Record routing decisions and snapshot versions in test output.
 
 ### Architectural boundary
 
-- [ ] Demonstrate that UIs sharing one backend also share its downstream group.
-- [ ] Demonstrate two backend instances from the same source when UIs require different
+- [x] Demonstrate that UIs sharing one backend also share its downstream group.
+- [x] Demonstrate two backend instances from the same source when UIs require different
       downstream groups.
-- [ ] Document why per-request downstream selection is impossible without application
+- [x] Document why per-request downstream selection is impossible without application
       context propagation.
-- [ ] Fail planning when a requested topology violates this invariant.
+- [x] Fail planning when a requested topology violates this invariant.
 
 ### Failure and lifecycle tests
 
-- [ ] Test provider crash, router crash, application crash, and Docker restart recovery.
-- [ ] Test a failed route apply and confirm the previous snapshot remains active.
-- [ ] Test startup with unavailable dependencies and delayed readiness.
-- [ ] Test clean shutdown with active HTTP, WebSocket, gRPC, and TCP connections.
-- [ ] Test parallel deployments for naming, port, network, and volume isolation.
+- [x] Test provider crash, router crash, application crash, and Docker restart recovery.
+- [x] Test a failed route apply and confirm the previous snapshot remains active.
+- [x] Test startup with unavailable dependencies and delayed readiness.
+- [x] Test clean shutdown with active HTTP, WebSocket, gRPC, and TCP connections.
+- [x] Test parallel deployments for naming, port, network, and volume isolation.
 
 ### Phase 4 exit gate — routing proof release
 
-- [ ] The complete routing-matrix scenario passes from a clean checkout with one
+- [x] The complete routing-matrix scenario passes from a clean checkout with one
       documented command.
-- [ ] The test requires no changes or Switchyard libraries inside fixture applications.
-- [ ] The routing proof is reproducible on every initially supported host platform.
-- [ ] Known limitations and the backend-group invariant are visible in CLI diagnostics
+- [x] The test requires no changes or Switchyard libraries inside fixture applications.
+- [x] The routing proof is reproducible on every initially supported host platform.
+- [x] Known limitations and the backend-group invariant are visible in CLI diagnostics
       and documentation.
 
 ## Phase 5 — Persistent control plane and SQLite state

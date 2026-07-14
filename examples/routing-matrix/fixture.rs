@@ -33,6 +33,32 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     match arguments.as_slice() {
+        [mode, listen] if mode == "ui-configured" => {
+            startup_delay()?;
+            serve(
+                listen,
+                Role::Ui {
+                    ui: required_env("FIXTURE_UI")?,
+                },
+            )
+        }
+        [mode, listen, service] if mode == "provider-configured" => {
+            startup_delay()?;
+            serve(
+                listen,
+                Role::Provider {
+                    service: service.clone(),
+                    provider: required_env("FIXTURE_PROVIDER")?,
+                },
+            )
+        }
+        [mode, listen, state_file] if mode == "backend-configured" => serve(
+            listen,
+            Role::Backend {
+                backend: required_env("FIXTURE_BACKEND")?,
+                counter: Arc::new(Mutex::new(Counter::load(state_file)?)),
+            },
+        ),
         [mode, listen, service, provider] if mode == "provider" => serve(
             listen,
             Role::Provider {
@@ -81,8 +107,24 @@ fn run() -> Result<(), String> {
         [mode] if mode == "hold" => loop {
             thread::park();
         },
-        _ => Err("usage: routing-fixture provider <listen> <service> <provider> | provider-instance <listen> <service> | backend <listen> <backend> <state-file> | backend-instance <listen> <state-file> | probe <address>... | admin-apply <socket> <token> <config> | hold".into()),
+        _ => Err("usage: routing-fixture ui-configured <listen> | provider-configured <listen> <service> | backend-configured <listen> <state-file> | provider <listen> <service> <provider> | provider-instance <listen> <service> | backend <listen> <backend> <state-file> | backend-instance <listen> <state-file> | probe <address>... | admin-apply <socket> <token> <config> | hold".into()),
     }
+}
+
+fn required_env(name: &str) -> Result<String, String> {
+    env::var(name).map_err(|_| format!("{name} must be set"))
+}
+
+fn startup_delay() -> Result<(), String> {
+    let milliseconds = match env::var("FIXTURE_STARTUP_DELAY_MS") {
+        Ok(value) => value
+            .parse::<u64>()
+            .map_err(|error| format!("invalid FIXTURE_STARTUP_DELAY_MS: {error}"))?,
+        Err(env::VarError::NotPresent) => 0,
+        Err(error) => return Err(format!("read FIXTURE_STARTUP_DELAY_MS: {error}")),
+    };
+    thread::sleep(Duration::from_millis(milliseconds));
+    Ok(())
 }
 
 fn admin_apply(socket: &str, token: &str, config: &str) -> Result<(), String> {
@@ -107,6 +149,9 @@ fn admin_apply(socket: &str, token: &str, config: &str) -> Result<(), String> {
 }
 
 enum Role {
+    Ui {
+        ui: String,
+    },
     Provider {
         service: String,
         provider: String,
@@ -120,6 +165,7 @@ enum Role {
 impl Clone for Role {
     fn clone(&self) -> Self {
         match self {
+            Self::Ui { ui } => Self::Ui { ui: ui.clone() },
             Self::Provider { service, provider } => Self::Provider {
                 service: service.clone(),
                 provider: provider.clone(),
@@ -133,7 +179,8 @@ impl Clone for Role {
 }
 
 fn serve(address: &str, role: Role) -> Result<(), String> {
-    let listener = TcpListener::bind(address).map_err(|error| format!("bind {address}: {error}"))?;
+    let listener =
+        TcpListener::bind(address).map_err(|error| format!("bind {address}: {error}"))?;
     for connection in listener.incoming() {
         match connection {
             Ok(stream) => {
@@ -155,7 +202,9 @@ fn handle(mut stream: TcpStream, role: &Role) -> Result<(), String> {
         .set_read_timeout(Some(Duration::from_secs(3)))
         .map_err(|error| error.to_string())?;
     let mut request = [0_u8; 4096];
-    let size = stream.read(&mut request).map_err(|error| error.to_string())?;
+    let size = stream
+        .read(&mut request)
+        .map_err(|error| error.to_string())?;
     let request = String::from_utf8_lossy(&request[..size]);
     let path = request
         .lines()
@@ -163,21 +212,33 @@ fn handle(mut stream: TcpStream, role: &Role) -> Result<(), String> {
         .and_then(|line| line.split_whitespace().nth(1))
         .unwrap_or("/");
 
-    let (status, body) = match path {
-        "/health" => (200, "{\"status\":\"ok\"}".to_owned()),
+    let (status, content_type, body) = match path {
+        "/health" => (200, "application/json", "{\"status\":\"ok\"}".to_owned()),
         "/identity" => match identity(role) {
-            Ok(body) => (200, body),
+            Ok(body) => (200, "application/json", body),
             Err(error) => (
                 502,
+                "application/json",
                 format!("{{\"code\":\"dependency_failed\",\"message\":{}}}", json(&error)),
             ),
         },
-        _ => (404, "{\"code\":\"not_found\"}".to_owned()),
+        "/" if matches!(role, Role::Ui { .. }) => (
+            200,
+            "text/html; charset=utf-8",
+            "<!doctype html><meta charset=\"utf-8\"><title>Routing matrix</title><script>fetch('http://localhost:10081/identity').then(r => r.json()).then(value => document.body.textContent = JSON.stringify(value))</script>".to_owned(),
+        ),
+        _ => (404, "application/json", "{\"code\":\"not_found\"}".to_owned()),
     };
-    let reason = if status == 200 { "OK" } else if status == 404 { "Not Found" } else { "Bad Gateway" };
+    let reason = if status == 200 {
+        "OK"
+    } else if status == 404 {
+        "Not Found"
+    } else {
+        "Bad Gateway"
+    };
     write!(
         stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
     .map_err(|error| error.to_string())
@@ -185,6 +246,10 @@ fn handle(mut stream: TcpStream, role: &Role) -> Result<(), String> {
 
 fn identity(role: &Role) -> Result<String, String> {
     match role {
+        Role::Ui { ui } => Ok(format!(
+            "{{\"ui\":{},\"backendUrl\":\"http://localhost:10081/identity\"}}",
+            json(ui)
+        )),
         Role::Provider { service, provider } => Ok(format!(
             "{{\"service\":{},\"provider\":{}}}",
             json(service),

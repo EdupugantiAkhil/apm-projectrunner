@@ -25,8 +25,12 @@ Every request includes the token:
 Supported operations are `validate`, `apply`, `current-version`, `routes`, `health`,
 `drain`, `counters`, and `events`. `validate` and `apply` include a `config` field.
 Live apply accepts complete, strictly newer snapshots and keeps listener and identity
-configuration fixed; those changes require a process restart. `drain` and `Ctrl-C`
-perform orderly shutdown.
+configuration fixed; those changes require a process restart. Providers with declared
+health checks are probed before activation. If candidate readiness fails, the apply
+returns `provider_unhealthy` with `status: rolled_back`, the previous version remains
+active, and health/reload events record the rejection. DNS failures are resolved before
+Pingora peer construction so an unavailable container cannot panic a data-plane worker.
+`drain` and `Ctrl-C` perform orderly shutdown.
 
 Inspection exposes active snapshot identity, HTTP and TCP data-plane counters, and a
 bounded structured event history. Events never retain request headers or URIs, and
@@ -66,6 +70,22 @@ Compose starts, the CLI accepts exactly one nonzero loopback result from
 `docker compose port` and writes the resolved configuration under
 `.switchyard/run/<deployment>/host-router.json`. Providers with a concrete loopback
 port remain valid for externally managed local processes.
+
+Docker may assign a new ephemeral loopback port when a published container namespace
+is recreated or restarted. A later `switchyard up` compares the running host config to
+current `docker compose port` observations and safely refreshes the owned gateway when
+they differ.
+
+## Backend-group invariant
+
+One backend instance owns one consumer network namespace and one complete downstream
+group. UIs may share that backend only when they also share its selected group. Without
+application-level context propagation, the backend cannot associate an outbound fixed
+localhost connection with the inbound UI request that caused it. If two UIs need the
+same backend source with different groups, declare two backend instances from that
+source. The planner's `uiRoutes` cross-check emits `BackendGroupInvariant` before any
+mutation when this rule is violated; `switchyard bind` updates every attached UI's
+recorded group expectation together with the backend binding.
 
 An HTTPS listener uses its `tls.certificate` and `tls.privateKey` paths. Missing pairs
 are generated as 90-day self-signed identities, the key is mode `0600`, and identities

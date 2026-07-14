@@ -1,8 +1,8 @@
 use std::{fs, path::Path};
 
 use switchyard_planner::{
-    DiagnosticCode, ManagedProfile, PublishedUpstream, load_bundle, plan, plan_with_binding,
-    write_plan,
+    DiagnosticCode, ManagedProfile, PublishedUpstream, UiRoute, load_bundle, plan,
+    plan_with_binding, write_plan,
 };
 
 fn bundle() -> switchyard_planner::Bundle {
@@ -72,6 +72,104 @@ fn binding_changes_routes_without_changing_resources() {
     assert_eq!(base.resource_hash, changed.resource_hash);
     assert_ne!(base.definition_hash, changed.definition_hash);
     assert_eq!(base.compose_yaml, changed.compose_yaml);
+    let resolved: serde_json::Value =
+        serde_yaml::from_str(&changed.resolved_deployment_yaml).unwrap();
+    assert_eq!(resolved["spec"]["bindings"]["consumer-a"], "feature");
+}
+
+#[test]
+fn backend_group_invariant_requires_duplicate_instances_for_different_groups() {
+    let mut bundle = bundle();
+    bundle
+        .spec
+        .blocks
+        .get_mut("consumer")
+        .unwrap()
+        .services
+        .get_mut("api")
+        .unwrap()
+        .publish = vec![3000];
+    bundle.spec.host_router = Some(
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "switchyard.dev/router/v1alpha1",
+            "kind": "RouterConfiguration",
+            "metadata": { "deployment": "comparison" },
+            "spec": {
+                "snapshot": {
+                    "id": "host-topology", "version": 1,
+                    "transitions": {
+                        "http": { "strategy": "close" }, "https": { "strategy": "close" },
+                        "websocket": { "strategy": "pin" }, "grpc": { "strategy": "drain", "timeoutMs": 1000 },
+                        "tcp": { "strategy": "close" }
+                    }
+                },
+                "listeners": [{
+                    "bind": { "host": "127.0.0.1", "port": 10081 }, "protocol": "http",
+                    "destinations": [{ "kind": "legacy_localhost", "slot": "backend", "host": "localhost" }]
+                }],
+                "providers": [
+                    { "id": "backend-a", "endpoint": { "protocol": "http", "host": "127.0.0.1", "port": 0 } },
+                    { "id": "backend-b", "endpoint": { "protocol": "http", "host": "127.0.0.1", "port": 0 } }
+                ],
+                "groups": [], "bindings": [], "routes": [],
+                "browserRoutes": [
+                    { "identity": { "source": "origin", "origin": "http://ui-a.localhost" }, "destination": "backend", "provider": "backend-a" },
+                    { "identity": { "source": "origin", "origin": "http://ui-b.localhost" }, "destination": "backend", "provider": "backend-b" }
+                ],
+                "identity": { "explicitHeader": "X-Switchyard-Route", "stripBeforeForwarding": true }
+            }
+        }))
+        .unwrap(),
+    );
+    bundle.spec.host_upstreams.insert(
+        "backend-a".into(),
+        PublishedUpstream {
+            instance: "consumer-a".into(),
+            service: "api".into(),
+            port: 3000,
+        },
+    );
+    bundle.spec.host_upstreams.insert(
+        "backend-b".into(),
+        PublishedUpstream {
+            instance: "consumer-b".into(),
+            service: "api".into(),
+            port: 3000,
+        },
+    );
+    bundle.spec.ui_routes.insert(
+        "provider-main".into(),
+        UiRoute {
+            origin: "http://ui-a.localhost".into(),
+            backend: "consumer-a".into(),
+            downstream_group: "base".into(),
+        },
+    );
+    bundle.spec.ui_routes.insert(
+        "suite-main".into(),
+        UiRoute {
+            origin: "http://ui-b.localhost".into(),
+            backend: "consumer-b".into(),
+            downstream_group: "feature".into(),
+        },
+    );
+
+    plan(&bundle).expect("two backend instances from one source may select different groups");
+
+    bundle.spec.ui_routes.get_mut("suite-main").unwrap().backend = "consumer-a".into();
+    bundle
+        .spec
+        .host_upstreams
+        .get_mut("backend-b")
+        .unwrap()
+        .instance = "consumer-a".into();
+    let errors = plan(&bundle).expect_err("one backend cannot satisfy two group requirements");
+    let invariant = errors
+        .iter()
+        .find(|error| error.code == DiagnosticCode::BackendGroupInvariant)
+        .expect("invariant diagnostic should be explicit");
+    assert!(invariant.message.contains("duplicate the backend instance"));
+    assert!(invariant.message.contains("per-request downstream context"));
 }
 
 #[test]
@@ -309,4 +407,40 @@ fn generated_route_configuration_matches_router_contract() {
 fn fixture_file_does_not_need_generated_state() {
     let yaml = fs::read_to_string("tests/fixtures/deployment.yaml").expect("fixture is readable");
     assert!(!yaml.contains(".switchyard/generated"));
+}
+
+#[test]
+fn parallel_deployments_have_disjoint_names_and_dynamic_loopback_ports() {
+    let first = plan(&bundle()).unwrap();
+    let mut second_bundle = bundle();
+    second_bundle.metadata.name = "comparison-two".into();
+    let second = plan(&second_bundle).unwrap();
+    assert_ne!(first.compose_project, second.compose_project);
+    assert!(!first.compose_yaml.contains("comparison-two"));
+    assert!(!second.compose_yaml.contains("sy-comparison-private"));
+    assert!(first.compose_yaml.contains("127.0.0.1::8080"));
+    assert!(second.compose_yaml.contains("127.0.0.1::8080"));
+
+    let first_manifest: serde_json::Value = serde_json::from_str(&first.manifest_json).unwrap();
+    let second_manifest: serde_json::Value = serde_json::from_str(&second.manifest_json).unwrap();
+    assert_ne!(first_manifest["network"], second_manifest["network"]);
+    assert_ne!(
+        first_manifest["ownershipLabels"],
+        second_manifest["ownershipLabels"]
+    );
+    let first_compose: serde_json::Value = serde_yaml::from_str(&first.compose_yaml).unwrap();
+    let second_compose: serde_json::Value = serde_yaml::from_str(&second.compose_yaml).unwrap();
+    let first_volumes = first_compose["volumes"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|volume| volume["name"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    let second_volumes = second_compose["volumes"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|volume| volume["name"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(first_volumes.is_disjoint(&second_volumes));
 }

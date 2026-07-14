@@ -15,7 +15,7 @@ RUN --mount=type=cache,id=switchyard-cargo-registry,target=/usr/local/cargo/regi
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates libssl3 \
+    && apt-get install --yes --no-install-recommends ca-certificates libssl3 wget \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /tmp/switchyard-router /usr/local/bin/switchyard-router
 COPY --from=build /tmp/routing-fixture /usr/local/bin/routing-fixture
