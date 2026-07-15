@@ -18,8 +18,9 @@ work can be marked without rewriting the specification.
 ## Release map
 
 - [x] **Routing proof:** Phases 0–4 demonstrate the zero-application-change topology.
-- [ ] **Product MVP:** Phase 5 persistent control plane is complete; Phase 6 adapters
-      and GUI are not started.
+- [x] **Product MVP:** Phases 5–6 are complete: persistent control plane, adapter SDK,
+      source/worktree management, overlays, schema-driven GUI, and the generic
+      legacy-workspace fixture.
 - [ ] **Team release:** Phase 7 adds LAN workflows and production-quality hardening.
 
 ## Phase 0 — Repository and contract foundation
@@ -384,12 +385,17 @@ Entry gate: the persistent control plane is complete.
 
 ### Phase 6 exit gate — product MVP release
 
-- [ ] All MVP acceptance criteria in `DESIGN.md` are checked against automated or
+- [x] All MVP acceptance criteria in `DESIGN.md` are checked against automated or
       documented manual tests.
-- [ ] Common deployments can be created, inspected, switched, and stopped from both CLI
+      - `docs/mvp-acceptance.md` maps all 21 criteria to named tests, smoke
+        assertions, or explicit manual procedures; criteria 1, 3, 7, 14, and 18
+        retain documented manual procedures for their non-automated portions.
+- [x] Common deployments can be created, inspected, switched, and stopped from both CLI
       and GUI.
-- [ ] Database data persists unless the user explicitly requests destructive cleanup.
-- [ ] Upgrade and recovery procedures are documented and tested.
+- [x] Database data persists unless the user explicitly requests destructive cleanup.
+- [x] Upgrade and recovery procedures are documented and tested.
+      - `docs/upgrade-recovery.md`; `scripts/phase6-proof.sh` is the one-command
+        Phase 6 check.
 
 ## Phase 7 — LAN, team workflows, and hardening
 

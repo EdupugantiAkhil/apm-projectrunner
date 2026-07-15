@@ -62,7 +62,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
       void loadDeployments()
     }).catch(report)
   }
-  const runCommand = async (kind: 'validate' | 'plan' | 'status' | 'logs' | 'apply' | 'down' | 'cleanup', target?: string) => {
+  const runCommand = async (kind: 'validate' | 'plan' | 'status' | 'logs' | 'open' | 'apply' | 'down' | 'cleanup', target?: string) => {
     if (!selected) return
     if (kind === 'apply' && Object.values(detail?.sourceIdentities ?? {}).some((identity) => identity.dirty) && !window.confirm('One or more source worktrees are modified. Continue with Up?')) {
       setNotice('up cancelled: modified worktrees were not acknowledged')
@@ -73,7 +73,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
       if (typed !== selected) { setNotice(`${kind} cancelled: confirmation did not match`); return }
     }
     const bundle = `.switchyard/generated/${selected}/resolved-deployment.yaml`
-    try { observe(await client.command(kind, bundle, { ...(kind === 'cleanup' ? { confirmed: true } : {}), ...(kind === 'logs' && target ? { target } : {}) })); setView('operations') } catch (value) { report(value) }
+    try { observe(await client.command(kind, bundle, { ...(kind === 'cleanup' ? { confirmed: true } : {}), ...(kind === 'logs' && target ? { target } : {}), ...(kind === 'open' && target ? { ui: target } : {}) })); setView('operations') } catch (value) { report(value) }
   }
   const navKeys = (event: KeyboardEvent<HTMLElement>) => {
     if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return
@@ -125,12 +125,12 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
   </div>
 }
 
-function DeploymentView({ client, detail, routes, onCommand, observe, refresh, report }: { client: ApiClient; detail: DeploymentDetail | null; routes: RouteState | null; onCommand: (kind: 'validate' | 'plan' | 'status' | 'logs' | 'apply' | 'down' | 'cleanup', target?: string) => void; observe: (operation: Operation) => void; refresh: () => Promise<void>; report: (error: unknown) => void }) {
+function DeploymentView({ client, detail, routes, onCommand, observe, refresh, report }: { client: ApiClient; detail: DeploymentDetail | null; routes: RouteState | null; onCommand: (kind: 'validate' | 'plan' | 'status' | 'logs' | 'open' | 'apply' | 'down' | 'cleanup', target?: string) => void; observe: (operation: Operation) => void; refresh: () => Promise<void>; report: (error: unknown) => void }) {
   if (!detail) return <section><h1>Deployments</h1><p>No applied deployment selected.</p></section>
   const instances = detail.snapshot?.spec?.instances ?? Object.keys(detail.sourceIdentities).map((name) => ({ name }))
   return <section><div className="title-row"><div><p className="eyebrow">Deployment</p><h1>{detail.deployment}</h1></div><span className="state-label">● {detail.reconciliation.diagnostics.length ? 'Needs attention' : 'Reconciled'}</span></div>
     <div className="command-bar" aria-label="Deployment commands"><button onClick={() => onCommand('validate')}>Validate</button><button onClick={() => onCommand('plan')}>Plan</button><button onClick={() => onCommand('status')}>Status</button><button onClick={() => onCommand('logs')}>Logs</button><button className="primary" onClick={() => onCommand('apply')}>Up</button><button className="danger" onClick={() => onCommand('down')}>Down</button><button className="danger" onClick={() => onCommand('cleanup')}>Cleanup</button></div>
-    <h2>Instances</h2><div className="instance-grid">{instances.map((instance) => { const identity = detail.sourceIdentities[instance.name]; const resource = detail.resources.find((item) => item.labels['dev.switchyard.instance'] === instance.name || item.name.includes(instance.name)); return <article className="instance-card" key={instance.name}><header><h3>{instance.name}</h3><span>{resource?.state ?? 'state unknown'}</span><button aria-label={`Logs for ${instance.name}`} onClick={() => onCommand('logs', instance.name)}>Logs</button></header>{identity ? <dl><dt>Path</dt><dd className="mono">{identity.path}</dd><dt>Ref</dt><dd className="mono">{identity.ref ?? 'detached'}</dd><dt>Commit</dt><dd className="mono">{short(identity.commit)} {identity.dirty ? <span className="dirty">● modified</span> : 'clean'}</dd></dl> : <p>Source identity unavailable</p>}</article> })}</div>
+    <h2>Instances</h2><div className="instance-grid">{instances.map((instance) => { const identity = detail.sourceIdentities[instance.name]; const resource = detail.resources.find((item) => item.labels['dev.switchyard.instance'] === instance.name || item.name.includes(instance.name)); return <article className="instance-card" key={instance.name}><header><h3>{instance.name}</h3><span>{resource?.state ?? 'state unknown'}</span><button aria-label={`Logs for ${instance.name}`} onClick={() => onCommand('logs', instance.name)}>Logs</button>{detail.snapshot?.spec?.managedProfiles?.[instance.name] && <button aria-label={`Open ${instance.name} in a managed browser profile`} onClick={() => onCommand('open', instance.name)}>Open</button>}</header>{identity ? <dl><dt>Path</dt><dd className="mono">{identity.path}</dd><dt>Ref</dt><dd className="mono">{identity.ref ?? 'detached'}</dd><dt>Commit</dt><dd className="mono">{short(identity.commit)} {identity.dirty ? <span className="dirty">● modified</span> : 'clean'}</dd></dl> : <p>Source identity unavailable</p>}</article> })}</div>
     <DeploymentWorkspace client={client} detail={detail} routes={routes} onOperation={observe} refresh={refresh} report={report} />
     <h2>Active routes</h2>{routes?.bindings.length ? <table><thead><tr><th>Consumer</th><th>Router</th><th>Version</th><th>Status</th></tr></thead><tbody>{routes.bindings.map((route) => <tr key={`${route.router}-${route.binding}`}><td className="mono">{route.binding}</td><td className="mono">{route.router}</td><td className="mono">v{route.currentVersion ?? route.desiredVersion ?? '—'}</td><td>{route.status}{route.lastErrorCode ? ` · ${route.lastErrorCode}` : ''}</td></tr>)}</tbody></table> : <p className="muted">No active route versions recorded.</p>}
     <RoutingEditor client={client} deployment={detail.deployment} onSaved={refresh} onOperation={observe} report={report} />

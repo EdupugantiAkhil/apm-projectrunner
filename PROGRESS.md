@@ -5,8 +5,7 @@ Updated: 2026-07-15
 ## Release status
 
 - Routing proof (Phases 0–4): complete.
-- Product MVP (Phases 5–6): Phase 5 complete; Phase 6 adapter SDK complete, remaining
-  Phase 6 sections in progress.
+- Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): not started.
 
 `IMPLEMENTATION_PLAN.md` remains the task-level checklist. This file records the
@@ -394,3 +393,38 @@ implemented shape and the evidence used to close a phase.
   task-based schema initialization, live AI-group switch without restarting the Java
   stand-in, source identity in status, database volume persistence across down/up,
   and zero owned resources after cleanup with the workspace git status unchanged.
+
+### Phase 6 exit gate (Part 6)
+
+- `docs/mvp-acceptance.md` audits every DESIGN.md §14 criterion (1–21) against named
+  Rust tests, Vitest tests, and smoke-script assertions, deliberately distinguishing
+  complete automation from partial automation; criteria 1, 3, 7, 14, and 18 carry
+  documented manual procedures for their remaining manual portions. The CLI/API/GUI
+  parity matrix covers every common operation; the two gaps it found were closed
+  during review: `switchyard operation cancel <id>` (daemon-backed arbitrary
+  operation cancellation from the CLI) and an instance-card **Open** button for
+  managed-profile instances in the GUI.
+- `docs/upgrade-recovery.md` documents test-backed upgrade (ordered migrations,
+  pre-migration backups, newer-schema refusal, backup-based downgrade) and recovery
+  procedures (daemon restart, deleted/restored SQLite, drift review, data-safety
+  guarantees), each referencing the proving test by name.
+- `scripts/phase6-proof.sh` is the one-command Phase 6 check: `scripts/check.sh`
+  (fmt, workspace tests, clippy `-D warnings`, rustdoc `-D warnings`), a clean GUI
+  `npm ci`/build/test, and the live `examples/jas-base/smoke.sh`.
+- Honest residual limits recorded in the audit: browser routing is live-proven with
+  Origin-bearing requests rather than a driven browser; Docker-label recovery by a
+  restarted real daemon and Docker Engine restarts remain integration boundaries;
+  concurrent variation execution is proven at planning level with a manual live
+  procedure; the lifecycle-hooks execution gap is tracked as Phase 7 work.
+
+## Phase 6 verification
+
+- `./scripts/phase6-proof.sh`: PASSED on this host (Linux aarch64, Docker Engine
+  29.4.0, Compose 5.1.2, Node 24): workspace formatting, full workspace tests,
+  clippy `-D warnings`, rustdoc `-D warnings`, GUI clean install/build and 12 Vitest
+  tests, and the complete live jas-base smoke (topology, worktree sources, live group
+  switching, task initialization, volume persistence, ownership-scoped cleanup).
+- `cargo test -p switchyard-cli --all-features`: passed (35 unit tests including the
+  new `parses_operation_cancel`, plus the daemon-parity integration test).
+- Earlier per-part verification is recorded in the Part 1–5 sections above; the
+  routing proof remains covered by `scripts/phase4-proof.sh`.

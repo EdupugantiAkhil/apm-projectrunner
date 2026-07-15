@@ -204,6 +204,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         | CliCommand::DaemonRun
         | CliCommand::DaemonStatus
         | CliCommand::DaemonStop
+        | CliCommand::OperationCancel { .. }
         | CliCommand::Gui
         | CliCommand::SourceList { .. }
         | CliCommand::SourceRegister { .. }
@@ -493,6 +494,20 @@ fn handle_daemon_command(
             }
             Ok(Some(ExitCode::SUCCESS))
         }
+        CliCommand::OperationCancel { id } => {
+            match switchyard_daemon::client::cancel_operation(workspace_root, id)? {
+                Some(operation) => println!(
+                    "operation {} ({}) is now {:?}",
+                    operation.id,
+                    operation.kind.segment(),
+                    operation.status
+                ),
+                None => println!(
+                    "daemon not running; operations only exist while the daemon is running"
+                ),
+            }
+            Ok(Some(ExitCode::SUCCESS))
+        }
         CliCommand::DaemonStop => {
             if switchyard_daemon::client::daemon_stop(workspace_root)? {
                 println!("daemon stop requested");
@@ -609,6 +624,7 @@ fn daemon_request(
         | CliCommand::DaemonRun
         | CliCommand::DaemonStatus
         | CliCommand::DaemonStop
+        | CliCommand::OperationCancel { .. }
         | CliCommand::Gui
         | CliCommand::SourceList { .. }
         | CliCommand::SourceRegister { .. }

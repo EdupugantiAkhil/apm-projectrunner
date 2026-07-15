@@ -53,6 +53,9 @@ pub enum CliCommand {
     DaemonRun,
     DaemonStatus,
     DaemonStop,
+    OperationCancel {
+        id: String,
+    },
     Gui,
     SourceList {
         json: bool,
@@ -119,6 +122,7 @@ Usage:
   switchyard daemon run
   switchyard daemon status
   switchyard daemon stop
+  switchyard operation cancel <operation-id>
   switchyard gui
   switchyard source list [--json]
   switchyard source register <name> <path>
@@ -199,6 +203,9 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
         "cleanup" if rest.len() == 2 && rest[1] == "--yes" => Ok(CliCommand::Cleanup {
             bundle: bundle()?,
             confirmed: true,
+        }),
+        "operation" if rest.len() == 2 && rest[0] == "cancel" => Ok(CliCommand::OperationCancel {
+            id: rest[1].clone(),
         }),
         "daemon" if rest == ["run"] => Ok(CliCommand::DaemonRun),
         "daemon" if rest == ["status"] => Ok(CliCommand::DaemonStatus),
@@ -452,6 +459,16 @@ mod tests {
                 allow_dirty: true
             }
         );
+    }
+
+    #[test]
+    fn parses_operation_cancel() {
+        assert_eq!(
+            parse(args(&["operation", "cancel", "op-42"])).unwrap(),
+            CliCommand::OperationCancel { id: "op-42".into() }
+        );
+        assert!(parse(args(&["operation", "cancel"])).is_err());
+        assert!(parse(args(&["operation", "cancel", "op-42", "extra"])).is_err());
     }
 
     #[test]

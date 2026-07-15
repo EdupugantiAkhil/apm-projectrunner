@@ -48,6 +48,18 @@ The command needs unoccupied loopback ports `10081` and `18080`, and Docker acce
 the current user. It refuses an existing ownership-labelled `routing-matrix` deployment
 instead of replacing it.
 
+Run the Phase 6 product-MVP proof from a clean checkout with:
+
+```sh
+./scripts/phase6-proof.sh
+```
+
+This command requires Rust, Node.js with npm, Docker Engine, and Docker Compose v2. It
+runs workspace formatting, tests, Clippy and rustdoc with warnings denied; performs a
+clean GUI dependency install followed by its build and tests; and runs the live JAS
+fixture smoke. `examples/routing-matrix/smoke.sh` remains the standalone routing-proof
+command.
+
 ## Shared checks
 
 Run the local CI-equivalent checks with:

@@ -24,6 +24,20 @@ pub fn sources(project_root: &Path) -> Result<Option<Vec<SourceV1>>, ClientError
     json_request::<(), _>(&discovery, "GET", "/api/v1/sources", None).map(Some)
 }
 
+/// Cancels a running operation by identifier through a discovered daemon.
+pub fn cancel_operation(project_root: &Path, id: &str) -> Result<Option<OperationV1>, ClientError> {
+    let Some(discovery) = load_discovery(project_root)? else {
+        return Ok(None);
+    };
+    json_request::<(), _>(
+        &discovery,
+        "POST",
+        &format!("/api/v1/operations/{id}/cancel"),
+        None,
+    )
+    .map(Some)
+}
+
 /// Registers an unmanaged source through a discovered daemon.
 pub fn register_source(
     project_root: &Path,
