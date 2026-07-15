@@ -21,7 +21,8 @@ run_doc() {
 
 run_audit() {
   if ! cargo audit --version >/dev/null 2>&1; then
-    echo "cargo-audit is required: cargo install cargo-audit --locked" >&2
+    # cargo-audit 0.22.2+ requires rustc 1.88; this workspace pins 1.85.
+    echo "cargo-audit is required: cargo install cargo-audit --locked --version 0.22.1" >&2
     return 1
   fi
   # Pingora 0.8.1 -> prometheus 0.13 -> protobuf 2.28. Switchyard only reaches

@@ -448,7 +448,9 @@ implemented shape and the evidence used to close a phase.
   deployment name before deriving the definition path (the GET already did),
   closing a percent-encoded traversal-shaped read; covered by a new 404 assertion in
   `definition_absence_and_validation_failures_have_stable_structured_errors`.
-- Note for test runs: the daemon test suite's startup reconciliation observes real
-  Docker labels, so running it concurrently with a live smoke script can leak that
-  smoke's deployments into `deployment_and_adapter_endpoints_are_authenticated_and_
-  shape_empty_state`; run them sequentially.
+- Follow-up review fixes: `api_for_tests` now prepares the daemon with empty runtime
+  observations (production `start_with_backend` still observes Docker), so the daemon
+  test suite is hermetic against Switchyard-labeled resources on the host — proven by
+  rerunning the empty-state test with a live decoy-labeled container. `check.sh audit`
+  now names the toolchain-compatible install (`cargo install cargo-audit --locked
+  --version 0.22.1`; 0.22.2+ needs rustc 1.88, the workspace pins 1.85).

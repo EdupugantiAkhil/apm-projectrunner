@@ -1065,7 +1065,11 @@ pub async fn start_with_backend(
             "a daemon discovered for this project is already listening".into(),
         ));
     }
-    let prepared = prepare(config.clone(), backend)?;
+    let prepared = prepare(
+        config.clone(),
+        backend,
+        observe_docker().unwrap_or_default(),
+    )?;
     let Prepared {
         inner,
         token,
@@ -1125,6 +1129,7 @@ struct Prepared {
 fn prepare(
     config: DaemonConfig,
     backend: Arc<dyn OperationBackend>,
+    resources: Vec<switchyard_state::OwnedResourceObservation>,
 ) -> Result<Prepared, DaemonError> {
     if !config.bind.ip().is_loopback() {
         return Err(DaemonError::InvalidConfiguration(
@@ -1142,7 +1147,6 @@ fn prepare(
     let now = now_millis();
     store.recover_abandoned_operations(now)?;
     let manifests = GeneratedManifest::load_generated(&state_dir.join("generated"))?;
-    let resources = observe_docker().unwrap_or_default();
     let reconciliation = store.reconcile(
         &ReconciliationInput {
             manifests,
@@ -1176,12 +1180,15 @@ fn prepare(
 }
 
 /// In-memory API instance for transport-independent tests in socket-restricted environments.
+///
+/// Startup reconciliation sees no runtime resources: tests stay hermetic even when a
+/// real Docker Engine with Switchyard-labeled resources is present on the host.
 #[doc(hidden)]
 pub fn api_for_tests(
     config: DaemonConfig,
     backend: Arc<dyn OperationBackend>,
 ) -> Result<(Router, String, ReconciliationReport), DaemonError> {
-    let prepared = prepare(config, backend)?;
+    let prepared = prepare(config, backend, Vec::new())?;
     Ok((
         routes(prepared.inner),
         prepared.token,
@@ -3233,7 +3240,7 @@ mod tests {
             }
         }
         assert!(matches!(
-            prepare(config, Arc::new(Unused)),
+            prepare(config, Arc::new(Unused), Vec::new()),
             Err(DaemonError::InvalidConfiguration(_))
         ));
     }
