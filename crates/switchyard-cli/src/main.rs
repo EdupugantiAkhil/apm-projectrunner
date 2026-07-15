@@ -5,6 +5,7 @@ mod cli;
 mod host_runtime;
 mod lan_preflight;
 mod runtime;
+mod tailscale_publication;
 
 use std::{
     env, fmt, fs, io,
@@ -113,6 +114,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             println!("host gateway: {host}");
             let mdns = lan_preflight::LanRuntime::new(&workspace_root, &plan).start()?;
             print_mdns_status(&mdns);
+            let tailscale =
+                tailscale_publication::TailscaleRuntime::new(&workspace_root, &plan).start()?;
+            print_tailscale_status(&tailscale);
             println!("deployment `{}` is healthy", plan.deployment);
         }
         CliCommand::Bind {
@@ -140,6 +144,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 host_runtime::HostRuntime::new(&workspace_root, &plan).status()?
             );
             print_mdns_status(&lan_preflight::LanRuntime::new(&workspace_root, &plan).status()?);
+            print_tailscale_status(
+                &tailscale_publication::TailscaleRuntime::new(&workspace_root, &plan).status()?,
+            );
             print_source_identities(&plan);
             if routes {
                 print_routes(&workspace_root, &plan)?;
@@ -233,6 +240,34 @@ fn print_mdns_status(status: &lan_preflight::MdnsStatus) {
     for check in &status.checks {
         println!(
             "LAN check [{}] {}: {}",
+            check.outcome, check.name, check.detail
+        );
+    }
+}
+
+fn print_tailscale_status(status: &tailscale_publication::TailscaleStatus) {
+    if !status.configured {
+        println!("tailnet publication: not configured");
+        return;
+    }
+    if let Some(record) = &status.record {
+        println!(
+            "tailnet publication: {} via {} on ports {}",
+            record.names.join(", "),
+            record.addresses.join(", "),
+            record
+                .ports
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    } else {
+        println!("tailnet publication: unavailable");
+    }
+    for check in &status.checks {
+        println!(
+            "tailnet check [{}] {}: {}",
             check.outcome, check.name, check.detail
         );
     }

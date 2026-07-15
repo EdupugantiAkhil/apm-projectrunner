@@ -2779,6 +2779,8 @@ dependencies = [
  "router-config",
  "serde",
  "serde_json",
+ "switchyard-adapter-sdk",
+ "switchyard-adapters",
  "switchyard-daemon",
  "switchyard-planner",
  "switchyard-router-admin",

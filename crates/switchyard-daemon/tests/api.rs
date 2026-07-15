@@ -677,6 +677,34 @@ async fn deployment_list_and_detail_include_applied_manifest_and_reconciliation(
         fs::Permissions::from_mode(0o600),
     )
     .unwrap();
+    fs::write(
+        temp.path()
+            .join(".switchyard/run/demo/tailscale-publication.json"),
+        serde_json::to_vec(&json!({
+            "apiVersion": "switchyard.dev/tailscale-publication/v1alpha1",
+            "deployment": "demo",
+            "definitionHash": "definition-1",
+            "record": {
+                "scope": "tailnet",
+                "names": ["demo.example.ts.net"],
+                "addresses": ["100.64.0.1"],
+                "ports": [8001],
+                "checks": [{
+                    "name": "gateway-exposure",
+                    "outcome": "pass",
+                    "detail": "gateway is exposed on 100.64.0.1"
+                }]
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::set_permissions(
+        temp.path()
+            .join(".switchyard/run/demo/tailscale-publication.json"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
     drop(store);
     let api = start_api(&temp, Arc::new(ImmediateBackend), 1);
 
@@ -711,6 +739,10 @@ async fn deployment_list_and_detail_include_applied_manifest_and_reconciliation(
         list["deployments"][0]["mdnsPublication"]["publications"][0]["status"],
         "published"
     );
+    assert_eq!(
+        list["deployments"][0]["tailscalePublication"]["names"][0],
+        "demo.example.ts.net"
+    );
 
     let (status, body) = request(
         &api,
@@ -736,6 +768,10 @@ async fn deployment_list_and_detail_include_applied_manifest_and_reconciliation(
     assert_eq!(
         detail["mdnsPublication"],
         list["deployments"][0]["mdnsPublication"]
+    );
+    assert_eq!(
+        detail["tailscalePublication"],
+        list["deployments"][0]["tailscalePublication"]
     );
 
     let (status, _) = request(

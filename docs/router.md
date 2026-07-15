@@ -67,6 +67,7 @@ hostRouter:
     exposure:
       mode: lan
       acknowledgeLanExposureRisk: true
+      publishTailscale: true # optional advisory tailnet publication
     listeners:
       - bind: { host: 0.0.0.0, port: 18080 }
         protocol: http
@@ -131,6 +132,31 @@ configured gateway port from a second device on the same trusted LAN. Guest isol
 multicast filtering, or a different subnet can prevent that even when every local check
 passes. The daemon's optional `mdnsPublication` list/detail field mirrors the CLI-owned
 publisher state and preflight report for inspection; it does not start publishers.
+
+Set `publishTailscale: true` only when the acknowledged LAN gateway should also be
+reported as reachable over an already-configured tailnet. This option is rejected in
+loopback mode or without the LAN risk acknowledgement. After the gateway is ready,
+Switchyard locates `tailscale`, parses `tailscale status --json`, requires
+`BackendState: Running`, reads `Self.DNSName` and `Self.TailscaleIPs`, and verifies that
+at least one Tailscale IP is among the gateway's concrete exposed addresses. A wildcard
+bind normally satisfies that check; a specific-interface bind that excludes the
+Tailscale interface fails with an actionable diagnostic.
+
+This adapter is advisory and never changes tailnet state: it does not run `tailscale
+up`, `tailscale set`, `tailscale serve`, or `tailscale funnel`. In particular, Funnel
+publishes to the public internet and is unsupported. The verified ts.net name,
+Tailscale addresses, listener ports, and check results are recorded owner-only in
+`.switchyard/run/<deployment>/tailscale-publication.json`. `status` re-runs the checks
+and reports missing or drifted persisted state without rewriting it; `down` and cleanup
+only remove this file. The daemon's optional `tailscalePublication` list/detail field
+reads the same guarded record and never invokes Tailscale.
+
+Custom application domains are not automatically resolvable by other tailnet clients.
+Clients can connect to the gateway's ts.net name or a Tailscale IP. To select a
+custom-domain routing slot, configure MagicDNS split DNS for that domain or provide
+client-side resolution, for example `curl --resolve app.example.test:18080:100.64.0.1
+http://app.example.test:18080/`. DNS publication and gateway routing remain separate
+concerns.
 
 To revert, restore every listener bind to loopback and remove the `exposure` block (or
 set `mode: loopback`), then run the normal `switchyard up` apply again. The owned host

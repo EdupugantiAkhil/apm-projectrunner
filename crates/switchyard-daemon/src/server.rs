@@ -44,7 +44,7 @@ use crate::contract::{
     DeploymentValidationV1, DeploymentsV1, DiscoveryV1, EventKindV1, EventV1, GatewayExposureV1,
     MdnsCheckV1, MdnsPublicationV1, MdnsPublishedNameV1, OperationStatusV1, OperationV1,
     RegisterSourceRequestV1, RemoveWorktreeRequestV1, RouteHistoryV1, RouterBindingV1,
-    TransitionPolicyV1, UpdateDeploymentDefinitionRequestV1,
+    TailscalePublicationV1, TransitionPolicyV1, UpdateDeploymentDefinitionRequestV1,
 };
 
 const LOCK_TTL_MILLIS: i64 = 15_000;
@@ -1387,6 +1387,59 @@ fn read_mdns_publication(root: &Path, deployment: &str) -> Option<MdnsPublicatio
     })
 }
 
+fn read_tailscale_publication(root: &Path, deployment: &str) -> Option<TailscalePublicationV1> {
+    let path = root
+        .join(".switchyard/run")
+        .join(deployment)
+        .join("tailscale-publication.json");
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+    if value.get("apiVersion")?.as_str()? != "switchyard.dev/tailscale-publication/v1alpha1"
+        || value.get("deployment")?.as_str()? != deployment
+    {
+        return None;
+    }
+    let record = value.get("record")?;
+    let strings = |name: &str| {
+        record
+            .get(name)?
+            .as_array()?
+            .iter()
+            .map(|value| value.as_str().map(str::to_owned))
+            .collect::<Option<Vec<_>>>()
+    };
+    let checks = record
+        .get("checks")?
+        .as_array()?
+        .iter()
+        .map(|check| {
+            Some(MdnsCheckV1 {
+                name: check.get("name")?.as_str()?.to_owned(),
+                outcome: check.get("outcome")?.as_str()?.to_owned(),
+                detail: check.get("detail")?.as_str()?.to_owned(),
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(TailscalePublicationV1 {
+        scope: record.get("scope")?.as_str()?.to_owned(),
+        names: strings("names")?,
+        addresses: strings("addresses")?,
+        ports: record
+            .get("ports")?
+            .as_array()?
+            .iter()
+            .map(|value| u16::try_from(value.as_u64()?).ok())
+            .collect::<Option<Vec<_>>>()?,
+        checks,
+    })
+}
+
 fn read_manifest(root: &Path, deployment: &str) -> Option<Value> {
     let path = root
         .join(".switchyard/generated")
@@ -1800,6 +1853,8 @@ async fn list_deployments(State(inner): State<Arc<Inner>>) -> Response {
             let gateway_exposure = snapshot_gateway_exposure(snapshot.as_ref());
             let mdns_publication =
                 read_mdns_publication(&inner.config.project_root, &stored.deployment);
+            let tailscale_publication =
+                read_tailscale_publication(&inner.config.project_root, &stored.deployment);
             DeploymentSummaryV1 {
                 name: stored.deployment,
                 definition_hash: stored.definition_hash,
@@ -1822,6 +1877,7 @@ async fn list_deployments(State(inner): State<Arc<Inner>>) -> Response {
                 bindings,
                 gateway_exposure,
                 mdns_publication,
+                tailscale_publication,
             }
         })
         .collect();
@@ -1903,6 +1959,7 @@ async fn deployment_detail(
     let (custom_domains, bindings) = snapshot_fields(snapshot.as_ref());
     let gateway_exposure = snapshot_gateway_exposure(snapshot.as_ref());
     let mdns_publication = read_mdns_publication(&inner.config.project_root, &deployment);
+    let tailscale_publication = read_tailscale_publication(&inner.config.project_root, &deployment);
     Json(DeploymentDetailV1 {
         api_version: API_VERSION.into(),
         deployment,
@@ -1918,6 +1975,7 @@ async fn deployment_detail(
         bindings,
         gateway_exposure,
         mdns_publication,
+        tailscale_publication,
     })
     .into_response()
 }

@@ -190,3 +190,11 @@
   refuse). Correction: advertise only non-VPN, non-container-bridge interface
   addresses while preflight still warns about the excluded ones. Lesson: "exposed"
   (listener binds) and "advertisable" (mDNS targets) are different sets.
+
+## 2026-07-16 — Phase 7 Tailscale Part 3
+
+- The first typed status model relied on Serde's `PascalCase` conversion for
+  `DNSName`, which produces `DnsName` and rejected realistic canned Tailscale JSON.
+  Correction: explicitly rename the acronym-heavy `DNSName` and `TailscaleIPs` fields
+  and retain the realistic status fixture. Lesson: case-conversion rules do not
+  preserve API acronyms; pin externally defined JSON keys explicitly.

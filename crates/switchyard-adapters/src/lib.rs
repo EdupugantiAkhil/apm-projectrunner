@@ -1,9 +1,18 @@
 //! Built-in adapters which express the existing Compose planner semantics through the SDK.
 //!
-//! These adapters validate and plan resources only. Execution remains owned by Switchyard's
-//! existing generated-Compose runtime and host gateway.
+//! Lifecycle adapters validate and plan resources while execution remains owned by Switchyard's
+//! existing generated-Compose runtime and host gateway. Publication adapters may perform bounded,
+//! read-only inspection of an already configured private network.
 
-use std::{collections::BTreeMap, path::Path, process::Command};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::IpAddr,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
+};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -12,6 +21,7 @@ use switchyard_adapter_sdk::{
     Adapter, AdapterDeclaration, AdapterRegistry, CapabilityMetadata, ChildRelationship,
     ConfigurationExample, Diagnostic, ExecutionAdapter, ExecutionContext, ExecutionPlan, LogRecord,
     ObservedRoute, ObservedState, OperationEvent, ProbeAdapter, ProbeOutcome, Protocol,
+    PublicationAdapter, PublicationCheck, PublicationCheckOutcome, PublicationRecord,
     RecoveryLabels, ResourceClaim, RouteAdapter, RouteChange, RouteConnection, RouteHandle,
     RouteValidationContext, RuntimeHandle, SDK_CONTRACT_VERSION, SourceAdapter, SourceIdentity,
     SupervisorAdapter, schema_for, validate_schema,
@@ -45,6 +55,286 @@ pub fn built_in_registry() -> AdapterRegistry {
         .register_probe(HealthProbeAdapter)
         .expect("built-in probe-health declaration is valid");
     registry
+        .register_publication(TailscalePublicationAdapter::default())
+        .expect("built-in publication-tailscale declaration is valid");
+    registry
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TailscalePublicationConfig {
+    exposed_addresses: Vec<String>,
+    ports: Vec<u16>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct TailscaleStatus {
+    backend_state: String,
+    #[serde(rename = "Self")]
+    own: TailscaleSelf,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct TailscaleSelf {
+    #[serde(rename = "DNSName")]
+    dns_name: String,
+    #[serde(rename = "TailscaleIPs")]
+    tailscale_ips: Vec<String>,
+}
+
+/// Command seam used by the CLI unit tests; implementations must only inspect status.
+pub trait TailscaleCommandRunner: Send + Sync {
+    fn find_tailscale(&self) -> Option<PathBuf>;
+    fn status_json(&self, executable: &Path) -> Result<Vec<u8>, String>;
+}
+
+struct SystemTailscaleCommandRunner;
+
+impl TailscaleCommandRunner for SystemTailscaleCommandRunner {
+    fn find_tailscale(&self) -> Option<PathBuf> {
+        std::env::var_os("PATH").and_then(|paths| {
+            std::env::split_paths(&paths)
+                .map(|path| path.join("tailscale"))
+                .find(|path| path.is_file())
+        })
+    }
+
+    fn status_json(&self, executable: &Path) -> Result<Vec<u8>, String> {
+        // Publication is advisory: never run `tailscale up`, `set`, `serve`, or
+        // especially `funnel`, which would create unsupported public exposure.
+        let mut child = Command::new(executable)
+            .args(["status", "--json"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("command timed out after 2 seconds".into());
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        let output = child
+            .wait_with_output()
+            .map_err(|error| error.to_string())?;
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct TailscalePublicationAdapter {
+    runner: Arc<dyn TailscaleCommandRunner>,
+}
+
+impl Default for TailscalePublicationAdapter {
+    fn default() -> Self {
+        Self {
+            runner: Arc::new(SystemTailscaleCommandRunner),
+        }
+    }
+}
+
+impl TailscalePublicationAdapter {
+    #[must_use]
+    pub fn with_runner(runner: Arc<dyn TailscaleCommandRunner>) -> Self {
+        Self { runner }
+    }
+
+    fn derive(&self, configuration: &Value) -> Result<PublicationRecord, Vec<Diagnostic>> {
+        let errors = self.validate_configuration(configuration);
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        let config: TailscalePublicationConfig = serde_json::from_value(configuration.clone())
+            .expect("validated Tailscale configuration deserializes");
+        let Some(binary) = self.runner.find_tailscale() else {
+            return Err(vec![Diagnostic::new(
+                "tailscale_binary_missing",
+                "$",
+                "`tailscale` was not found in PATH; install Tailscale and retry",
+            )]);
+        };
+        let bytes = self.runner.status_json(&binary).map_err(|detail| {
+            vec![Diagnostic::new(
+                "tailscale_status_failed",
+                "$",
+                format!("`tailscale status --json` failed: {detail}"),
+            )]
+        })?;
+        let status: TailscaleStatus = serde_json::from_slice(&bytes).map_err(|error| {
+            vec![Diagnostic::new(
+                "tailscale_status_invalid",
+                "$",
+                format!("could not parse `tailscale status --json`: {error}"),
+            )]
+        })?;
+        if status.backend_state != "Running" {
+            return Err(vec![Diagnostic::new(
+                "tailscale_not_running",
+                "$.BackendState",
+                format!(
+                    "Tailscale backend is {}; connect it and retry",
+                    status.backend_state
+                ),
+            )]);
+        }
+        let tailscale_ips = status
+            .own
+            .tailscale_ips
+            .iter()
+            .filter_map(|value| value.parse::<IpAddr>().ok())
+            .collect::<BTreeSet<_>>();
+        if tailscale_ips.is_empty() {
+            return Err(vec![Diagnostic::new(
+                "tailscale_addresses_missing",
+                "$.Self.TailscaleIPs",
+                "Tailscale status did not report a valid IP address",
+            )]);
+        }
+        let exposed = config
+            .exposed_addresses
+            .iter()
+            .filter_map(|value| value.parse::<IpAddr>().ok())
+            .collect::<BTreeSet<_>>();
+        let matching = tailscale_ips
+            .intersection(&exposed)
+            .copied()
+            .collect::<Vec<_>>();
+        if matching.is_empty() {
+            return Err(vec![Diagnostic::new(
+                "tailscale_gateway_not_exposed",
+                "$.exposedAddresses",
+                format!(
+                    "gateway does not listen on any Tailscale address (tailnet: {}; exposed: {}); bind 0.0.0.0/:: or the Tailscale interface",
+                    tailscale_ips
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    exposed
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            )]);
+        }
+        let name = status.own.dns_name.trim_end_matches('.').to_owned();
+        if name.is_empty() {
+            return Err(vec![Diagnostic::new(
+                "tailscale_dns_name_missing",
+                "$.Self.DNSName",
+                "Tailscale status did not report a tailnet DNS name",
+            )]);
+        }
+        Ok(PublicationRecord {
+            scope: "tailnet".into(),
+            names: vec![name.clone()],
+            addresses: tailscale_ips.iter().map(ToString::to_string).collect(),
+            ports: config.ports,
+            checks: vec![
+                PublicationCheck {
+                    name: "tailscale-binary".into(),
+                    outcome: PublicationCheckOutcome::Pass,
+                    detail: format!("found {}", binary.display()),
+                },
+                PublicationCheck {
+                    name: "tailscale-status".into(),
+                    outcome: PublicationCheckOutcome::Pass,
+                    detail: "status JSON parsed and backend is running".into(),
+                },
+                PublicationCheck {
+                    name: "tailnet-identity".into(),
+                    outcome: PublicationCheckOutcome::Pass,
+                    detail: format!("{name} has {} Tailscale address(es)", tailscale_ips.len()),
+                },
+                PublicationCheck {
+                    name: "gateway-exposure".into(),
+                    outcome: PublicationCheckOutcome::Pass,
+                    detail: format!(
+                        "gateway is exposed on {}",
+                        matching
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                },
+            ],
+        })
+    }
+}
+
+impl Adapter for TailscalePublicationAdapter {
+    fn declaration(&self) -> AdapterDeclaration {
+        declaration(
+            "publication-tailscale",
+            Vec::new(),
+            false,
+            false,
+            &["private-network", "advisory"],
+        )
+    }
+    fn configuration_schema(&self) -> schemars::Schema {
+        schema_for::<TailscalePublicationConfig>()
+    }
+    fn configuration_examples(&self) -> Vec<ConfigurationExample> {
+        examples(
+            json!({"exposedAddresses": ["100.64.0.1"], "ports": [8001]}),
+            json!({"exposedAddresses": "0.0.0.0", "ports": [0]}),
+        )
+    }
+    fn validate_configuration(&self, configuration: &Value) -> Vec<Diagnostic> {
+        let mut errors = validate_typed::<TailscalePublicationConfig>(configuration);
+        if errors.is_empty() {
+            let config: TailscalePublicationConfig =
+                serde_json::from_value(configuration.clone()).expect("schema-valid configuration");
+            if config
+                .exposed_addresses
+                .iter()
+                .any(|value| value.parse::<IpAddr>().is_err())
+            {
+                errors.push(Diagnostic::new(
+                    "tailscale_invalid_exposed_address",
+                    "$.exposedAddresses",
+                    "every exposed address must be an IP address",
+                ));
+            }
+            if config.ports.is_empty() || config.ports.contains(&0) {
+                errors.push(Diagnostic::new(
+                    "tailscale_invalid_ports",
+                    "$.ports",
+                    "at least one nonzero exposed port is required",
+                ));
+            }
+        }
+        errors
+    }
+    fn example_handles(&self) -> Vec<Value> {
+        Vec::new()
+    }
+}
+
+impl PublicationAdapter for TailscalePublicationAdapter {
+    fn publish(&self, configuration: &Value) -> Result<PublicationRecord, Vec<Diagnostic>> {
+        self.derive(configuration)
+    }
+    fn inspect(&self, configuration: &Value) -> Result<PublicationRecord, Vec<Diagnostic>> {
+        self.derive(configuration)
+    }
 }
 
 fn declaration(
@@ -894,9 +1184,36 @@ impl ProbeAdapter for HealthProbeAdapter {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use switchyard_adapter_sdk::{AdapterKind, RegisteredAdapter, conformance};
 
     use super::*;
+
+    struct CannedTailscale {
+        present: bool,
+        status: Result<Vec<u8>, String>,
+    }
+
+    impl TailscaleCommandRunner for CannedTailscale {
+        fn find_tailscale(&self) -> Option<PathBuf> {
+            self.present.then(|| PathBuf::from("/usr/bin/tailscale"))
+        }
+        fn status_json(&self, _: &Path) -> Result<Vec<u8>, String> {
+            self.status.clone()
+        }
+    }
+
+    fn tailscale_adapter(present: bool, backend: &str) -> TailscalePublicationAdapter {
+        TailscalePublicationAdapter::with_runner(Arc::new(CannedTailscale {
+            present,
+            status: Ok(serde_json::to_vec(&json!({
+                "BackendState": backend,
+                "Self": { "DNSName": "host.tail.example.ts.net.", "TailscaleIPs": ["100.64.0.1"] }
+            }))
+            .unwrap()),
+        }))
+    }
 
     fn assert_conforms(kind: AdapterKind, id: &str) {
         let registry = built_in_registry();
@@ -914,7 +1231,9 @@ mod tests {
                     conformance::check_route_handle(&RouteHandle(handle))
                         .expect("route handle round-trips");
                 }
-                RegisteredAdapter::Source { .. } | RegisteredAdapter::Probe { .. } => {}
+                RegisteredAdapter::Source { .. }
+                | RegisteredAdapter::Probe { .. }
+                | RegisteredAdapter::Publication { .. } => {}
             }
         }
     }
@@ -951,6 +1270,11 @@ mod tests {
         "route-switchyard"
     );
     conformance_test!(probe_health_conformance, AdapterKind::Probe, "probe-health");
+    conformance_test!(
+        publication_tailscale_conformance,
+        AdapterKind::Publication,
+        "publication-tailscale"
+    );
 
     #[test]
     fn trusted_host_execution_is_explicitly_deferred() {
@@ -959,5 +1283,32 @@ mod tests {
                 .lookup(AdapterKind::Execution, "execution-host")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn tailscale_publication_derives_running_tailnet_record() {
+        let record = tailscale_adapter(true, "Running")
+            .publish(&json!({"exposedAddresses": ["100.64.0.1"], "ports": [8001]}))
+            .expect("running status publishes");
+        assert_eq!(record.scope, "tailnet");
+        assert_eq!(record.names, ["host.tail.example.ts.net"]);
+        assert_eq!(record.addresses, ["100.64.0.1"]);
+        assert_eq!(record.ports, [8001]);
+    }
+
+    #[test]
+    fn tailscale_publication_reports_stopped_backend() {
+        let errors = tailscale_adapter(true, "Stopped")
+            .inspect(&json!({"exposedAddresses": ["100.64.0.1"], "ports": [8001]}))
+            .expect_err("stopped backend fails");
+        assert_eq!(errors[0].code, "tailscale_not_running");
+    }
+
+    #[test]
+    fn tailscale_publication_reports_missing_binary_without_running_commands() {
+        let errors = tailscale_adapter(false, "Running")
+            .publish(&json!({"exposedAddresses": ["100.64.0.1"], "ports": [8001]}))
+            .expect_err("missing binary fails");
+        assert_eq!(errors[0].code, "tailscale_binary_missing");
     }
 }

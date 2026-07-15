@@ -278,6 +278,9 @@ impl<'a> HostRuntime<'a> {
     }
 
     pub fn stop(&self) -> Result<(), HostRuntimeError> {
+        crate::tailscale_publication::TailscaleRuntime::new(self.workspace_root, self.plan)
+            .stop()
+            .map_err(|error| HostRuntimeError::Startup(error.to_string()))?;
         crate::lan_preflight::LanRuntime::new(self.workspace_root, self.plan)
             .stop()
             .map_err(|error| HostRuntimeError::Startup(error.to_string()))?;

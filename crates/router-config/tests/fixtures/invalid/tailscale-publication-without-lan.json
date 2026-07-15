@@ -1,0 +1,26 @@
+{
+  "apiVersion": "switchyard.dev/router/v1alpha1",
+  "kind": "RouterConfiguration",
+  "metadata": { "deployment": "demo" },
+  "spec": {
+    "exposure": { "mode": "loopback", "publishTailscale": true },
+    "snapshot": {
+      "id": "initial",
+      "version": 1,
+      "transitions": {
+        "http": { "strategy": "drain", "timeoutMs": 5000 },
+        "https": { "strategy": "drain", "timeoutMs": 5000 },
+        "websocket": { "strategy": "pin" },
+        "grpc": { "strategy": "drain", "timeoutMs": 5000 },
+        "tcp": { "strategy": "close" }
+      }
+    },
+    "listeners": [],
+    "providers": [],
+    "groups": [],
+    "bindings": [],
+    "routes": [],
+    "browserRoutes": [],
+    "identity": { "explicitHeader": "X-Switchyard-Route", "stripBeforeForwarding": true }
+  }
+}

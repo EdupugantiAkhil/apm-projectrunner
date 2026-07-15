@@ -409,7 +409,7 @@ Entry gate: the product MVP is stable for local single-developer use.
 - [x] Implement mDNS publication and preflight checks.
 - [x] Detect firewall, subnet, guest-network, VPN, and name-resolution limitations where
       practical.
-- [ ] Add an optional Tailscale or private-DNS publication adapter.
+- [x] Add an optional Tailscale or private-DNS publication adapter.
 - [x] Keep public-internet exposure outside the supported scope.
 
 ### Import, export, and collaboration

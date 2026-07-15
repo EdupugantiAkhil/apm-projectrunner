@@ -550,3 +550,42 @@ implemented shape and the evidence used to close a phase.
   also never reaches other devices), so passive discovery from the second machine
   fails while unicast queries and TCP connects succeed — exactly the failure mode
   the preflight's `network-boundaries`/`firewall-udp-5353` warnings describe.
+
+## Phase 7 LAN and private-network access — Part 3
+
+- Added the explicit `GatewayExposure.publishTailscale` opt-in, omitted by default and
+  valid only with acknowledged LAN exposure. Router validation exposes a stable error
+  code and fixture for invalid combinations, with serialization round-trip coverage.
+- Extended the adapter SDK with the `Publication` kind, `PublicationAdapter` contract,
+  and structured private-network reachability/check records. The built-in
+  `publication-tailscale` adapter validates its JSON Schema configuration, runs only
+  `tailscale status --json` behind a command seam, requires a running backend and a
+  gateway-exposed Tailscale IP, and derives the ts.net name, Tailscale IPs, and ports.
+- CLI `up` now performs the advisory check after gateway readiness and atomically
+  persists an owner-only deployment/version-bound record. `status` re-derives current
+  tailnet reachability and reports stale/missing state without mutation; gateway stop,
+  down, cleanup, and disabling the opt-in remove the record because no process or
+  tailnet resource is owned.
+- Daemon deployment list/detail project the guarded state as optional
+  `tailscalePublication`. Router documentation covers checks, custom-domain resolution
+  through MagicDNS split DNS or client-side resolution, and the strict boundary that
+  Switchyard never runs Tailscale mutation commands or Funnel/public exposure.
+- Hermetic adapter tests cover running, stopped, and missing-binary status through the
+  command seam. `cargo fmt --all --check`, workspace/all-target clippy with
+  `-D warnings`, and the requested package tests pass except for the pre-existing
+  socket-bound CLI startup-cleanup test blocked by the sandbox (`Operation not
+  permitted`); rerunning with only that test skipped passes 40 CLI tests plus all
+  config, SDK, adapter, daemon, parity, and doc tests. Live two-machine tailnet
+  verification remains with the reviewer.
+
+### Part 3 reviewer verification (2026-07-16)
+
+- `./scripts/check.sh`: PASSED end to end.
+- Live tailnet proof (radxa publishing, poco-f1-nixos on the same tailnet):
+  `switchyard up` with `publishTailscale: true` reported
+  `radxa-dragon-q6a.warg-firefighter.ts.net via 100.106.209.100, fd7a:...` with all
+  four checks passing. From the second machine over the tailnet, a request to the
+  raw ts.net name failed closed with structured `route_not_found` (custom domains
+  are not tailnet-resolvable by default, as documented), and a Host-resolved
+  request to the custom domain through the tailscale address returned 200.
+  `switchyard down` removed the owner-only publication state file.

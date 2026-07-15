@@ -115,6 +115,7 @@ fn lan_exposure_defaults_to_loopback_and_round_trips_when_acknowledged() {
     config.spec.exposure = Some(GatewayExposure {
         mode: GatewayExposureMode::Lan,
         acknowledge_lan_exposure_risk: true,
+        publish_tailscale: true,
     });
     config.spec.listeners[0].bind.host = "0.0.0.0".parse().unwrap();
     for provider in &mut config.spec.providers {
@@ -122,6 +123,7 @@ fn lan_exposure_defaults_to_loopback_and_round_trips_when_acknowledged() {
     }
     let encoded = serde_json::to_string(&config).unwrap();
     assert!(encoded.contains("acknowledgeLanExposureRisk"));
+    assert!(encoded.contains("publishTailscale"));
     let decoded: RouterConfig = serde_json::from_str(&encoded).unwrap();
     assert_eq!(decoded, config);
     decoded
@@ -155,6 +157,10 @@ fn invalid_fixtures_report_stable_codes() {
         (
             "invalid/lan-opt-in-without-acknowledgement.json",
             ValidationCode::LanExposureRiskNotAcknowledged,
+        ),
+        (
+            "invalid/tailscale-publication-without-lan.json",
+            ValidationCode::TailscalePublicationRequiresLanExposure,
         ),
         (
             "invalid/lan-non-loopback-provider.json",

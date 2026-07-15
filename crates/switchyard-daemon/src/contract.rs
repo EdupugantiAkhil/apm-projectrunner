@@ -258,6 +258,7 @@ pub struct DeploymentSummaryV1 {
     pub bindings: Value,
     pub gateway_exposure: Option<GatewayExposureV1>,
     pub mdns_publication: Option<MdnsPublicationV1>,
+    pub tailscale_publication: Option<TailscalePublicationV1>,
 }
 
 /// Effective host-gateway listener exposure for deployment inspection.
@@ -291,6 +292,17 @@ pub struct MdnsCheckV1 {
     pub name: String,
     pub outcome: String,
     pub detail: String,
+}
+
+/// CLI-owned, advisory tailnet reachability record.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TailscalePublicationV1 {
+    pub scope: String,
+    pub names: Vec<String>,
+    pub addresses: Vec<String>,
+    pub ports: Vec<u16>,
+    pub checks: Vec<MdnsCheckV1>,
 }
 
 /// Versioned deployment-list response.
@@ -359,6 +371,7 @@ pub struct DeploymentDetailV1 {
     pub bindings: Value,
     pub gateway_exposure: Option<GatewayExposureV1>,
     pub mdns_publication: Option<MdnsPublicationV1>,
+    pub tailscale_publication: Option<TailscalePublicationV1>,
 }
 
 /// Project-local daemon discovery document. Its containing file is mode 0600.

@@ -95,6 +95,18 @@ impl RouterConfig {
             ));
         }
 
+        if self.spec.exposure.as_ref().is_some_and(|exposure| {
+            exposure.publish_tailscale
+                && (exposure.mode != GatewayExposureMode::Lan
+                    || !exposure.acknowledge_lan_exposure_risk)
+        }) {
+            errors.push(ValidationError::new(
+                ValidationCode::TailscalePublicationRequiresLanExposure,
+                "spec.exposure.publishTailscale",
+                "Tailscale publication requires mode: lan and acknowledgeLanExposureRisk: true",
+            ));
+        }
+
         let mut listener_keys = BTreeMap::new();
         let mut slots = BTreeMap::new();
         for (index, listener) in self.spec.listeners.iter().enumerate() {
@@ -435,6 +447,9 @@ pub struct GatewayExposure {
     /// LAN exposure must remain a deliberate, reviewable acknowledgement in desired state.
     #[serde(default, skip_serializing_if = "is_false")]
     pub acknowledge_lan_exposure_risk: bool,
+    /// Opts into advisory verification of private tailnet reachability.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub publish_tailscale: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -756,6 +771,7 @@ pub enum ValidationCode {
     AmbiguousRoute,
     LanExposureNotEnabled,
     LanExposureRiskNotAcknowledged,
+    TailscalePublicationRequiresLanExposure,
     UnsafeLanProvider,
 }
 

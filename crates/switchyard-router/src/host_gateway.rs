@@ -848,6 +848,7 @@ mod tests {
         config.spec.exposure = Some(router_config::GatewayExposure {
             mode: router_config::GatewayExposureMode::Lan,
             acknowledge_lan_exposure_risk: true,
+            publish_tailscale: false,
         });
         config.spec.listeners[0].bind.host = "0.0.0.0".parse().unwrap();
 
@@ -882,6 +883,7 @@ mod tests {
         config.spec.exposure = Some(router_config::GatewayExposure {
             mode: router_config::GatewayExposureMode::Lan,
             acknowledge_lan_exposure_risk: true,
+            publish_tailscale: false,
         });
         assert!(matches!(
             preflight(&config),

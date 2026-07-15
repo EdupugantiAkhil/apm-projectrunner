@@ -495,6 +495,7 @@ fn explicit_identity_is_rejected_on_non_loopback_listener() {
     config.spec.exposure = Some(router_config::GatewayExposure {
         mode: router_config::GatewayExposureMode::Lan,
         acknowledge_lan_exposure_risk: true,
+        publish_tailscale: false,
     });
     let engine = Arc::new(RouteEngine::new(config.clone()).unwrap());
     let running = HttpDataPlane::new(

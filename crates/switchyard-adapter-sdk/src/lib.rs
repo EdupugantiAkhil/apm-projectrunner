@@ -55,6 +55,8 @@ pub enum AdapterKind {
     Route,
     /// Observes readiness or health.
     Probe,
+    /// Verifies and reports private-network publication.
+    Publication,
 }
 
 /// Protocol metadata understood by the built-in routing model.
@@ -323,6 +325,48 @@ pub struct ProbeOutcome {
     pub detail: String,
 }
 
+/// Outcome of one publication verification check.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicationCheckOutcome {
+    /// The required condition was verified.
+    Pass,
+    /// The condition could not be fully verified but publication may still be useful.
+    Warn,
+    /// The required condition failed.
+    Fail,
+}
+
+impl fmt::Display for PublicationCheckOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Pass => "pass",
+            Self::Warn => "warn",
+            Self::Fail => "fail",
+        })
+    }
+}
+
+/// One stable, user-facing publication verification result.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublicationCheck {
+    pub name: String,
+    pub outcome: PublicationCheckOutcome,
+    pub detail: String,
+}
+
+/// Verified private-network reachability reported by a publication adapter.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublicationRecord {
+    pub scope: String,
+    pub names: Vec<String>,
+    pub addresses: Vec<String>,
+    pub ports: Vec<u16>,
+    pub checks: Vec<PublicationCheck>,
+}
+
 /// Common discovery, schema, and validation behavior shared by every adapter kind.
 pub trait Adapter: Send + Sync {
     /// Returns the compatibility declaration.
@@ -408,6 +452,14 @@ pub trait ProbeAdapter: Adapter {
     fn observe(&self, configuration: &Value) -> Result<ProbeOutcome, Vec<Diagnostic>>;
 }
 
+/// Advisory publication contract. Implementations must not widen network exposure.
+pub trait PublicationAdapter: Adapter {
+    /// Verifies reachability and returns the record that may be persisted by the caller.
+    fn publish(&self, configuration: &Value) -> Result<PublicationRecord, Vec<Diagnostic>>;
+    /// Re-derives current reachability without mutating private-network state.
+    fn inspect(&self, configuration: &Value) -> Result<PublicationRecord, Vec<Diagnostic>>;
+}
+
 /// Generates a draft 2020-12 schema for an adapter configuration type.
 #[must_use]
 pub fn schema_for<T: JsonSchema>() -> Schema {
@@ -478,6 +530,11 @@ pub enum RegisteredAdapter {
         /// Kind-specific probe interface.
         adapter: Arc<dyn ProbeAdapter>,
     },
+    /// Publication adapter entry.
+    Publication {
+        common: Arc<dyn Adapter>,
+        adapter: Arc<dyn PublicationAdapter>,
+    },
 }
 
 impl RegisteredAdapter {
@@ -490,6 +547,7 @@ impl RegisteredAdapter {
             Self::Supervisor { .. } => AdapterKind::Supervisor,
             Self::Route { .. } => AdapterKind::Route,
             Self::Probe { .. } => AdapterKind::Probe,
+            Self::Publication { .. } => AdapterKind::Publication,
         }
     }
 
@@ -501,7 +559,8 @@ impl RegisteredAdapter {
             | Self::Execution { common, .. }
             | Self::Supervisor { common, .. }
             | Self::Route { common, .. }
-            | Self::Probe { common, .. } => common.as_ref(),
+            | Self::Probe { common, .. }
+            | Self::Publication { common, .. } => common.as_ref(),
         }
     }
 }
@@ -618,6 +677,18 @@ impl AdapterRegistry {
     ) -> Result<(), RegistryError> {
         let adapter = Arc::new(adapter);
         self.register(RegisteredAdapter::Probe {
+            common: adapter.clone(),
+            adapter,
+        })
+    }
+
+    /// Registers one private-network publication adapter.
+    pub fn register_publication<A: PublicationAdapter + 'static>(
+        &mut self,
+        adapter: A,
+    ) -> Result<(), RegistryError> {
+        let adapter = Arc::new(adapter);
+        self.register(RegisteredAdapter::Publication {
             common: adapter.clone(),
             adapter,
         })
