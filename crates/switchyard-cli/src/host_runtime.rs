@@ -999,6 +999,10 @@ mod tests {
             host_router_config: Some("{}".into()),
             host_upstreams: Default::default(),
             source_identities: Default::default(),
+            origins: Default::default(),
+            injected_files: Default::default(),
+            runtime_secrets: Default::default(),
+            has_overrides: false,
         };
         assert!(
             HostRuntime::new(&root, &plan)

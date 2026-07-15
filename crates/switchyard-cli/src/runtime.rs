@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::OsString,
     fmt, fs, io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -55,6 +56,14 @@ pub struct CommandOutput {
 pub trait CommandExecutor {
     fn capture(&self, program: &str, arguments: &[String]) -> Result<CommandOutput, RuntimeError>;
     fn stream(&self, program: &str, arguments: &[String]) -> Result<(), RuntimeError>;
+    fn stream_with_environment(
+        &self,
+        program: &str,
+        arguments: &[String],
+        _environment: &BTreeMap<String, OsString>,
+    ) -> Result<(), RuntimeError> {
+        self.stream(program, arguments)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -74,6 +83,27 @@ impl CommandExecutor for SystemExecutor {
 
     fn stream(&self, program: &str, arguments: &[String]) -> Result<(), RuntimeError> {
         let status = prepared_command(program, arguments)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()?;
+        if !status.success() {
+            return Err(RuntimeError::Docker {
+                command: render_command(program, arguments),
+                detail: status.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn stream_with_environment(
+        &self,
+        program: &str,
+        arguments: &[String],
+        environment: &BTreeMap<String, OsString>,
+    ) -> Result<(), RuntimeError> {
+        let status = prepared_command(program, arguments)
+            .envs(environment)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -141,6 +171,7 @@ pub struct RuntimePlan {
     pub project_directory: PathBuf,
     pub artifact_dir: PathBuf,
     pub requires_router_token: bool,
+    pub runtime_secrets: Vec<switchyard_planner::RuntimeSecretPlan>,
 }
 
 impl RuntimePlan {
@@ -178,20 +209,24 @@ impl<E: CommandExecutor> DockerRuntime<E> {
                 detail: "SWITCHYARD_ROUTER_TOKEN must be set".into(),
             });
         }
-        self.executor.stream(
+        let environment = secret_environment(plan)?;
+        self.executor.stream_with_environment(
             "docker",
             &compose_arguments(plan, &["--progress", "plain", "build"]),
+            &environment,
         )?;
-        self.executor.stream(
+        self.executor.stream_with_environment(
             "docker",
             &compose_arguments(plan, &["up", "--detach", "--wait", "--remove-orphans"]),
+            &environment,
         )
     }
 
     pub fn logs(&self, plan: &RuntimePlan, services: &[String]) -> Result<(), RuntimeError> {
         let mut arguments = compose_arguments(plan, &["logs", "--follow"]);
         arguments.extend(services.iter().cloned());
-        self.executor.stream("docker", &arguments)
+        self.executor
+            .stream_with_environment("docker", &arguments, &secret_environment(plan)?)
     }
 
     pub fn down(&self, plan: &RuntimePlan) -> Result<(), RuntimeError> {
@@ -199,9 +234,10 @@ impl<E: CommandExecutor> DockerRuntime<E> {
             &plan.deployment,
             &self.discover_compose_project(&plan.deployment, &plan.compose_project)?,
         )?;
-        self.executor.stream(
+        self.executor.stream_with_environment(
             "docker",
             &compose_arguments(plan, &["down", "--remove-orphans"]),
+            &secret_environment(plan)?,
         )
     }
 
@@ -214,9 +250,10 @@ impl<E: CommandExecutor> DockerRuntime<E> {
         }
         let resources = self.discover_compose_project(&plan.deployment, &plan.compose_project)?;
         verify_ownership(&plan.deployment, &resources)?;
-        self.executor.stream(
+        self.executor.stream_with_environment(
             "docker",
             &compose_arguments(plan, &["down", "--volumes", "--remove-orphans"]),
+            &secret_environment(plan)?,
         )
     }
 
@@ -281,6 +318,47 @@ impl<E: CommandExecutor> DockerRuntime<E> {
             resources,
         ))
     }
+}
+
+fn secret_environment(plan: &RuntimePlan) -> Result<BTreeMap<String, OsString>, RuntimeError> {
+    let mut environment = BTreeMap::new();
+    for secret in &plan.runtime_secrets {
+        let value = match (
+            &secret.reference.environment_variable,
+            &secret.reference.file,
+        ) {
+            (Some(name), None) => std::env::var_os(name).ok_or_else(|| RuntimeError::Docker {
+                command: "docker compose".into(),
+                detail: format!("required overlay secret environment variable `{name}` is not set"),
+            })?,
+            (None, Some(path)) => {
+                let mut bytes = fs::read(path)?;
+                if bytes.last() == Some(&b'\n') {
+                    bytes.pop();
+                    if bytes.last() == Some(&b'\r') {
+                        bytes.pop();
+                    }
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::ffi::OsStringExt;
+                    OsString::from_vec(bytes)
+                }
+                #[cfg(not(unix))]
+                {
+                    OsString::from(String::from_utf8(bytes).map_err(io::Error::other)?)
+                }
+            }
+            _ => {
+                return Err(RuntimeError::Docker {
+                    command: "docker compose".into(),
+                    detail: "invalid overlay secret reference".into(),
+                });
+            }
+        };
+        environment.insert(secret.variable.clone(), value);
+    }
+    Ok(environment)
 }
 
 fn compose_arguments(plan: &RuntimePlan, command: &[&str]) -> Vec<String> {
@@ -572,6 +650,7 @@ mod tests {
             project_directory: PathBuf::from("/tmp"),
             artifact_dir: PathBuf::from("/tmp/generated/demo"),
             requires_router_token: false,
+            runtime_secrets: Vec::new(),
         }
     }
 

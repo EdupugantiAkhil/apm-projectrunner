@@ -1,12 +1,339 @@
 use std::{fs, path::Path};
 
 use switchyard_planner::{
-    DiagnosticCode, ManagedProfile, PublishedUpstream, UiRoute, load_bundle, plan,
-    plan_with_binding, write_plan,
+    ChangeImpact, DiagnosticCode, ManagedProfile, OverlayOptions, PublishedUpstream, UiRoute,
+    classify_changes, load_bundle, parse_dotenv, plan, plan_with_binding, plan_with_overlays,
+    write_plan,
 };
 
 fn bundle() -> switchyard_planner::Bundle {
     load_bundle(Path::new("tests/fixtures/deployment.yaml")).expect("fixture should load")
+}
+
+fn write_overlay(directory: &Path, name: &str, body: &str) -> std::path::PathBuf {
+    let path = directory.join(name);
+    fs::write(&path, body).unwrap();
+    path
+}
+
+#[test]
+fn strict_dotenv_parser_has_no_shell_semantics() {
+    let values = parse_dotenv("# comment\nPLAIN=value\nSHELL=$(touch /tmp/never)\nEMPTY=\n")
+        .expect("strict dotenv should parse literals");
+    assert_eq!(values["SHELL"], "$(touch /tmp/never)");
+    assert_eq!(values["EMPTY"], "");
+    assert!(parse_dotenv("export BAD=value").is_err());
+    assert!(parse_dotenv("MISSING").is_err());
+    assert!(parse_dotenv("DUP=one\nDUP=two").is_err());
+}
+
+#[test]
+fn overlays_resolve_in_order_trace_shadows_and_materialize_files() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(directory.path().join("values.env"), "FROM_FILE=first\n").unwrap();
+    let first = write_overlay(
+        directory.path(),
+        "first.yaml",
+        r#"
+apiVersion: switchyard.dev/v1alpha1
+kind: Overlay
+metadata: { name: first }
+spec:
+  selectors: { instances: { names: [consumer-a] } }
+  environment:
+    envFiles: [values.env]
+    set: { STATIC_VALUE: overlay-one, REMOVE_ME: inherited }
+  parameters: { LOG_LEVEL: overlay }
+  routes: { search: provider-main/api }
+  variables: { enabled: "true" }
+  files:
+    - content: "enabled=${overlay.variables.enabled}\ncommand=$(touch /tmp/never)\n"
+      target: /runtime/config/app.conf
+      template: true
+      mode: "0640"
+"#,
+    );
+    let second = write_overlay(
+        directory.path(),
+        "second.yaml",
+        r#"
+apiVersion: switchyard.dev/v1alpha1
+kind: Overlay
+metadata: { name: second }
+spec:
+  selectors: { instances: { names: [consumer-a] } }
+  environment:
+    set: { STATIC_VALUE: overlay-two }
+    unset: [REMOVE_ME]
+  routes:
+    search: { provider: provider-main/api, replace: true }
+  files:
+    - content: "replacement=${instance.name}/${deployment.name}/${parameters.LOG_LEVEL}\n"
+      target: /runtime/config/app.conf
+      template: true
+      replace: true
+"#,
+    );
+    let options = OverlayOptions {
+        overlays: vec![first, second],
+        variation: None,
+        set: Default::default(),
+    };
+    let plan = plan_with_overlays(&bundle(), &options).expect("ordered overlays should resolve");
+    let resolved: serde_json::Value = serde_yaml::from_str(&plan.resolved_deployment_yaml).unwrap();
+    let consumer = resolved["spec"]["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|value| value["name"] == "consumer-a")
+        .unwrap();
+    assert_eq!(consumer["environment"]["STATIC_VALUE"], "overlay-two");
+    assert_eq!(consumer["parameters"]["LOG_LEVEL"], "debug");
+    assert!(consumer["environment"].get("REMOVE_ME").is_none());
+    assert!(plan.compose_yaml.contains("STATIC_VALUE: overlay-two"));
+    assert!(plan.compose_yaml.contains(":/runtime/config/app.conf:ro"));
+    let trace = plan
+        .origins
+        .iter()
+        .find(|trace| {
+            trace.instance == "consumer-a"
+                && trace.category == "environment"
+                && trace.key == "STATIC_VALUE"
+        })
+        .unwrap();
+    assert_eq!(trace.value, "overlay-two");
+    assert!(
+        trace
+            .shadowed
+            .iter()
+            .any(|origin| origin.value == "overlay-one")
+    );
+    assert_eq!(plan.injected_files.len(), 1);
+    assert_eq!(plan.injected_files[0].mode, 0o644);
+    let workspace = tempfile::tempdir().unwrap();
+    let output = write_plan(workspace.path(), &plan).unwrap();
+    let materialized = output.join(&plan.injected_files[0].relative_path);
+    assert!(materialized.is_file());
+    let content = fs::read_to_string(materialized).unwrap();
+    assert_eq!(content, "replacement=consumer-a/comparison/debug\n");
+    assert!(!Path::new("/tmp/never").exists());
+}
+
+#[test]
+fn overlay_validation_rejects_conflicts_selectors_templates_and_traversal() {
+    let directory = tempfile::tempdir().unwrap();
+    let missing = write_overlay(
+        directory.path(),
+        "missing.yaml",
+        r#"
+apiVersion: switchyard.dev/v1alpha1
+kind: Overlay
+metadata: { name: missing }
+spec:
+  selectors: { instances: { names: [misspelled] } }
+  files: [{ content: x, target: /runtime/../escape }]
+"#,
+    );
+    let errors = plan_with_overlays(
+        &bundle(),
+        &OverlayOptions {
+            overlays: vec![missing],
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.code == DiagnosticCode::SelectorNoMatch)
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.code == DiagnosticCode::InvalidPath)
+    );
+
+    let optional = write_overlay(
+        directory.path(),
+        "optional.yaml",
+        r#"
+apiVersion: switchyard.dev/v1alpha1
+kind: Overlay
+metadata: { name: optional }
+spec:
+  selectors: { optional: true, instances: { names: [missing] } }
+  environment: { set: { UNUSED: value } }
+"#,
+    );
+    plan_with_overlays(
+        &bundle(),
+        &OverlayOptions {
+            overlays: vec![optional],
+            ..Default::default()
+        },
+    )
+    .expect("optional selector is a no-op");
+
+    let unknown = write_overlay(
+        directory.path(),
+        "unknown.yaml",
+        r#"
+apiVersion: switchyard.dev/v1alpha1
+kind: Overlay
+metadata: { name: unknown }
+spec:
+  selectors: { instances: { names: [consumer-a] } }
+  files: [{ content: "${unknown.expression}", target: /runtime/config/value, template: true }]
+"#,
+    );
+    let errors = plan_with_overlays(
+        &bundle(),
+        &OverlayOptions {
+            overlays: vec![unknown],
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.code == DiagnosticCode::MissingVariable)
+    );
+}
+
+#[test]
+fn secrets_are_redacted_and_variations_are_disjoint() {
+    let directory = tempfile::tempdir().unwrap();
+    let secret = write_overlay(
+        directory.path(),
+        "secret.yaml",
+        r#"
+apiVersion: switchyard.dev/v1alpha1
+kind: Overlay
+metadata: { name: secret }
+spec:
+  selectors: { instances: { names: [consumer-a] } }
+  environment:
+    set:
+      API_TOKEN: { environmentVariable: SUPER_SECRET_TOKEN }
+"#,
+    );
+    let first = plan_with_overlays(
+        &bundle(),
+        &OverlayOptions {
+            overlays: vec![secret.clone()],
+            variation: Some("one".into()),
+            set: Default::default(),
+        },
+    )
+    .unwrap();
+    let second = plan_with_overlays(
+        &bundle(),
+        &OverlayOptions {
+            overlays: vec![secret],
+            variation: Some("two".into()),
+            set: Default::default(),
+        },
+    )
+    .unwrap();
+    for preview in [&first.resolved_deployment_yaml, &first.manifest_json] {
+        assert!(!preview.contains("literal-secret-value"));
+        assert!(preview.contains("«secret: SUPER_SECRET_TOKEN»"));
+    }
+    assert!(!first.compose_yaml.contains("SUPER_SECRET_TOKEN"));
+    assert!(first.compose_yaml.contains("SWITCHYARD_OVERLAY_SECRET_"));
+    assert_ne!(first.deployment, second.deployment);
+    assert_ne!(first.compose_project, second.compose_project);
+    assert_ne!(first.resource_hash, second.resource_hash);
+    let workspace = tempfile::tempdir().unwrap();
+    let one = write_plan(workspace.path(), &first).unwrap();
+    let two = write_plan(workspace.path(), &second).unwrap();
+    assert_ne!(one, two);
+    assert!(one.join("manifest.json").is_file() && two.join("manifest.json").is_file());
+}
+
+#[test]
+fn change_preview_distinguishes_live_restart_and_rebuild() {
+    let workspace = tempfile::tempdir().unwrap();
+    let base_bundle = bundle();
+    let base = plan(&base_bundle).unwrap();
+    write_plan(workspace.path(), &base).unwrap();
+
+    let directory = tempfile::tempdir().unwrap();
+    let route = write_overlay(
+        directory.path(),
+        "route.yaml",
+        r#"
+apiVersion: switchyard.dev/v1alpha1
+kind: Overlay
+metadata: { name: route }
+spec:
+  selectors: { instances: { names: [consumer-a] } }
+  routes: { search: provider-main/api }
+"#,
+    );
+    let live = plan_with_overlays(
+        &base_bundle,
+        &OverlayOptions {
+            overlays: vec![route],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        classify_changes(workspace.path(), &live)
+            .unwrap()
+            .iter()
+            .all(|change| change.impact == ChangeImpact::Live)
+    );
+
+    let environment = write_overlay(
+        directory.path(),
+        "environment.yaml",
+        r#"
+apiVersion: switchyard.dev/v1alpha1
+kind: Overlay
+metadata: { name: environment }
+spec:
+  selectors: { instances: { names: [consumer-a] } }
+  environment: { set: { ADDED: value } }
+"#,
+    );
+    let restart = plan_with_overlays(
+        &base_bundle,
+        &OverlayOptions {
+            overlays: vec![environment],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        classify_changes(workspace.path(), &restart)
+            .unwrap()
+            .iter()
+            .any(|change| change.impact == ChangeImpact::Restart)
+    );
+
+    let mut rebuilt_bundle = base_bundle;
+    if let switchyard_planner::Execution::Container { image, .. } = &mut rebuilt_bundle
+        .spec
+        .blocks
+        .get_mut("provider")
+        .unwrap()
+        .services
+        .get_mut("api")
+        .unwrap()
+        .execution
+    {
+        *image = Some("example/provider:2".into());
+    }
+    let rebuilt = plan(&rebuilt_bundle).unwrap();
+    assert!(
+        classify_changes(workspace.path(), &rebuilt)
+            .unwrap()
+            .iter()
+            .any(|change| change.impact == ChangeImpact::Rebuild)
+    );
 }
 
 #[test]
@@ -17,6 +344,14 @@ fn compose_and_manifest_are_deterministic_and_owned() {
 
     assert_eq!(first.compose_yaml, second.compose_yaml);
     assert_eq!(first.manifest_json, second.manifest_json);
+    assert!(
+        !first
+            .resolved_deployment_yaml
+            .contains("resolvedOverlayFiles")
+    );
+    assert!(!first.manifest_json.contains("\"origins\""));
+    assert!(!first.manifest_json.contains("\"injectedFiles\""));
+    assert!(!first.has_overrides);
     assert_eq!(
         first.artifact_dir,
         Path::new(".switchyard/generated/comparison")

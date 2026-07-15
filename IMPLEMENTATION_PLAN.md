@@ -356,12 +356,12 @@ Entry gate: the persistent control plane is complete.
 
 ### Overlays and variations
 
-- [ ] Implement ordered environment, dotenv, file, parameter, and route overlays.
-- [ ] Track the origin and shadowing history of every resolved value.
-- [ ] Materialize injected files outside source worktrees.
-- [ ] Keep secret values out of generated previews, logs, YAML, and SQLite.
-- [ ] Preview whether each change requires live reload, restart, or rebuild.
-- [ ] Run multiple resolved variations concurrently without resource collisions.
+- [x] Implement ordered environment, dotenv, file, parameter, and route overlays.
+- [x] Track the origin and shadowing history of every resolved value.
+- [x] Materialize injected files outside source worktrees.
+- [x] Keep secret values out of generated previews, logs, YAML, and SQLite.
+- [x] Preview whether each change requires live reload, restart, or rebuild.
+- [x] Run multiple resolved variations concurrently without resource collisions.
 
 ### Schema-driven GUI
 

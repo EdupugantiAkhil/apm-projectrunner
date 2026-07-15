@@ -22,11 +22,20 @@ pub struct Bundle {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Metadata {
     pub name: String,
+    /// Labels used by deployment-level overlay selectors.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeploymentSpec {
+    /// Ordered deployment-relative overlay documents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overlays: Vec<PathBuf>,
+    /// Secret-safe injected-file metadata emitted in resolved deployment artifacts.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub resolved_overlay_files: BTreeMap<String, Vec<ResolvedOverlayFile>>,
     #[serde(default)]
     pub sources: BTreeMap<String, Source>,
     #[serde(default)]
@@ -50,6 +59,16 @@ pub struct DeploymentSpec {
     pub host_upstreams: BTreeMap<String, PublishedUpstream>,
     #[serde(default = "default_router_image")]
     pub router_image: String,
+}
+
+/// Secret-safe identity of a file resolved from an overlay.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolvedOverlayFile {
+    pub target: PathBuf,
+    pub content_hash: String,
+    pub mode: String,
+    pub origin: String,
 }
 
 fn default_router_image() -> String {
@@ -281,6 +300,15 @@ pub struct Instance {
     pub source: String,
     #[serde(default)]
     pub parameters: BTreeMap<String, String>,
+    /// Labels used by instance overlay selectors.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
+    /// Instance-wide environment values, applied after deployment overlays.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub environment: BTreeMap<String, String>,
+    /// Environment keys removed after inherited service defaults are applied.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub environment_unset: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

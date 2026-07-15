@@ -247,3 +247,42 @@ implemented shape and the evidence used to close a phase.
   (daemon 4 unit + 9 API + parity, sources 6).
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passed.
 - `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps`: passed.
+
+### Overlays and variations (Part 3)
+
+- Overlay documents (`kind: Overlay`) support deployment/instance selectors (required
+  selectors must match unless `optional: true`), ordered environment (`envFiles`
+  strict dotenv, `set`, `unset`), file injection (path or inline content, optional
+  restricted templates, `replace: true` conflicts), parameters, and route selection.
+  Deployments list overlays in order via `spec.overlays`; instances gained optional
+  selector labels.
+- Resolution follows the DESIGN.md precedence chain (block defaults < deployment
+  overlays in order < instance values < `--set` ephemeral overrides), merges maps by
+  key, honors `unset`, and records an origin trace with full shadowing history for
+  every resolved environment value, parameter, file, and route.
+- Injected files materialize only under
+  `.switchyard/generated/<deployment>/overlays/<instance>/<content-hash>/` and are
+  bind-mounted read-only; targets reject relative paths and `..` traversal and must
+  fall under controlled container mount roots. Templates support only fixed-namespace
+  `${...}` lookup (overlay variables, instance/deployment names, parameters) with
+  unknown variables rejected — no execution of any kind.
+- Secret overlay values are environment-variable or file references; previews, origin
+  traces, resolved YAML, manifests, and Compose show only placeholders. Generated
+  Compose interpolates `${SWITCHYARD_OVERLAY_SECRET_<hash>:?}` and the runtime injects
+  real values solely into the `docker compose` process environment at apply time.
+  Secret file injection is explicitly rejected as unsupported.
+- `overlay validate` and `overlay diff --with ...` provide stable diagnostics and a
+  per-service live/restart/rebuild classification against currently generated
+  artifacts. `plan`/`up`/`down`/`status` accept `--with`, `--variation`, and `--set`;
+  variations rename the deployment through existing deterministic naming with
+  cross-variation listener/publication collision checks. Overlay-less output remains
+  byte-stable.
+- Documentation: `docs/overlays.md`.
+
+### Phase 6 Part 3 verification
+
+- `cargo fmt --all -- --check`: passed.
+- `cargo test --workspace --all-features`: passed on this host (planner 17, CLI 32,
+  all router/daemon suites green).
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passed.
+- `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps`: passed.

@@ -131,6 +131,11 @@ GUI have migrated.
 
 ## CLI behavior and test boundary
 
+Overlay and variation arguments currently execute through the CLI's one-shot planner
+and runtime path so apply-time secret references remain confined to the invoking process.
+See [`overlays.md`](overlays.md) for the supported commands and safety model. The
+versioned daemon command contract remains byte-compatible for overlay-less calls.
+
 Ordinary `switchyard` commands inspect secure project-local discovery first. A reachable
 daemon returns the existing stdout, stderr, and exit code. Missing or stale discovery
 falls back to the original one-shot path, so scripts do not require a daemon.

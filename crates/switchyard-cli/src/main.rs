@@ -7,7 +7,7 @@ mod runtime;
 
 use std::{env, fmt, fs, io, net::SocketAddr, path::Path, process::ExitCode};
 
-use cli::{CliCommand, USAGE};
+use cli::{CliCommand, DeploymentOptions, USAGE};
 use router_config::RouterConfig;
 use runtime::{DeploymentStatus, DockerRuntime, DriftState, RuntimePlan};
 use switchyard_planner::{Bundle, Plan};
@@ -35,7 +35,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     if let Some(code) = handle_source_command(&workspace_root, &command)? {
         return Ok(code);
     }
-    if env::var_os("SWITCHYARD_BYPASS_DAEMON").is_none() {
+    if env::var_os("SWITCHYARD_BYPASS_DAEMON").is_none() && daemon_compatible(&command) {
         let (kind, request) = daemon_request(&command);
         match switchyard_daemon::client::execute_if_running(&workspace_root, kind, &request)? {
             switchyard_daemon::client::DaemonExecution::NotRunning => {}
@@ -70,12 +70,12 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 plan.deployment, plan.definition_hash
             );
         }
-        CliCommand::Plan { bundle } => {
-            let (_, plan) = load_and_plan(&bundle)?;
+        CliCommand::Plan { bundle, options } => {
+            let (_, plan) = load_and_plan_options(&bundle, &options)?;
             print_plan(&workspace_root, &plan)?;
         }
-        CliCommand::Up { bundle } => {
-            let (_, plan) = load_and_plan(&bundle)?;
+        CliCommand::Up { bundle, options } => {
+            let (_, plan) = load_and_plan_options(&bundle, &options)?;
             let runtime_plan = runtime_plan(&workspace_root, &plan);
             refuse_runtime_drift(&runtime.status(&runtime_plan)?)?;
             let host_runtime = host_runtime::HostRuntime::new(&workspace_root, &plan);
@@ -119,8 +119,12 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             switchyard_planner::write_plan(&workspace_root, &plan)?;
             println!("bound `{consumer}` to `{group}`");
         }
-        CliCommand::Status { bundle, routes } => {
-            let (_, plan) = load_and_plan(&bundle)?;
+        CliCommand::Status {
+            bundle,
+            routes,
+            options,
+        } => {
+            let (_, plan) = load_and_plan_options(&bundle, &options)?;
             let status = runtime.status(&runtime_plan(&workspace_root, &plan))?;
             print_status(&status);
             println!(
@@ -160,14 +164,23 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 profile_dir.display()
             );
         }
-        CliCommand::Down { bundle } => {
-            let (_, plan) = load_and_plan(&bundle)?;
+        CliCommand::Down { bundle, options } => {
+            let (_, plan) = load_and_plan_options(&bundle, &options)?;
             host_runtime::HostRuntime::new(&workspace_root, &plan).stop()?;
             runtime.down(&runtime_plan(&workspace_root, &plan))?;
             println!(
                 "deployment `{}` stopped; volumes were preserved",
                 plan.deployment
             );
+        }
+        CliCommand::OverlayValidate { overlay } => {
+            let overlay = switchyard_planner::load_overlay(&overlay)?;
+            switchyard_planner::validate_overlay(&overlay).map_err(diagnostics)?;
+            println!("overlay `{}` is valid", overlay.metadata.name);
+        }
+        CliCommand::OverlayDiff { bundle, options } => {
+            let (_, plan) = load_and_plan_options(&bundle, &options)?;
+            print_overlay_diff(&workspace_root, &plan)?;
         }
         CliCommand::Cleanup { bundle, confirmed } => {
             let (_, plan) = load_and_plan(&bundle)?;
@@ -193,6 +206,17 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         | CliCommand::WorktreeRemove { .. } => unreachable!("handled before command dispatch"),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn daemon_compatible(command: &CliCommand) -> bool {
+    match command {
+        CliCommand::Plan { options, .. }
+        | CliCommand::Up { options, .. }
+        | CliCommand::Down { options, .. }
+        | CliCommand::Status { options, .. } => options == &DeploymentOptions::default(),
+        CliCommand::OverlayValidate { .. } | CliCommand::OverlayDiff { .. } => false,
+        _ => true,
+    }
 }
 
 fn handle_source_command(
@@ -491,8 +515,8 @@ fn daemon_request(
     };
     match command {
         CliCommand::Validate { bundle } => (CommandKind::Validate, empty(bundle.clone())),
-        CliCommand::Plan { bundle } => (CommandKind::Plan, empty(bundle.clone())),
-        CliCommand::Up { bundle } => (CommandKind::Apply, empty(bundle.clone())),
+        CliCommand::Plan { bundle, .. } => (CommandKind::Plan, empty(bundle.clone())),
+        CliCommand::Up { bundle, .. } => (CommandKind::Apply, empty(bundle.clone())),
         CliCommand::Bind {
             bundle,
             consumer,
@@ -515,7 +539,7 @@ fn daemon_request(
             });
             (CommandKind::Bind, request)
         }
-        CliCommand::Status { bundle, routes } => {
+        CliCommand::Status { bundle, routes, .. } => {
             let mut request = empty(bundle.clone());
             request.routes = *routes;
             (CommandKind::Status, request)
@@ -531,7 +555,7 @@ fn daemon_request(
             request.ui = Some(ui.clone());
             (CommandKind::Open, request)
         }
-        CliCommand::Down { bundle } => (CommandKind::Down, empty(bundle.clone())),
+        CliCommand::Down { bundle, .. } => (CommandKind::Down, empty(bundle.clone())),
         CliCommand::Cleanup { bundle, confirmed } => {
             let mut request = empty(bundle.clone());
             request.confirmed = *confirmed;
@@ -545,13 +569,27 @@ fn daemon_request(
         | CliCommand::SourceRegister { .. }
         | CliCommand::SourceDeregister { .. }
         | CliCommand::WorktreeCreate { .. }
-        | CliCommand::WorktreeRemove { .. } => unreachable!("not delegated"),
+        | CliCommand::WorktreeRemove { .. }
+        | CliCommand::OverlayValidate { .. }
+        | CliCommand::OverlayDiff { .. } => unreachable!("not delegated"),
     }
 }
 
 fn load_and_plan(path: &Path) -> Result<(Bundle, Plan), Box<dyn std::error::Error>> {
+    load_and_plan_options(path, &DeploymentOptions::default())
+}
+
+fn load_and_plan_options(
+    path: &Path,
+    options: &DeploymentOptions,
+) -> Result<(Bundle, Plan), Box<dyn std::error::Error>> {
     let bundle = switchyard_planner::load_bundle(path)?;
-    let plan = switchyard_planner::plan(&bundle).map_err(diagnostics)?;
+    let options = switchyard_planner::OverlayOptions {
+        overlays: options.overlays.clone(),
+        variation: options.variation.clone(),
+        set: options.set.iter().cloned().collect(),
+    };
+    let plan = switchyard_planner::plan_with_overlays(&bundle, &options).map_err(diagnostics)?;
     Ok((bundle, plan))
 }
 
@@ -616,6 +654,7 @@ fn runtime_plan(workspace_root: &Path, plan: &Plan) -> RuntimePlan {
         project_directory: workspace_root.to_owned(),
         artifact_dir: workspace_root.join(&plan.artifact_dir),
         requires_router_token: !plan.sidecars.is_empty(),
+        runtime_secrets: plan.runtime_secrets.clone(),
     }
 }
 
@@ -635,6 +674,10 @@ fn print_plan(workspace_root: &Path, plan: &Plan) -> io::Result<()> {
     println!("Mutation: {mutation}");
     println!("Compose project: {}", plan.compose_project);
     println!("Artifact directory: {}", plan.artifact_dir.display());
+    if plan.has_overrides {
+        print_impacts(workspace_root, plan)?;
+        print_origins(plan);
+    }
     println!("\nGenerated Compose:\n{}", plan.compose_yaml.trim_end());
     if plan.route_configs.is_empty() {
         println!("\nRoutes: none");
@@ -645,6 +688,49 @@ fn print_plan(workspace_root: &Path, plan: &Plan) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn print_overlay_diff(workspace_root: &Path, plan: &Plan) -> io::Result<()> {
+    println!("Deployment: {}", plan.deployment);
+    print_impacts(workspace_root, plan)?;
+    print_origins(plan);
+    Ok(())
+}
+
+fn print_impacts(workspace_root: &Path, plan: &Plan) -> io::Result<()> {
+    let changes = switchyard_planner::classify_changes(workspace_root, plan)?;
+    if changes.is_empty() {
+        println!("Impact: none");
+    } else {
+        println!("Impact:");
+        for change in changes {
+            println!(
+                "  {}: {}",
+                change.service,
+                format!("{:?}", change.impact).to_ascii_lowercase()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn print_origins(plan: &Plan) {
+    if plan.origins.is_empty() {
+        return;
+    }
+    println!("Origins:");
+    for origin in &plan.origins {
+        println!(
+            "  {}/{} {}={}  ← {}",
+            origin.instance, origin.category, origin.key, origin.value, origin.layer
+        );
+        for shadowed in &origin.shadowed {
+            println!(
+                "    warning: shadows {} from {}",
+                shadowed.value, shadowed.layer
+            );
+        }
+    }
 }
 
 fn refuse_runtime_drift(status: &DeploymentStatus) -> Result<(), MessageError> {

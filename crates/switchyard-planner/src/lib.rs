@@ -1,8 +1,10 @@
 //! Deterministic, side-effect-free deployment planning.
 
 mod model;
+mod overlay;
 
 pub use model::*;
+pub use overlay::*;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -24,6 +26,8 @@ use switchyard_sources::SourceManager;
 pub enum PlannerError {
     Io(io::Error),
     Yaml(serde_yaml::Error),
+    OverlayIo(io::Error),
+    OverlayYaml(serde_yaml::Error),
 }
 
 impl fmt::Display for PlannerError {
@@ -31,6 +35,8 @@ impl fmt::Display for PlannerError {
         match self {
             Self::Io(error) => write!(f, "could not read deployment: {error}"),
             Self::Yaml(error) => write!(f, "invalid deployment YAML: {error}"),
+            Self::OverlayIo(error) => write!(f, "could not read overlay: {error}"),
+            Self::OverlayYaml(error) => write!(f, "invalid overlay YAML: {error}"),
         }
     }
 }
@@ -64,6 +70,10 @@ pub enum DiagnosticCode {
     IncompatibleProtocol,
     IncompleteGroup,
     BackendGroupInvariant,
+    InvalidOverlay,
+    SelectorNoMatch,
+    OverlayConflict,
+    UnsupportedSecret,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -112,6 +122,18 @@ pub struct Plan {
     /// Exact live-derived source identity captured for every instance at plan time.
     #[serde(default)]
     pub source_identities: BTreeMap<String, SourceIdentity>,
+    /// Secret-safe provenance for values resolved from overlays.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub origins: Vec<OriginTrace>,
+    /// File payloads written only beneath the generated artifact directory.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub injected_files: Vec<InjectedFilePlan>,
+    /// Apply-time secret bindings, deliberately excluded from serialization.
+    #[serde(skip)]
+    pub runtime_secrets: Vec<RuntimeSecretPlan>,
+    /// Whether explicit overlays, a variation, or ephemeral values participated.
+    #[serde(skip)]
+    pub has_overrides: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -160,8 +182,11 @@ pub fn load_bundle(path: &Path) -> Result<Bundle, PlannerError> {
 
 /// Produces a deterministic Compose document and recovery artifacts without writing them.
 pub fn plan(bundle: &Bundle) -> Result<Plan, Vec<Diagnostic>> {
+    if !bundle.spec.overlays.is_empty() {
+        return plan_with_overlays(bundle, &OverlayOptions::default());
+    }
     let resolved_groups = validate(bundle)?;
-    generate(bundle, &resolved_groups).map_err(|error| {
+    generate(bundle, &resolved_groups, None).map_err(|error| {
         vec![Diagnostic::new(
             DiagnosticCode::InvalidPath,
             "$",
@@ -196,6 +221,11 @@ pub fn plan_with_binding(
 pub fn write_plan(workspace_root: &Path, plan: &Plan) -> io::Result<PathBuf> {
     let artifact_dir = workspace_root.join(&plan.artifact_dir);
     fs::create_dir_all(artifact_dir.join("routes"))?;
+    let overlays_dir = artifact_dir.join("overlays");
+    if overlays_dir.exists() {
+        fs::remove_dir_all(&overlays_dir)?;
+    }
+    overlay::materialize_injected_files(&artifact_dir, &plan.injected_files)?;
     write_atomic(
         &artifact_dir.join("compose.yaml"),
         plan.compose_yaml.as_bytes(),
@@ -1293,6 +1323,7 @@ fn resolve_path(base: &Path, value: &Path) -> PathBuf {
 fn generate(
     bundle: &Bundle,
     groups: &BTreeMap<String, BTreeMap<String, String>>,
+    overlay: Option<&OverlayResolution>,
 ) -> Result<Plan, Box<dyn std::error::Error>> {
     let deployment = &bundle.metadata.name;
     let project = resource_name(&["sy", deployment]);
@@ -1302,7 +1333,12 @@ fn generate(
     let artifact_bind_dir = bundle.workspace_root.join(&artifact_dir);
     let runtime_bind_dir = bundle.workspace_root.join(&runtime_dir);
     let definition_bytes = serde_json::to_vec(bundle)?;
-    let definition_hash = format!("{:x}", Sha256::digest(definition_bytes));
+    let mut definition_digest = Sha256::new();
+    definition_digest.update(definition_bytes);
+    if let Some(overlay) = overlay {
+        definition_digest.update(serde_json::to_vec(&overlay.files)?);
+    }
+    let definition_hash = format!("{:x}", definition_digest.finalize());
     let mut resource_definition = bundle.clone();
     resource_definition.spec.bindings.clear();
     resource_definition.spec.routes.clear();
@@ -1310,10 +1346,12 @@ fn generate(
     resource_definition.spec.managed_profiles.clear();
     resource_definition.spec.host_router = None;
     resource_definition.spec.host_upstreams.clear();
-    let resource_hash = format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(&resource_definition)?)
-    );
+    let mut resource_digest = Sha256::new();
+    resource_digest.update(serde_json::to_vec(&resource_definition)?);
+    if let Some(overlay) = overlay {
+        resource_digest.update(serde_json::to_vec(&overlay.files)?);
+    }
+    let resource_hash = format!("{:x}", resource_digest.finalize());
     let labels = ownership_labels(deployment, &resource_hash);
     let instances = bundle
         .spec
@@ -1375,6 +1413,8 @@ fn generate(
                     bundle,
                     block,
                 );
+                add_injected_mounts(&mut app, overlay, &instance.name, &artifact_bind_dir);
+                apply_overlay_environment(&mut app, overlay, instance);
                 let app_object = app.as_object_mut().expect("service is an object");
                 add_compose_dependencies(app_object, bundle, instance, service);
                 app_object.remove("networks");
@@ -1444,6 +1484,8 @@ fn generate(
                     bundle,
                     block,
                 );
+                add_injected_mounts(&mut app, overlay, &instance.name, &artifact_bind_dir);
+                apply_overlay_environment(&mut app, overlay, instance);
                 add_compose_dependencies(
                     app.as_object_mut().expect("service is an object"),
                     bundle,
@@ -1486,7 +1528,7 @@ fn generate(
         source.path = resolve_path(&bundle.definition_dir, &source.path);
     }
     let resolved_deployment_yaml = serde_yaml::to_string(&resolved)?;
-    let manifest = json!({
+    let mut manifest = json!({
         "apiVersion": API_VERSION,
         "deployment": deployment,
         "definitionHash": definition_hash,
@@ -1501,6 +1543,11 @@ fn generate(
         "ownershipLabels": labels,
         "sourceIdentities": source_identities,
     });
+    if let Some(overlay) = overlay {
+        let object = manifest.as_object_mut().expect("manifest is an object");
+        object.insert("origins".into(), json!(overlay.origins));
+        object.insert("injectedFiles".into(), json!(overlay.files));
+    }
     let manifest_json = serde_json::to_string_pretty(&manifest)?;
 
     Ok(Plan {
@@ -1518,6 +1565,19 @@ fn generate(
         host_router_config,
         host_upstreams,
         source_identities,
+        origins: overlay.map_or_else(Vec::new, |value| value.origins.clone()),
+        injected_files: overlay.map_or_else(Vec::new, |value| value.files.clone()),
+        runtime_secrets: overlay.map_or_else(Vec::new, |value| {
+            value
+                .secret_environment
+                .iter()
+                .map(|((instance, key), reference)| RuntimeSecretPlan {
+                    variable: overlay_secret_variable(instance, key),
+                    reference: reference.clone(),
+                })
+                .collect()
+        }),
+        has_overrides: overlay.is_some(),
     })
 }
 
@@ -1934,12 +1994,74 @@ fn add_runtime_fields(
                 .map(|value| (name.clone(), value.clone()))
         })
         .collect::<BTreeMap<_, _>>();
-    variables.extend(instance.parameters.clone());
     variables.extend(environment.clone());
+    variables.extend(instance.parameters.clone());
+    variables.extend(instance.environment.clone());
     variables.insert("SWITCHYARD_DEPLOYMENT".into(), bundle.metadata.name.clone());
     variables.insert("SWITCHYARD_INSTANCE".into(), instance.name.clone());
     if !variables.is_empty() {
         value.insert("environment".into(), json!(variables));
+    }
+}
+
+fn apply_overlay_environment(
+    service: &mut Value,
+    overlay: Option<&OverlayResolution>,
+    instance: &Instance,
+) {
+    let Some(environment) = service
+        .as_object_mut()
+        .and_then(|service| service.get_mut("environment"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    for key in &instance.environment_unset {
+        environment.remove(key);
+    }
+    let Some(overlay) = overlay else { return };
+    for (target, key) in overlay.secret_environment.keys() {
+        if target == &instance.name {
+            let variable = overlay_secret_variable(target, key);
+            environment.insert(
+                key.clone(),
+                Value::String(format!("${{{variable}:?overlay secret is required}}")),
+            );
+        }
+    }
+}
+
+fn overlay_secret_variable(instance: &str, key: &str) -> String {
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(format!("{instance}\0{key}").as_bytes())
+    );
+    format!(
+        "SWITCHYARD_OVERLAY_SECRET_{}",
+        digest[..16].to_ascii_uppercase()
+    )
+}
+
+fn add_injected_mounts(
+    service: &mut Value,
+    overlay: Option<&OverlayResolution>,
+    instance: &str,
+    artifact_bind_dir: &Path,
+) {
+    let Some(overlay) = overlay else { return };
+    let object = service.as_object_mut().expect("service is an object");
+    let mounts = object.entry("volumes").or_insert_with(|| json!([]));
+    let mounts = mounts.as_array_mut().expect("volumes is an array");
+    for file in overlay
+        .files
+        .iter()
+        .filter(|file| file.instance == instance)
+    {
+        mounts.push(json!(format!(
+            "{}:{}:ro",
+            artifact_bind_dir.join(&file.relative_path).display(),
+            file.target.display()
+        )));
     }
 }
 

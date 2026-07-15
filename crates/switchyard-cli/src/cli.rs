@@ -7,9 +7,11 @@ pub enum CliCommand {
     },
     Plan {
         bundle: PathBuf,
+        options: DeploymentOptions,
     },
     Up {
         bundle: PathBuf,
+        options: DeploymentOptions,
     },
     Bind {
         bundle: PathBuf,
@@ -20,6 +22,7 @@ pub enum CliCommand {
     Status {
         bundle: PathBuf,
         routes: bool,
+        options: DeploymentOptions,
     },
     Routes {
         bundle: PathBuf,
@@ -34,6 +37,14 @@ pub enum CliCommand {
     },
     Down {
         bundle: PathBuf,
+        options: DeploymentOptions,
+    },
+    OverlayValidate {
+        overlay: PathBuf,
+    },
+    OverlayDiff {
+        bundle: PathBuf,
+        options: DeploymentOptions,
     },
     Cleanup {
         bundle: PathBuf,
@@ -65,6 +76,13 @@ pub enum CliCommand {
     Help,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DeploymentOptions {
+    pub overlays: Vec<PathBuf>,
+    pub variation: Option<String>,
+    pub set: Vec<(String, String)>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransitionArgument {
     Close,
@@ -86,14 +104,16 @@ impl std::error::Error for UsageError {}
 pub const USAGE: &str = "\
 Usage:
   switchyard validate <deployment.yaml>
-  switchyard plan <deployment.yaml>
-  switchyard up <deployment.yaml>
+  switchyard plan <deployment.yaml> [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
+  switchyard up <deployment.yaml> [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
+  switchyard overlay validate <overlay.yaml>
+  switchyard overlay diff <deployment.yaml> --with <overlay.yaml> [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
   switchyard bind <deployment.yaml> <consumer> <group> [--transition close|drain|pin] [--drain-timeout-ms <ms>]
-  switchyard status <deployment.yaml> [--routes]
+  switchyard status <deployment.yaml> [--routes] [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
   switchyard routes <deployment.yaml>
   switchyard logs <deployment.yaml> [instance[/service]]
   switchyard open <deployment.yaml> <ui>
-  switchyard down <deployment.yaml>
+  switchyard down <deployment.yaml> [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
   switchyard cleanup <deployment.yaml> --yes
   switchyard daemon run
   switchyard daemon status
@@ -128,17 +148,23 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
     };
     match command {
         "validate" if rest.len() == 1 => Ok(CliCommand::Validate { bundle: bundle()? }),
-        "plan" if rest.len() == 1 => Ok(CliCommand::Plan { bundle: bundle()? }),
-        "up" if rest.len() == 1 => Ok(CliCommand::Up { bundle: bundle()? }),
+        "plan" if !rest.is_empty() => {
+            let (bundle, options, _) = parse_deployment_options(rest, false)?;
+            Ok(CliCommand::Plan { bundle, options })
+        }
+        "up" if !rest.is_empty() => {
+            let (bundle, options, _) = parse_deployment_options(rest, false)?;
+            Ok(CliCommand::Up { bundle, options })
+        }
         "bind" if rest.len() >= 3 => parse_bind(rest),
-        "status" if rest.len() == 1 => Ok(CliCommand::Status {
-            bundle: bundle()?,
-            routes: false,
-        }),
-        "status" if rest.len() == 2 && rest[1] == "--routes" => Ok(CliCommand::Status {
-            bundle: bundle()?,
-            routes: true,
-        }),
+        "status" if !rest.is_empty() => {
+            let (bundle, options, routes) = parse_deployment_options(rest, true)?;
+            Ok(CliCommand::Status {
+                bundle,
+                routes,
+                options,
+            })
+        }
         "routes" if rest.len() == 1 => Ok(CliCommand::Routes { bundle: bundle()? }),
         "logs" if (1..=2).contains(&rest.len()) => Ok(CliCommand::Logs {
             bundle: bundle()?,
@@ -148,7 +174,22 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
             bundle: bundle()?,
             ui: rest[1].clone(),
         }),
-        "down" if rest.len() == 1 => Ok(CliCommand::Down { bundle: bundle()? }),
+        "down" if !rest.is_empty() => {
+            let (bundle, options, _) = parse_deployment_options(rest, false)?;
+            Ok(CliCommand::Down { bundle, options })
+        }
+        "overlay" if rest.len() == 2 && rest[0] == "validate" => Ok(CliCommand::OverlayValidate {
+            overlay: PathBuf::from(&rest[1]),
+        }),
+        "overlay" if rest.len() >= 4 && rest[0] == "diff" => {
+            let (bundle, options, _) = parse_deployment_options(&rest[1..], false)?;
+            if options.overlays.is_empty() {
+                return Err(UsageError(
+                    "overlay diff requires at least one --with overlay".into(),
+                ));
+            }
+            Ok(CliCommand::OverlayDiff { bundle, options })
+        }
         "cleanup" if rest.len() == 1 => Ok(CliCommand::Cleanup {
             bundle: bundle()?,
             confirmed: false,
@@ -186,6 +227,44 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
             "invalid {command} arguments\n\n{USAGE}"
         ))),
     }
+}
+
+fn parse_deployment_options(
+    rest: &[String],
+    allow_routes: bool,
+) -> Result<(PathBuf, DeploymentOptions, bool), UsageError> {
+    let bundle = rest
+        .first()
+        .map(PathBuf::from)
+        .ok_or_else(|| UsageError("deployment YAML path is required".into()))?;
+    let mut options = DeploymentOptions::default();
+    let mut routes = false;
+    let mut index = 1;
+    while index < rest.len() {
+        match rest[index].as_str() {
+            "--with" if index + 1 < rest.len() => {
+                options.overlays.push(PathBuf::from(&rest[index + 1]));
+                index += 2;
+            }
+            "--variation" if index + 1 < rest.len() && options.variation.is_none() => {
+                options.variation = Some(rest[index + 1].clone());
+                index += 2;
+            }
+            "--set" if index + 1 < rest.len() => {
+                let Some((key, value)) = rest[index + 1].split_once('=') else {
+                    return Err(UsageError("--set requires KEY=VALUE".into()));
+                };
+                options.set.push((key.into(), value.into()));
+                index += 2;
+            }
+            "--routes" if allow_routes && !routes => {
+                routes = true;
+                index += 1;
+            }
+            _ => return Err(UsageError(format!("invalid deployment options\n\n{USAGE}"))),
+        }
+    }
+    Ok((bundle, options, routes))
 }
 
 fn parse_worktree_create(rest: &[String]) -> Result<CliCommand, UsageError> {
@@ -370,5 +449,37 @@ mod tests {
                 allow_dirty: true
             }
         );
+    }
+
+    #[test]
+    fn parses_overlay_and_variation_options_in_order() {
+        assert_eq!(
+            parse(args(&[
+                "plan",
+                "demo.yaml",
+                "--with",
+                "one.yaml",
+                "--with",
+                "two.yaml",
+                "--variation",
+                "mongo",
+                "--set",
+                "LOG_LEVEL=trace"
+            ]))
+            .unwrap(),
+            CliCommand::Plan {
+                bundle: "demo.yaml".into(),
+                options: DeploymentOptions {
+                    overlays: vec!["one.yaml".into(), "two.yaml".into()],
+                    variation: Some("mongo".into()),
+                    set: vec![("LOG_LEVEL".into(), "trace".into())],
+                },
+            }
+        );
+        assert!(matches!(
+            parse(args(&["overlay", "validate", "one.yaml"])).unwrap(),
+            CliCommand::OverlayValidate { .. }
+        ));
+        assert!(parse(args(&["overlay", "diff", "demo.yaml"])).is_err());
     }
 }
