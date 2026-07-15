@@ -62,9 +62,15 @@ for cleanup. A bind may also carry `transition` as `close`, `pin`, or `drain` wi
 `timeoutMs`; the CLI exposes the same choice through `--transition` and
 `--drain-timeout-ms`. Creation returns HTTP 202 and a versioned operation document. Status is
 `pending`, `running`, `succeeded`, `failed`, or `cancelled`. Script-compatible stdout,
-stderr, and exit code remain available for the daemon lifetime; terminal status and
-structured error data are durable in SQLite across restart. Raw output is deliberately
-not persisted because it can contain application secrets.
+stderr, and exit code remain available while an operation is active or retained in
+memory; terminal status and structured error data are durable in SQLite across restart.
+Raw output is deliberately not persisted because it can contain application secrets.
+
+The daemon keeps the 64 most recent terminal operations in memory, including their raw
+output and resumable event logs. Older terminal operations are evicted from memory;
+`GET /api/v1/operations/{id}` continues to return their durable status from SQLite, but
+their raw output and SSE replay are no longer available. Existing SSE streams retain
+their event log until the connected client finishes.
 
 Mutations acquire an expiring, heartbeated `switchyard-state` lease keyed by planned
 deployment ID. A second mutation receives HTTP 409 and `operation_lock_contended`;
@@ -92,8 +98,10 @@ followed by append-only activation history. `switchyard status --routes` and
 `GET /api/v1/operations/{id}/events` emits standard SSE records. IDs start at one and
 increase monotonically per operation stream. Event names are `operation`, `build`,
 `health`, `route`, and `log`. Send the last processed ID in `Last-Event-ID` to replay
-retained later events. Streams retain the latest 2,048 records for the daemon lifetime
-and close after the terminal event. Disconnecting an observer does not cancel work.
+retained later events. Streams retain the latest 2,048 records while their operation
+remains among the 64 most recent terminal operations and close after the terminal
+event. Disconnecting an observer does not cancel work, and an already connected stream
+remains valid if its operation is evicted from the daemon's lookup map.
 
 ## Compatibility policy
 

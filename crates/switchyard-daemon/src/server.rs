@@ -44,6 +44,7 @@ use crate::contract::{
 
 const LOCK_TTL_MILLIS: i64 = 15_000;
 const EVENT_CAPACITY: usize = 2_048;
+const TERMINAL_OPERATION_RETENTION: usize = 64;
 
 /// Configuration for one daemon instance.
 #[derive(Clone, Debug)]
@@ -220,12 +221,68 @@ struct RouterTarget {
     candidate: router_config::RouterConfig,
 }
 
+trait RouterAdmin {
+    fn current_snapshot(
+        &self,
+        socket: &Path,
+        token: &str,
+    ) -> Result<switchyard_router_admin::SnapshotIdentity, switchyard_router_admin::AdminError>;
+
+    fn apply_snapshot(
+        &self,
+        socket: &Path,
+        token: &str,
+        config: &router_config::RouterConfig,
+    ) -> Result<switchyard_router_admin::ApplyAcknowledgement, switchyard_router_admin::AdminError>;
+}
+
+struct LocalRouterAdmin;
+
+impl RouterAdmin for LocalRouterAdmin {
+    fn current_snapshot(
+        &self,
+        socket: &Path,
+        token: &str,
+    ) -> Result<switchyard_router_admin::SnapshotIdentity, switchyard_router_admin::AdminError>
+    {
+        switchyard_router_admin::current_snapshot(socket, token)
+    }
+
+    fn apply_snapshot(
+        &self,
+        socket: &Path,
+        token: &str,
+        config: &router_config::RouterConfig,
+    ) -> Result<switchyard_router_admin::ApplyAcknowledgement, switchyard_router_admin::AdminError>
+    {
+        switchyard_router_admin::apply_snapshot(socket, token, config)
+    }
+}
+
 fn apply_live_binding(
     project_root: &Path,
     request: CommandRequestV1,
     operation_id: &str,
     cancellation: watch::Receiver<bool>,
     events: EventSink,
+) -> Result<BackendOutcome, ApiErrorV1> {
+    apply_live_binding_with_admin(
+        project_root,
+        request,
+        operation_id,
+        cancellation,
+        events,
+        &LocalRouterAdmin,
+    )
+}
+
+fn apply_live_binding_with_admin(
+    project_root: &Path,
+    request: CommandRequestV1,
+    operation_id: &str,
+    cancellation: watch::Receiver<bool>,
+    events: EventSink,
+    admin: &impl RouterAdmin,
 ) -> Result<BackendOutcome, ApiErrorV1> {
     let consumer = request
         .consumer
@@ -356,7 +413,7 @@ fn apply_live_binding(
             failure = Some("operation was cancelled".to_owned());
             break;
         }
-        let observed = match switchyard_router_admin::current_snapshot(&target.socket, &token) {
+        let observed = match admin.current_snapshot(&target.socket, &token) {
             Ok(observed) => observed,
             Err(error) => {
                 failure = Some(error.to_string());
@@ -392,7 +449,7 @@ fn apply_live_binding(
             EventKindV1::Route,
             json!({"router": target.id, "binding": consumer, "desiredVersion": version, "status": "pending"}),
         );
-        match switchyard_router_admin::apply_snapshot(&target.socket, &token, &target.candidate) {
+        match admin.apply_snapshot(&target.socket, &token, &target.candidate) {
             Ok(ack)
                 if ack.version == version
                     && ack.checksum == checksum
@@ -463,73 +520,18 @@ fn apply_live_binding(
     }
 
     if failure.is_some() {
-        for (index, _) in applied.into_iter().rev() {
-            let target = &mut targets[index];
-            let observed = switchyard_router_admin::current_snapshot(&target.socket, &token)
-                .map_err(|error| {
-                    ApiErrorV1::new("rollback_observation_failed", error.to_string())
-                })?;
-            let rollback_version = observed.version.checked_add(1).ok_or_else(|| {
-                ApiErrorV1::new(
-                    "snapshot_version_exhausted",
-                    "router snapshot version is exhausted",
-                )
-            })?;
-            target.old.spec.snapshot.version = rollback_version;
-            target.old.spec.snapshot.id = router_config::RouteSnapshotId::new(format!(
-                "{}-rollback-{rollback_version}",
-                target.id.replace(':', "-")
-            ));
-            set_transition(&mut target.old, transition);
-            let checksum = snapshot_checksum(&target.old);
-            match switchyard_router_admin::apply_snapshot(&target.socket, &token, &target.old) {
-                Ok(ack)
-                    if ack.version == rollback_version
-                        && ack.checksum == checksum
-                        && ack.status == switchyard_router_admin::ActivationStatus::Activated =>
-                {
-                    attempts.push(router_attempt(
-                        &plan.deployment,
-                        target,
-                        consumer,
-                        operation_id,
-                        rollback_version,
-                        checksum,
-                        RouterApplyStatus::RolledBack,
-                        Some((observed.version, observed.checksum.clone())),
-                        transition_context.clone(),
-                        None,
-                        json!({"reason": "peer_router_failed"}),
-                    )?);
-                }
-                Ok(ack) => attempts.push(router_attempt(
-                    &plan.deployment,
-                    target,
-                    consumer,
-                    operation_id,
-                    rollback_version,
-                    checksum,
-                    RouterApplyStatus::Failed,
-                    Some((observed.version, observed.checksum)),
-                    transition_context.clone(),
-                    Some("rollback_acknowledgement_mismatch"),
-                    json!({"acknowledgement": ack}),
-                )?),
-                Err(error) => attempts.push(router_attempt(
-                    &plan.deployment,
-                    target,
-                    consumer,
-                    operation_id,
-                    rollback_version,
-                    checksum,
-                    RouterApplyStatus::Failed,
-                    Some((observed.version, observed.checksum)),
-                    transition_context.clone(),
-                    Some("rollback_failed"),
-                    json!({"message": error.to_string()}),
-                )?),
-            }
-        }
+        rollback_applied_targets(
+            &plan.deployment,
+            consumer,
+            operation_id,
+            &token,
+            transition,
+            &transition_context,
+            &mut targets,
+            applied,
+            &mut attempts,
+            admin,
+        );
         let message = failure.expect("checked");
         return Ok(BackendOutcome::LiveBinding {
             result: CommandResultV1 {
@@ -590,6 +592,172 @@ fn apply_live_binding(
             stderr: String::new(),
         },
         attempts,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rollback_applied_targets(
+    deployment: &str,
+    consumer: &str,
+    operation_id: &str,
+    token: &str,
+    transition: Option<TransitionPolicyV1>,
+    transition_context: &StructuredContext,
+    targets: &mut [RouterTarget],
+    applied: Vec<(usize, switchyard_router_admin::SnapshotIdentity)>,
+    attempts: &mut Vec<RouterApplyRecord>,
+    admin: &impl RouterAdmin,
+) {
+    for (index, previously_observed) in applied.into_iter().rev() {
+        let target = &mut targets[index];
+        let observed = match admin.current_snapshot(&target.socket, token) {
+            Ok(observed) => observed,
+            Err(error) => {
+                attempts.push(rollback_attempt(
+                    deployment,
+                    target,
+                    consumer,
+                    operation_id,
+                    target.candidate.spec.snapshot.version,
+                    snapshot_checksum(&target.candidate),
+                    RouterApplyStatus::Failed,
+                    Some((previously_observed.version, previously_observed.checksum)),
+                    transition_context.clone(),
+                    Some("rollback_observation_failed"),
+                    json!({"message": error.to_string()}),
+                ));
+                continue;
+            }
+        };
+        let Some(rollback_version) = observed.version.checked_add(1) else {
+            attempts.push(rollback_attempt(
+                deployment,
+                target,
+                consumer,
+                operation_id,
+                observed.version,
+                observed.checksum.clone(),
+                RouterApplyStatus::Failed,
+                Some((observed.version, observed.checksum)),
+                transition_context.clone(),
+                Some("rollback_version_exhausted"),
+                json!({"message": "router snapshot version is exhausted"}),
+            ));
+            continue;
+        };
+        target.old.spec.snapshot.version = rollback_version;
+        target.old.spec.snapshot.id = router_config::RouteSnapshotId::new(format!(
+            "{}-rollback-{rollback_version}",
+            target.id.replace(':', "-")
+        ));
+        set_transition(&mut target.old, transition);
+        let checksum = snapshot_checksum(&target.old);
+        match admin.apply_snapshot(&target.socket, token, &target.old) {
+            Ok(ack)
+                if ack.version == rollback_version
+                    && ack.checksum == checksum
+                    && ack.status == switchyard_router_admin::ActivationStatus::Activated =>
+            {
+                attempts.push(rollback_attempt(
+                    deployment,
+                    target,
+                    consumer,
+                    operation_id,
+                    rollback_version,
+                    checksum,
+                    RouterApplyStatus::RolledBack,
+                    Some((observed.version, observed.checksum.clone())),
+                    transition_context.clone(),
+                    None,
+                    json!({"reason": "peer_router_failed"}),
+                ));
+            }
+            Ok(ack) => attempts.push(rollback_attempt(
+                deployment,
+                target,
+                consumer,
+                operation_id,
+                rollback_version,
+                checksum,
+                RouterApplyStatus::Failed,
+                Some((observed.version, observed.checksum)),
+                transition_context.clone(),
+                Some("rollback_acknowledgement_mismatch"),
+                json!({"acknowledgement": ack}),
+            )),
+            Err(error) => attempts.push(rollback_attempt(
+                deployment,
+                target,
+                consumer,
+                operation_id,
+                rollback_version,
+                checksum,
+                RouterApplyStatus::Failed,
+                Some((observed.version, observed.checksum)),
+                transition_context.clone(),
+                Some("rollback_failed"),
+                json!({"message": error.to_string()}),
+            )),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rollback_attempt(
+    deployment: &str,
+    target: &RouterTarget,
+    binding: &str,
+    operation_id: &str,
+    version: u64,
+    checksum: String,
+    status: RouterApplyStatus,
+    observed: Option<(u64, String)>,
+    transition: StructuredContext,
+    error_code: Option<&str>,
+    context: Value,
+) -> RouterApplyRecord {
+    let fallback_checksum = checksum.clone();
+    let fallback_observed = observed.clone();
+    let fallback_transition = transition.clone();
+    router_attempt(
+        deployment,
+        target,
+        binding,
+        operation_id,
+        version,
+        checksum,
+        status,
+        observed,
+        transition,
+        error_code,
+        context,
+    )
+    .unwrap_or_else(|error| RouterApplyRecord {
+        deployment: deployment.into(),
+        router: target.id.clone(),
+        binding: binding.into(),
+        operation_id: operation_id.into(),
+        desired_version: i64::try_from(target.candidate.spec.snapshot.version).unwrap_or(i64::MAX),
+        desired_checksum: snapshot_checksum(&target.candidate),
+        version: i64::try_from(version).unwrap_or(i64::MAX),
+        checksum: fallback_checksum,
+        status: RouterApplyStatus::Failed,
+        observed_version: fallback_observed
+            .as_ref()
+            .map(|(version, _)| i64::try_from(*version).unwrap_or(i64::MAX)),
+        observed_checksum: fallback_observed.map(|(_, checksum)| checksum),
+        transition: fallback_transition,
+        error_code: Some(
+            error_code
+                .unwrap_or("rollback_attempt_record_failed")
+                .into(),
+        ),
+        recorded_at: now_millis(),
+        context: StructuredContext::new(json!({
+            "recordingErrorCode": error.code,
+            "message": error.message
+        }))
+        .unwrap_or_else(|_| StructuredContext::new(json!({})).expect("empty context is valid")),
     })
 }
 
@@ -814,6 +982,7 @@ struct Inner {
     token: String,
     store: Mutex<StateStore>,
     operations: Mutex<HashMap<String, RuntimeOperation>>,
+    terminal_operations: Mutex<VecDeque<String>>,
     heavy: Semaphore,
     backend: Arc<dyn OperationBackend>,
     shutdown: watch::Sender<bool>,
@@ -982,6 +1151,7 @@ fn prepare(
         token: token.clone(),
         store: Mutex::new(store),
         operations: Mutex::new(HashMap::new()),
+        terminal_operations: Mutex::new(VecDeque::new()),
         heavy: Semaphore::new(config.max_heavy_operations),
         backend,
         shutdown: shutdown.clone(),
@@ -1125,10 +1295,7 @@ async fn api_method_not_allowed() -> Response {
     )
 }
 
-async fn system_status(State(inner): State<Arc<Inner>>, headers: HeaderMap) -> Response {
-    if let Err(response) = authenticate(&inner, &headers) {
-        return response;
-    }
+async fn system_status(State(inner): State<Arc<Inner>>) -> Response {
     let operations = inner
         .operations
         .lock()
@@ -1146,10 +1313,7 @@ async fn system_status(State(inner): State<Arc<Inner>>, headers: HeaderMap) -> R
     .into_response()
 }
 
-async fn system_shutdown(State(inner): State<Arc<Inner>>, headers: HeaderMap) -> Response {
-    if let Err(response) = authenticate(&inner, &headers) {
-        return response;
-    }
+async fn system_shutdown(State(inner): State<Arc<Inner>>) -> Response {
     inner.shutdown.send_replace(true);
     StatusCode::ACCEPTED.into_response()
 }
@@ -1157,12 +1321,8 @@ async fn system_shutdown(State(inner): State<Arc<Inner>>, headers: HeaderMap) ->
 async fn start_command(
     State(inner): State<Arc<Inner>>,
     AxumPath(segment): AxumPath<String>,
-    headers: HeaderMap,
     payload: Result<Json<CommandRequestV1>, JsonRejection>,
 ) -> Response {
-    if let Err(response) = authenticate(&inner, &headers) {
-        return response;
-    }
     let request = match payload {
         Ok(Json(request)) => request,
         Err(error) => {
@@ -1348,6 +1508,7 @@ async fn execute_operation(
         inner.backend.run(kind, arguments, cancellation, sink)
     };
     let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
+    let mut lock_lost = None;
     let mut outcome = loop {
         tokio::select! {
             outcome = &mut work => break outcome,
@@ -1355,58 +1516,32 @@ async fn execute_operation(
                 let result = inner.store.lock().unwrap_or_else(|error| error.into_inner())
                     .heartbeat_lock(lock.as_mut().expect("guarded"), now_millis(), LOCK_TTL_MILLIS);
                 if let Err(error) = result {
-                    break Err(ApiErrorV1::new(error.code(), error.to_string()));
+                    lock_lost = Some(ApiErrorV1::new(error.code(), error.to_string()));
+                    if let Some(operation) = inner.operations.lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()).get(&id)
+                    {
+                        operation.cancellation.send_replace(true);
+                    }
+                    break work.await;
                 }
             }
         }
     };
     drop(permit);
-    let successful_apply = matches!(
-        &outcome,
-        Ok(BackendOutcome::Completed(result)) if result.exit_code == 0
-    ) || matches!(
-        &outcome,
-        Ok(BackendOutcome::LiveBinding { result, .. }) if result.exit_code == 0
-    );
+    let successful_apply = lock_lost.is_none()
+        && (matches!(
+            &outcome,
+            Ok(BackendOutcome::Completed(result)) if result.exit_code == 0
+        ) || matches!(
+            &outcome,
+            Ok(BackendOutcome::LiveBinding { result, .. }) if result.exit_code == 0
+        ));
     if successful_apply && matches!(kind, CommandKind::Apply | CommandKind::Bind) {
         if let Err(error) = persist_applied_snapshot(&inner, &persistence_request) {
             outcome = Err(error);
         }
     }
     match outcome {
-        Ok(BackendOutcome::Completed(result)) if result.exit_code == 0 => finish_operation(
-            &inner,
-            &id,
-            OperationStatusV1::Succeeded,
-            Some(result),
-            None,
-            &events,
-            lock,
-        ),
-        Ok(BackendOutcome::Completed(result)) => finish_operation(
-            &inner,
-            &id,
-            OperationStatusV1::Failed,
-            Some(result),
-            Some(ApiErrorV1::new(
-                "command_failed",
-                "switchyard command failed",
-            )),
-            &events,
-            lock,
-        ),
-        Ok(BackendOutcome::Cancelled(result)) => finish_operation(
-            &inner,
-            &id,
-            OperationStatusV1::Cancelled,
-            Some(result),
-            Some(ApiErrorV1::new(
-                "operation_cancelled",
-                "operation was cancelled",
-            )),
-            &events,
-            lock,
-        ),
         Ok(BackendOutcome::LiveBinding { result, attempts }) => {
             let persistence = {
                 let mut store = inner
@@ -1417,13 +1552,18 @@ async fn execute_operation(
                     .iter()
                     .try_for_each(|attempt| store.record_router_apply(attempt))
             };
-            if let Err(error) = persistence {
+            let error = lock_lost.or_else(|| {
+                persistence
+                    .err()
+                    .map(|error| ApiErrorV1::new(error.code(), error.to_string()))
+            });
+            if let Some(error) = error {
                 finish_operation(
                     &inner,
                     &id,
                     OperationStatusV1::Failed,
                     Some(result),
-                    Some(ApiErrorV1::new(error.code(), error.to_string())),
+                    Some(error),
                     &events,
                     lock,
                 );
@@ -1452,6 +1592,52 @@ async fn execute_operation(
                 );
             }
         }
+        Ok(BackendOutcome::Completed(result)) if result.exit_code == 0 && lock_lost.is_none() => {
+            finish_operation(
+                &inner,
+                &id,
+                OperationStatusV1::Succeeded,
+                Some(result),
+                None,
+                &events,
+                lock,
+            )
+        }
+        Ok(BackendOutcome::Completed(result)) => finish_operation(
+            &inner,
+            &id,
+            OperationStatusV1::Failed,
+            Some(result),
+            lock_lost.or_else(|| {
+                Some(ApiErrorV1::new(
+                    "command_failed",
+                    "switchyard command failed",
+                ))
+            }),
+            &events,
+            lock,
+        ),
+        Ok(BackendOutcome::Cancelled(result)) if lock_lost.is_none() => finish_operation(
+            &inner,
+            &id,
+            OperationStatusV1::Cancelled,
+            Some(result),
+            Some(ApiErrorV1::new(
+                "operation_cancelled",
+                "operation was cancelled",
+            )),
+            &events,
+            lock,
+        ),
+        Ok(BackendOutcome::Cancelled(result)) => finish_operation(
+            &inner,
+            &id,
+            OperationStatusV1::Failed,
+            Some(result),
+            lock_lost,
+            &events,
+            lock,
+        ),
         Err(error) => finish_operation(
             &inner,
             &id,
@@ -1573,17 +1759,34 @@ fn finish_operation(
         json!({"status": status, "error": error}),
     );
     events.finish();
+    retain_terminal_operation(inner, id);
     inner.active_notify.notify_waiters();
+}
+
+fn retain_terminal_operation(inner: &Inner, id: &str) {
+    let evicted = {
+        let mut terminal = inner
+            .terminal_operations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        terminal.push_back(id.to_owned());
+        (terminal.len() > TERMINAL_OPERATION_RETENTION)
+            .then(|| terminal.pop_front())
+            .flatten()
+    };
+    if let Some(evicted) = evicted {
+        inner
+            .operations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&evicted);
+    }
 }
 
 async fn get_operation(
     State(inner): State<Arc<Inner>>,
     AxumPath(id): AxumPath<String>,
-    headers: HeaderMap,
 ) -> Response {
-    if let Err(response) = authenticate(&inner, &headers) {
-        return response;
-    }
     if let Some(operation) = inner
         .operations
         .lock()
@@ -1619,11 +1822,7 @@ async fn get_operation(
 async fn cancel_operation(
     State(inner): State<Arc<Inner>>,
     AxumPath(id): AxumPath<String>,
-    headers: HeaderMap,
 ) -> Response {
-    if let Err(response) = authenticate(&inner, &headers) {
-        return response;
-    }
     let mut operations = inner
         .operations
         .lock()
@@ -1654,9 +1853,6 @@ async fn operation_events(
     AxumPath(id): AxumPath<String>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(response) = authenticate(&inner, &headers) {
-        return response;
-    }
     let last_id = match headers
         .get("last-event-id")
         .and_then(|value| value.to_str().ok())
@@ -1882,8 +2078,10 @@ fn discovery_listener_is_active(path: &Path) -> bool {
     let Ok(address) = discovery.address.parse::<SocketAddr>() else {
         return false;
     };
-    address.ip().is_loopback()
-        && std::net::TcpStream::connect_timeout(&address, Duration::from_millis(100)).is_ok()
+    if !address.ip().is_loopback() {
+        return false;
+    }
+    crate::client::discovery_daemon_status(&discovery).is_some()
 }
 
 fn remove_discovery_if_owned(path: &Path, token: &str) -> Result<(), DaemonError> {
@@ -1999,6 +2197,109 @@ fn observe_docker() -> Result<Vec<switchyard_state::OwnedResourceObservation>, i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FailingRollbackAdmin {
+        applied: Mutex<Vec<String>>,
+    }
+
+    impl RouterAdmin for FailingRollbackAdmin {
+        fn current_snapshot(
+            &self,
+            socket: &Path,
+            _token: &str,
+        ) -> Result<switchyard_router_admin::SnapshotIdentity, switchyard_router_admin::AdminError>
+        {
+            if socket == Path::new("second.socket") {
+                return Err(switchyard_router_admin::AdminError::InvalidResponse(
+                    "observation unavailable".into(),
+                ));
+            }
+            Ok(switchyard_router_admin::SnapshotIdentity {
+                id: "active".into(),
+                version: 2,
+                checksum: "active-checksum".into(),
+            })
+        }
+
+        fn apply_snapshot(
+            &self,
+            socket: &Path,
+            _token: &str,
+            config: &router_config::RouterConfig,
+        ) -> Result<
+            switchyard_router_admin::ApplyAcknowledgement,
+            switchyard_router_admin::AdminError,
+        > {
+            self.applied
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(socket.to_string_lossy().into_owned());
+            Ok(switchyard_router_admin::ApplyAcknowledgement {
+                version: config.spec.snapshot.version,
+                checksum: snapshot_checksum(config),
+                status: switchyard_router_admin::ActivationStatus::Activated,
+            })
+        }
+    }
+
+    #[test]
+    fn rollback_observation_failure_is_recorded_and_remaining_targets_continue() {
+        let config: router_config::RouterConfig = serde_json::from_str(include_str!(
+            "../../router-config/tests/fixtures/valid/v1alpha1-minimal.json"
+        ))
+        .unwrap();
+        let target = |id: &str, socket: &str| {
+            let mut candidate = config.clone();
+            candidate.spec.snapshot.version = 2;
+            RouterTarget {
+                id: id.into(),
+                socket: socket.into(),
+                old: config.clone(),
+                candidate,
+            }
+        };
+        let mut targets = vec![
+            target("first", "first.socket"),
+            target("second", "second.socket"),
+        ];
+        let observed = |id: &str| switchyard_router_admin::SnapshotIdentity {
+            id: id.into(),
+            version: 1,
+            checksum: format!("{id}-checksum"),
+        };
+        let admin = FailingRollbackAdmin {
+            applied: Mutex::new(Vec::new()),
+        };
+        let mut attempts = Vec::new();
+        rollback_applied_targets(
+            "demo",
+            "backend",
+            "operation",
+            "token",
+            None,
+            &StructuredContext::new(json!({})).unwrap(),
+            &mut targets,
+            vec![(0, observed("first")), (1, observed("second"))],
+            &mut attempts,
+            &admin,
+        );
+
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].router, "second");
+        assert_eq!(
+            attempts[0].error_code.as_deref(),
+            Some("rollback_observation_failed")
+        );
+        assert_eq!(attempts[1].router, "first");
+        assert_eq!(attempts[1].status, RouterApplyStatus::RolledBack);
+        assert_eq!(
+            *admin
+                .applied
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+            vec!["first.socket"]
+        );
+    }
 
     #[test]
     fn discovery_is_private_and_token_comparison_handles_different_lengths() {

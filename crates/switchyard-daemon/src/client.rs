@@ -1,6 +1,6 @@
 use std::{
     fmt, fs,
-    io::{self, Read, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     net::{SocketAddr, TcpStream},
     os::unix::fs::PermissionsExt,
     path::Path,
@@ -103,6 +103,9 @@ pub fn load_discovery(project_root: &Path) -> Result<Option<DiscoveryV1>, Client
     if discovery.token.is_empty() {
         return Err(ClientError::InvalidDiscovery("token is empty".into()));
     }
+    if discovery_daemon_status(&discovery).is_none() {
+        return Ok(None);
+    }
     Ok(Some(discovery))
 }
 
@@ -131,6 +134,17 @@ pub fn execute_if_running(
         }
         Err(error) => return Err(error),
     };
+    let events_path = format!("/api/v1/operations/{}/events", operation.id);
+    if wait_for_terminal_event(&discovery, &events_path).is_ok() {
+        let current = json_request::<(), _>(
+            &discovery,
+            "GET",
+            &format!("/api/v1/operations/{}", operation.id),
+            None,
+        )?;
+        return Ok(DaemonExecution::Completed(current));
+    }
+    let mut delay = Duration::from_millis(100);
     loop {
         let current: OperationV1 = json_request::<(), _>(
             &discovery,
@@ -141,7 +155,8 @@ pub fn execute_if_running(
         if current.status.terminal() {
             return Ok(DaemonExecution::Completed(current));
         }
-        thread::sleep(Duration::from_millis(40));
+        thread::sleep(delay);
+        delay = (delay * 2).min(Duration::from_secs(1));
     }
 }
 
@@ -171,6 +186,24 @@ fn json_request<B: Serialize, T: DeserializeOwned>(
     path: &str,
     body: Option<&B>,
 ) -> Result<T, ClientError> {
+    json_request_with_timeouts(
+        discovery,
+        method,
+        path,
+        body,
+        Duration::from_millis(300),
+        Duration::from_secs(30),
+    )
+}
+
+fn json_request_with_timeouts<B: Serialize, T: DeserializeOwned>(
+    discovery: &DiscoveryV1,
+    method: &str,
+    path: &str,
+    body: Option<&B>,
+    connect_timeout: Duration,
+    read_timeout: Duration,
+) -> Result<T, ClientError> {
     let address: SocketAddr = discovery
         .address
         .parse()
@@ -180,8 +213,8 @@ fn json_request<B: Serialize, T: DeserializeOwned>(
         .transpose()
         .map_err(|error| ClientError::InvalidResponse(error.to_string()))?
         .unwrap_or_default();
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(300))?;
-    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    let mut stream = TcpStream::connect_timeout(&address, connect_timeout)?;
+    stream.set_read_timeout(Some(read_timeout))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     write!(
         stream,
@@ -225,6 +258,142 @@ fn json_request<B: Serialize, T: DeserializeOwned>(
         .map_err(|error| ClientError::InvalidResponse(error.to_string()))
 }
 
+pub(crate) fn discovery_daemon_status(discovery: &DiscoveryV1) -> Option<DaemonStatusV1> {
+    json_request_with_timeouts::<(), _>(
+        discovery,
+        "GET",
+        "/api/v1/system/status",
+        None,
+        Duration::from_millis(100),
+        Duration::from_millis(300),
+    )
+    .ok()
+    .filter(|status: &DaemonStatusV1| status.api_version == API_VERSION)
+}
+
+fn wait_for_terminal_event(discovery: &DiscoveryV1, path: &str) -> Result<(), ClientError> {
+    let address: SocketAddr = discovery
+        .address
+        .parse()
+        .map_err(|error| ClientError::InvalidDiscovery(format!("invalid address: {error}")))?;
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(300))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n",
+        discovery.token
+    )?;
+    stream.flush()?;
+    let mut reader = BufReader::new(stream);
+    let mut headers = String::new();
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 {
+            return Err(ClientError::InvalidResponse(
+                "truncated SSE response headers".into(),
+            ));
+        }
+        if line == "\r\n" {
+            break;
+        }
+        headers.push_str(&line);
+    }
+    let status = headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|status| status.parse::<u16>().ok())
+        .ok_or_else(|| ClientError::InvalidResponse("missing HTTP status".into()))?;
+    if !(200..300).contains(&status) {
+        return Err(ClientError::InvalidResponse(format!(
+            "SSE request returned HTTP {status}"
+        )));
+    }
+    let chunked = headers
+        .lines()
+        .any(|line| line.eq_ignore_ascii_case("transfer-encoding: chunked"));
+    if chunked {
+        read_chunked_sse(&mut reader)
+    } else {
+        read_sse_lines(&mut reader)
+    }
+}
+
+fn read_chunked_sse(reader: &mut impl BufRead) -> Result<(), ClientError> {
+    let mut pending = String::new();
+    loop {
+        let mut size_line = String::new();
+        reader.read_line(&mut size_line)?;
+        let size = usize::from_str_radix(
+            size_line.trim_end().split(';').next().unwrap_or_default(),
+            16,
+        )
+        .map_err(|error| ClientError::InvalidResponse(error.to_string()))?;
+        if size == 0 {
+            return Err(ClientError::InvalidResponse(
+                "SSE stream ended before a terminal operation event".into(),
+            ));
+        }
+        let mut chunk = vec![0_u8; size];
+        reader.read_exact(&mut chunk)?;
+        let mut terminator = [0_u8; 2];
+        reader.read_exact(&mut terminator)?;
+        if terminator != *b"\r\n" {
+            return Err(ClientError::InvalidResponse(
+                "invalid chunk terminator".into(),
+            ));
+        }
+        pending.push_str(&String::from_utf8_lossy(&chunk).replace('\r', ""));
+        if consume_sse_records(&mut pending)? {
+            return Ok(());
+        }
+    }
+}
+
+fn read_sse_lines(reader: &mut impl BufRead) -> Result<(), ClientError> {
+    let mut pending = String::new();
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 {
+            return Err(ClientError::InvalidResponse(
+                "SSE stream ended before a terminal operation event".into(),
+            ));
+        }
+        pending.push_str(&line.replace('\r', ""));
+        if consume_sse_records(&mut pending)? {
+            return Ok(());
+        }
+    }
+}
+
+fn consume_sse_records(pending: &mut String) -> Result<bool, ClientError> {
+    while let Some(end) = pending.find("\n\n") {
+        let record = pending[..end].to_owned();
+        pending.drain(..end + 2);
+        let mut event = None;
+        let mut data = None;
+        for line in record.lines() {
+            if let Some(value) = line.strip_prefix("event:") {
+                event = Some(value.trim());
+            } else if let Some(value) = line.strip_prefix("data:") {
+                data = Some(value.trim());
+            }
+        }
+        if event == Some("operation") {
+            let value: serde_json::Value = serde_json::from_str(data.unwrap_or_default())
+                .map_err(|error| ClientError::InvalidResponse(error.to_string()))?;
+            if value
+                .pointer("/data/status")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|status| matches!(status, "succeeded" | "failed" | "cancelled"))
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 fn decode_chunked(mut input: &[u8]) -> Result<Vec<u8>, ClientError> {
     let mut output = Vec::new();
     loop {
@@ -251,4 +420,24 @@ fn decode_chunked(mut input: &[u8]) -> Result<Vec<u8>, ClientError> {
         input = &input[size + 2..];
     }
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sse_parser_waits_for_a_terminal_operation_event() {
+        let mut pending = concat!(
+            "event: operation\n",
+            "data: {\"data\":{\"status\":\"running\"}}\n\n",
+            "event: log\n",
+            "data: {\"data\":{\"status\":\"failed\"}}\n\n"
+        )
+        .to_owned();
+        assert!(!consume_sse_records(&mut pending).unwrap());
+
+        pending.push_str("event: operation\ndata: {\"data\":{\"status\":\"succeeded\"}}\n\n");
+        assert!(consume_sse_records(&mut pending).unwrap());
+    }
 }

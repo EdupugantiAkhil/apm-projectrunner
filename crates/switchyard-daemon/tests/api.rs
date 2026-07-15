@@ -7,9 +7,9 @@ use std::{
     pin::Pin,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{Router, body::Body, http::Request};
@@ -21,7 +21,9 @@ use switchyard_daemon::{
     contract::{CommandKind, CommandResultV1, OperationStatusV1, OperationV1},
     server::{BackendOutcome, EventSink, OperationBackend, api_for_tests},
 };
-use switchyard_state::{RouterApplyRecord, RouterApplyStatus, StructuredContext};
+use switchyard_state::{
+    LockRequest, RouterApplyRecord, RouterApplyStatus, StateStore, StructuredContext,
+};
 use tempfile::TempDir;
 use tokio::sync::watch;
 use tower::ServiceExt;
@@ -75,6 +77,99 @@ struct CountingBackend {
 }
 
 struct LiveBindingBackend;
+
+struct ImmediateBackend;
+
+struct LockLossBackend {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl OperationBackend for LockLossBackend {
+    fn run(
+        &self,
+        _kind: CommandKind,
+        _arguments: Vec<String>,
+        _cancellation: watch::Receiver<bool>,
+        _events: EventSink,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<BackendOutcome, switchyard_daemon::contract::ApiErrorV1>>
+                + Send,
+        >,
+    > {
+        Box::pin(async { unreachable!("bind uses the native backend hook") })
+    }
+
+    fn live_bind(
+        &self,
+        request: switchyard_daemon::contract::CommandRequestV1,
+        operation_id: String,
+        mut cancellation: watch::Receiver<bool>,
+        _events: EventSink,
+    ) -> Option<
+        Pin<
+            Box<
+                dyn Future<Output = Result<BackendOutcome, switchyard_daemon::contract::ApiErrorV1>>
+                    + Send,
+            >,
+        >,
+    > {
+        let cancelled = self.cancelled.clone();
+        let binding = request.consumer.unwrap();
+        Some(Box::pin(async move {
+            while !*cancellation.borrow() && cancellation.changed().await.is_ok() {}
+            cancelled.store(true, Ordering::SeqCst);
+            let empty = || StructuredContext::new(json!({})).unwrap();
+            Ok(BackendOutcome::LiveBinding {
+                result: CommandResultV1 {
+                    exit_code: 130,
+                    stdout: String::new(),
+                    stderr: "cancelled after lock loss\n".into(),
+                },
+                attempts: vec![RouterApplyRecord {
+                    deployment: "comparison".into(),
+                    router: "sidecar:backend-a".into(),
+                    binding,
+                    operation_id,
+                    desired_version: 2,
+                    desired_checksum: "candidate".into(),
+                    version: 2,
+                    checksum: "candidate".into(),
+                    status: RouterApplyStatus::Failed,
+                    observed_version: Some(1),
+                    observed_checksum: Some("active".into()),
+                    transition: empty(),
+                    error_code: Some("cancelled_after_lock_loss".into()),
+                    recorded_at: 12,
+                    context: empty(),
+                }],
+            })
+        }))
+    }
+}
+
+impl OperationBackend for ImmediateBackend {
+    fn run(
+        &self,
+        _kind: CommandKind,
+        _arguments: Vec<String>,
+        _cancellation: watch::Receiver<bool>,
+        _events: EventSink,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<BackendOutcome, switchyard_daemon::contract::ApiErrorV1>>
+                + Send,
+        >,
+    > {
+        Box::pin(async {
+            Ok(BackendOutcome::Completed(CommandResultV1 {
+                exit_code: 0,
+                stdout: "done\n".into(),
+                stderr: String::new(),
+            }))
+        })
+    }
+}
 
 impl OperationBackend for LiveBindingBackend {
     fn run(
@@ -309,6 +404,22 @@ async fn auth_and_versioned_surface_are_enforced() {
             .0,
         401
     );
+    for (method, path) in [
+        ("POST", "/api/v1/system/shutdown"),
+        ("POST", "/api/v1/commands/validate"),
+        ("GET", "/api/v1/operations/missing"),
+        ("POST", "/api/v1/operations/missing/cancel"),
+        ("GET", "/api/v1/operations/missing/events"),
+        ("GET", "/api/v1/deployments/missing/routes"),
+        ("GET", "/api/v1/not-found"),
+        ("DELETE", "/api/v1/system/status"),
+    ] {
+        assert_eq!(
+            request(&daemon, None, method, path, None, &[]).await.0,
+            401,
+            "{method} {path} bypassed authentication"
+        );
+    }
     assert_eq!(
         request(
             &daemon,
@@ -360,6 +471,145 @@ async fn auth_and_versioned_surface_are_enforced() {
     assert_eq!(malformed.0, 400);
     let error: switchyard_daemon::contract::ApiErrorV1 = json_body(&malformed.1);
     assert_eq!(error.code, "invalid_json");
+}
+
+#[tokio::test]
+async fn terminal_operation_retention_is_bounded_and_store_remains_queryable() {
+    let temp = TempDir::new().unwrap();
+    let daemon = start_api(&temp, Arc::new(ImmediateBackend), 2);
+    let mut ids = Vec::new();
+    for _ in 0..65 {
+        let (status, body) = request(
+            &daemon,
+            Some(&daemon.token),
+            "POST",
+            "/api/v1/commands/validate",
+            Some(command_body(&fixture())),
+            &[],
+        )
+        .await;
+        assert_eq!(status, 202);
+        let operation: OperationV1 = json_body(&body);
+        wait_terminal(&daemon, &operation.id).await;
+        ids.push(operation.id);
+    }
+
+    let oldest = &ids[0];
+    assert_eq!(
+        request(
+            &daemon,
+            Some(&daemon.token),
+            "GET",
+            &format!("/api/v1/operations/{oldest}/events"),
+            None,
+            &[],
+        )
+        .await
+        .0,
+        404
+    );
+    let (status, body) = request(
+        &daemon,
+        Some(&daemon.token),
+        "GET",
+        &format!("/api/v1/operations/{oldest}"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let stored: OperationV1 = json_body(&body);
+    assert_eq!(stored.status, OperationStatusV1::Succeeded);
+    assert!(stored.result.is_none());
+    assert_eq!(
+        request(
+            &daemon,
+            Some(&daemon.token),
+            "GET",
+            &format!("/api/v1/operations/{}/events", ids.last().unwrap()),
+            None,
+            &[],
+        )
+        .await
+        .0,
+        200
+    );
+}
+
+#[tokio::test]
+async fn lock_loss_cancels_live_binding_then_persists_its_attempts() {
+    let temp = TempDir::new().unwrap();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let daemon = start_api(
+        &temp,
+        Arc::new(LockLossBackend {
+            cancelled: cancelled.clone(),
+        }),
+        2,
+    );
+    let (status, body) = request(
+        &daemon,
+        Some(&daemon.token),
+        "POST",
+        "/api/v1/commands/bind",
+        Some(json!({
+            "bundle": fixture(),
+            "consumer": "backend-a",
+            "group": "base"
+        })),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 202);
+    let operation: OperationV1 = json_body(&body);
+
+    let (mut competing_store, _) =
+        StateStore::open(temp.path().join(".switchyard/state.sqlite3")).unwrap();
+    let future_now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+        + 60_000;
+    competing_store
+        .acquire_lock(&LockRequest {
+            deployment: "comparison",
+            owner: "replacement-daemon",
+            pid: 999,
+            process_started_at: future_now,
+            token: "replacement-token",
+            now: future_now,
+            ttl_millis: 15_000,
+        })
+        .unwrap();
+    drop(competing_store);
+
+    let terminal = tokio::time::timeout(
+        Duration::from_secs(7),
+        wait_terminal(&daemon, &operation.id),
+    )
+    .await
+    .expect("heartbeat should detect the replaced lease");
+    assert_eq!(terminal.status, OperationStatusV1::Failed);
+    assert_eq!(
+        terminal.error.as_ref().map(|error| error.code.as_str()),
+        Some("operation_lock_lost")
+    );
+    assert!(cancelled.load(Ordering::SeqCst));
+
+    let (_, body) = request(
+        &daemon,
+        Some(&daemon.token),
+        "GET",
+        "/api/v1/deployments/comparison/routes",
+        None,
+        &[],
+    )
+    .await;
+    let routes: switchyard_daemon::contract::DeploymentRoutesV1 = json_body(&body);
+    assert!(routes.history.iter().any(|attempt| {
+        attempt.operation_id.as_deref() == Some(operation.id.as_str())
+            && attempt.activation_status == "rejected"
+    }));
 }
 
 #[tokio::test]

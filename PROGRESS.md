@@ -95,6 +95,11 @@ implemented shape and the evidence used to close a phase.
   monotonic IDs, retains 2,048 records, and replays records after `Last-Event-ID`.
   Status and structured errors survive restart in SQLite; raw command output and event
   buffers remain memory-only to avoid persisting possible application secrets.
+- Phase 5 review hardening retains live-bind and rollback attempts across partial
+  failures, cancels and joins blocking bind work after lease loss, bounds in-memory
+  terminal operations to the most recent 64, waits through SSE with backed-off polling
+  fallback, authenticates discovery peers with daemon status, and applies bearer
+  authentication exactly once in router middleware.
 - Docker-free tests cover auth, versioned-only routing, every SSE category and replay,
   mutation contention, global limiting, mid-operation cancellation, SQLite restart
   recovery, no-daemon fallback, and byte-identical API-backend CLI output. The production
@@ -148,9 +153,10 @@ implemented shape and the evidence used to close a phase.
 
 ## Phase 5 verification
 
-- `cargo test -p switchyard-daemon --all-features --test api`: passed (6 tests),
+- `cargo test -p switchyard-daemon --all-features --test api`: passed (8 tests),
   including restart, domain/binding persistence, route failure/rollback persistence,
-  and deleted-database recovery.
+  lock-loss cancellation with attempt persistence, bounded terminal retention, and
+  deleted-database recovery.
 - `cargo test -p switchyard-state -p switchyard-router-admin -p switchyard-daemon
   --all-features --no-fail-fast`: passed (state, shared client, daemon, integration, and
   doc tests).

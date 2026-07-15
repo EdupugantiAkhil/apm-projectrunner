@@ -1,5 +1,19 @@
 # Agent mistakes and lessons
 
+## 2026-07-15 — Phase 5 daemon review corrections
+
+- Live-bind rollback returned early when observing one previously activated router
+  failed, discarding the complete attempt vector before SQLite persistence and skipping
+  compensation for remaining routers. Correction: record the observation failure as a
+  failed rollback attempt and continue the rollback loop. Lesson: error paths for
+  multi-target mutations must preserve the full history accumulated so far.
+- Lease-heartbeat failure dropped the async handle for blocking live-bind work, allowing
+  router mutation to continue without the lease while its attempts became unobservable.
+  Correction: signal cooperative cancellation, await the backend to completion, persist
+  returned attempts, and only then finish with the lock-lost error. Lesson: blocking work
+  must observe cancellation and must never be abandoned merely because its async handle
+  was dropped.
+
 ## 2026-07-15 — Phase 5 live router control
 
 - The first state update treated an activated candidate's acknowledgement as both the
