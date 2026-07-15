@@ -13,6 +13,11 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use switchyard_adapter_sdk::{
+    AdapterKind, ConsumerSlot, Diagnostic as AdapterDiagnostic, Protocol as AdapterProtocol,
+    ProviderCapability, RegisteredAdapter, RouteValidationContext,
+};
+use switchyard_adapters::built_in_registry;
 
 #[derive(Debug)]
 pub enum PlannerError {
@@ -247,8 +252,25 @@ fn validate(
     }
     validate_name(&bundle.metadata.name, "metadata.name", &mut errors);
 
+    let adapters = built_in_registry();
+
     for (name, source) in &bundle.spec.sources {
         validate_name(name, format!("spec.sources.{name}"), &mut errors);
+        let (adapter_id, configuration) = source_adapter_configuration(source);
+        if let Some(adapter) = adapters.lookup(AdapterKind::Source, adapter_id) {
+            extend_adapter_diagnostics(
+                &mut errors,
+                adapter.adapter().validate_configuration(&configuration),
+                DiagnosticCode::InvalidPath,
+                &format!("spec.sources.{name}"),
+            );
+        } else {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::UnsupportedSchema,
+                format!("spec.sources.{name}"),
+                format!("built-in adapter {adapter_id} is not registered"),
+            ));
+        }
         let path = resolve_path(&bundle.definition_dir, &source.path);
         if !path.is_dir() {
             errors.push(Diagnostic::new(
@@ -259,14 +281,13 @@ fn validate(
         }
         if matches!(source.r#type, SourceType::Worktree) {
             match &source.repository {
-                Some(repository)
-                    if resolve_path(&bundle.definition_dir, repository).is_dir()
-                        && source.r#ref.as_ref().is_some_and(|value| !value.is_empty()) => {}
-                _ => errors.push(Diagnostic::new(
+                Some(repository) if resolve_path(&bundle.definition_dir, repository).is_dir() => {}
+                Some(_) => errors.push(Diagnostic::new(
                     DiagnosticCode::InvalidPath,
                     format!("spec.sources.{name}"),
-                    "worktree source needs an existing repository directory and a non-empty ref",
+                    "worktree source needs an existing repository directory",
                 )),
+                None => {}
             }
         }
     }
@@ -286,7 +307,11 @@ fn validate(
                 format!("spec.blocks.{block_name}.services.{service_name}"),
                 &mut errors,
             );
-            validate_execution(block_name, service_name, service, bundle, &mut errors);
+            validate_execution(block_name, service_name, service, &adapters, &mut errors);
+            if let Some(probe) = &service.probe {
+                validate_probe(block_name, service_name, probe, &adapters, &mut errors);
+            }
+            validate_route_slots(block_name, service_name, service, &adapters, &mut errors);
             for slot in service.provides.keys().chain(service.consumes.keys()) {
                 validate_name(
                     slot,
@@ -380,7 +405,7 @@ fn validate(
 
     let resolved_groups = resolve_groups(&bundle.spec.groups, &mut errors);
     validate_expanded_dependencies(bundle, &instances, &mut errors);
-    validate_routes(bundle, &instances, &resolved_groups, &mut errors);
+    validate_routes(bundle, &instances, &resolved_groups, &adapters, &mut errors);
     validate_ui_routes(bundle, &instances, &resolved_groups, &mut errors);
     for (ui, profile) in &bundle.spec.managed_profiles {
         let path = format!("spec.managedProfiles.{ui}");
@@ -458,62 +483,228 @@ fn validate_execution(
     block_name: &str,
     service_name: &str,
     service: &Service,
-    bundle: &Bundle,
+    adapters: &switchyard_adapter_sdk::AdapterRegistry,
     errors: &mut Vec<Diagnostic>,
 ) {
     let path = format!("spec.blocks.{block_name}.services.{service_name}.execution");
-    match &service.execution {
-        Execution::Container { image, build, .. } => {
-            if image.is_none() && build.is_none() {
-                errors.push(Diagnostic::new(
-                    DiagnosticCode::MissingReference,
-                    &path,
-                    "container execution needs image or build",
-                ));
+    let (kind, adapter_id, configuration) = execution_adapter_configuration(&service.execution);
+    let Some(adapter) = adapters.lookup(kind, adapter_id) else {
+        errors.push(Diagnostic::new(
+            DiagnosticCode::UnsupportedSchema,
+            path,
+            format!("built-in adapter {adapter_id} is not registered"),
+        ));
+        return;
+    };
+    for diagnostic in adapter.adapter().validate_configuration(&configuration) {
+        let code = match diagnostic.code.as_str() {
+            "adapter_missing_reference" | "adapter_config_schema"
+                if matches!(
+                    service.execution,
+                    Execution::Container { .. } | Execution::Script { .. }
+                ) =>
+            {
+                DiagnosticCode::MissingReference
             }
-            if let Some(build) = build {
-                for (value, field) in [
-                    (build.context.as_path(), "context"),
-                    (
-                        build
-                            .dockerfile
-                            .as_deref()
-                            .unwrap_or_else(|| Path::new("Dockerfile")),
-                        "dockerfile",
-                    ),
-                ] {
-                    if value.is_absolute()
-                        || value.components().any(|part| part.as_os_str() == "..")
-                    {
-                        errors.push(Diagnostic::new(
-                            DiagnosticCode::InvalidPath,
-                            format!("{path}.{field}"),
-                            "build paths must stay within the selected source",
-                        ));
-                    }
-                }
-            }
+            _ => DiagnosticCode::InvalidPath,
+        };
+        errors.push(Diagnostic::new(code, &path, diagnostic.message));
+    }
+}
+
+fn source_adapter_configuration(source: &Source) -> (&'static str, Value) {
+    match source.r#type {
+        SourceType::Path => (
+            "source-path",
+            json!({ "path": source.path.to_string_lossy() }),
+        ),
+        SourceType::Worktree => (
+            "source-git",
+            json!({
+                "path": source.path.to_string_lossy(),
+                "repository": source.repository.as_ref().map(|path| path.to_string_lossy()),
+                "ref": source.r#ref,
+            }),
+        ),
+    }
+}
+
+fn execution_adapter_configuration(execution: &Execution) -> (AdapterKind, &'static str, Value) {
+    match execution {
+        Execution::Container {
+            image,
+            build,
+            command,
+            working_directory,
+            environment,
+        } => (
+            AdapterKind::Execution,
+            "execution-container",
+            json!({
+                "image": image,
+                "build": build.as_ref().map(|build| json!({
+                    "context": build.context.to_string_lossy(),
+                    "dockerfile": build.dockerfile.as_ref().map(|path| path.to_string_lossy()),
+                })),
+                "command": command,
+                "workingDirectory": working_directory.as_ref().map(|path| path.to_string_lossy()),
+                "environment": environment,
+            }),
+        ),
+        Execution::Script {
+            image,
+            command,
+            working_directory,
+            source_mount,
+            writable,
+            environment,
+            lifecycle,
+        } => (
+            AdapterKind::Execution,
+            "execution-runner-script",
+            json!({
+                "image": image,
+                "command": command,
+                "workingDirectory": working_directory.as_ref().map(|path| path.to_string_lossy()),
+                "sourceMount": source_mount.to_string_lossy(),
+                "writable": writable,
+                "environment": environment,
+                "lifecycle": match lifecycle {
+                    ScriptLifecycle::Service => "service",
+                    ScriptLifecycle::Task => "task",
+                },
+            }),
+        ),
+        Execution::ProcessCompose {
+            image,
+            file,
+            working_directory,
+            source_mount,
+            writable,
+            environment,
+        } => (
+            AdapterKind::Supervisor,
+            "supervisor-process-compose",
+            json!({
+                "image": image,
+                "file": file.to_string_lossy(),
+                "workingDirectory": working_directory.as_ref().map(|path| path.to_string_lossy()),
+                "sourceMount": source_mount.to_string_lossy(),
+                "writable": writable,
+                "environment": environment,
+                "children": [],
+            }),
+        ),
+    }
+}
+
+fn validate_probe(
+    block_name: &str,
+    service_name: &str,
+    probe: &Probe,
+    adapters: &switchyard_adapter_sdk::AdapterRegistry,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let path = format!("spec.blocks.{block_name}.services.{service_name}.probe");
+    let configuration = match probe {
+        Probe::Http { path, port, https } => {
+            json!({ "type": "http", "path": path, "port": port, "https": https })
         }
-        Execution::Script { command, .. } => {
-            if command.is_empty() {
-                errors.push(Diagnostic::new(
-                    DiagnosticCode::MissingReference,
-                    &path,
-                    "script command cannot be empty",
-                ));
-            }
+        Probe::Tcp { port } => json!({ "type": "tcp", "port": port }),
+        Probe::Command { command } => json!({ "type": "command", "command": command }),
+    };
+    match adapters.lookup(AdapterKind::Probe, "probe-health") {
+        Some(adapter) => extend_adapter_diagnostics(
+            errors,
+            adapter.adapter().validate_configuration(&configuration),
+            DiagnosticCode::MissingReference,
+            &path,
+        ),
+        None => errors.push(Diagnostic::new(
+            DiagnosticCode::UnsupportedSchema,
+            path,
+            "built-in adapter probe-health is not registered",
+        )),
+    }
+}
+
+fn validate_route_slots(
+    block_name: &str,
+    service_name: &str,
+    service: &Service,
+    adapters: &switchyard_adapter_sdk::AdapterRegistry,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let path = format!("spec.blocks.{block_name}.services.{service_name}");
+    let Some(RegisteredAdapter::Route { adapter, common }) =
+        adapters.lookup(AdapterKind::Route, "route-switchyard")
+    else {
+        errors.push(Diagnostic::new(
+            DiagnosticCode::UnsupportedSchema,
+            path,
+            "built-in adapter route-switchyard is not registered",
+        ));
+        return;
+    };
+    extend_adapter_diagnostics(
+        errors,
+        common.validate_configuration(&json!({ "mode": "sidecar" })),
+        DiagnosticCode::InvalidPath,
+        &path,
+    );
+    for (slot_name, slot) in &service.consumes {
+        let context = RouteValidationContext {
+            consumer: service_name.into(),
+            slot: ConsumerSlot {
+                name: slot_name.clone(),
+                protocol: adapter_protocol(slot.protocol),
+                host: slot.address.host.clone(),
+                port: slot.address.port,
+            },
+            provider: ProviderCapability {
+                name: "validation-placeholder".into(),
+                protocol: adapter_protocol(slot.protocol),
+                port: 1,
+            },
+        };
+        extend_adapter_diagnostics(
+            errors,
+            adapter.validate(&context),
+            DiagnosticCode::InvalidPath,
+            &format!("{path}.consumes.{slot_name}"),
+        );
+    }
+    let declaration = common.declaration();
+    let supported = &declaration.capabilities.protocols;
+    for (capability_name, capability) in &service.provides {
+        if capability.port == 0 {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::InvalidPath,
+                format!("{path}.provides.{capability_name}.port"),
+                "route ports must be nonzero",
+            ));
         }
-        Execution::ProcessCompose { file, .. } => {
-            if file.is_absolute() || file.components().any(|part| part.as_os_str() == "..") {
-                errors.push(Diagnostic::new(
-                    DiagnosticCode::InvalidPath,
-                    &path,
-                    "Process Compose file must stay within the selected source",
-                ));
-            }
+        if !supported.contains(&adapter_protocol(capability.protocol)) {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::IncompatibleProtocol,
+                format!("{path}.provides.{capability_name}.protocol"),
+                "route-switchyard does not support this provider protocol",
+            ));
         }
     }
-    let _ = bundle;
+}
+
+fn extend_adapter_diagnostics(
+    errors: &mut Vec<Diagnostic>,
+    diagnostics: Vec<AdapterDiagnostic>,
+    code: DiagnosticCode,
+    path: &str,
+) {
+    errors.extend(
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| Diagnostic::new(code.clone(), path, diagnostic.message)),
+    );
 }
 
 fn validate_host_upstreams(
@@ -726,6 +917,7 @@ fn validate_routes(
     bundle: &Bundle,
     instances: &BTreeMap<&str, &Instance>,
     groups: &BTreeMap<String, BTreeMap<String, String>>,
+    adapters: &switchyard_adapter_sdk::AdapterRegistry,
     errors: &mut Vec<Diagnostic>,
 ) {
     for (consumer, group) in &bundle.spec.bindings {
@@ -777,14 +969,41 @@ fn validate_routes(
                 continue;
             };
             match provider_for(bundle, instances, provider_ref, slot) {
-                Ok((_, capability)) if capability.protocol != route_slot.protocol => {
-                    errors.push(Diagnostic::new(
-                        DiagnosticCode::IncompatibleProtocol,
-                        format!("spec.routes.{consumer}.{slot}"),
-                        "consumer and provider protocols differ",
-                    ))
+                Ok((_, capability)) => {
+                    let path = format!("spec.routes.{consumer}.{slot}");
+                    match adapters.lookup(AdapterKind::Route, "route-switchyard") {
+                        Some(RegisteredAdapter::Route { adapter, .. }) => {
+                            let context = RouteValidationContext {
+                                consumer: (*consumer).into(),
+                                slot: ConsumerSlot {
+                                    name: slot.clone(),
+                                    protocol: adapter_protocol(route_slot.protocol),
+                                    host: route_slot.address.host.clone(),
+                                    port: route_slot.address.port,
+                                },
+                                provider: ProviderCapability {
+                                    name: provider_ref.clone(),
+                                    protocol: adapter_protocol(capability.protocol),
+                                    port: capability.port,
+                                },
+                            };
+                            for diagnostic in adapter.validate(&context) {
+                                if diagnostic.code == "adapter_incompatible_protocol" {
+                                    errors.push(Diagnostic::new(
+                                        DiagnosticCode::IncompatibleProtocol,
+                                        &path,
+                                        diagnostic.message,
+                                    ));
+                                }
+                            }
+                        }
+                        _ => errors.push(Diagnostic::new(
+                            DiagnosticCode::UnsupportedSchema,
+                            path,
+                            "built-in adapter route-switchyard is not registered",
+                        )),
+                    }
                 }
-                Ok(_) => {}
                 Err(message) => errors.push(Diagnostic::new(
                     DiagnosticCode::MissingProvider,
                     format!("spec.routes.{consumer}.{slot}"),
@@ -792,6 +1011,16 @@ fn validate_routes(
                 )),
             }
         }
+    }
+}
+
+fn adapter_protocol(protocol: Protocol) -> AdapterProtocol {
+    match protocol {
+        Protocol::Http => AdapterProtocol::Http,
+        Protocol::Https => AdapterProtocol::Https,
+        Protocol::Websocket => AdapterProtocol::Websocket,
+        Protocol::Grpc => AdapterProtocol::Grpc,
+        Protocol::Tcp => AdapterProtocol::Tcp,
     }
 }
 

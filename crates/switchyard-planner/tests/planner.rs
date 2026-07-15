@@ -444,3 +444,42 @@ fn parallel_deployments_have_disjoint_names_and_dynamic_loopback_ports() {
         .collect::<std::collections::BTreeSet<_>>();
     assert!(first_volumes.is_disjoint(&second_volumes));
 }
+
+#[test]
+fn worktree_sources_still_require_repository_and_ref_through_adapters() {
+    let mut bundle = bundle();
+    let source = bundle
+        .spec
+        .sources
+        .get_mut("app")
+        .expect("fixture declares the app source");
+    source.r#type = switchyard_planner::SourceType::Worktree;
+    source.repository = None;
+    source.r#ref = None;
+    let errors = plan(&bundle).expect_err("worktree source without repository and ref");
+    assert!(
+        errors
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::InvalidPath
+                && diagnostic.path == "spec.sources.app"),
+        "expected an InvalidPath diagnostic for spec.sources.app: {errors:?}"
+    );
+
+    let mut empty_ref_bundle = crate::bundle();
+    let source = empty_ref_bundle
+        .spec
+        .sources
+        .get_mut("app")
+        .expect("fixture declares the app source");
+    source.r#type = switchyard_planner::SourceType::Worktree;
+    source.repository = Some(".".into());
+    source.r#ref = Some(String::new());
+    let errors = plan(&empty_ref_bundle).expect_err("worktree source with an empty ref");
+    assert!(
+        errors
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::InvalidPath
+                && diagnostic.path == "spec.sources.app"),
+        "expected an InvalidPath diagnostic for spec.sources.app: {errors:?}"
+    );
+}

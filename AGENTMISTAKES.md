@@ -104,3 +104,14 @@
 - A verification wrapper initially assigned to zsh's read-only `status` parameter and
   failed after the test command completed. Correction: rerun it with `rc` and preserve
   the test exit code. Lesson: avoid shell-reserved parameter names in portable wrappers.
+
+## 2026-07-15 — Phase 6 adapter SDK
+
+- The first planner integration replaced the native worktree repository/ref validation
+  with `source-git` adapter schema validation without a regression test guarding the
+  moved behavior, and review had to add one. Lesson: when validation logic moves across
+  a crate boundary, the old behavior needs an explicit test at the new seam before the
+  move is trusted.
+- A test appended to `planner.rs` reused the local variable name `bundle`, shadowing the
+  `bundle()` fixture helper within the same function and failing compilation. Lesson:
+  fixture helpers and locals sharing a name cannot coexist in one test body.

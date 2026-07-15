@@ -1,0 +1,16 @@
+[package]
+name = "switchyard-adapter-sdk"
+description = "Versioned, framework-neutral adapter contracts for Switchyard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+jsonschema = { version = "0.47", default-features = false }
+schemars = { version = "1.2.1", features = ["derive"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+
+[lints]
+workspace = true

@@ -5,7 +5,8 @@ Updated: 2026-07-15
 ## Release status
 
 - Routing proof (Phases 0–4): complete.
-- Product MVP (Phases 5–6): Phase 5 complete; Phase 6 not started.
+- Product MVP (Phases 5–6): Phase 5 complete; Phase 6 adapter SDK complete, remaining
+  Phase 6 sections in progress.
 - Team release (Phase 7): not started.
 
 `IMPLEMENTATION_PLAN.md` remains the task-level checklist. This file records the
@@ -170,3 +171,42 @@ implemented shape and the evidence used to close a phase.
 - `./scripts/phase5-proof.sh`: daemon/recovery portion passed; the Docker routing-matrix
   gate was explicitly skipped because access to `/var/run/docker.sock` was denied.
   Docker Compose 5.1.2 is installed, but the Engine is unavailable to this sandbox.
+
+## Phase 6 implementation
+
+### Adapter SDK (Part 1)
+
+- `switchyard-adapter-sdk` defines the versioned `switchyard.dev/adapter-sdk/v1alpha1`
+  contracts for source, execution, supervisor, route, and probe adapters. Configuration
+  and recovery handles cross the boundary as serializable JSON; states, events, logs,
+  claims, source identity, and route observations use normalized SDK types.
+- Every adapter declares id, semantic version, supported SDK contract versions, and
+  protocol/live-update/recovery/feature capabilities, and must publish a draft 2020-12
+  JSON Schema (schemars generation, offline jsonschema validation). The registry rejects
+  malformed ids/versions, duplicates, and incompatible contract declarations with stable
+  `RegistryErrorCode`s; listing returns declaration + schema metadata for schema-driven
+  forms.
+- A public conformance suite checks schema compilation and dialect, valid/invalid
+  examples, deterministic validation, capability consistency, compatibility, and
+  lossless opaque-handle round trips.
+- `switchyard-adapters` implements the seven built-ins (`source-path`, `source-git`,
+  `execution-container`, `execution-runner-script`, `supervisor-process-compose`,
+  `route-switchyard`, `probe-health`) at planning level; execution remains owned by the
+  existing generated-Compose runtime. Trusted host execution is explicitly deferred and
+  guarded by a registry test.
+- `switchyard-planner` validation resolves sources, executions, probes, provider
+  capabilities, and route slots through the built-in registry while keeping the
+  deployment YAML, diagnostics style, and deterministic artifact generation unchanged.
+  A regression test proves worktree sources still require an existing repository and a
+  non-empty ref through the adapter path.
+- Documentation: `docs/adapters.md`.
+
+### Phase 6 Part 1 verification
+
+- `cargo fmt --all -- --check`: passed.
+- `cargo test --workspace --all-features`: passed on this host (all suites, including
+  the socket-based router integration tests unavailable to the implementation sandbox).
+- `cargo test -p switchyard-planner --test planner`: 12 passed, including the new
+  worktree adapter-path regression test.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passed.
+- `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps`: passed.

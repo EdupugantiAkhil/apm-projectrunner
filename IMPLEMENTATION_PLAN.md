@@ -337,13 +337,13 @@ Entry gate: the persistent control plane is complete.
 
 ### Adapter SDK
 
-- [ ] Define versioned source, execution, supervisor, route, and probe adapter contracts.
-- [ ] Require JSON Schema for every adapter's user configuration.
-- [ ] Add capability and compatibility declarations.
-- [ ] Add adapter conformance tests and compatibility-version checks.
-- [ ] Implement path, Git/worktree, container, runner-script, Process Compose, HTTP/TCP
+- [x] Define versioned source, execution, supervisor, route, and probe adapter contracts.
+- [x] Require JSON Schema for every adapter's user configuration.
+- [x] Add capability and compatibility declarations.
+- [x] Add adapter conformance tests and compatibility-version checks.
+- [x] Implement path, Git/worktree, container, runner-script, Process Compose, HTTP/TCP
       route, and health-probe adapters.
-- [ ] Defer trusted host execution until its ownership and isolation checks pass the same
+- [x] Defer trusted host execution until its ownership and isolation checks pass the same
       conformance suite.
 
 ### Source and worktree management
