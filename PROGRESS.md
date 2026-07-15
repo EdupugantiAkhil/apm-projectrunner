@@ -650,3 +650,19 @@ implemented shape and the evidence used to close a phase.
   generated routing-matrix and a genuine `port_conflict`: jas-base also claims
   `127.0.0.1:10081`. A tampered bundle was rejected with `bundle_hash_mismatch`
   naming both hashes.
+
+## Phase 7 reliability — Part 5: lifecycle hooks resolved by removal
+
+- The reserved per-service `hooks` field (`prepare`, `postReady`, `stop`,
+  `cleanup`) was removed from the planner schema instead of gaining an executor:
+  it was never read by any runtime path, no fixture used it, and the real
+  initialization mechanism (`execution: script` with `lifecycle: task`, gated via
+  `dependsOn: completed_successfully`) already carries logs, status, ownership,
+  and recovery like any service. Declaring `hooks` now fails closed with an
+  unknown-field error naming the field
+  (`declared_lifecycle_hooks_are_rejected_not_silently_ignored`); the supported
+  pattern and the removal rationale are documented in `docs/adapters.md`.
+- Reviewer verification (2026-07-16): `./scripts/check.sh` PASSED end to end,
+  and the live `examples/jas-base/smoke.sh` PASSED, proving task-lifecycle
+  database initialization, live group switching, persistence, and
+  ownership-scoped cleanup all still work after the removal.

@@ -35,9 +35,6 @@ spec:
             search:
               protocol: http
               address: { host: 127.0.0.1, port: 8001 }
-          hooks:
-            prepare: [["./prepare"]]
-            postReady: [["./seed"]]
           probe: { type: tcp, port: 3000 }
     suite:
       services:

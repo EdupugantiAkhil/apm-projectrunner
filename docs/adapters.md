@@ -97,3 +97,17 @@ and other exclusive resources. A host execution adapter may land only after it p
 the same public conformance suite and the ownership and isolation checks in DESIGN.md
 section 8, including complete resource claims, durable identity, recovery, safe stop,
 and ownership-aware cleanup. A built-in registry test protects this deferral.
+
+## Service initialization and lifecycle commands
+
+Per-service initialization, seeding, and teardown are expressed as ordinary
+`execution: script` services with `lifecycle: task` (one-shot runner containers that
+other services gate on through `dependsOn` with `completed_successfully`), exactly as
+the `jas-base` fixture initializes its databases. Task services get the same logs,
+status, ownership labels, and recovery behavior as every other service.
+
+A reserved per-service `hooks` field (`prepare`, `postReady`, `stop`, `cleanup`) that
+was declared in the schema but never executed by the runtime was removed in Phase 7
+rather than shipped inert: declaring `hooks` now fails validation with an
+unknown-field error instead of silently doing nothing. If a future runtime gains a
+real hook executor, the field can return together with its execution semantics.

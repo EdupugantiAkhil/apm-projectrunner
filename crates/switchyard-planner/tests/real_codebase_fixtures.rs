@@ -147,14 +147,8 @@ fn legacy_workspace_fixture_expands_through_generic_planner_contracts() {
         );
     }
 
-    for block in bundle.spec.blocks.values() {
-        for service in block.services.values() {
-            assert!(service.hooks.prepare.is_empty());
-            assert!(service.hooks.post_ready.is_empty());
-            assert!(service.hooks.stop.is_empty());
-            assert!(service.hooks.cleanup.is_empty());
-        }
-    }
+    // The inert per-service `hooks` field was removed in Phase 7; the schema now
+    // rejects it outright, so no per-service assertion is needed here.
 }
 
 #[test]

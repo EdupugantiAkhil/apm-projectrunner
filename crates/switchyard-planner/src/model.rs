@@ -127,8 +127,6 @@ pub struct Service {
     #[serde(default)]
     pub depends_on: BTreeMap<String, DependencyCondition>,
     #[serde(default)]
-    pub hooks: LifecycleHooks,
-    #[serde(default)]
     pub probe: Option<Probe>,
 }
 
@@ -255,19 +253,6 @@ pub enum DependencyCondition {
     #[default]
     Healthy,
     CompletedSuccessfully,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct LifecycleHooks {
-    #[serde(default)]
-    pub prepare: Vec<Vec<String>>,
-    #[serde(default)]
-    pub post_ready: Vec<Vec<String>>,
-    #[serde(default)]
-    pub stop: Vec<Vec<String>>,
-    #[serde(default)]
-    pub cleanup: Vec<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

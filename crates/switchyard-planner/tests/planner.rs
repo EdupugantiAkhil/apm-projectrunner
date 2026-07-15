@@ -824,3 +824,28 @@ fn worktree_sources_still_require_repository_and_ref_through_adapters() {
         "expected an InvalidPath diagnostic for spec.sources.app: {errors:?}"
     );
 }
+
+#[test]
+fn declared_lifecycle_hooks_are_rejected_not_silently_ignored() {
+    // The reserved per-service `hooks` field was removed in Phase 7 because the
+    // runtime never executed it; initialization belongs to `lifecycle: task`
+    // script services. Declaring it must fail loudly, not parse into a no-op.
+    let fixture = fs::read_to_string("tests/fixtures/deployment.yaml").unwrap();
+    let with_hooks = fixture.replacen(
+        "      services:\n        api:\n",
+        "      services:\n        api:\n          hooks: { postReady: [[\"true\"]] }\n",
+        1,
+    );
+    assert_ne!(
+        fixture, with_hooks,
+        "fixture shape changed; update this test"
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("deployment.yaml");
+    fs::write(&path, with_hooks).unwrap();
+    let error = load_bundle(&path).expect_err("hooks must be rejected");
+    assert!(
+        error.to_string().contains("hooks"),
+        "error should name the removed field: {error}"
+    );
+}

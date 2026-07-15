@@ -421,10 +421,13 @@ Entry gate: the product MVP is stable for local single-developer use.
 
 ### Reliability and release engineering
 
-- [ ] Execute or remove the declared service lifecycle hooks: `LifecycleHooks`
+- [x] Execute or remove the declared service lifecycle hooks: `LifecycleHooks`
       (`prepare`, `postReady`, `stop`, `cleanup`) exists in the planner schema but the
       generated-Compose runtime never runs it (discovered during Phase 6 fixture work;
       containerized initialization currently uses task-lifecycle script services).
+      - Resolved by removal: the schema now rejects `hooks` with an unknown-field
+        error; task-lifecycle script services are the documented mechanism
+        (`docs/adapters.md`).
 - [ ] Add upgrade tests across every supported configuration and SQLite schema version.
 - [ ] Add resource-leak, long-running soak, reload-storm, and high-concurrency tests.
 - [ ] Add platform packaging, checksums, signatures, and release notes.
