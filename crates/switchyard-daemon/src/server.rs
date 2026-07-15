@@ -16,9 +16,9 @@ use std::{
 use axum::{
     Json, Router,
     extract::{Path as AxumPath, Query, State, rejection::JsonRejection},
-    http::{HeaderMap, Request, StatusCode},
+    http::{HeaderMap, Request, StatusCode, header},
     middleware::{self, Next},
-    response::{IntoResponse, Response, Sse, sse::Event},
+    response::{IntoResponse, Redirect, Response, Sse, sse::Event},
     routing::{delete, get, post},
 };
 use futures_util::{Stream, stream};
@@ -39,7 +39,8 @@ use tokio::{
 
 use crate::contract::{
     API_VERSION, ApiErrorV1, CommandKind, CommandRequestV1, CommandResultV1,
-    CreateWorktreeRequestV1, DaemonStatusV1, DeploymentRoutesV1, DiscoveryV1, EventKindV1, EventV1,
+    CreateWorktreeRequestV1, DaemonStatusV1, DeploymentDetailV1, DeploymentOperationSummaryV1,
+    DeploymentRoutesV1, DeploymentSummaryV1, DeploymentsV1, DiscoveryV1, EventKindV1, EventV1,
     OperationStatusV1, OperationV1, RegisterSourceRequestV1, RemoveWorktreeRequestV1,
     RouteHistoryV1, RouterBindingV1, TransitionPolicyV1,
 };
@@ -55,15 +56,18 @@ pub struct DaemonConfig {
     pub bind: SocketAddr,
     pub max_heavy_operations: usize,
     pub cli_program: PathBuf,
+    pub gui_dist: PathBuf,
 }
 
 impl DaemonConfig {
     pub fn new(project_root: PathBuf, cli_program: PathBuf) -> Self {
+        let gui_dist = project_root.join("packages/web/dist");
         Self {
             project_root,
             bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             max_heavy_operations: 2,
             cli_program,
+            gui_dist,
         }
     }
 }
@@ -989,6 +993,7 @@ struct Inner {
     backend: Arc<dyn OperationBackend>,
     shutdown: watch::Sender<bool>,
     active_notify: Notify,
+    reconciliation: ReconciliationReport,
 }
 
 /// A running daemon useful for embedding and integration tests.
@@ -1158,6 +1163,7 @@ fn prepare(
         backend,
         shutdown: shutdown.clone(),
         active_notify: Notify::new(),
+        reconciliation: reconciliation.clone(),
     });
     Ok(Prepared {
         inner,
@@ -1184,6 +1190,14 @@ pub fn api_for_tests(
 
 fn routes(inner: Arc<Inner>) -> Router {
     Router::new()
+        .route("/gui", get(|| async { Redirect::permanent("/gui/") }))
+        .route(
+            "/gui/",
+            get(|State(inner)| async move {
+                serve_gui(State(inner), AxumPath("index.html".into())).await
+            }),
+        )
+        .route("/gui/{*path}", get(serve_gui))
         .route("/api/v1/system/status", get(system_status))
         .route("/api/v1/system/shutdown", post(system_shutdown))
         .route("/api/v1/commands/{kind}", post(start_command))
@@ -1194,6 +1208,9 @@ fn routes(inner: Arc<Inner>) -> Router {
             "/api/v1/deployments/{deployment}/routes",
             get(deployment_routes),
         )
+        .route("/api/v1/deployments", get(list_deployments))
+        .route("/api/v1/deployments/{deployment}", get(deployment_detail))
+        .route("/api/v1/adapters", get(list_adapters))
         .route("/api/v1/sources", get(list_sources).post(register_source))
         .route("/api/v1/sources/{name}", delete(deregister_source))
         .route(
@@ -1205,6 +1222,234 @@ fn routes(inner: Arc<Inner>) -> Router {
         .method_not_allowed_fallback(api_method_not_allowed)
         .with_state(inner.clone())
         .layer(middleware::from_fn_with_state(inner, auth_middleware))
+}
+
+async fn serve_gui(State(inner): State<Arc<Inner>>, AxumPath(path): AxumPath<String>) -> Response {
+    let relative = Path::new(&path);
+    let safe = relative
+        .components()
+        .all(|component| matches!(component, std::path::Component::Normal(_)));
+    let requested = if safe {
+        inner.config.gui_dist.join(relative)
+    } else {
+        inner.config.gui_dist.join("index.html")
+    };
+    let file = if requested.is_file() {
+        requested
+    } else {
+        inner.config.gui_dist.join("index.html")
+    };
+    match tokio::fs::read(&file).await {
+        Ok(contents) => {
+            let content_type = match file.extension().and_then(|value| value.to_str()) {
+                Some("css") => "text/css; charset=utf-8",
+                Some("js") => "text/javascript; charset=utf-8",
+                Some("json") => "application/json",
+                Some("svg") => "image/svg+xml",
+                Some("png") => "image/png",
+                Some("ico") => "image/x-icon",
+                _ => "text/html; charset=utf-8",
+            };
+            ([(header::CONTENT_TYPE, content_type)], contents).into_response()
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => api_error(
+            StatusCode::NOT_FOUND,
+            "gui_not_built",
+            "GUI assets are unavailable; run `npm run build` in packages/web",
+        ),
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "gui_read_failed",
+            &error.to_string(),
+        ),
+    }
+}
+
+async fn list_adapters() -> Response {
+    Json(switchyard_adapters::built_in_registry().list()).into_response()
+}
+
+fn snapshot_fields(snapshot: Option<&Value>) -> (Vec<String>, Value) {
+    let bindings = snapshot
+        .and_then(|value| value.pointer("/spec/bindings"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let mut domains = Vec::new();
+    fn collect_domains(value: &Value, domains: &mut Vec<String>) {
+        match value {
+            Value::Object(object) => {
+                if object.get("kind").and_then(Value::as_str) == Some("custom_domain") {
+                    if let Some(domain) = object.get("domain").and_then(Value::as_str) {
+                        domains.push(domain.to_owned());
+                    }
+                }
+                for child in object.values() {
+                    collect_domains(child, domains);
+                }
+            }
+            Value::Array(array) => {
+                for child in array {
+                    collect_domains(child, domains);
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(snapshot) = snapshot {
+        collect_domains(snapshot, &mut domains);
+    }
+    domains.sort();
+    domains.dedup();
+    (domains, bindings)
+}
+
+fn read_manifest(root: &Path, deployment: &str) -> Option<Value> {
+    let path = root
+        .join(".switchyard/generated")
+        .join(deployment)
+        .join("manifest.json");
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+async fn list_deployments(State(inner): State<Arc<Inner>>) -> Response {
+    let stored = match inner
+        .store
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .deployments()
+    {
+        Ok(stored) => stored,
+        Err(error) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error.code(),
+                &error.to_string(),
+            );
+        }
+    };
+    let deployments = stored
+        .into_iter()
+        .map(|stored| {
+            let snapshot = stored
+                .snapshot_json
+                .as_deref()
+                .and_then(|value| serde_json::from_str::<Value>(value).ok());
+            let manifest = read_manifest(&inner.config.project_root, &stored.deployment);
+            let (custom_domains, bindings) = snapshot_fields(snapshot.as_ref());
+            DeploymentSummaryV1 {
+                name: stored.deployment,
+                definition_hash: stored.definition_hash,
+                resource_hash: manifest
+                    .as_ref()
+                    .and_then(|value| value.get("resourceHash"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                applied_at: stored.applied_at,
+                last_operation: stored.last_operation.map(|operation| {
+                    DeploymentOperationSummaryV1 {
+                        id: operation.id,
+                        kind: operation.kind,
+                        status: operation.status,
+                        started_at: operation.started_at,
+                        finished_at: operation.finished_at,
+                    }
+                }),
+                custom_domains,
+                bindings,
+            }
+        })
+        .collect();
+    Json(DeploymentsV1 {
+        api_version: API_VERSION.into(),
+        deployments,
+    })
+    .into_response()
+}
+
+async fn deployment_detail(
+    State(inner): State<Arc<Inner>>,
+    AxumPath(deployment): AxumPath<String>,
+) -> Response {
+    let stored = match inner
+        .store
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .deployments()
+    {
+        Ok(deployments) => deployments
+            .into_iter()
+            .find(|entry| entry.deployment == deployment),
+        Err(error) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error.code(),
+                &error.to_string(),
+            );
+        }
+    };
+    let Some(stored) = stored else {
+        return api_error(
+            StatusCode::NOT_FOUND,
+            "deployment_not_found",
+            "deployment not found",
+        );
+    };
+    let snapshot = stored
+        .snapshot_json
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<Value>(value).ok());
+    let manifest = read_manifest(&inner.config.project_root, &deployment);
+    let source_identities = manifest
+        .as_ref()
+        .and_then(|value| value.get("sourceIdentities"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let resource_hash = manifest
+        .as_ref()
+        .and_then(|value| value.get("resourceHash"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let reconciliation = inner
+        .reconciliation
+        .deployments
+        .iter()
+        .find(|entry| entry.deployment == deployment)
+        .cloned()
+        .unwrap_or_else(|| switchyard_state::DeploymentReconciliation {
+            deployment: deployment.clone(),
+            diagnostics: Vec::new(),
+        });
+    let resources = match inner
+        .store
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .active_resources(&deployment)
+    {
+        Ok(resources) => resources,
+        Err(error) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error.code(),
+                &error.to_string(),
+            );
+        }
+    };
+    let (custom_domains, bindings) = snapshot_fields(snapshot.as_ref());
+    Json(DeploymentDetailV1 {
+        api_version: API_VERSION.into(),
+        deployment,
+        definition_hash: stored.definition_hash,
+        resource_hash,
+        applied_at: stored.applied_at,
+        snapshot,
+        manifest,
+        source_identities,
+        reconciliation,
+        resources,
+        custom_domains,
+        bindings,
+    })
+    .into_response()
 }
 
 /// Runs Git-subprocess and SQLite source work on the blocking pool so a slow
@@ -1509,7 +1754,20 @@ async fn auth_middleware(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    if let Err(response) = authenticate(&inner, request.headers()) {
+    let path = request.uri().path();
+    if path == "/gui" || path.starts_with("/gui/") {
+        return next.run(request).await;
+    }
+    let query_token = (path.starts_with("/api/v1/operations/") && path.ends_with("/events"))
+        .then(|| request.uri().query())
+        .flatten()
+        .and_then(|query| {
+            query.split('&').find_map(|field| {
+                let (name, value) = field.split_once('=')?;
+                (name == "access_token").then_some(value)
+            })
+        });
+    if let Err(response) = authenticate(&inner, request.headers(), query_token) {
         return response;
     }
     next.run(request).await
@@ -2140,13 +2398,20 @@ fn event_stream(
     })
 }
 
-fn authenticate(inner: &Inner, headers: &HeaderMap) -> Result<(), Response> {
-    let presented = headers
+fn authenticate(
+    inner: &Inner,
+    headers: &HeaderMap,
+    query_token: Option<&str>,
+) -> Result<(), Response> {
+    let header_token = headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .unwrap_or_default();
-    if !constant_time_eq(presented.as_bytes(), inner.token.as_bytes()) {
+        .and_then(|value| value.strip_prefix("Bearer "));
+    let authorized = header_token
+        .into_iter()
+        .chain(query_token)
+        .any(|presented| constant_time_eq(presented.as_bytes(), inner.token.as_bytes()));
+    if !authorized {
         return Err(api_error(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
@@ -2567,6 +2832,7 @@ mod tests {
             bind: "0.0.0.0:0".parse().unwrap(),
             max_heavy_operations: 1,
             cli_program: "unused".into(),
+            gui_dist: temp.path().join("dist"),
         };
         struct Unused;
         impl OperationBackend for Unused {

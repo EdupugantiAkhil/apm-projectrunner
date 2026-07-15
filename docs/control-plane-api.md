@@ -55,6 +55,9 @@ optional `context` fields. Framework types are not part of the public Rust contr
 | `POST` | `/api/v1/operations/{id}/cancel` | Request cooperative cancellation |
 | `GET` | `/api/v1/operations/{id}/events` | Observe or resume the operation SSE stream |
 | `GET` | `/api/v1/deployments/{deployment}/routes` | Query route versions and activation history |
+| `GET` | `/api/v1/deployments` | List known deployments with applied hashes, latest operation, domains, and bindings |
+| `GET` | `/api/v1/deployments/{deployment}` | Read the applied snapshot, generated source identities, resources, and reconciliation summary |
+| `GET` | `/api/v1/adapters` | List built-in adapter declarations and configuration JSON Schemas |
 | `GET` | `/api/v1/sources` | List registrations with live source identity |
 | `POST` | `/api/v1/sources` | Register an existing path as unmanaged |
 | `DELETE` | `/api/v1/sources/{name}` | Forget a registration without deleting files |
@@ -119,6 +122,22 @@ retained later events. Streams retain the latest 2,048 records while their opera
 remains among the 64 most recent terminal operations and close after the terminal
 event. Disconnecting an observer does not cancel work, and an already connected stream
 remains valid if its operation is evicted from the daemon's lookup map.
+
+An SSE request may authenticate with the normal `Authorization` header or with an
+`access_token` query parameter. The query form exists only because browser
+`EventSource` cannot set request headers. It is accepted only for operation event
+paths, and the daemon remains loopback-only. The GUI obtains the credential in a URL
+fragment, removes the fragment immediately, holds the credential only in memory, and
+places it in the SSE URL only when opening the local stream. API clients that can set
+headers should continue to use bearer headers.
+
+## Bundled GUI
+
+The daemon serves static files below `/gui/`, with `index.html` as the fallback for
+client-side views. Static GUI requests are deliberately exempt from bearer auth; every
+`/api/v1` route remains guarded. The default directory is `packages/web/dist` under
+the project root and can be changed with `DaemonConfig::gui_dist` or
+`SWITCHYARD_GUI_DIST`. See [`gui.md`](gui.md) for build, launch, and security details.
 
 ## Compatibility policy
 

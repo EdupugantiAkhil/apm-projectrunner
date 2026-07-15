@@ -286,3 +286,30 @@ implemented shape and the evidence used to close a phase.
   all router/daemon suites green).
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passed.
 - `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps`: passed.
+
+### Schema-driven GUI foundation (Part 4a)
+
+- Daemon additions: `GET /api/v1/deployments` (+ per-deployment detail with applied
+  snapshot, reconciliation summary, resources, and manifest source identities),
+  `GET /api/v1/adapters` (registry declarations plus JSON Schemas for schema-driven
+  forms), and `/gui/` static serving of `packages/web/dist` (configurable, SPA
+  fallback, traversal-safe). Static assets bypass bearer auth; `/api/v1` is unchanged
+  except that operation SSE additionally accepts the credential via `access_token`
+  query parameter because EventSource cannot set headers (loopback-only rationale
+  documented).
+- `switchyard gui` prints and best-effort-opens `http://127.0.0.1:<port>/gui/#token=…`
+  using daemon discovery; the credential travels only in the URL fragment, which the
+  web client captures into memory and strips from the location immediately.
+- `packages/web` (Vite + React 19 + TypeScript, committed scaffold with pre-installed
+  dependencies): typed API client with structured errors, operation polling and SSE
+  subscription; DESIGN.md shell (deployment rail, canvas, inspector, collapsible
+  event/log drawer, exact color tokens); deployment list/detail with per-instance
+  source identity, live route versions, domains, and bindings; sources view with
+  register-unmanaged and worktree create plus a two-step dirty-removal dialog;
+  operations timeline with cancel and failure detail; guarded destructive commands
+  (typed confirmation for down/cleanup, dirty-worktree acknowledgement before up);
+  keyboard navigation, aria-live announcements, reduced-motion support, responsive
+  fallbacks.
+- Verification: workspace tests passed on this host (daemon API 12); fmt, workspace
+  clippy `-D warnings`, and rustdoc `-D warnings` passed; `npm run build` passed and
+  `npm test` passed (6 Vitest tests).

@@ -26,6 +26,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(limit) = env::var_os("SWITCHYARD_DAEMON_MAX_HEAVY") {
         config.max_heavy_operations = limit.to_string_lossy().parse()?;
     }
+    if let Some(path) = env::var_os("SWITCHYARD_GUI_DIST") {
+        config.gui_dist = PathBuf::from(path);
+    }
     run_blocking(config)?;
     Ok(())
 }

@@ -5,7 +5,12 @@ mod cli;
 mod host_runtime;
 mod runtime;
 
-use std::{env, fmt, fs, io, net::SocketAddr, path::Path, process::ExitCode};
+use std::{
+    env, fmt, fs, io,
+    net::{SocketAddr, ToSocketAddrs},
+    path::Path,
+    process::{Command, ExitCode, Stdio},
+};
 
 use cli::{CliCommand, DeploymentOptions, USAGE};
 use router_config::RouterConfig;
@@ -199,6 +204,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         | CliCommand::DaemonRun
         | CliCommand::DaemonStatus
         | CliCommand::DaemonStop
+        | CliCommand::Gui
         | CliCommand::SourceList { .. }
         | CliCommand::SourceRegister { .. }
         | CliCommand::SourceDeregister { .. }
@@ -468,6 +474,9 @@ fn handle_daemon_command(
             if let Some(limit) = env::var_os("SWITCHYARD_DAEMON_MAX_HEAVY") {
                 config.max_heavy_operations = limit.to_string_lossy().parse()?;
             }
+            if let Some(path) = env::var_os("SWITCHYARD_GUI_DIST") {
+                config.gui_dist = path.into();
+            }
             switchyard_daemon::run_blocking(config)?;
             Ok(Some(ExitCode::SUCCESS))
         }
@@ -492,8 +501,43 @@ fn handle_daemon_command(
             }
             Ok(Some(ExitCode::SUCCESS))
         }
+        CliCommand::Gui => {
+            let url = gui_url(workspace_root)?;
+            println!("{url}");
+            let opener = if cfg!(target_os = "macos") {
+                "open"
+            } else {
+                "xdg-open"
+            };
+            let _ = Command::new(opener)
+                .arg(&url)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+            Ok(Some(ExitCode::SUCCESS))
+        }
         _ => Ok(None),
     }
+}
+
+fn gui_url(workspace_root: &Path) -> Result<String, MessageError> {
+    let discovery = switchyard_daemon::client::load_discovery(workspace_root)
+        .map_err(|error| MessageError(error.to_string()))?
+        .ok_or_else(|| {
+            MessageError("daemon not running; start it with `switchyard daemon run`".into())
+        })?;
+    let port = discovery
+        .address
+        .to_socket_addrs()
+        .map_err(|error| MessageError(format!("invalid daemon address: {error}")))?
+        .next()
+        .ok_or_else(|| MessageError("daemon address did not resolve".into()))?
+        .port();
+    Ok(format!(
+        "http://127.0.0.1:{port}/gui/#token={}",
+        discovery.token
+    ))
 }
 
 fn daemon_request(
@@ -565,6 +609,7 @@ fn daemon_request(
         | CliCommand::DaemonRun
         | CliCommand::DaemonStatus
         | CliCommand::DaemonStop
+        | CliCommand::Gui
         | CliCommand::SourceList { .. }
         | CliCommand::SourceRegister { .. }
         | CliCommand::SourceDeregister { .. }
@@ -936,5 +981,14 @@ mod tests {
             }],
         };
         assert!(refuse_runtime_drift(&status).is_err());
+    }
+
+    #[test]
+    fn gui_without_daemon_returns_actionable_error() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            gui_url(temp.path()).unwrap_err().to_string(),
+            "daemon not running; start it with `switchyard daemon run`"
+        );
     }
 }

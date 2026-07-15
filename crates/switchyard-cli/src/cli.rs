@@ -53,6 +53,7 @@ pub enum CliCommand {
     DaemonRun,
     DaemonStatus,
     DaemonStop,
+    Gui,
     SourceList {
         json: bool,
     },
@@ -118,6 +119,7 @@ Usage:
   switchyard daemon run
   switchyard daemon status
   switchyard daemon stop
+  switchyard gui
   switchyard source list [--json]
   switchyard source register <name> <path>
   switchyard source deregister <name>
@@ -201,6 +203,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
         "daemon" if rest == ["run"] => Ok(CliCommand::DaemonRun),
         "daemon" if rest == ["status"] => Ok(CliCommand::DaemonStatus),
         "daemon" if rest == ["stop"] => Ok(CliCommand::DaemonStop),
+        "gui" if rest.is_empty() => Ok(CliCommand::Gui),
         "source" if rest == ["list"] => Ok(CliCommand::SourceList { json: false }),
         "source" if rest == ["list", "--json"] => Ok(CliCommand::SourceList { json: true }),
         "source" if rest.len() == 3 && rest[0] == "register" => Ok(CliCommand::SourceRegister {
@@ -449,6 +452,12 @@ mod tests {
                 allow_dirty: true
             }
         );
+    }
+
+    #[test]
+    fn parses_gui_without_arguments() {
+        assert_eq!(parse(args(&["gui"])).unwrap(), CliCommand::Gui);
+        assert!(parse(args(&["gui", "extra"])).is_err());
     }
 
     #[test]

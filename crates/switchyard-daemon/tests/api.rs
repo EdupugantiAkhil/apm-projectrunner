@@ -22,7 +22,8 @@ use switchyard_daemon::{
     server::{BackendOutcome, EventSink, OperationBackend, api_for_tests},
 };
 use switchyard_state::{
-    LockRequest, RouterApplyRecord, RouterApplyStatus, StateStore, StructuredContext,
+    AppliedSnapshot, LockRequest, OperationKind, OperationRecord, OperationStatus,
+    RouterApplyRecord, RouterApplyStatus, StateStore, StructuredContext,
 };
 use tempfile::TempDir;
 use tokio::sync::watch;
@@ -392,6 +393,184 @@ async fn wait_terminal(api: &TestApi, id: &str) -> OperationV1 {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+#[tokio::test]
+async fn deployment_and_adapter_endpoints_are_authenticated_and_shape_empty_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = start_api(&temp, Arc::new(ImmediateBackend), 1);
+
+    for path in ["/api/v1/deployments", "/api/v1/adapters"] {
+        let (status, _) = request(&api, None, "GET", path, None, &[]).await;
+        assert_eq!(status, 401, "{path} bypassed authentication");
+    }
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "GET",
+        "/api/v1/deployments",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        json_body::<Value>(&body),
+        json!({"apiVersion":"v1","deployments":[]})
+    );
+    let (status, body) =
+        request(&api, Some(&api.token), "GET", "/api/v1/adapters", None, &[]).await;
+    assert_eq!(status, 200);
+    let adapters = json_body::<Value>(&body);
+    let first = adapters.as_array().unwrap().first().unwrap();
+    assert!(first.get("kind").is_some());
+    assert!(first.get("declaration").is_some());
+    assert!(first.get("configurationSchema").is_some());
+}
+
+#[tokio::test]
+async fn deployment_list_and_detail_include_applied_manifest_and_reconciliation() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir_all(temp.path().join(".switchyard/generated/demo")).unwrap();
+    let (mut store, _) = StateStore::open(temp.path().join(".switchyard/state.sqlite3")).unwrap();
+    let snapshot = AppliedSnapshot::from_json(json!({
+        "spec": {
+            "bindings": {"consumer-a": "feature"},
+            "hostRouter": {"listeners": [
+                {"kind": "custom_domain", "domain": "demo.localhost"}
+            ]}
+        }
+    }))
+    .unwrap();
+    store
+        .record_applied_snapshot("demo", "definition-1", &snapshot, 10)
+        .unwrap();
+    store
+        .start_operation(&OperationRecord {
+            id: "op-1".into(),
+            deployment: "demo".into(),
+            kind: OperationKind::Apply,
+            status: OperationStatus::Succeeded,
+            started_at: 11,
+            finished_at: Some(12),
+            error: None,
+        })
+        .unwrap();
+    fs::write(
+        temp.path().join(".switchyard/generated/demo/manifest.json"),
+        serde_json::to_vec(&json!({
+            "deployment": "demo",
+            "definitionHash": "definition-1",
+            "resourceHash": "resource-1",
+            "sourceIdentities": {
+                "consumer-a": {"path":"/work/demo","ref":"feature/x","commit":"abcdef123456","dirty":true}
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    drop(store);
+    let api = start_api(&temp, Arc::new(ImmediateBackend), 1);
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "GET",
+        "/api/v1/deployments",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let list = json_body::<Value>(&body);
+    assert_eq!(list["deployments"][0]["name"], "demo");
+    assert_eq!(list["deployments"][0]["resourceHash"], "resource-1");
+    assert_eq!(
+        list["deployments"][0]["lastOperation"]["status"],
+        "succeeded"
+    );
+    assert_eq!(list["deployments"][0]["customDomains"][0], "demo.localhost");
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "GET",
+        "/api/v1/deployments/demo",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let detail = json_body::<Value>(&body);
+    assert_eq!(
+        detail["sourceIdentities"]["consumer-a"]["commit"],
+        "abcdef123456"
+    );
+    assert_eq!(detail["bindings"]["consumer-a"], "feature");
+    assert_eq!(detail["reconciliation"]["deployment"], "demo");
+
+    let (status, _) = request(
+        &api,
+        Some(&api.token),
+        "GET",
+        "/api/v1/deployments/missing",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn gui_static_files_are_public_while_api_and_sse_query_tokens_stay_guarded() {
+    let temp = tempfile::tempdir().unwrap();
+    let dist = temp.path().join("packages/web/dist/assets");
+    fs::create_dir_all(&dist).unwrap();
+    fs::write(
+        temp.path().join("packages/web/dist/index.html"),
+        "gui-index",
+    )
+    .unwrap();
+    fs::write(dist.join("app.js"), "gui-asset").unwrap();
+    let bundle = fixture();
+    let api = start_api(&temp, Arc::new(ImmediateBackend), 1);
+
+    for path in ["/gui/", "/gui/deployments/demo", "/gui/assets/app.js"] {
+        let (status, body) = request(&api, None, "GET", path, None, &[]).await;
+        assert_eq!(status, 200);
+        assert!(String::from_utf8(body).unwrap().starts_with("gui-"));
+    }
+    let (status, _) = request(&api, None, "GET", "/api/v1/system/status", None, &[]).await;
+    assert_eq!(status, 401);
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/commands/validate",
+        Some(command_body(&bundle)),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 202);
+    let operation: OperationV1 = json_body(&body);
+    let path = format!(
+        "/api/v1/operations/{}/events?access_token={}",
+        operation.id, api.token
+    );
+    let (status, body) = request(&api, None, "GET", &path, None, &[]).await;
+    assert_eq!(status, 200);
+    assert!(
+        String::from_utf8(body)
+            .unwrap()
+            .contains("event: operation")
+    );
+    let path = format!(
+        "/api/v1/operations/{}/events?access_token=wrong",
+        operation.id
+    );
+    let (status, _) = request(&api, None, "GET", &path, None, &[]).await;
+    assert_eq!(status, 401);
 }
 
 #[tokio::test]

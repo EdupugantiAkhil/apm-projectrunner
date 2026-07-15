@@ -2799,6 +2799,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "switchyard-adapters",
  "switchyard-planner",
  "switchyard-router-admin",
  "switchyard-sources",

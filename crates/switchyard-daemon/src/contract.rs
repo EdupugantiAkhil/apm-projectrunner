@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use switchyard_state::DeploymentReconciliation;
 
 /// Stable URL prefix for this contract generation.
 pub const API_V1_PREFIX: &str = "/api/v1";
@@ -228,6 +229,56 @@ pub struct DaemonStatusV1 {
     pub pid: u32,
     pub active_operations: usize,
     pub max_heavy_operations: usize,
+}
+
+/// Latest operation fields shown beside a deployment list entry.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentOperationSummaryV1 {
+    pub id: String,
+    pub kind: String,
+    pub status: String,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+}
+
+/// Compact deployment state for the GUI rail.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentSummaryV1 {
+    pub name: String,
+    pub definition_hash: Option<String>,
+    pub resource_hash: Option<String>,
+    pub applied_at: Option<i64>,
+    pub last_operation: Option<DeploymentOperationSummaryV1>,
+    pub custom_domains: Vec<String>,
+    pub bindings: Value,
+}
+
+/// Versioned deployment-list response.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentsV1 {
+    pub api_version: String,
+    pub deployments: Vec<DeploymentSummaryV1>,
+}
+
+/// Applied deployment state plus the daemon's live reconciliation projection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentDetailV1 {
+    pub api_version: String,
+    pub deployment: String,
+    pub definition_hash: Option<String>,
+    pub resource_hash: Option<String>,
+    pub applied_at: Option<i64>,
+    pub snapshot: Option<Value>,
+    pub manifest: Option<Value>,
+    pub source_identities: Value,
+    pub reconciliation: DeploymentReconciliation,
+    pub resources: Vec<switchyard_state::OwnedResourceObservation>,
+    pub custom_domains: Vec<String>,
+    pub bindings: Value,
 }
 
 /// Project-local daemon discovery document. Its containing file is mode 0600.

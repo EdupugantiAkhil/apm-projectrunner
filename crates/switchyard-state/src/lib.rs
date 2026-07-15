@@ -541,6 +541,39 @@ impl StateStore {
         ).optional().map_err(Into::into)
     }
 
+    /// Lists every deployment known to SQLite with its latest operation, if any.
+    pub fn deployments(&self) -> Result<Vec<StoredDeployment>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT d.id,d.applied_definition_hash,d.applied_snapshot_json,d.applied_at,\
+             o.id,o.kind,o.status,o.started_at,o.finished_at,o.error_code,o.error_context_json \
+             FROM deployments d LEFT JOIN operations o ON o.id=(\
+               SELECT latest.id FROM operations latest WHERE latest.deployment_id=d.id \
+               ORDER BY latest.started_at DESC,latest.id DESC LIMIT 1) ORDER BY d.id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            let operation_id = row.get::<_, Option<String>>(4)?;
+            Ok(StoredDeployment {
+                deployment: row.get(0)?,
+                definition_hash: row.get(1)?,
+                snapshot_json: row.get(2)?,
+                applied_at: row.get(3)?,
+                last_operation: operation_id.map(|id| StoredOperation {
+                    id,
+                    deployment: row.get(0).expect("deployment column is valid"),
+                    kind: row.get(5).expect("joined operation kind is present"),
+                    status: row.get(6).expect("joined operation status is present"),
+                    started_at: row.get(7).expect("joined operation start is present"),
+                    finished_at: row.get(8).expect("joined operation finish is valid"),
+                    error_code: row.get(9).expect("joined operation error code is valid"),
+                    error_context_json: row
+                        .get(10)
+                        .expect("joined operation error context is valid"),
+                }),
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Starts an auditable operation.
     pub fn start_operation(&self, operation: &OperationRecord) -> Result<(), StateError> {
         validate_id("operation id", &operation.id)?;
@@ -1056,6 +1089,16 @@ pub struct AppliedDeployment {
     pub snapshot: AppliedSnapshot,
     /// Caller-supplied Unix timestamp in milliseconds.
     pub applied_at: i64,
+}
+
+/// Deployment list projection used by control-plane clients.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredDeployment {
+    pub deployment: String,
+    pub definition_hash: Option<String>,
+    pub snapshot_json: Option<String>,
+    pub applied_at: Option<i64>,
+    pub last_operation: Option<StoredOperation>,
 }
 
 /// Audited control-plane operation kind.
