@@ -54,10 +54,13 @@ optional `context` fields. Framework types are not part of the public Rust contr
 | `GET` | `/api/v1/operations/{id}` | Fetch current or durable terminal operation state |
 | `POST` | `/api/v1/operations/{id}/cancel` | Request cooperative cancellation |
 | `GET` | `/api/v1/operations/{id}/events` | Observe or resume the operation SSE stream |
+| `GET` | `/api/v1/deployments/{deployment}/routes` | Query route versions and activation history |
 
 A command request always contains `bundle`. Command-specific fields are `consumer` and
 `group` for bind, `routes` for status, `target` for logs, `ui` for open, and `confirmed`
-for cleanup. Creation returns HTTP 202 and a versioned operation document. Status is
+for cleanup. A bind may also carry `transition` as `close`, `pin`, or `drain` with a
+`timeoutMs`; the CLI exposes the same choice through `--transition` and
+`--drain-timeout-ms`. Creation returns HTTP 202 and a versioned operation document. Status is
 `pending`, `running`, `succeeded`, `failed`, or `cancelled`. Script-compatible stdout,
 stderr, and exit code remain available for the daemon lifetime; terminal status and
 structured error data are durable in SQLite across restart. Raw output is deliberately
@@ -68,6 +71,21 @@ deployment ID. A second mutation receives HTTP 409 and `operation_lock_contended
 reads remain independent. Apply operations additionally acquire the global heavy-work
 semaphore. Shutdown and cancellation terminate child commands cooperatively, record
 `cancelled`, and release the lease.
+
+Bind operations are daemon-owned rather than delegated to the one-shot CLI. The daemon
+renders complete candidates for the consumer sidecar and running host gateway, then
+uses their existing local administration sockets. A target becomes `active` in SQLite
+only when its acknowledgement matches the candidate version and checksum and reports
+`activated`. A timeout, rejection, stale acknowledgement, or checksum mismatch retains
+the previously observed active version and records a failed attempt. If one target has
+already activated when a later target fails, the daemon reapplies the prior routes at a
+new monotonic version and records the rollback. Router provider-health rollbacks are
+also retained with their structured, secret-safe diagnostic context.
+
+The deployment route endpoint returns each router/binding's desired, current, previous,
+and observed versions and checksums, transition policy, status, and last error code,
+followed by append-only activation history. `switchyard status --routes` and
+`switchyard routes` add a compact version summary when they execute through a daemon.
 
 ## Server-Sent Events
 

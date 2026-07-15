@@ -16,6 +16,7 @@ serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 switchyard-planner = { path = "../switchyard-planner" }
 switchyard-daemon = { path = "../switchyard-daemon" }
+switchyard-router-admin = { path = "../switchyard-router-admin" }
 
 [dev-dependencies]
 axum = "0.8.8"

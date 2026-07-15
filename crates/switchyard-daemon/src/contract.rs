@@ -67,6 +67,8 @@ pub struct CommandRequestV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<TransitionPolicyV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<String>,
@@ -74,6 +76,19 @@ pub struct CommandRequestV1 {
     pub routes: bool,
     #[serde(default)]
     pub confirmed: bool,
+}
+
+/// Existing-connection behavior requested for a live binding change.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "strategy",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum TransitionPolicyV1 {
+    Close,
+    Drain { timeout_ms: u64 },
+    Pin,
 }
 
 impl CommandRequestV1 {
@@ -89,12 +104,30 @@ impl CommandRequestV1 {
             CommandKind::Validate => vec!["validate".into(), bundle],
             CommandKind::Plan => vec!["plan".into(), bundle],
             CommandKind::Apply => vec!["up".into(), bundle],
-            CommandKind::Bind => vec![
-                "bind".into(),
-                bundle,
-                required(&self.consumer, "consumer")?,
-                required(&self.group, "group")?,
-            ],
+            CommandKind::Bind => {
+                let mut args = vec![
+                    "bind".into(),
+                    bundle,
+                    required(&self.consumer, "consumer")?,
+                    required(&self.group, "group")?,
+                ];
+                match self.transition {
+                    None => {}
+                    Some(TransitionPolicyV1::Close) => {
+                        args.extend(["--transition".into(), "close".into()])
+                    }
+                    Some(TransitionPolicyV1::Pin) => {
+                        args.extend(["--transition".into(), "pin".into()])
+                    }
+                    Some(TransitionPolicyV1::Drain { timeout_ms }) => args.extend([
+                        "--transition".into(),
+                        "drain".into(),
+                        "--drain-timeout-ms".into(),
+                        timeout_ms.to_string(),
+                    ]),
+                }
+                args
+            }
             CommandKind::Status => {
                 let mut args = vec!["status".into(), bundle];
                 if self.routes {
@@ -227,6 +260,51 @@ pub enum EventKindV1 {
     Health,
     Route,
     Log,
+}
+
+/// Desired/applied/observed version state for one router binding.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RouterBindingV1 {
+    pub router: String,
+    pub binding: String,
+    pub desired_version: Option<i64>,
+    pub desired_checksum: Option<String>,
+    pub current_version: Option<i64>,
+    pub current_checksum: Option<String>,
+    pub previous_version: Option<i64>,
+    pub previous_checksum: Option<String>,
+    pub observed_version: Option<i64>,
+    pub observed_checksum: Option<String>,
+    pub status: String,
+    pub transition: Value,
+    pub last_error_code: Option<String>,
+    pub updated_at: i64,
+}
+
+/// One immutable route apply, rejection, or rollback history record.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RouteHistoryV1 {
+    pub sequence: i64,
+    pub router: Option<String>,
+    pub binding: Option<String>,
+    pub operation_id: Option<String>,
+    pub version: i64,
+    pub checksum: String,
+    pub activation_status: String,
+    pub recorded_at: i64,
+    pub context: Value,
+}
+
+/// Route version visibility and append-only history for one deployment.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentRoutesV1 {
+    pub api_version: String,
+    pub deployment: String,
+    pub bindings: Vec<RouterBindingV1>,
+    pub history: Vec<RouteHistoryV1>,
 }
 
 impl EventKindV1 {

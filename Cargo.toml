@@ -8,6 +8,7 @@ members = [
     "crates/switchyard-daemon",
     "crates/switchyard-planner",
     "crates/switchyard-router",
+    "crates/switchyard-router-admin",
     "crates/switchyard-state",
 ]
 resolver = "3"

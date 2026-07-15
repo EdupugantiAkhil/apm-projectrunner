@@ -23,9 +23,11 @@ use axum::{
 };
 use futures_util::{Stream, stream};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use switchyard_state::{
-    GeneratedManifest, LockRequest, OperationKind, OperationRecord, OperationStatus,
-    ReconciliationInput, ReconciliationReport, StateError, StateStore, StructuredContext,
+    AppliedSnapshot, GeneratedManifest, LockRequest, OperationKind, OperationRecord,
+    OperationStatus, ReconciliationInput, ReconciliationReport, RouterApplyRecord,
+    RouterApplyStatus, StateError, StateStore, StructuredContext,
 };
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -36,7 +38,8 @@ use tokio::{
 
 use crate::contract::{
     API_VERSION, ApiErrorV1, CommandKind, CommandRequestV1, CommandResultV1, DaemonStatusV1,
-    DiscoveryV1, EventKindV1, EventV1, OperationStatusV1, OperationV1,
+    DeploymentRoutesV1, DiscoveryV1, EventKindV1, EventV1, OperationStatusV1, OperationV1,
+    RouteHistoryV1, RouterBindingV1, TransitionPolicyV1,
 };
 
 const LOCK_TTL_MILLIS: i64 = 15_000;
@@ -67,7 +70,14 @@ impl DaemonConfig {
 pub enum BackendOutcome {
     Completed(CommandResultV1),
     Cancelled(CommandResultV1),
+    LiveBinding {
+        result: CommandResultV1,
+        attempts: Vec<RouterApplyRecord>,
+    },
 }
+
+/// Boxed asynchronous operation result used by injectable daemon backends.
+pub type BackendFuture = Pin<Box<dyn Future<Output = Result<BackendOutcome, ApiErrorV1>> + Send>>;
 
 /// Injectable, Docker-free operation backend used by the server and integration tests.
 pub trait OperationBackend: Send + Sync + 'static {
@@ -77,7 +87,18 @@ pub trait OperationBackend: Send + Sync + 'static {
         arguments: Vec<String>,
         cancellation: watch::Receiver<bool>,
         events: EventSink,
-    ) -> Pin<Box<dyn Future<Output = Result<BackendOutcome, ApiErrorV1>> + Send>>;
+    ) -> BackendFuture;
+
+    /// Native daemon-owned live bind path. Test backends may retain the command path.
+    fn live_bind(
+        &self,
+        _request: CommandRequestV1,
+        _operation_id: String,
+        _cancellation: watch::Receiver<bool>,
+        _events: EventSink,
+    ) -> Option<BackendFuture> {
+        None
+    }
 }
 
 /// Event emitter passed to operation backends.
@@ -116,7 +137,7 @@ impl OperationBackend for CliBackend {
         arguments: Vec<String>,
         mut cancellation: watch::Receiver<bool>,
         events: EventSink,
-    ) -> Pin<Box<dyn Future<Output = Result<BackendOutcome, ApiErrorV1>> + Send>> {
+    ) -> BackendFuture {
         let program = self.program.clone();
         let project_root = self.project_root.clone();
         Box::pin(async move {
@@ -173,6 +194,484 @@ impl OperationBackend for CliBackend {
             })
         })
     }
+
+    fn live_bind(
+        &self,
+        request: CommandRequestV1,
+        operation_id: String,
+        cancellation: watch::Receiver<bool>,
+        events: EventSink,
+    ) -> Option<BackendFuture> {
+        let project_root = self.project_root.clone();
+        Some(Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                apply_live_binding(&project_root, request, &operation_id, cancellation, events)
+            })
+            .await
+            .map_err(|error| ApiErrorV1::new("router_apply_task_failed", error.to_string()))?
+        }))
+    }
+}
+
+struct RouterTarget {
+    id: String,
+    socket: PathBuf,
+    old: router_config::RouterConfig,
+    candidate: router_config::RouterConfig,
+}
+
+fn apply_live_binding(
+    project_root: &Path,
+    request: CommandRequestV1,
+    operation_id: &str,
+    cancellation: watch::Receiver<bool>,
+    events: EventSink,
+) -> Result<BackendOutcome, ApiErrorV1> {
+    let consumer = request
+        .consumer
+        .as_deref()
+        .ok_or_else(|| ApiErrorV1::new("invalid_request", "`consumer` is required"))?;
+    let group = request
+        .group
+        .as_deref()
+        .ok_or_else(|| ApiErrorV1::new("invalid_request", "`group` is required"))?;
+    let bundle_path = if request.bundle.is_absolute() {
+        request.bundle.clone()
+    } else {
+        project_root.join(&request.bundle)
+    };
+    let authored = switchyard_planner::load_bundle(&bundle_path)
+        .map_err(|error| ApiErrorV1::new("bundle_load_failed", error.to_string()))?;
+    let authored_plan = switchyard_planner::plan(&authored)
+        .map_err(|errors| ApiErrorV1::new("plan_failed", format_diagnostics(errors)))?;
+    let resolved_path = project_root
+        .join(&authored_plan.artifact_dir)
+        .join("resolved-deployment.yaml");
+    let base = if resolved_path.is_file() {
+        let manifest_path = project_root
+            .join(&authored_plan.artifact_dir)
+            .join("manifest.json");
+        let manifest: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).map_err(|error| {
+                ApiErrorV1::new("generated_manifest_missing", error.to_string())
+            })?)
+            .map_err(|error| ApiErrorV1::new("generated_manifest_invalid", error.to_string()))?;
+        if manifest["deployment"].as_str() != Some(authored_plan.deployment.as_str())
+            || manifest["resourceHash"].as_str() != Some(authored_plan.resource_hash.as_str())
+        {
+            return Err(ApiErrorV1::new(
+                "generated_state_drift",
+                "generated bind state does not match this deployment; reconcile drift before binding",
+            ));
+        }
+        switchyard_planner::load_bundle(&resolved_path)
+            .map_err(|error| ApiErrorV1::new("resolved_state_invalid", error.to_string()))?
+    } else {
+        authored
+    };
+    let mut plan = switchyard_planner::plan_with_binding(&base, consumer, group)
+        .map_err(|errors| ApiErrorV1::new("plan_failed", format_diagnostics(errors)))?;
+    let token = std::env::var("SWITCHYARD_ROUTER_TOKEN").map_err(|_| {
+        ApiErrorV1::new(
+            "router_token_missing",
+            "SWITCHYARD_ROUTER_TOKEN must be set for bind",
+        )
+    })?;
+    let transition = request.transition;
+    let route_dir = project_root
+        .join(&authored_plan.artifact_dir)
+        .join("routes");
+    let old_sidecar: router_config::RouterConfig = serde_json::from_slice(
+        &fs::read(route_dir.join(format!("{consumer}.json")))
+            .map_err(|error| ApiErrorV1::new("active_snapshot_missing", error.to_string()))?,
+    )
+    .map_err(|error| ApiErrorV1::new("active_snapshot_invalid", error.to_string()))?;
+    let mut candidate_sidecar: router_config::RouterConfig = serde_json::from_str(
+        plan.route_configs
+            .get(consumer)
+            .ok_or_else(|| ApiErrorV1::new("router_missing", "consumer has no sidecar router"))?,
+    )
+    .map_err(|error| ApiErrorV1::new("candidate_snapshot_invalid", error.to_string()))?;
+    set_transition(&mut candidate_sidecar, transition);
+    let sidecar = plan
+        .sidecars
+        .get(consumer)
+        .ok_or_else(|| ApiErrorV1::new("router_missing", "consumer has no sidecar router"))?;
+    let mut targets = vec![RouterTarget {
+        id: format!("sidecar:{consumer}"),
+        socket: project_root.join(&sidecar.admin_socket),
+        old: old_sidecar,
+        candidate: candidate_sidecar,
+    }];
+
+    let host_dir = project_root.join(".switchyard/run").join(&plan.deployment);
+    let host_socket = host_dir.join("host.socket");
+    let host_config = host_dir.join("host-router.json");
+    if let Some(encoded) = &plan.host_router_config {
+        let mut candidate: router_config::RouterConfig = serde_json::from_str(encoded)
+            .map_err(|error| ApiErrorV1::new("candidate_snapshot_invalid", error.to_string()))?;
+        let old = match fs::read(&host_config) {
+            Ok(encoded) => serde_json::from_slice(&encoded)
+                .map_err(|error| ApiErrorV1::new("active_snapshot_invalid", error.to_string()))?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => candidate.clone(),
+            Err(error) => {
+                return Err(ApiErrorV1::new(
+                    "active_snapshot_missing",
+                    error.to_string(),
+                ));
+            }
+        };
+        if host_config.is_file() {
+            for provider in &mut candidate.spec.providers {
+                if let Some(active) = old
+                    .spec
+                    .providers
+                    .iter()
+                    .find(|active| active.id == provider.id)
+                {
+                    provider.endpoint = active.endpoint.clone();
+                }
+            }
+        }
+        set_transition(&mut candidate, transition);
+        targets.push(RouterTarget {
+            id: "host-gateway".into(),
+            socket: host_socket,
+            old,
+            candidate,
+        });
+    }
+
+    let transition_context = StructuredContext::new(
+        serde_json::to_value(&targets[0].candidate.spec.snapshot.transitions)
+            .unwrap_or(Value::Null),
+    )
+    .map_err(|error| ApiErrorV1::new(error.code(), error.to_string()))?;
+    let mut attempts = Vec::new();
+    let mut applied: Vec<(usize, switchyard_router_admin::SnapshotIdentity)> = Vec::new();
+    let mut acknowledgements = Vec::new();
+    let mut failure = None;
+    for (index, target) in targets.iter_mut().enumerate() {
+        if *cancellation.borrow() {
+            failure = Some("operation was cancelled".to_owned());
+            break;
+        }
+        let observed = match switchyard_router_admin::current_snapshot(&target.socket, &token) {
+            Ok(observed) => observed,
+            Err(error) => {
+                failure = Some(error.to_string());
+                attempts.push(router_attempt(
+                    &plan.deployment,
+                    target,
+                    consumer,
+                    operation_id,
+                    target.candidate.spec.snapshot.version,
+                    snapshot_checksum(&target.candidate),
+                    RouterApplyStatus::Failed,
+                    None,
+                    transition_context.clone(),
+                    Some("router_unreachable"),
+                    json!({"message": error.to_string()}),
+                )?);
+                break;
+            }
+        };
+        let version = observed.version.checked_add(1).ok_or_else(|| {
+            ApiErrorV1::new(
+                "snapshot_version_exhausted",
+                "router snapshot version is exhausted",
+            )
+        })?;
+        target.candidate.spec.snapshot.version = version;
+        target.candidate.spec.snapshot.id = router_config::RouteSnapshotId::new(format!(
+            "{}-bind-{version}",
+            target.id.replace(':', "-")
+        ));
+        let checksum = snapshot_checksum(&target.candidate);
+        events.emit(
+            EventKindV1::Route,
+            json!({"router": target.id, "binding": consumer, "desiredVersion": version, "status": "pending"}),
+        );
+        match switchyard_router_admin::apply_snapshot(&target.socket, &token, &target.candidate) {
+            Ok(ack)
+                if ack.version == version
+                    && ack.checksum == checksum
+                    && ack.status == switchyard_router_admin::ActivationStatus::Activated =>
+            {
+                attempts.push(router_attempt(
+                    &plan.deployment,
+                    target,
+                    consumer,
+                    operation_id,
+                    version,
+                    checksum,
+                    RouterApplyStatus::Active,
+                    Some((observed.version, observed.checksum.clone())),
+                    transition_context.clone(),
+                    None,
+                    json!({"acknowledgement": ack}),
+                )?);
+                acknowledgements.push(json!({"router": target.id, "acknowledgement": ack}));
+                applied.push((index, observed));
+            }
+            Ok(ack) => {
+                failure = Some(format!(
+                    "router {} returned a non-activating acknowledgement",
+                    target.id
+                ));
+                attempts.push(router_attempt(
+                    &plan.deployment,
+                    target,
+                    consumer,
+                    operation_id,
+                    version,
+                    checksum,
+                    RouterApplyStatus::Failed,
+                    Some((observed.version, observed.checksum)),
+                    transition_context.clone(),
+                    Some("acknowledgement_mismatch"),
+                    json!({"acknowledgement": ack}),
+                )?);
+                break;
+            }
+            Err(error) => {
+                let rolled_back = error.rejection_code() == Some("provider_unhealthy");
+                failure = Some(error.to_string());
+                attempts.push(router_attempt(
+                    &plan.deployment,
+                    target,
+                    consumer,
+                    operation_id,
+                    version,
+                    checksum,
+                    if rolled_back {
+                        RouterApplyStatus::RolledBack
+                    } else {
+                        RouterApplyStatus::Failed
+                    },
+                    Some((observed.version, observed.checksum)),
+                    transition_context.clone(),
+                    error.rejection_code().or(Some("router_apply_failed")),
+                    error
+                        .details()
+                        .cloned()
+                        .unwrap_or_else(|| json!({"message": error.to_string()})),
+                )?);
+                break;
+            }
+        }
+    }
+
+    if failure.is_some() {
+        for (index, _) in applied.into_iter().rev() {
+            let target = &mut targets[index];
+            let observed = switchyard_router_admin::current_snapshot(&target.socket, &token)
+                .map_err(|error| {
+                    ApiErrorV1::new("rollback_observation_failed", error.to_string())
+                })?;
+            let rollback_version = observed.version.checked_add(1).ok_or_else(|| {
+                ApiErrorV1::new(
+                    "snapshot_version_exhausted",
+                    "router snapshot version is exhausted",
+                )
+            })?;
+            target.old.spec.snapshot.version = rollback_version;
+            target.old.spec.snapshot.id = router_config::RouteSnapshotId::new(format!(
+                "{}-rollback-{rollback_version}",
+                target.id.replace(':', "-")
+            ));
+            set_transition(&mut target.old, transition);
+            let checksum = snapshot_checksum(&target.old);
+            match switchyard_router_admin::apply_snapshot(&target.socket, &token, &target.old) {
+                Ok(ack)
+                    if ack.version == rollback_version
+                        && ack.checksum == checksum
+                        && ack.status == switchyard_router_admin::ActivationStatus::Activated =>
+                {
+                    attempts.push(router_attempt(
+                        &plan.deployment,
+                        target,
+                        consumer,
+                        operation_id,
+                        rollback_version,
+                        checksum,
+                        RouterApplyStatus::RolledBack,
+                        Some((observed.version, observed.checksum.clone())),
+                        transition_context.clone(),
+                        None,
+                        json!({"reason": "peer_router_failed"}),
+                    )?);
+                }
+                Ok(ack) => attempts.push(router_attempt(
+                    &plan.deployment,
+                    target,
+                    consumer,
+                    operation_id,
+                    rollback_version,
+                    checksum,
+                    RouterApplyStatus::Failed,
+                    Some((observed.version, observed.checksum)),
+                    transition_context.clone(),
+                    Some("rollback_acknowledgement_mismatch"),
+                    json!({"acknowledgement": ack}),
+                )?),
+                Err(error) => attempts.push(router_attempt(
+                    &plan.deployment,
+                    target,
+                    consumer,
+                    operation_id,
+                    rollback_version,
+                    checksum,
+                    RouterApplyStatus::Failed,
+                    Some((observed.version, observed.checksum)),
+                    transition_context.clone(),
+                    Some("rollback_failed"),
+                    json!({"message": error.to_string()}),
+                )?),
+            }
+        }
+        let message = failure.expect("checked");
+        return Ok(BackendOutcome::LiveBinding {
+            result: CommandResultV1 {
+                exit_code: 1,
+                stdout: String::new(),
+                stderr: format!("switchyard: {message}\n"),
+            },
+            attempts,
+        });
+    }
+
+    let sidecar_config = &targets[0].candidate;
+    plan.route_configs.insert(
+        consumer.to_owned(),
+        serde_json::to_string_pretty(sidecar_config)
+            .map_err(|error| ApiErrorV1::new("snapshot_encode_failed", error.to_string()))?,
+    );
+    if let Some(target) = targets.iter().find(|target| target.id == "host-gateway") {
+        plan.host_router_config = Some(
+            serde_json::to_string_pretty(&target.candidate)
+                .map_err(|error| ApiErrorV1::new("snapshot_encode_failed", error.to_string()))?,
+        );
+        fs::write(
+            host_dir.join("host-router.json"),
+            plan.host_router_config.as_deref().unwrap(),
+        )
+        .map_err(|error| ApiErrorV1::new("host_snapshot_write_failed", error.to_string()))?;
+    }
+    switchyard_planner::write_plan(project_root, &plan)
+        .map_err(|error| ApiErrorV1::new("artifact_write_failed", error.to_string()))?;
+    events.emit(
+        EventKindV1::Route,
+        json!({"binding": consumer, "status": "active"}),
+    );
+    let mut stdout = format!(
+        "router acknowledgement: {}\n",
+        serde_json::to_string(
+            acknowledgements
+                .first()
+                .map(|entry| &entry["acknowledgement"])
+                .unwrap_or(&Value::Null)
+        )
+        .unwrap_or_else(|_| "null".into())
+    );
+    for acknowledgement in acknowledgements.iter().skip(1) {
+        stdout.push_str(&format!(
+            "router acknowledgement ({}): {}\n",
+            acknowledgement["router"].as_str().unwrap_or("additional"),
+            serde_json::to_string(&acknowledgement["acknowledgement"])
+                .unwrap_or_else(|_| "null".into())
+        ));
+    }
+    stdout.push_str(&format!("bound `{consumer}` to `{group}`\n"));
+    Ok(BackendOutcome::LiveBinding {
+        result: CommandResultV1 {
+            exit_code: 0,
+            stdout,
+            stderr: String::new(),
+        },
+        attempts,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn router_attempt(
+    deployment: &str,
+    target: &RouterTarget,
+    binding: &str,
+    operation_id: &str,
+    version: u64,
+    checksum: String,
+    status: RouterApplyStatus,
+    observed: Option<(u64, String)>,
+    transition: StructuredContext,
+    error_code: Option<&str>,
+    context: Value,
+) -> Result<RouterApplyRecord, ApiErrorV1> {
+    Ok(RouterApplyRecord {
+        deployment: deployment.into(),
+        router: target.id.clone(),
+        binding: binding.into(),
+        operation_id: operation_id.into(),
+        desired_version: i64::try_from(target.candidate.spec.snapshot.version).map_err(|_| {
+            ApiErrorV1::new("snapshot_version_exhausted", "version exceeds SQLite range")
+        })?,
+        desired_checksum: snapshot_checksum(&target.candidate),
+        version: i64::try_from(version).map_err(|_| {
+            ApiErrorV1::new("snapshot_version_exhausted", "version exceeds SQLite range")
+        })?,
+        checksum,
+        status,
+        observed_version: observed
+            .as_ref()
+            .map(|(version, _)| *version)
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| {
+                ApiErrorV1::new("snapshot_version_exhausted", "version exceeds SQLite range")
+            })?,
+        observed_checksum: observed.map(|(_, checksum)| checksum),
+        transition,
+        error_code: error_code.map(str::to_owned),
+        recorded_at: now_millis(),
+        context: StructuredContext::new(context)
+            .map_err(|error| ApiErrorV1::new(error.code(), error.to_string()))?,
+    })
+}
+
+fn snapshot_checksum(config: &router_config::RouterConfig) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(config).expect("router configuration serializes"))
+    )
+}
+
+fn set_transition(
+    config: &mut router_config::RouterConfig,
+    transition: Option<TransitionPolicyV1>,
+) {
+    let Some(transition) = transition else { return };
+    let policy = match transition {
+        TransitionPolicyV1::Close => router_config::ConnectionTransitionPolicy::Close,
+        TransitionPolicyV1::Drain { timeout_ms } => {
+            router_config::ConnectionTransitionPolicy::Drain { timeout_ms }
+        }
+        TransitionPolicyV1::Pin => router_config::ConnectionTransitionPolicy::Pin,
+    };
+    config.spec.snapshot.transitions = router_config::ConnectionTransitionPolicies {
+        http: policy.clone(),
+        https: policy.clone(),
+        websocket: policy.clone(),
+        grpc: policy.clone(),
+        tcp: policy,
+    };
+}
+
+fn format_diagnostics(diagnostics: Vec<switchyard_planner::Diagnostic>) -> String {
+    diagnostics
+        .into_iter()
+        .map(|diagnostic| diagnostic.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 async fn read_output<R>(
@@ -519,10 +1018,84 @@ fn routes(inner: Arc<Inner>) -> Router {
         .route("/api/v1/operations/{id}", get(get_operation))
         .route("/api/v1/operations/{id}/cancel", post(cancel_operation))
         .route("/api/v1/operations/{id}/events", get(operation_events))
+        .route(
+            "/api/v1/deployments/{deployment}/routes",
+            get(deployment_routes),
+        )
         .fallback(api_not_found)
         .method_not_allowed_fallback(api_method_not_allowed)
         .with_state(inner.clone())
         .layer(middleware::from_fn_with_state(inner, auth_middleware))
+}
+
+async fn deployment_routes(
+    State(inner): State<Arc<Inner>>,
+    AxumPath(deployment): AxumPath<String>,
+) -> Response {
+    let store = inner
+        .store
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let bindings = match store.router_bindings(&deployment) {
+        Ok(bindings) => bindings,
+        Err(error) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error.code(),
+                &error.to_string(),
+            );
+        }
+    };
+    let history = match store.route_history(&deployment) {
+        Ok(history) => history,
+        Err(error) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error.code(),
+                &error.to_string(),
+            );
+        }
+    };
+    let bindings = bindings
+        .into_iter()
+        .map(|binding| RouterBindingV1 {
+            router: binding.router,
+            binding: binding.binding,
+            desired_version: binding.desired_version,
+            desired_checksum: binding.desired_checksum,
+            current_version: binding.current_version,
+            current_checksum: binding.current_checksum,
+            previous_version: binding.previous_version,
+            previous_checksum: binding.previous_checksum,
+            observed_version: binding.observed_version,
+            observed_checksum: binding.observed_checksum,
+            status: binding.status,
+            transition: serde_json::from_str(&binding.transition_json).unwrap_or(Value::Null),
+            last_error_code: binding.last_error_code,
+            updated_at: binding.updated_at,
+        })
+        .collect();
+    let history = history
+        .into_iter()
+        .map(|entry| RouteHistoryV1 {
+            sequence: entry.sequence,
+            router: entry.router,
+            binding: entry.binding,
+            operation_id: entry.operation_id,
+            version: entry.version,
+            checksum: entry.checksum,
+            activation_status: entry.activation_status,
+            recorded_at: entry.recorded_at,
+            context: serde_json::from_str(&entry.context_json).unwrap_or(Value::Null),
+        })
+        .collect();
+    Json(DeploymentRoutesV1 {
+        api_version: API_VERSION.into(),
+        deployment,
+        bindings,
+        history,
+    })
+    .into_response()
 }
 
 async fn auth_middleware(
@@ -613,7 +1186,7 @@ async fn start_command(
         inner.config.project_root.join(&request.bundle)
     };
     let deployment = deployment_id(&bundle_path);
-    match begin_operation(inner, kind, deployment, arguments).await {
+    match begin_operation(inner, kind, deployment, arguments, request).await {
         Ok(operation) => (StatusCode::ACCEPTED, Json(operation)).into_response(),
         Err((status, error)) => (status, Json(error)).into_response(),
     }
@@ -624,6 +1197,7 @@ async fn begin_operation(
     kind: CommandKind,
     deployment: String,
     arguments: Vec<String>,
+    request: CommandRequestV1,
 ) -> Result<OperationV1, (StatusCode, ApiErrorV1)> {
     let id = format!(
         "op-{}-{}",
@@ -717,6 +1291,7 @@ async fn begin_operation(
         id,
         kind,
         arguments,
+        request,
         cancellation_rx,
         events,
         lock,
@@ -724,11 +1299,13 @@ async fn begin_operation(
     Ok(operation)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_operation(
     inner: Arc<Inner>,
     id: String,
     kind: CommandKind,
     arguments: Vec<String>,
+    request: CommandRequestV1,
     cancellation: watch::Receiver<bool>,
     events: Arc<EventLog>,
     mut lock: Option<switchyard_state::OperationLock>,
@@ -761,9 +1338,17 @@ async fn execute_operation(
         operation_id: id.clone(),
         log: events.clone(),
     };
-    let mut work = inner.backend.run(kind, arguments, cancellation, sink);
+    let persistence_request = request.clone();
+    let mut work = if kind == CommandKind::Bind {
+        inner
+            .backend
+            .live_bind(request, id.clone(), cancellation.clone(), sink.clone())
+            .unwrap_or_else(|| inner.backend.run(kind, arguments, cancellation, sink))
+    } else {
+        inner.backend.run(kind, arguments, cancellation, sink)
+    };
     let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
-    let outcome = loop {
+    let mut outcome = loop {
         tokio::select! {
             outcome = &mut work => break outcome,
             _ = heartbeat.tick(), if lock.is_some() => {
@@ -776,6 +1361,18 @@ async fn execute_operation(
         }
     };
     drop(permit);
+    let successful_apply = matches!(
+        &outcome,
+        Ok(BackendOutcome::Completed(result)) if result.exit_code == 0
+    ) || matches!(
+        &outcome,
+        Ok(BackendOutcome::LiveBinding { result, .. }) if result.exit_code == 0
+    );
+    if successful_apply && matches!(kind, CommandKind::Apply | CommandKind::Bind) {
+        if let Err(error) = persist_applied_snapshot(&inner, &persistence_request) {
+            outcome = Err(error);
+        }
+    }
     match outcome {
         Ok(BackendOutcome::Completed(result)) if result.exit_code == 0 => finish_operation(
             &inner,
@@ -810,6 +1407,51 @@ async fn execute_operation(
             &events,
             lock,
         ),
+        Ok(BackendOutcome::LiveBinding { result, attempts }) => {
+            let persistence = {
+                let mut store = inner
+                    .store
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                attempts
+                    .iter()
+                    .try_for_each(|attempt| store.record_router_apply(attempt))
+            };
+            if let Err(error) = persistence {
+                finish_operation(
+                    &inner,
+                    &id,
+                    OperationStatusV1::Failed,
+                    Some(result),
+                    Some(ApiErrorV1::new(error.code(), error.to_string())),
+                    &events,
+                    lock,
+                );
+            } else if result.exit_code == 0 {
+                finish_operation(
+                    &inner,
+                    &id,
+                    OperationStatusV1::Succeeded,
+                    Some(result),
+                    None,
+                    &events,
+                    lock,
+                );
+            } else {
+                finish_operation(
+                    &inner,
+                    &id,
+                    OperationStatusV1::Failed,
+                    Some(result),
+                    Some(ApiErrorV1::new(
+                        "router_apply_failed",
+                        "live binding change failed",
+                    )),
+                    &events,
+                    lock,
+                );
+            }
+        }
         Err(error) => finish_operation(
             &inner,
             &id,
@@ -820,6 +1462,43 @@ async fn execute_operation(
             lock,
         ),
     }
+}
+
+fn persist_applied_snapshot(inner: &Inner, request: &CommandRequestV1) -> Result<(), ApiErrorV1> {
+    let bundle_path = if request.bundle.is_absolute() {
+        request.bundle.clone()
+    } else {
+        inner.config.project_root.join(&request.bundle)
+    };
+    let bundle = switchyard_planner::load_bundle(&bundle_path)
+        .map_err(|error| ApiErrorV1::new("bundle_load_failed", error.to_string()))?;
+    let authored_plan = switchyard_planner::plan(&bundle)
+        .map_err(|errors| ApiErrorV1::new("plan_failed", format_diagnostics(errors)))?;
+    let resolved_path = inner
+        .config
+        .project_root
+        .join(&authored_plan.artifact_dir)
+        .join("resolved-deployment.yaml");
+    let resolved = switchyard_planner::load_bundle(&resolved_path)
+        .map_err(|error| ApiErrorV1::new("resolved_state_invalid", error.to_string()))?;
+    let applied_plan = switchyard_planner::plan(&resolved)
+        .map_err(|errors| ApiErrorV1::new("plan_failed", format_diagnostics(errors)))?;
+    let snapshot = AppliedSnapshot::from_json(
+        serde_json::to_value(&resolved)
+            .map_err(|error| ApiErrorV1::new("snapshot_encode_failed", error.to_string()))?,
+    )
+    .map_err(|error| ApiErrorV1::new(error.code(), error.to_string()))?;
+    inner
+        .store
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .record_applied_snapshot(
+            &applied_plan.deployment,
+            &applied_plan.definition_hash,
+            &snapshot,
+            now_millis(),
+        )
+        .map_err(|error| ApiErrorV1::new(error.code(), error.to_string()))
 }
 
 async fn cancellation_wait(mut cancellation: watch::Receiver<bool>) {

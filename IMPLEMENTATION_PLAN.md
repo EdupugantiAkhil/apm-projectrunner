@@ -18,7 +18,8 @@ work can be marked without rewriting the specification.
 ## Release map
 
 - [x] **Routing proof:** Phases 0–4 demonstrate the zero-application-change topology.
-- [ ] **Product MVP:** Phases 5–6 add persistent state, APIs, adapters, and the GUI.
+- [ ] **Product MVP:** Phase 5 persistent control plane is complete; Phase 6 adapters
+      and GUI are not started.
 - [ ] **Team release:** Phase 7 adds LAN workflows and production-quality hardening.
 
 ## Phase 0 — Repository and contract foundation
@@ -316,17 +317,17 @@ Entry gate: the routing proof release is complete.
 
 ### Live router control
 
-- [ ] Push versioned snapshots to host and sidecar routers.
-- [ ] Require acknowledgement before marking a binding applied.
-- [ ] Persist apply failure and rollback history.
-- [ ] Expose current, previous, desired, and observed route versions.
-- [ ] Add graceful connection-drain policy controls.
+- [x] Push versioned snapshots to host and sidecar routers.
+- [x] Require acknowledgement before marking a binding applied.
+- [x] Persist apply failure and rollback history.
+- [x] Expose current, previous, desired, and observed route versions.
+- [x] Add graceful connection-drain policy controls.
 
 ### Phase 5 exit gate
 
-- [ ] Restarting the daemon preserves deployments, domains, bindings, and route history.
-- [ ] Deleting SQLite allows safe observed-state recovery from manifests and Docker.
-- [ ] CLI operations behave consistently through the daemon API.
+- [x] Restarting the daemon preserves deployments, domains, bindings, and route history.
+- [x] Deleting SQLite allows safe observed-state recovery from manifests and Docker.
+- [x] CLI operations behave consistently through the daemon API.
 
 ## Phase 6 — Product MVP: adapters, sources, overlays, and GUI
 

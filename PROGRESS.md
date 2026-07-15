@@ -5,7 +5,7 @@ Updated: 2026-07-15
 ## Release status
 
 - Routing proof (Phases 0–4): complete.
-- Product MVP (Phases 5–6): Phase 5 in progress.
+- Product MVP (Phases 5–6): Phase 5 complete; Phase 6 not started.
 - Team release (Phase 7): not started.
 
 `IMPLEMENTATION_PLAN.md` remains the task-level checklist. This file records the
@@ -46,7 +46,7 @@ implemented shape and the evidence used to close a phase.
 - Rust formatting was checked with the available Nix-provided Rust 1.95 `rustfmt`; the
   shell's `cargo-fmt` shim could not launch because its dynamic loader is absent.
 
-## Phase 5 (in progress)
+## Phase 5 implementation
 
 ### SQLite state
 
@@ -108,3 +108,59 @@ implemented shape and the evidence used to close a phase.
   socket-based Pingora integration test (`grpc_h2c`) failed to bind with sandbox
   `EPERM`. An earlier isolated CLI run reached the same restriction in its pre-existing
   Unix-socket host-runtime test. This is the sole repository-test verification gap.
+
+### Live router control
+
+- Router administration is now a shared typed crate used by both the one-shot CLI and
+  daemon. It retains the existing newline-delimited Unix-socket protocol, provides
+  configurable timeouts, and decodes snapshot identities and activation
+  acknowledgements without exposing credentials in errors.
+- The real daemon backend owns binding changes. It plans from the last generated
+  resolved state, pushes complete monotonic snapshots to the selected consumer sidecar
+  and a running host gateway, and requires matching version, checksum, and `activated`
+  status before recording success or replacing generated artifacts.
+- Multi-router changes compensate for partial activation by reapplying the prior route
+  configuration at a newer version. Timeouts, invalid/stale acknowledgements,
+  provider-health rollback, compensation success, and compensation failure are stored
+  as secret-safe route history and linked to the durable operation ID.
+- SQLite schema version 3 adds per-router/binding desired, current, previous, and
+  observed version/checksum state, transition policy, status, and last error code.
+  `/api/v1/deployments/:deployment/routes` returns this state and append-only history;
+  daemon-backed `status --routes` and `routes` append a compact version summary.
+- Bind requests and `switchyard bind` accept additive close, drain (with timeout), and
+  pin controls. The selected policy is applied consistently to HTTP, HTTPS, WebSocket,
+  gRPC, and TCP fields in the router's existing transition contract.
+
+### Phase 5 exit gate
+
+- Successful daemon applies persist the resolved desired snapshot and definition hash.
+  A transport-independent restart test proves custom domains and bindings remain in
+  SQLite, while a live-binding test proves failed and rolled-back route history and all
+  visible versions survive daemon reconstruction.
+- The same recovery test deletes SQLite and verifies startup rediscovers the generated
+  routing-matrix manifest with `applied_state_missing` drift instead of inventing an
+  apply. State-layer coverage injects owned Docker-label observations and proves the
+  same safe recovery path for runtime resources.
+- CLI parsing, daemon request generation, no-daemon fallback, byte-compatible command
+  output, additive route-version output, and the shared transition policy contract are
+  automated. Existing command output remains unchanged before the additive version
+  section.
+
+## Phase 5 verification
+
+- `cargo test -p switchyard-daemon --all-features --test api`: passed (6 tests),
+  including restart, domain/binding persistence, route failure/rollback persistence,
+  and deleted-database recovery.
+- `cargo test -p switchyard-state -p switchyard-router-admin -p switchyard-daemon
+  --all-features --no-fail-fast`: passed (state, shared client, daemon, integration, and
+  doc tests).
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passed.
+- `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps`: passed.
+- `cargo fmt --all -- --check`: passed after formatting the increment.
+- `cargo test --workspace --all-features`: compilation succeeded and all tests reached
+  passed until the pre-existing `router-pingora` `grpc_h2c` socket test; its listener
+  failed with sandbox `EPERM`. The exact workspace command therefore did not pass in
+  this environment.
+- `./scripts/phase5-proof.sh`: daemon/recovery portion passed; the Docker routing-matrix
+  gate was explicitly skipped because access to `/var/run/docker.sock` was denied.
+  Docker Compose 5.1.2 is installed, but the Engine is unavailable to this sandbox.

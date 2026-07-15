@@ -2373,6 +2373,7 @@ dependencies = [
  "serde_json",
  "switchyard-daemon",
  "switchyard-planner",
+ "switchyard-router-admin",
  "tempfile",
  "tokio",
  "tower",
@@ -2385,9 +2386,12 @@ dependencies = [
  "axum",
  "futures-util",
  "http-body-util",
+ "router-config",
  "serde",
  "serde_json",
+ "sha2",
  "switchyard-planner",
+ "switchyard-router-admin",
  "switchyard-state",
  "tempfile",
  "tokio",
@@ -2426,6 +2430,15 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+]
+
+[[package]]
+name = "switchyard-router-admin"
+version = "0.1.0"
+dependencies = [
+ "router-config",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

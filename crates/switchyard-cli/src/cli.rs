@@ -15,6 +15,7 @@ pub enum CliCommand {
         bundle: PathBuf,
         consumer: String,
         group: String,
+        transition: Option<TransitionArgument>,
     },
     Status {
         bundle: PathBuf,
@@ -44,6 +45,13 @@ pub enum CliCommand {
     Help,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransitionArgument {
+    Close,
+    Drain { timeout_ms: u64 },
+    Pin,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UsageError(String);
 
@@ -60,7 +68,7 @@ Usage:
   switchyard validate <deployment.yaml>
   switchyard plan <deployment.yaml>
   switchyard up <deployment.yaml>
-  switchyard bind <deployment.yaml> <consumer> <group>
+  switchyard bind <deployment.yaml> <consumer> <group> [--transition close|drain|pin] [--drain-timeout-ms <ms>]
   switchyard status <deployment.yaml> [--routes]
   switchyard routes <deployment.yaml>
   switchyard logs <deployment.yaml> [instance[/service]]
@@ -97,11 +105,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
         "validate" if rest.len() == 1 => Ok(CliCommand::Validate { bundle: bundle()? }),
         "plan" if rest.len() == 1 => Ok(CliCommand::Plan { bundle: bundle()? }),
         "up" if rest.len() == 1 => Ok(CliCommand::Up { bundle: bundle()? }),
-        "bind" if rest.len() == 3 => Ok(CliCommand::Bind {
-            bundle: bundle()?,
-            consumer: rest[1].clone(),
-            group: rest[2].clone(),
-        }),
+        "bind" if rest.len() >= 3 => parse_bind(rest),
         "status" if rest.len() == 1 => Ok(CliCommand::Status {
             bundle: bundle()?,
             routes: false,
@@ -137,6 +141,51 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
     }
 }
 
+fn parse_bind(rest: &[String]) -> Result<CliCommand, UsageError> {
+    let mut strategy = None;
+    let mut timeout = None;
+    let mut index = 3;
+    while index < rest.len() {
+        match rest[index].as_str() {
+            "--transition" if index + 1 < rest.len() => {
+                strategy = Some(rest[index + 1].as_str());
+                index += 2;
+            }
+            "--drain-timeout-ms" if index + 1 < rest.len() => {
+                timeout = Some(rest[index + 1].parse::<u64>().map_err(|_| {
+                    UsageError("--drain-timeout-ms must be an unsigned integer".into())
+                })?);
+                index += 2;
+            }
+            _ => return Err(UsageError(format!("invalid bind arguments\n\n{USAGE}"))),
+        }
+    }
+    let transition = match strategy {
+        None if timeout.is_none() => None,
+        Some("close") if timeout.is_none() => Some(TransitionArgument::Close),
+        Some("pin") if timeout.is_none() => Some(TransitionArgument::Pin),
+        Some("drain") => Some(TransitionArgument::Drain {
+            timeout_ms: timeout.unwrap_or(30_000),
+        }),
+        None => {
+            return Err(UsageError(
+                "--drain-timeout-ms requires --transition drain".into(),
+            ));
+        }
+        Some(_) => {
+            return Err(UsageError(
+                "--transition must be close, drain, or pin".into(),
+            ));
+        }
+    };
+    Ok(CliCommand::Bind {
+        bundle: PathBuf::from(&rest[0]),
+        consumer: rest[1].clone(),
+        group: rest[2].clone(),
+        transition,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,8 +202,30 @@ mod tests {
                 bundle: "demo.yaml".into(),
                 consumer: "backend".into(),
                 group: "ai-feature".into(),
+                transition: None,
             }
         );
+    }
+
+    #[test]
+    fn parses_drain_policy() {
+        assert!(matches!(
+            parse(args(&[
+                "bind",
+                "demo.yaml",
+                "backend",
+                "base",
+                "--transition",
+                "drain",
+                "--drain-timeout-ms",
+                "2500"
+            ]))
+            .unwrap(),
+            CliCommand::Bind {
+                transition: Some(TransitionArgument::Drain { timeout_ms: 2500 }),
+                ..
+            }
+        ));
     }
 
     #[test]

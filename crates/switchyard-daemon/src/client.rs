@@ -11,8 +11,8 @@ use std::{
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::contract::{
-    API_VERSION, ApiErrorV1, CommandKind, CommandRequestV1, DaemonStatusV1, DiscoveryV1,
-    OperationV1,
+    API_VERSION, ApiErrorV1, CommandKind, CommandRequestV1, DaemonStatusV1, DeploymentRoutesV1,
+    DiscoveryV1, OperationV1,
 };
 
 /// Result of optional daemon discovery used by transparent CLI delegation.
@@ -20,6 +20,18 @@ use crate::contract::{
 pub enum DaemonExecution {
     NotRunning,
     Completed(OperationV1),
+}
+
+/// Queries durable route versions and history through a discovered daemon.
+pub fn deployment_routes(
+    project_root: &Path,
+    deployment: &str,
+) -> Result<Option<DeploymentRoutesV1>, ClientError> {
+    let Some(discovery) = load_discovery(project_root)? else {
+        return Ok(None);
+    };
+    let path = format!("/api/v1/deployments/{deployment}/routes");
+    json_request::<(), _>(&discovery, "GET", &path, None).map(Some)
 }
 
 #[derive(Debug)]

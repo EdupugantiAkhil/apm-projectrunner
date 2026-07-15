@@ -31,8 +31,10 @@
 //! recovered observations. `deployment_history`, `operations`, `resources`, and
 //! `health_observations` are append-oriented audit tables. Resource rows use an
 //! `active` marker so each reconciliation preserves earlier observations. `routes` and
-//! `route_snapshots` preserve route selection and activation attempts independently.
-//! `operation_locks` is the only replace-in-place coordination table. Arbitrary
+//! `route_snapshots` preserve route selection and activation attempts independently;
+//! `router_bindings` exposes desired, current, previous, and observed acknowledgement
+//! state without rewriting that history. `operation_locks` is the only replace-in-place
+//! coordination table. Arbitrary
 //! diagnostic JSON is admitted only through [`StructuredContext`]; observed Docker
 //! labels are reduced to the three Switchyard ownership fields before storage.
 //!
@@ -55,7 +57,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The schema version understood by this crate.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 /// Ownership label used by the existing Docker runtime.
 pub const MANAGED_LABEL: &str = "dev.switchyard.managed";
 /// Deployment ownership label used by the existing Docker runtime.
@@ -66,6 +68,7 @@ pub const RESOURCE_HASH_LABEL: &str = "dev.switchyard.resource-hash";
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("migrations/001_initial.sql")),
     (2, include_str!("migrations/002_routes.sql")),
+    (3, include_str!("migrations/003_live_routes.sql")),
 ];
 
 /// Stable state-layer failures suitable for API translation.
@@ -491,10 +494,130 @@ impl StateStore {
     /// Appends an immutable route-snapshot activation attempt.
     pub fn record_route_snapshot(&self, snapshot: &RouteSnapshotRecord) -> Result<(), StateError> {
         self.connection.execute(
-            "INSERT INTO route_snapshots(deployment_id, version, checksum, activation_status, recorded_at, context_json) VALUES (?1,?2,?3,?4,?5,?6)",
-            params![snapshot.deployment, snapshot.version, snapshot.checksum, snapshot.activation_status.as_str(), snapshot.recorded_at, snapshot.context.as_json()],
+            "INSERT INTO route_snapshots(deployment_id, version, checksum, activation_status, recorded_at, context_json, router_id, binding_id, operation_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![snapshot.deployment, snapshot.version, snapshot.checksum, snapshot.activation_status.as_str(), snapshot.recorded_at, snapshot.context.as_json(), snapshot.router, snapshot.binding, snapshot.operation_id],
         )?;
         Ok(())
+    }
+
+    /// Records a router acknowledgement or failure and updates version visibility atomically.
+    pub fn record_router_apply(&mut self, record: &RouterApplyRecord) -> Result<(), StateError> {
+        for (name, value) in [
+            ("deployment", record.deployment.as_str()),
+            ("router", record.router.as_str()),
+            ("binding", record.binding.as_str()),
+            ("checksum", record.checksum.as_str()),
+        ] {
+            validate_id(name, value)?;
+        }
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing = tx
+            .query_row(
+                "SELECT current_version,current_checksum FROM router_bindings WHERE deployment_id=?1 AND router_id=?2 AND binding_id=?3",
+                params![record.deployment, record.router, record.binding],
+                |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .optional()?;
+        let (old_version, old_checksum) = existing.unwrap_or((None, None));
+        let activates = record.status == RouterApplyStatus::Active
+            || record.status == RouterApplyStatus::RolledBack && record.error_code.is_none();
+        let current_version = activates
+            .then_some(record.version)
+            .or(old_version)
+            .or(record.observed_version);
+        let current_checksum = if activates {
+            Some(record.checksum.clone())
+        } else {
+            old_checksum
+                .clone()
+                .or_else(|| record.observed_checksum.clone())
+        };
+        let previous_version = activates
+            .then(|| old_version.or(record.observed_version))
+            .flatten();
+        let previous_checksum = activates
+            .then(|| old_checksum.or_else(|| record.observed_checksum.clone()))
+            .flatten();
+        let observed_version = if activates {
+            current_version
+        } else {
+            record.observed_version.or(current_version)
+        };
+        let observed_checksum = if activates {
+            current_checksum.clone()
+        } else {
+            record
+                .observed_checksum
+                .clone()
+                .or_else(|| current_checksum.clone())
+        };
+        tx.execute(
+            "INSERT INTO router_bindings(deployment_id,router_id,binding_id,desired_version,desired_checksum,current_version,current_checksum,previous_version,previous_checksum,observed_version,observed_checksum,apply_status,transition_json,last_error_code,updated_at) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15) \
+             ON CONFLICT(deployment_id,router_id,binding_id) DO UPDATE SET desired_version=excluded.desired_version,desired_checksum=excluded.desired_checksum,current_version=excluded.current_version,current_checksum=excluded.current_checksum,previous_version=CASE WHEN ?16 THEN excluded.previous_version ELSE router_bindings.previous_version END,previous_checksum=CASE WHEN ?16 THEN excluded.previous_checksum ELSE router_bindings.previous_checksum END,observed_version=excluded.observed_version,observed_checksum=excluded.observed_checksum,apply_status=excluded.apply_status,transition_json=excluded.transition_json,last_error_code=excluded.last_error_code,updated_at=excluded.updated_at",
+            params![record.deployment, record.router, record.binding, record.desired_version, record.desired_checksum, current_version, current_checksum, previous_version, previous_checksum, observed_version, observed_checksum, record.status.as_str(), record.transition.as_json(), record.error_code, record.recorded_at, activates],
+        )?;
+        tx.execute(
+            "INSERT INTO route_snapshots(deployment_id,version,checksum,activation_status,recorded_at,context_json,router_id,binding_id,operation_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![record.deployment, record.version, record.checksum, record.status.history_status(), record.recorded_at, record.context.as_json(), record.router, record.binding, record.operation_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Returns current version state for every router/binding in a deployment.
+    pub fn router_bindings(&self, deployment: &str) -> Result<Vec<RouterBindingState>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT router_id,binding_id,desired_version,desired_checksum,current_version,current_checksum,previous_version,previous_checksum,observed_version,observed_checksum,apply_status,transition_json,last_error_code,updated_at FROM router_bindings WHERE deployment_id=?1 ORDER BY router_id,binding_id",
+        )?;
+        statement
+            .query_map([deployment], |row| {
+                Ok(RouterBindingState {
+                    deployment: deployment.to_owned(),
+                    router: row.get(0)?,
+                    binding: row.get(1)?,
+                    desired_version: row.get(2)?,
+                    desired_checksum: row.get(3)?,
+                    current_version: row.get(4)?,
+                    current_checksum: row.get(5)?,
+                    previous_version: row.get(6)?,
+                    previous_checksum: row.get(7)?,
+                    observed_version: row.get(8)?,
+                    observed_checksum: row.get(9)?,
+                    status: row.get(10)?,
+                    transition_json: row.get(11)?,
+                    last_error_code: row.get(12)?,
+                    updated_at: row.get(13)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// Returns append-only route activation history for a deployment.
+    pub fn route_history(&self, deployment: &str) -> Result<Vec<StoredRouteSnapshot>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT sequence,router_id,binding_id,operation_id,version,checksum,activation_status,recorded_at,context_json FROM route_snapshots WHERE deployment_id=?1 ORDER BY sequence",
+        )?;
+        statement
+            .query_map([deployment], |row| {
+                Ok(StoredRouteSnapshot {
+                    sequence: row.get(0)?,
+                    deployment: deployment.to_owned(),
+                    router: row.get(1)?,
+                    binding: row.get(2)?,
+                    operation_id: row.get(3)?,
+                    version: row.get(4)?,
+                    checksum: row.get(5)?,
+                    activation_status: row.get(6)?,
+                    recorded_at: row.get(7)?,
+                    context_json: row.get(8)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     /// Atomically acquires a deployment mutation lease or recovers an expired one.
@@ -937,11 +1060,98 @@ impl ActivationStatus {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RouteSnapshotRecord {
     pub deployment: String,
+    pub router: Option<String>,
+    pub binding: Option<String>,
+    pub operation_id: Option<String>,
     pub version: i64,
     pub checksum: String,
     pub activation_status: ActivationStatus,
     pub recorded_at: i64,
     pub context: StructuredContext,
+}
+
+/// Per-router apply status used by the acknowledgement gate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RouterApplyStatus {
+    Pending,
+    Active,
+    Failed,
+    RolledBack,
+}
+
+impl RouterApplyStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Active => "active",
+            Self::Failed => "failed",
+            Self::RolledBack => "rolled_back",
+        }
+    }
+
+    const fn history_status(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Active => "active",
+            Self::Failed => "rejected",
+            Self::RolledBack => "rolled_back",
+        }
+    }
+}
+
+/// One desired snapshot attempt and its observed acknowledgement state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RouterApplyRecord {
+    pub deployment: String,
+    pub router: String,
+    pub binding: String,
+    pub operation_id: String,
+    pub desired_version: i64,
+    pub desired_checksum: String,
+    pub version: i64,
+    pub checksum: String,
+    pub status: RouterApplyStatus,
+    pub observed_version: Option<i64>,
+    pub observed_checksum: Option<String>,
+    pub transition: StructuredContext,
+    pub error_code: Option<String>,
+    pub recorded_at: i64,
+    pub context: StructuredContext,
+}
+
+/// Queryable desired/applied/observed route versions.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RouterBindingState {
+    pub deployment: String,
+    pub router: String,
+    pub binding: String,
+    pub desired_version: Option<i64>,
+    pub desired_checksum: Option<String>,
+    pub current_version: Option<i64>,
+    pub current_checksum: Option<String>,
+    pub previous_version: Option<i64>,
+    pub previous_checksum: Option<String>,
+    pub observed_version: Option<i64>,
+    pub observed_checksum: Option<String>,
+    pub status: String,
+    pub transition_json: String,
+    pub last_error_code: Option<String>,
+    pub updated_at: i64,
+}
+
+/// One append-only route snapshot history row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredRouteSnapshot {
+    pub sequence: i64,
+    pub deployment: String,
+    pub router: Option<String>,
+    pub binding: Option<String>,
+    pub operation_id: Option<String>,
+    pub version: i64,
+    pub checksum: String,
+    pub activation_status: String,
+    pub recorded_at: i64,
+    pub context_json: String,
 }
 
 /// Mutation lease acquisition request.
@@ -1279,7 +1489,7 @@ mod tests {
         drop(connection);
 
         let (store, report) = StateStore::open(&path).unwrap();
-        assert_eq!(report.applied_migrations, vec![2]);
+        assert_eq!(report.applied_migrations, vec![2, 3]);
         let backup = report.backup_path.unwrap();
         assert!(backup.is_file());
         let versions = store
@@ -1290,7 +1500,7 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(versions, vec![1, 2]);
+        assert_eq!(versions, vec![1, 2, 3]);
         let backup_connection = Connection::open(backup).unwrap();
         assert_eq!(current_schema_version(&backup_connection).unwrap(), 1);
     }
@@ -1552,6 +1762,9 @@ mod tests {
         store
             .record_route_snapshot(&RouteSnapshotRecord {
                 deployment: "demo".into(),
+                router: Some("sidecar:api".into()),
+                binding: Some("api".into()),
+                operation_id: Some("operation-1".into()),
                 version: 1,
                 checksum: "checksum".into(),
                 activation_status: ActivationStatus::Active,
@@ -1573,5 +1786,82 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "missing history in {table}");
         }
+    }
+
+    #[test]
+    fn router_acknowledgement_gates_current_version_and_preserves_history() {
+        let temp = TempDir::new().unwrap();
+        let (mut store, _) = open_temp(&temp);
+        let transition =
+            StructuredContext::new(json!({"strategy": "drain", "timeoutMs": 10})).unwrap();
+        let context = StructuredContext::new(json!({"reason": "test"})).unwrap();
+        let record = |status: RouterApplyStatus,
+                      version: i64,
+                      checksum: &str,
+                      observed: Option<(i64, &str)>| RouterApplyRecord {
+            deployment: "demo".into(),
+            router: "sidecar:api".into(),
+            binding: "api".into(),
+            operation_id: format!("op-{version}"),
+            desired_version: version,
+            desired_checksum: checksum.into(),
+            version,
+            checksum: checksum.into(),
+            status,
+            observed_version: observed.map(|(version, _)| version),
+            observed_checksum: observed.map(|(_, checksum)| checksum.into()),
+            transition: transition.clone(),
+            error_code: (status == RouterApplyStatus::Failed).then(|| "timeout".into()),
+            recorded_at: version,
+            context: context.clone(),
+        };
+        store
+            .record_router_apply(&record(
+                RouterApplyStatus::Active,
+                2,
+                "two",
+                Some((1, "one")),
+            ))
+            .unwrap();
+        let active = store.router_bindings("demo").unwrap().pop().unwrap();
+        assert_eq!(active.previous_version, Some(1));
+        assert_eq!(active.observed_version, Some(2));
+        store
+            .record_router_apply(&record(
+                RouterApplyStatus::Failed,
+                3,
+                "three",
+                Some((2, "two")),
+            ))
+            .unwrap();
+        let state = store.router_bindings("demo").unwrap().pop().unwrap();
+        assert_eq!(state.desired_version, Some(3));
+        assert_eq!(state.current_version, Some(2));
+        assert_eq!(state.observed_version, Some(2));
+        assert_eq!(state.status, "failed");
+        let rollback = RouterApplyRecord {
+            deployment: "demo".into(),
+            router: "sidecar:api".into(),
+            binding: "api".into(),
+            operation_id: "op-rollback".into(),
+            desired_version: 3,
+            desired_checksum: "three".into(),
+            version: 4,
+            checksum: "one-rerendered".into(),
+            status: RouterApplyStatus::RolledBack,
+            observed_version: Some(2),
+            observed_checksum: Some("two".into()),
+            transition,
+            error_code: None,
+            recorded_at: 4,
+            context,
+        };
+        store.record_router_apply(&rollback).unwrap();
+        let rolled_back = store.router_bindings("demo").unwrap().pop().unwrap();
+        assert_eq!(rolled_back.desired_version, Some(3));
+        assert_eq!(rolled_back.current_version, Some(4));
+        assert_eq!(rolled_back.previous_version, Some(2));
+        assert_eq!(rolled_back.status, "rolled_back");
+        assert_eq!(store.route_history("demo").unwrap().len(), 3);
     }
 }

@@ -1,6 +1,5 @@
 #![cfg(unix)]
 
-mod admin;
 mod browser;
 mod cli;
 mod host_runtime;
@@ -43,6 +42,17 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 })?;
                 print!("{}", result.stdout);
                 eprint!("{}", result.stderr);
+                if matches!(
+                    command,
+                    CliCommand::Status { .. } | CliCommand::Routes { .. }
+                ) {
+                    if let Some(routes) = switchyard_daemon::client::deployment_routes(
+                        &workspace_root,
+                        &operation.deployment,
+                    )? {
+                        print_route_versions(&routes);
+                    }
+                }
                 let code = u8::try_from(result.exit_code).unwrap_or(1);
                 return Ok(ExitCode::from(code));
             }
@@ -98,10 +108,11 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             bundle,
             consumer,
             group,
+            transition,
         } => {
             let bundle = load_bind_base(&workspace_root, &bundle)?;
             let mut plan = plan_with_binding(&bundle, &consumer, &group)?;
-            apply_binding(&workspace_root, &mut plan, &consumer)?;
+            apply_binding(&workspace_root, &mut plan, &consumer, transition)?;
             switchyard_planner::write_plan(&workspace_root, &plan)?;
             println!("bound `{consumer}` to `{group}`");
         }
@@ -175,6 +186,27 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn print_route_versions(routes: &switchyard_daemon::contract::DeploymentRoutesV1) {
+    if routes.bindings.is_empty() {
+        return;
+    }
+    println!("Route versions:");
+    for binding in &routes.bindings {
+        let version =
+            |value: Option<i64>| value.map_or_else(|| "-".into(), |value| value.to_string());
+        println!(
+            "  {} {} desired={} current={} previous={} observed={} status={}",
+            binding.router,
+            binding.binding,
+            version(binding.desired_version),
+            version(binding.current_version),
+            version(binding.previous_version),
+            version(binding.observed_version),
+            binding.status,
+        );
+    }
+}
+
 fn handle_daemon_command(
     workspace_root: &Path,
     command: &CliCommand,
@@ -230,6 +262,7 @@ fn daemon_request(
         bundle,
         consumer: None,
         group: None,
+        transition: None,
         target: None,
         ui: None,
         routes: false,
@@ -243,10 +276,22 @@ fn daemon_request(
             bundle,
             consumer,
             group,
+            transition,
         } => {
             let mut request = empty(bundle.clone());
             request.consumer = Some(consumer.clone());
             request.group = Some(group.clone());
+            request.transition = transition.map(|transition| match transition {
+                cli::TransitionArgument::Close => {
+                    switchyard_daemon::contract::TransitionPolicyV1::Close
+                }
+                cli::TransitionArgument::Drain { timeout_ms } => {
+                    switchyard_daemon::contract::TransitionPolicyV1::Drain { timeout_ms }
+                }
+                cli::TransitionArgument::Pin => {
+                    switchyard_daemon::contract::TransitionPolicyV1::Pin
+                }
+            });
             (CommandKind::Bind, request)
         }
         CliCommand::Status { bundle, routes } => {
@@ -415,6 +460,7 @@ fn apply_binding(
     workspace_root: &Path,
     plan: &mut Plan,
     consumer: &str,
+    transition: Option<cli::TransitionArgument>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let encoded = plan.route_configs.get(consumer).cloned().ok_or_else(|| {
         MessageError(format!(
@@ -422,6 +468,22 @@ fn apply_binding(
         ))
     })?;
     let mut config: RouterConfig = serde_json::from_str(&encoded)?;
+    if let Some(transition) = transition {
+        let policy = match transition {
+            cli::TransitionArgument::Close => router_config::ConnectionTransitionPolicy::Close,
+            cli::TransitionArgument::Drain { timeout_ms } => {
+                router_config::ConnectionTransitionPolicy::Drain { timeout_ms }
+            }
+            cli::TransitionArgument::Pin => router_config::ConnectionTransitionPolicy::Pin,
+        };
+        config.spec.snapshot.transitions = router_config::ConnectionTransitionPolicies {
+            http: policy.clone(),
+            https: policy.clone(),
+            websocket: policy.clone(),
+            grpc: policy.clone(),
+            tcp: policy,
+        };
+    }
     config.validate().map_err(|errors| {
         MessageError(
             errors
@@ -439,13 +501,14 @@ fn apply_binding(
     let token = env::var("SWITCHYARD_ROUTER_TOKEN")
         .map_err(|_| MessageError("SWITCHYARD_ROUTER_TOKEN must be set for bind".into()))?;
     let socket = workspace_root.join(&sidecar.admin_socket);
-    let next_version = admin::current_version(&socket, &token)?
+    let next_version = switchyard_router_admin::current_snapshot(&socket, &token)?
+        .version
         .checked_add(1)
         .ok_or_else(|| MessageError("router snapshot version is exhausted".into()))?;
     config.spec.snapshot.version = next_version;
     config.spec.snapshot.id =
         router_config::RouteSnapshotId::new(format!("{consumer}-bind-{next_version}"));
-    let acknowledgement = admin::apply_snapshot(&socket, &token, &config)?;
+    let acknowledgement = switchyard_router_admin::apply_snapshot(&socket, &token, &config)?;
     plan.route_configs
         .insert(consumer.to_owned(), serde_json::to_string_pretty(&config)?);
     println!(
@@ -464,7 +527,10 @@ fn print_routes(workspace_root: &Path, plan: &Plan) -> Result<(), Box<dyn std::e
         MessageError("SWITCHYARD_ROUTER_TOKEN must be set to inspect routes".into())
     })?;
     for (consumer, sidecar) in &plan.sidecars {
-        let routes = admin::inspect_routes(&workspace_root.join(&sidecar.admin_socket), &token)?;
+        let routes = switchyard_router_admin::inspect_routes(
+            &workspace_root.join(&sidecar.admin_socket),
+            &token,
+        )?;
         println!("[{consumer}]\n{}", serde_json::to_string_pretty(&routes)?);
     }
     Ok(())

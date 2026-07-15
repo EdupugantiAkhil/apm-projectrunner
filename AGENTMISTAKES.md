@@ -1,5 +1,27 @@
 # Agent mistakes and lessons
 
+## 2026-07-15 — Phase 5 live router control
+
+- The first state update treated an activated candidate's acknowledgement as both the
+  observed and previous snapshot, which made `previousVersion` equal `currentVersion`
+  on the first recorded bind. Correction: retain the pre-apply observation for the
+  previous tuple and derive the post-ack observation from the activated candidate.
+  Lesson: an acknowledgement describes the new active snapshot; version visibility
+  still needs a distinct pre-mutation observation.
+- Adding schema version 3 initially left the migration test expecting only version 2.
+  Correction: assert both pending migrations and the complete version sequence.
+  Lesson: migration tests should express the ordered suffix from their fixture version,
+  not assume only one future migration.
+- The first CLI version-summary condition used a let-chain unsupported by the minimum
+  compiler available in this workspace. Correction: use nested conditionals and rerun
+  the workspace check. Lesson: edition 2024 does not imply every newer language feature
+  is available at the declared Rust 1.85 minimum.
+- The exact workspace test again reached the environment's `EPERM` listener restriction,
+  and Docker Engine access was denied. Correction: run the complete transport-independent
+  Phase 5 suite and proof script, retain the exact failures in verification, and do not
+  weaken existing network tests to manufacture a pass. Lesson: release evidence must
+  distinguish implemented behavior from host capabilities.
+
 ## 2026-07-15 — Phase 5 daemon and API
 
 - The first API integration tests started real loopback listeners, but this execution
