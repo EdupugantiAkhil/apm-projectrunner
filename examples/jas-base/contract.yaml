@@ -1,0 +1,28 @@
+apiVersion: switchyard.dev/examples/v1alpha1
+kind: FixtureContract
+metadata: { name: generic-legacy-workspace }
+topology:
+  ui-a: { java: jas-main, python: ai-feature }
+  ui-b: { java: jas-feature, python: ai-main }
+  jas-main: { database: db-main, python: ai-feature }
+  jas-feature: { database: db-main, python: ai-main }
+fixedSlots:
+  ui:
+    java: 127.0.0.1:10081
+    catalog: 127.0.0.1:8001
+    search: 127.0.0.1:8002
+    reports: 127.0.0.1:8003
+    scheduler: 127.0.0.1:8004
+    audit: 127.0.0.1:8005
+  java:
+    database-kv: 127.0.0.1:9101
+    database-document: 127.0.0.1:9102
+    catalog: 127.0.0.1:8001
+    search: 127.0.0.1:8002
+    reports: 127.0.0.1:8003
+    scheduler: 127.0.0.1:8004
+    audit: 127.0.0.1:8005
+identityFields: [deployment, instance, service, source, selectedProviders]
+persistence:
+  volumes: [kv-data, document-data]
+  observation: initializationCount

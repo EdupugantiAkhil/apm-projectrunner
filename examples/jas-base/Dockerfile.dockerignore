@@ -1,0 +1,9 @@
+**
+!Cargo.toml
+!Cargo.lock
+!crates/
+!crates/**
+!examples/
+!examples/jas-base/
+!examples/jas-base/fixture.rs
+!examples/jas-base/process-compose

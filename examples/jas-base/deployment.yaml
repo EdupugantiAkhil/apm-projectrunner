@@ -1,0 +1,242 @@
+apiVersion: switchyard.dev/v1alpha1
+kind: Deployment
+metadata:
+  name: jas-base
+  labels: { fixture: legacy-workspace }
+spec:
+  routerImage: &fixture-image switchyard-jas-base:local
+  sources:
+    repository-root: { path: ../.. }
+    fixture-root: { path: . }
+    monorepo-main: { path: sources/main }
+    jas-feature-worktree: { path: sources/feature }
+    ai-feature-worktree: { path: sources/feature }
+  blocks:
+    fixture-image:
+      services:
+        builder:
+          execution:
+            type: container
+            image: *fixture-image
+            build: { context: ., dockerfile: examples/jas-base/Dockerfile }
+            command: ["/usr/local/bin/jas-base-fixture", hold]
+    jas-databases:
+      parameters:
+        FIXTURE_SOURCE: { required: true }
+      services:
+        kv-store:
+          execution:
+            type: container
+            image: *fixture-image
+            command: ["/usr/local/bin/jas-base-fixture", store, "0.0.0.0:9101", kv-store, "/data/schema-count"]
+          provides:
+            database-kv: { protocol: http, port: 9101 }
+          volumes: [{ name: kv-data, target: /data }]
+          probe: { type: http, path: /health, port: 9101 }
+        document-store:
+          execution:
+            type: container
+            image: *fixture-image
+            command: ["/usr/local/bin/jas-base-fixture", store, "0.0.0.0:9102", document-store, "/data/schema-count"]
+          provides:
+            database-document: { protocol: http, port: 9102 }
+          volumes: [{ name: document-data, target: /data }]
+          probe: { type: http, path: /health, port: 9102 }
+        initialize-schema:
+          execution:
+            type: script
+            image: *fixture-image
+            command: ["/workspace/initialize-databases.sh"]
+            workingDirectory: /workspace
+            lifecycle: task
+          dependsOn:
+            kv-store: healthy
+            document-store: healthy
+    jas-service:
+      parameters:
+        FIXTURE_SOURCE: { required: true }
+      services:
+        service:
+          execution:
+            type: script
+            image: *fixture-image
+            command: ["/workspace/start-jas-service.sh"]
+            workingDirectory: /workspace
+          consumes:
+            database-kv: { protocol: http, address: { host: 127.0.0.1, port: 9101 } }
+            database-document: { protocol: http, address: { host: 127.0.0.1, port: 9102 } }
+            catalog: { protocol: http, address: { host: 127.0.0.1, port: 8001 } }
+            search: { protocol: http, address: { host: 127.0.0.1, port: 8002 } }
+            reports: { protocol: http, address: { host: 127.0.0.1, port: 8003 } }
+            scheduler: { protocol: http, address: { host: 127.0.0.1, port: 8004 } }
+            audit: { protocol: http, address: { host: 127.0.0.1, port: 8005 } }
+          provides:
+            java: { protocol: http, port: 10081 }
+          publish: [10081]
+          dependsOn:
+            db-main/initialize-schema: completed_successfully
+          probe: { type: http, path: /health, port: 10081 }
+    ai-services:
+      parameters:
+        FIXTURE_SOURCE: { required: true }
+      services:
+        suite:
+          execution:
+            type: processCompose
+            image: *fixture-image
+            file: process-compose.yaml
+          provides:
+            catalog: { protocol: http, port: 8001 }
+            search: { protocol: http, port: 8002 }
+            reports: { protocol: http, port: 8003 }
+            scheduler: { protocol: http, port: 8004 }
+            audit: { protocol: http, port: 8005 }
+          probe:
+            type: command
+            command: ["/usr/local/bin/jas-base-fixture", probe, "127.0.0.1:8001", "127.0.0.1:8002", "127.0.0.1:8003", "127.0.0.1:8004", "127.0.0.1:8005"]
+    ui:
+      parameters:
+        FIXTURE_SOURCE: { required: true }
+      services:
+        app:
+          execution:
+            type: container
+            image: *fixture-image
+            build: { context: ., dockerfile: examples/jas-base/Dockerfile }
+            command: ["/usr/local/bin/jas-base-fixture", ui, "0.0.0.0:8080"]
+          consumes:
+            # The unchanged UI calls localhost:10081; inside the container namespace
+            # the sidecar binds the loopback IP literal serving that same address.
+            java: { protocol: http, address: { host: 127.0.0.1, port: 10081 } }
+            catalog: { protocol: http, address: { host: 127.0.0.1, port: 8001 } }
+            search: { protocol: http, address: { host: 127.0.0.1, port: 8002 } }
+            reports: { protocol: http, address: { host: 127.0.0.1, port: 8003 } }
+            scheduler: { protocol: http, address: { host: 127.0.0.1, port: 8004 } }
+            audit: { protocol: http, address: { host: 127.0.0.1, port: 8005 } }
+          provides:
+            ui: { protocol: http, port: 8080 }
+          publish: [8080]
+          probe: { type: http, path: /health, port: 8080 }
+  instances:
+    - { name: fixture-image, block: fixture-image, source: repository-root }
+    - name: db-main
+      block: jas-databases
+      source: fixture-root
+      parameters: { FIXTURE_SOURCE: fixture-root }
+    - name: jas-main
+      block: jas-service
+      source: monorepo-main
+      parameters: { FIXTURE_SOURCE: sources/main }
+    - name: jas-feature
+      block: jas-service
+      source: jas-feature-worktree
+      parameters: { FIXTURE_SOURCE: sources/feature }
+    - name: ai-main
+      block: ai-services
+      source: monorepo-main
+      parameters: { FIXTURE_SOURCE: sources/main }
+    - name: ai-feature
+      block: ai-services
+      source: ai-feature-worktree
+      parameters: { FIXTURE_SOURCE: sources/feature }
+    - name: ui-a
+      block: ui
+      source: repository-root
+      parameters: { FIXTURE_SOURCE: repository-root/ui-a }
+    - name: ui-b
+      block: ui
+      source: repository-root
+      parameters: { FIXTURE_SOURCE: repository-root/ui-b }
+  groups:
+    ai-main:
+      providers:
+        catalog: ai-main/suite
+        search: ai-main/suite
+        reports: ai-main/suite
+        scheduler: ai-main/suite
+        audit: ai-main/suite
+    ai-feature:
+      extends: ai-main
+      providers:
+        catalog: ai-feature/suite
+        search: ai-feature/suite
+        reports: ai-feature/suite
+        scheduler: ai-feature/suite
+        audit: ai-feature/suite
+  bindings:
+    ui-a: ai-feature
+    ui-b: ai-main
+    jas-main: ai-feature
+    jas-feature: ai-main
+  routes:
+    ui-a: { java: jas-main/service }
+    ui-b: { java: jas-feature/service }
+    jas-main:
+      { database-kv: db-main/kv-store, database-document: db-main/document-store }
+    jas-feature:
+      { database-kv: db-main/kv-store, database-document: db-main/document-store }
+  uiRoutes:
+    ui-a:
+      origin: http://ui-a.jas-base.localhost:18081
+      backend: jas-main
+      downstreamGroup: ai-feature
+    ui-b:
+      origin: http://ui-b.jas-base.localhost:18081
+      backend: jas-feature
+      downstreamGroup: ai-main
+  hostRouter:
+    apiVersion: switchyard.dev/router/v1alpha1
+    kind: RouterConfiguration
+    metadata: { deployment: jas-base }
+    spec:
+      snapshot:
+        id: jas-base-host-initial
+        version: 1
+        transitions:
+          http: { strategy: drain, timeoutMs: 5000 }
+          https: { strategy: drain, timeoutMs: 5000 }
+          websocket: { strategy: pin }
+          grpc: { strategy: drain, timeoutMs: 5000 }
+          tcp: { strategy: close }
+      identity:
+        explicitHeader: X-Switchyard-Route
+        stripBeforeForwarding: true
+      listeners:
+        - consumer: gateway
+          bind: { host: 127.0.0.1, port: 18081 }
+          protocol: http
+          destinations:
+            - { kind: custom_domain, slot: ui-a-domain, domain: ui-a.jas-base.localhost }
+            - { kind: custom_domain, slot: ui-b-domain, domain: ui-b.jas-base.localhost }
+        - bind: { host: 127.0.0.1, port: 10081 }
+          protocol: http
+          destinations:
+            - { kind: legacy_localhost, slot: browser-java, host: localhost }
+      providers:
+        - id: ui-a
+          endpoint: { protocol: http, host: 127.0.0.1, port: 0 }
+          healthCheck: { protocol: http, path: /health, intervalMs: 1000, timeoutMs: 500 }
+        - id: ui-b
+          endpoint: { protocol: http, host: 127.0.0.1, port: 0 }
+          healthCheck: { protocol: http, path: /health, intervalMs: 1000, timeoutMs: 500 }
+        - id: jas-main
+          endpoint: { protocol: http, host: 127.0.0.1, port: 0 }
+          healthCheck: { protocol: http, path: /health, intervalMs: 1000, timeoutMs: 500 }
+        - id: jas-feature
+          endpoint: { protocol: http, host: 127.0.0.1, port: 0 }
+          healthCheck: { protocol: http, path: /health, intervalMs: 1000, timeoutMs: 500 }
+      groups: []
+      bindings: []
+      routes:
+        - { consumer: gateway, slot: ui-a-domain, provider: ui-a }
+        - { consumer: gateway, slot: ui-b-domain, provider: ui-b }
+      browserRoutes:
+        - { identity: { source: origin, origin: "http://ui-a.jas-base.localhost:18081" }, destination: browser-java, provider: jas-main }
+        - { identity: { source: origin, origin: "http://ui-b.jas-base.localhost:18081" }, destination: browser-java, provider: jas-feature }
+        - { identity: { source: explicit_header, value: ui-a }, destination: browser-java, provider: jas-main }
+        - { identity: { source: explicit_header, value: ui-b }, destination: browser-java, provider: jas-feature }
+  hostUpstreams:
+    ui-a: { instance: ui-a, service: app, port: 8080 }
+    ui-b: { instance: ui-b, service: app, port: 8080 }
+    jas-main: { instance: jas-main, service: service, port: 10081 }
+    jas-feature: { instance: jas-feature, service: service, port: 10081 }

@@ -377,10 +377,10 @@ Entry gate: the persistent control plane is complete.
 
 ### Real-codebase validation
 
-- [ ] Add the JAS legacy deployment as a generic integration fixture.
-- [ ] Run its database, Java, UI, and five-service Python components in declared blocks.
-- [ ] Validate multiple source/worktree combinations without modifying the codebase.
-- [ ] Replace the JAS fixture with an unrelated fixture without changing core code.
+- [x] Add the JAS legacy deployment as a generic integration fixture.
+- [x] Run its database, Java, UI, and five-service Python components in declared blocks.
+- [x] Validate multiple source/worktree combinations without modifying the codebase.
+- [x] Replace the JAS fixture with an unrelated fixture without changing core code.
 
 ### Phase 6 exit gate — product MVP release
 
@@ -415,6 +415,10 @@ Entry gate: the product MVP is stable for local single-developer use.
 
 ### Reliability and release engineering
 
+- [ ] Execute or remove the declared service lifecycle hooks: `LifecycleHooks`
+      (`prepare`, `postReady`, `stop`, `cleanup`) exists in the planner schema but the
+      generated-Compose runtime never runs it (discovered during Phase 6 fixture work;
+      containerized initialization currently uses task-lifecycle script services).
 - [ ] Add upgrade tests across every supported configuration and SQLite schema version.
 - [ ] Add resource-leak, long-running soak, reload-storm, and high-concurrency tests.
 - [ ] Add platform packaging, checksums, signatures, and release notes.

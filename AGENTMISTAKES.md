@@ -135,3 +135,20 @@
   contract already carried an optional per-instance `target`; review wired instance
   cards to it. Lesson: check the existing contract surface before concluding a
   capability needs new plumbing — and before shipping a screen without it.
+
+## 2026-07-15 — Phase 6 JAS fixture
+
+- The first smoke-test invocation piped output through `tail`, so the reported exit
+  code was tail's success while the script had actually failed at variation planning.
+  Correction: write output to a file and test the script's own exit status. Lesson:
+  never take an exit code from the far end of a pipeline.
+- The fixture's UI `java` slot used `host: localhost`, which every existing fixture
+  avoided: router listener binds require IP literals and the sidecar exited on config
+  parse. Correction: bind `127.0.0.1` (identical service for the unchanged app's
+  `localhost` calls) and note the constraint in the deployment definition. Lesson:
+  validate generated router configs against the router binary, not only the planner,
+  before shipping a fixture.
+- The reviewer brief said "post-ready schema-init hook", steering the implementation
+  toward the schema-only `hooks.postReady`; Codex correctly stopped on the gap.
+  Correction: task-lifecycle init service plus a recorded Phase 7 work item for the
+  inert hooks. Lesson: brief wording should name mechanisms verified to exist.

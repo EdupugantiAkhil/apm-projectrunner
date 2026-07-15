@@ -1,0 +1,13 @@
+apiVersion: switchyard.dev/v1alpha1
+kind: Overlay
+metadata: { name: main-observation }
+spec:
+  selectors:
+    instances: { names: [jas-main, ai-main] }
+  environment:
+    set: { FIXTURE_VARIATION: main }
+  files:
+    - content: "variation=${overlay.variables.name}\ninstance=${instance.name}\n"
+      target: /runtime/fixture-variation.env
+      template: true
+  variables: { name: main }

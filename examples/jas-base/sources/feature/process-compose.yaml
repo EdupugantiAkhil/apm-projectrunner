@@ -1,0 +1,21 @@
+version: "0.5"
+processes:
+  catalog:
+    command: /usr/local/bin/jas-base-fixture ai-service 0.0.0.0:8001 catalog
+    readiness_probe: { http_get: { host: 127.0.0.1, port: 8001, path: /health } }
+  search:
+    command: /usr/local/bin/jas-base-fixture ai-service 0.0.0.0:8002 search
+    depends_on: { catalog: { condition: process_healthy } }
+    readiness_probe: { http_get: { host: 127.0.0.1, port: 8002, path: /health } }
+  reports:
+    command: /usr/local/bin/jas-base-fixture ai-service 0.0.0.0:8003 reports
+    depends_on: { search: { condition: process_healthy } }
+    readiness_probe: { http_get: { host: 127.0.0.1, port: 8003, path: /health } }
+  scheduler:
+    command: /usr/local/bin/jas-base-fixture ai-service 0.0.0.0:8004 scheduler
+    depends_on: { reports: { condition: process_healthy } }
+    readiness_probe: { http_get: { host: 127.0.0.1, port: 8004, path: /health } }
+  audit:
+    command: /usr/local/bin/jas-base-fixture ai-service 0.0.0.0:8005 audit
+    depends_on: { scheduler: { condition: process_healthy } }
+    readiness_probe: { http_get: { host: 127.0.0.1, port: 8005, path: /health } }

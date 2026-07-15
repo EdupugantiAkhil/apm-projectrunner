@@ -1,0 +1,13 @@
+apiVersion: switchyard.dev/v1alpha1
+kind: Overlay
+metadata: { name: feature-observation }
+spec:
+  selectors:
+    instances: { names: [jas-feature, ai-feature] }
+  environment:
+    set: { FIXTURE_VARIATION: feature }
+  files:
+    - content: "variation=${overlay.variables.name}\ninstance=${instance.name}\n"
+      target: /runtime/fixture-variation.env
+      template: true
+  variables: { name: feature }

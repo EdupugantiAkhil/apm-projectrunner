@@ -354,3 +354,43 @@ implemented shape and the evidence used to close a phase.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passed.
 - `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps`: passed.
 - `npm run build`: passed; `npm test`: 12 Vitest tests passed.
+
+### Real-codebase validation (Part 5)
+
+- `examples/jas-base/` is a self-contained generic stand-in for the JAS legacy
+  workspace: two image-backed database stand-ins with named volumes and a one-shot
+  `lifecycle: task` schema-initialization service (`dependsOn: healthy`, consumers
+  gated on `completed_successfully`), a fixed-port legacy shell script in a runner
+  image for the Java stand-in, a five-process Process Compose suite per AI instance,
+  and Dockerfile-built UIs with custom domains. The DESIGN.md topology is expressed
+  verbatim (`ui-a → jas-main + ai-feature`, `ui-b → jas-feature + ai-main`, shared
+  `db-main`), with both Java stand-ins consuming identical fixed `127.0.0.1:8001–8005`
+  and `9101/9102` slots and both UIs consuming `127.0.0.1:10081`.
+- Planner tests (`real_codebase_fixtures.rs`): full expansion assertions for the
+  fixture; a fixture-swap test planning jas-base and routing-matrix through the
+  identical deterministic path; an overlay/variation disjointness test; and a guard
+  test proving no `jas` identifier exists in any production crate source.
+- Discovered gap recorded in the plan (Phase 7): declared `LifecycleHooks`
+  (`prepare`/`postReady`/`stop`/`cleanup`) are schema-only — nothing generates or
+  executes them; the fixture deliberately uses task-lifecycle services instead and
+  documents the gap in its README.
+- Review fixes: the UI `java` slot originally declared `host: localhost`, which the
+  router rejects (`invalid IP address syntax`) because listener binds require IP
+  literals — changed to `127.0.0.1`, which serves the unchanged app's
+  `localhost:10081` calls identically inside the namespace. The smoke script's
+  variation demonstration now skips with a notice when another generated deployment
+  legitimately claims `127.0.0.1:10081` (the collision guard working as designed in a
+  shared workspace).
+
+### Phase 6 Part 5 verification
+
+- `cargo test -p switchyard-planner --all-features`: passed (21 tests including the
+  four new fixture tests).
+- `cargo fmt --all -- --check`, workspace clippy `-D warnings`, rustdoc `-D warnings`:
+  passed.
+- `examples/jas-base/smoke.sh`: PASSED end to end on this host (Docker Engine 29.4.0,
+  Compose 5.1.2, Linux aarch64): build, registered unmanaged source + managed
+  worktree, typed topology observations for both UIs and both Java stand-ins,
+  task-based schema initialization, live AI-group switch without restarting the Java
+  stand-in, source identity in status, database volume persistence across down/up,
+  and zero owned resources after cleanup with the workspace git status unchanged.
