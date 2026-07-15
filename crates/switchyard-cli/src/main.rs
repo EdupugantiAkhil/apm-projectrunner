@@ -8,9 +8,10 @@ mod runtime;
 mod tailscale_publication;
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     env, fmt, fs, io,
-    net::{SocketAddr, ToSocketAddrs},
-    path::Path,
+    net::{SocketAddr, TcpListener, ToSocketAddrs},
+    path::{Path, PathBuf},
     process::{Command, ExitCode, Stdio},
 };
 
@@ -70,6 +71,85 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     }
     let runtime = DockerRuntime::default();
     match command {
+        CliCommand::BundleExport {
+            deployment,
+            overlays,
+            output,
+        } => {
+            let export = switchyard_planner::export_portable_bundle(
+                &deployment,
+                &switchyard_planner::ExportBundleOptions { overlays },
+            )?;
+            let output = output.unwrap_or_else(|| {
+                PathBuf::from(format!(
+                    "{}.switchyard-bundle.json",
+                    export.bundle.metadata.deployment_name
+                ))
+            });
+            switchyard_planner::write_portable_bundle(&output, &export.bundle)?;
+            println!(
+                "exported deployment `{}` to {}",
+                export.bundle.metadata.deployment_name,
+                output.display()
+            );
+            println!("content hash: {}", export.bundle.content_hash);
+            if !export.bundle.required_local_inputs.is_empty() {
+                println!("required local inputs:");
+                for input in &export.bundle.required_local_inputs {
+                    println!(
+                        "  {} [{}]: {}",
+                        input.name,
+                        required_input_kind(&input.kind),
+                        input.description
+                    );
+                }
+            }
+            for warning in export.warnings {
+                println!(
+                    "Warning [{}] {}: {}",
+                    bundle_warning_code(&warning.code),
+                    warning.path,
+                    warning.message
+                );
+            }
+        }
+        CliCommand::BundleImport {
+            bundle,
+            into,
+            force,
+        } => {
+            let imported = switchyard_planner::import_portable_bundle(
+                &bundle,
+                &into,
+                &switchyard_planner::ImportBundleOptions { force },
+            )?;
+            println!(
+                "imported deployment `{}` into {}",
+                imported.deployment_name,
+                into.display()
+            );
+            println!("Compatibility: ok");
+            if imported.required_local_inputs.is_empty() {
+                println!("Required local inputs: none");
+            } else {
+                println!("Required local inputs:");
+                for input in &imported.required_local_inputs {
+                    println!(
+                        "  {} [{}]: replace {} ({})",
+                        input.name,
+                        required_input_kind(&input.kind),
+                        into.join("required-local-inputs")
+                            .join(&input.name)
+                            .display(),
+                        input.expected_shape
+                    );
+                }
+            }
+            let (_, plan) = load_and_plan(&imported.definition_path)?;
+            let imported_workspace = definition_workspace_root(&imported.definition_path);
+            print_plan(&imported_workspace, &plan)?;
+            print_import_conflicts(&imported_workspace, &plan)?;
+        }
         CliCommand::Validate { bundle } => {
             let (_, plan) = load_and_plan(&bundle)?;
             println!(
@@ -279,7 +359,10 @@ fn daemon_compatible(command: &CliCommand) -> bool {
         | CliCommand::Up { options, .. }
         | CliCommand::Down { options, .. }
         | CliCommand::Status { options, .. } => options == &DeploymentOptions::default(),
-        CliCommand::OverlayValidate { .. } | CliCommand::OverlayDiff { .. } => false,
+        CliCommand::OverlayValidate { .. }
+        | CliCommand::OverlayDiff { .. }
+        | CliCommand::BundleExport { .. }
+        | CliCommand::BundleImport { .. } => false,
         _ => true,
     }
 }
@@ -689,6 +772,8 @@ fn daemon_request(
         | CliCommand::SourceDeregister { .. }
         | CliCommand::WorktreeCreate { .. }
         | CliCommand::WorktreeRemove { .. }
+        | CliCommand::BundleExport { .. }
+        | CliCommand::BundleImport { .. }
         | CliCommand::OverlayValidate { .. }
         | CliCommand::OverlayDiff { .. } => unreachable!("not delegated"),
     }
@@ -696,6 +781,22 @@ fn daemon_request(
 
 fn load_and_plan(path: &Path) -> Result<(Bundle, Plan), Box<dyn std::error::Error>> {
     load_and_plan_options(path, &DeploymentOptions::default())
+}
+
+fn definition_workspace_root(path: &Path) -> PathBuf {
+    let definition_dir = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let canonical = definition_dir
+        .canonicalize()
+        .unwrap_or_else(|_| definition_dir.to_owned());
+    let definition_dir = canonical.as_path();
+    definition_dir
+        .ancestors()
+        .find(|ancestor| ancestor.join(".git").exists())
+        .unwrap_or(definition_dir)
+        .to_owned()
 }
 
 fn load_and_plan_options(
@@ -775,6 +876,322 @@ fn runtime_plan(workspace_root: &Path, plan: &Plan) -> RuntimePlan {
         requires_router_token: !plan.sidecars.is_empty(),
         runtime_secrets: plan.runtime_secrets.clone(),
     }
+}
+
+fn required_input_kind(kind: &switchyard_planner::RequiredLocalInputKind) -> &'static str {
+    match kind {
+        switchyard_planner::RequiredLocalInputKind::SourceDirectory => "source-directory",
+        switchyard_planner::RequiredLocalInputKind::File => "file",
+        switchyard_planner::RequiredLocalInputKind::DotenvFile => "dotenv-file",
+        switchyard_planner::RequiredLocalInputKind::EnvironmentValue => "environment-value",
+        switchyard_planner::RequiredLocalInputKind::ParameterValue => "parameter-value",
+    }
+}
+
+fn bundle_warning_code(code: &switchyard_planner::BundleWarningCode) -> &'static str {
+    match code {
+        switchyard_planner::BundleWarningCode::CredentialLikeKey => "credential_like_key",
+        switchyard_planner::BundleWarningCode::LocalPathReplaced => "local_path_replaced",
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ImportConflict {
+    code: &'static str,
+    detail: String,
+}
+
+fn print_import_conflicts(
+    workspace_root: &Path,
+    plan: &Plan,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conflicts = collect_import_conflicts(workspace_root, plan)?;
+    conflicts.sort_by(|left, right| {
+        left.code
+            .cmp(right.code)
+            .then_with(|| left.detail.cmp(&right.detail))
+    });
+    conflicts.dedup_by(|left, right| left.code == right.code && left.detail == right.detail);
+    if conflicts.is_empty() {
+        println!("Conflicts: none");
+    } else {
+        println!("Conflicts:");
+        for conflict in conflicts {
+            println!("  [{}] {}", conflict.code, conflict.detail);
+        }
+    }
+    Ok(())
+}
+
+fn collect_import_conflicts(
+    workspace_root: &Path,
+    plan: &Plan,
+) -> Result<Vec<ImportConflict>, Box<dyn std::error::Error>> {
+    let mut conflicts = Vec::new();
+    let generated_root = workspace_root.join(".switchyard/generated");
+    let generated_deployment = generated_root.join(&plan.deployment);
+    if generated_deployment.exists() {
+        conflicts.push(ImportConflict {
+            code: "name_conflict",
+            detail: format!(
+                "generated deployment directory already exists: {}",
+                generated_deployment.display()
+            ),
+        });
+    }
+    if let Some(deployments) = switchyard_daemon::client::deployments(workspace_root)? {
+        for deployment in deployments.deployments {
+            if deployment.name == plan.deployment {
+                conflicts.push(ImportConflict {
+                    code: "name_conflict",
+                    detail: format!(
+                        "daemon state already contains deployment `{}`",
+                        plan.deployment
+                    ),
+                });
+            }
+            for domain in deployment.custom_domains {
+                if current_domains(plan).contains(&domain) && deployment.name != plan.deployment {
+                    conflicts.push(ImportConflict {
+                        code: "domain_conflict",
+                        detail: format!(
+                            "domain `{domain}` is claimed by daemon deployment `{}`",
+                            deployment.name
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    let current_domains = current_domains(plan);
+    let current_ports = current_ports(plan);
+    for manifest in generated_host_router_configs(&generated_root)? {
+        if manifest.deployment == plan.deployment {
+            continue;
+        }
+        for domain in manifest.domains {
+            if current_domains.contains(&domain) {
+                conflicts.push(ImportConflict {
+                    code: "domain_conflict",
+                    detail: format!(
+                        "domain `{domain}` is claimed by generated deployment `{}`",
+                        manifest.deployment
+                    ),
+                });
+            }
+        }
+        for listener in manifest.listeners {
+            if current_ports.contains(&listener) {
+                conflicts.push(ImportConflict {
+                    code: "port_conflict",
+                    detail: format!(
+                        "{}:{} is claimed by generated deployment `{}`",
+                        listener.0, listener.1, manifest.deployment
+                    ),
+                });
+            }
+        }
+    }
+    for (host, port) in &current_ports {
+        if *port == 0 {
+            continue;
+        }
+        let address = format!("{host}:{port}");
+        let bindable = address
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut addresses| addresses.next())
+            .is_some_and(|address| TcpListener::bind(address).is_ok());
+        if !bindable {
+            conflicts.push(ImportConflict {
+                code: "live_port_conflict",
+                detail: format!("{address} is not currently bindable"),
+            });
+        }
+    }
+    conflicts.extend(docker_resource_conflicts(plan));
+    Ok(conflicts)
+}
+
+#[derive(Clone, Debug)]
+struct GeneratedClaims {
+    deployment: String,
+    domains: BTreeSet<String>,
+    listeners: BTreeSet<(String, u16)>,
+}
+
+fn generated_host_router_configs(root: &Path) -> io::Result<Vec<GeneratedClaims>> {
+    let mut claims = Vec::new();
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(claims),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let deployment = entry.file_name().to_string_lossy().into_owned();
+        let path = entry.path().join("host-router.json");
+        let Ok(config) = fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&config) else {
+            continue;
+        };
+        claims.push(GeneratedClaims {
+            deployment,
+            domains: router_domains(&value),
+            listeners: router_listeners(&value),
+        });
+    }
+    Ok(claims)
+}
+
+fn current_router_value(plan: &Plan) -> Option<serde_json::Value> {
+    plan.host_router_config
+        .as_deref()
+        .and_then(|config| serde_json::from_str(config).ok())
+}
+
+fn current_domains(plan: &Plan) -> BTreeSet<String> {
+    current_router_value(plan)
+        .as_ref()
+        .map(router_domains)
+        .unwrap_or_default()
+}
+
+fn current_ports(plan: &Plan) -> BTreeSet<(String, u16)> {
+    current_router_value(plan)
+        .as_ref()
+        .map(router_listeners)
+        .unwrap_or_default()
+}
+
+fn router_domains(config: &serde_json::Value) -> BTreeSet<String> {
+    config
+        .pointer("/spec/listeners")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|listener| {
+            listener
+                .get("destinations")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter(|destination| {
+            destination.get("kind").and_then(serde_json::Value::as_str) == Some("custom_domain")
+        })
+        .filter_map(|destination| {
+            destination
+                .get("domain")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .collect()
+}
+
+fn router_listeners(config: &serde_json::Value) -> BTreeSet<(String, u16)> {
+    config
+        .pointer("/spec/listeners")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|listener| {
+            let bind = listener.get("bind")?;
+            let host = bind.get("host")?.as_str()?.to_owned();
+            let port = bind
+                .get("port")?
+                .as_u64()
+                .and_then(|port| u16::try_from(port).ok())?;
+            Some((host, port))
+        })
+        .collect()
+}
+
+fn docker_resource_conflicts(plan: &Plan) -> Vec<ImportConflict> {
+    let Ok(output) = Command::new("docker")
+        .args(["version", "--format", "{{.Server.Version}}"])
+        .output()
+    else {
+        return vec![ImportConflict {
+            code: "docker_unavailable",
+            detail: "Docker CLI is unavailable; external resource checks were skipped".into(),
+        }];
+    };
+    if !output.status.success() {
+        return vec![ImportConflict {
+            code: "docker_unavailable",
+            detail: "Docker daemon is unavailable; external resource checks were skipped".into(),
+        }];
+    }
+
+    let mut conflicts = Vec::new();
+    for (kind, name) in expected_docker_names(plan) {
+        let output = Command::new("docker")
+            .args([kind, "inspect", name.as_str()])
+            .output();
+        let Ok(output) = output else {
+            conflicts.push(ImportConflict {
+                code: "docker_unavailable",
+                detail: "Docker inspect failed; external resource checks were incomplete".into(),
+            });
+            break;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let labels = docker_labels(&output.stdout);
+        let owner = labels
+            .get(runtime::DEPLOYMENT_LABEL)
+            .map(String::as_str)
+            .unwrap_or("<unlabeled>");
+        if owner != plan.deployment {
+            conflicts.push(ImportConflict {
+                code: "external_resource_conflict",
+                detail: format!("{kind} `{name}` already exists with owner `{owner}`"),
+            });
+        }
+    }
+    conflicts
+}
+
+fn expected_docker_names(plan: &Plan) -> BTreeSet<(&'static str, String)> {
+    let mut names = BTreeSet::new();
+    for (kind, values) in switchyard_planner::planned_docker_resource_names(plan) {
+        let kind = match kind.as_str() {
+            "container" => "container",
+            "network" => "network",
+            "volume" => "volume",
+            _ => continue,
+        };
+        for name in values {
+            names.insert((kind, name));
+        }
+    }
+    names
+}
+
+fn docker_labels(stdout: &[u8]) -> BTreeMap<String, String> {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(stdout) else {
+        return BTreeMap::new();
+    };
+    let Some(first) = value.as_array().and_then(|items| items.first()) else {
+        return BTreeMap::new();
+    };
+    let labels = first
+        .pointer("/Config/Labels")
+        .or_else(|| first.get("Labels"))
+        .and_then(serde_json::Value::as_object);
+    labels
+        .into_iter()
+        .flatten()
+        .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_owned())))
+        .collect()
 }
 
 fn print_plan(workspace_root: &Path, plan: &Plan) -> io::Result<()> {

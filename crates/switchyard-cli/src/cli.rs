@@ -2,6 +2,16 @@ use std::{ffi::OsString, fmt, path::PathBuf};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CliCommand {
+    BundleExport {
+        deployment: PathBuf,
+        overlays: Vec<PathBuf>,
+        output: Option<PathBuf>,
+    },
+    BundleImport {
+        bundle: PathBuf,
+        into: PathBuf,
+        force: bool,
+    },
     Validate {
         bundle: PathBuf,
     },
@@ -110,6 +120,8 @@ Usage:
   switchyard validate <deployment.yaml>
   switchyard plan <deployment.yaml> [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
   switchyard up <deployment.yaml> [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
+  switchyard bundle export <deployment.yaml> [--with <overlay.yaml>]... [--output <file>]
+  switchyard bundle import <bundle-file> --into <directory> [--force]
   switchyard overlay validate <overlay.yaml>
   switchyard overlay diff <deployment.yaml> --with <overlay.yaml> [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
   switchyard bind <deployment.yaml> <consumer> <group> [--transition close|drain|pin] [--drain-timeout-ms <ms>]
@@ -153,6 +165,8 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
             .ok_or_else(|| UsageError(format!("{command} requires a deployment YAML path")))
     };
     match command {
+        "bundle" if rest.len() >= 2 && rest[0] == "export" => parse_bundle_export(rest),
+        "bundle" if rest.len() >= 3 && rest[0] == "import" => parse_bundle_import(rest),
         "validate" if rest.len() == 1 => Ok(CliCommand::Validate { bundle: bundle()? }),
         "plan" if !rest.is_empty() => {
             let (bundle, options, _) = parse_deployment_options(rest, false)?;
@@ -237,6 +251,65 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
             "invalid {command} arguments\n\n{USAGE}"
         ))),
     }
+}
+
+fn parse_bundle_export(rest: &[String]) -> Result<CliCommand, UsageError> {
+    let deployment = PathBuf::from(&rest[1]);
+    let mut overlays = Vec::new();
+    let mut output = None;
+    let mut index = 2;
+    while index < rest.len() {
+        match rest[index].as_str() {
+            "--with" if index + 1 < rest.len() => {
+                overlays.push(PathBuf::from(&rest[index + 1]));
+                index += 2;
+            }
+            "--output" if index + 1 < rest.len() && output.is_none() => {
+                output = Some(PathBuf::from(&rest[index + 1]));
+                index += 2;
+            }
+            _ => {
+                return Err(UsageError(format!(
+                    "invalid bundle export arguments\n\n{USAGE}"
+                )));
+            }
+        }
+    }
+    Ok(CliCommand::BundleExport {
+        deployment,
+        overlays,
+        output,
+    })
+}
+
+fn parse_bundle_import(rest: &[String]) -> Result<CliCommand, UsageError> {
+    let bundle = PathBuf::from(&rest[1]);
+    let mut into = None;
+    let mut force = false;
+    let mut index = 2;
+    while index < rest.len() {
+        match rest[index].as_str() {
+            "--into" if index + 1 < rest.len() && into.is_none() => {
+                into = Some(PathBuf::from(&rest[index + 1]));
+                index += 2;
+            }
+            "--force" if !force => {
+                force = true;
+                index += 1;
+            }
+            _ => {
+                return Err(UsageError(format!(
+                    "invalid bundle import arguments\n\n{USAGE}"
+                )));
+            }
+        }
+    }
+    let into = into.ok_or_else(|| UsageError("bundle import requires --into".into()))?;
+    Ok(CliCommand::BundleImport {
+        bundle,
+        into,
+        force,
+    })
 }
 
 fn parse_deployment_options(
@@ -370,6 +443,44 @@ mod tests {
                 transition: None,
             }
         );
+    }
+
+    #[test]
+    fn parses_bundle_commands() {
+        assert_eq!(
+            parse(args(&[
+                "bundle",
+                "export",
+                "demo.yaml",
+                "--with",
+                "overlay.yaml",
+                "--output",
+                "demo.switchyard-bundle.json"
+            ]))
+            .unwrap(),
+            CliCommand::BundleExport {
+                deployment: "demo.yaml".into(),
+                overlays: vec!["overlay.yaml".into()],
+                output: Some("demo.switchyard-bundle.json".into()),
+            }
+        );
+        assert_eq!(
+            parse(args(&[
+                "bundle",
+                "import",
+                "demo.switchyard-bundle.json",
+                "--into",
+                "imported",
+                "--force"
+            ]))
+            .unwrap(),
+            CliCommand::BundleImport {
+                bundle: "demo.switchyard-bundle.json".into(),
+                into: "imported".into(),
+                force: true,
+            }
+        );
+        assert!(parse(args(&["bundle", "import", "demo.switchyard-bundle.json"])).is_err());
     }
 
     #[test]

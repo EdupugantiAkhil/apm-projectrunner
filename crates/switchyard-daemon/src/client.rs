@@ -12,8 +12,8 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use crate::contract::{
     API_VERSION, ApiErrorV1, CommandKind, CommandRequestV1, CreateWorktreeRequestV1,
-    DaemonStatusV1, DeploymentRoutesV1, DiscoveryV1, OperationV1, RegisterSourceRequestV1,
-    RemoveWorktreeRequestV1, SourceV1,
+    DaemonStatusV1, DeploymentRoutesV1, DeploymentsV1, DiscoveryV1, OperationV1,
+    RegisterSourceRequestV1, RemoveWorktreeRequestV1, SourceV1,
 };
 
 /// Lists sources through a discovered daemon, or returns `None` for one-shot fallback.
@@ -22,6 +22,14 @@ pub fn sources(project_root: &Path) -> Result<Option<Vec<SourceV1>>, ClientError
         return Ok(None);
     };
     json_request::<(), _>(&discovery, "GET", "/api/v1/sources", None).map(Some)
+}
+
+/// Lists deployments through a discovered daemon, or returns `None` for one-shot fallback.
+pub fn deployments(project_root: &Path) -> Result<Option<DeploymentsV1>, ClientError> {
+    let Some(discovery) = load_discovery(project_root)? else {
+        return Ok(None);
+    };
+    json_request::<(), _>(&discovery, "GET", "/api/v1/deployments", None).map(Some)
 }
 
 /// Cancels a running operation by identifier through a discovered daemon.

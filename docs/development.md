@@ -4,6 +4,8 @@ The persistent daemon and authenticated versioned API are documented in
 [`control-plane-api.md`](control-plane-api.md).
 Overlay composition, secret handling, change previews, and concurrent variations are
 documented in [`overlays.md`](overlays.md).
+Portable export/import bundles and safe sharing guidance are documented in
+[`bundles.md`](bundles.md).
 
 Switchyard development is Linux-first. Native Linux on `x86_64` or `aarch64` with a
 Linux Docker Engine and Docker Compose v2 is the supported path; CI runs on `x86_64`

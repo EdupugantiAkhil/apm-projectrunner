@@ -414,10 +414,10 @@ Entry gate: the product MVP is stable for local single-developer use.
 
 ### Import, export, and collaboration
 
-- [ ] Export portable deployment bundles without secrets or machine-specific state.
-- [ ] Import bundles with compatibility validation and a complete mutation preview.
-- [ ] Add conflict detection for names, domains, ports, and external resources.
-- [ ] Document safe sharing of block, deployment, group, and overlay definitions.
+- [x] Export portable deployment bundles without secrets or machine-specific state.
+- [x] Import bundles with compatibility validation and a complete mutation preview.
+- [x] Add conflict detection for names, domains, ports, and external resources.
+- [x] Document safe sharing of block, deployment, group, and overlay definitions.
 
 ### Reliability and release engineering
 

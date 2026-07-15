@@ -198,3 +198,12 @@
   Correction: explicitly rename the acronym-heavy `DNSName` and `TailscaleIPs` fields
   and retain the realistic status fixture. Lesson: case-conversion rules do not
   preserve API acronyms; pin externally defined JSON keys explicitly.
+
+## 2026-07-16 — Phase 7 bundles Part 4
+
+- The first import integrity check treated every absolute-looking string as
+  machine-specific state, which would have rejected legitimate container command paths
+  such as `/usr/local/bin/...`. Correction: reject absolute paths only in typed
+  host-path fields such as sources and overlay file/env references. Lesson: portability
+  checks must understand schema meaning; string-shaped data is not automatically a host
+  path.

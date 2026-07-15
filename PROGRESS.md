@@ -1,12 +1,12 @@
 # Switchyard implementation progress
 
-Updated: 2026-07-15
+Updated: 2026-07-16
 
 ## Release status
 
 - Routing proof (Phases 0–4): complete.
 - Product MVP (Phases 5–6): complete.
-- Team release (Phase 7): not started.
+- Team release (Phase 7): in progress.
 
 `IMPLEMENTATION_PLAN.md` remains the task-level checklist. This file records the
 implemented shape and the evidence used to close a phase.
@@ -209,6 +209,51 @@ implemented shape and the evidence used to close a phase.
   worktree adapter-path regression test.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passed.
 - `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps`: passed.
+
+## Phase 7 import/export and collaboration — Part 4
+
+- `switchyard-planner` owns the portable bundle contract in `bundle.rs`, because it is
+  the crate that already owns strict deployment/overlay parsing and validation. The CLI
+  keeps only local-machine conflict checks and presentation.
+- `switchyard bundle export <deployment.yaml> [--with <overlay.yaml>]... [--output
+  <file>]` writes one deterministic, reviewable
+  `switchyard.dev/bundle/v1alpha1` JSON file with a SHA-256 content hash over the
+  canonical payload. Export embeds deployment and overlay definitions, replaces local
+  source/file/dotenv inputs with `requiredLocalInputs`, preserves secret references, and
+  warns/replaces credential-looking literal keys.
+- `switchyard bundle import <bundle-file> --into <directory> [--force]` verifies
+  apiVersion and content hash, rejects machine-state paths in typed host-path fields,
+  writes the deployment and overlay YAML without overwriting unless forced, scaffolds
+  placeholder local inputs, validates through the existing planner path, prints the
+  normal mutation preview, and starts no runtime resources.
+- Import conflict reporting is CLI-only and read-only: generated manifests, live daemon
+  deployment summaries, live bind checks, and Docker `inspect` probes detect
+  `name_conflict`, `domain_conflict`, `port_conflict`, `live_port_conflict`,
+  `external_resource_conflict`, and `docker_unavailable`.
+- Docker conflict probing degrades to `docker_unavailable` in sandboxes without Docker.
+  No new daemon endpoint was added; a future daemon-aware import workflow remains a
+  follow-up.
+- `docs/bundles.md` documents bundle contents, omitted machine state, secret/local-input
+  handling, conflict codes, and safe sharing of block, deployment, group, and overlay
+  definitions. `docs/development.md` links it from the documentation index.
+
+### Phase 7 Part 4 verification
+
+- `cargo fmt --all --check`: passed.
+- `cargo test -p switchyard-planner`: passed, including export/import validation,
+  tampered-hash rejection, and unsupported-apiVersion rejection.
+- `cargo test -p switchyard-planner -p switchyard-cli`: compiled and passed all planner
+  tests and the new CLI parser test, then hit the pre-existing
+  `host_runtime::tests::failed_startup_cleanup_allows_a_clean_retry` Unix-socket bind
+  sandbox failure (`Operation not permitted`). This is the same class of socket
+  restriction recorded earlier and not a bundle regression.
+- `cargo test -p switchyard-cli cli::tests::parses_bundle_commands`: passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- CLI smoke: `switchyard bundle export examples/routing-matrix/deployment.yaml` to
+  `/tmp`, followed by `switchyard bundle import ... --into /tmp/... --force`, passed.
+  Import produced placeholder local inputs, a create-artifacts mutation preview, and
+  read-only conflict diagnostics; Docker probing degraded to `docker_unavailable` in
+  this sandbox.
 
 ### Source and worktree management (Part 2)
 
@@ -589,3 +634,19 @@ implemented shape and the evidence used to close a phase.
   are not tailnet-resolvable by default, as documented), and a Host-resolved
   request to the custom domain through the tailscale address returned 200.
   `switchyard down` removed the owner-only publication state file.
+
+### Part 4 reviewer verification (2026-07-16)
+
+- Reviewer fix: import now pre-checks every destination path before writing any
+  file, so a `bundle_write_conflict` can no longer leave a partially imported
+  bundle behind.
+- `./scripts/check.sh`: PASSED end to end.
+- Live CLI proof: `bundle export` of routing-matrix produced a deterministic
+  envelope with 8 source paths replaced by required local inputs and
+  `local_path_replaced` warnings; `bundle import` into a clean directory
+  reported compatibility ok, scaffolded the inputs, validated, and printed the
+  full mutation preview with `Conflicts: none`. Importing into this repository
+  (where fixtures already exist) reported `name_conflict` for the existing
+  generated routing-matrix and a genuine `port_conflict`: jas-base also claims
+  `127.0.0.1:10081`. A tampered bundle was rejected with `bundle_hash_mismatch`
+  naming both hashes.

@@ -1,8 +1,10 @@
 //! Deterministic, side-effect-free deployment planning.
 
+mod bundle;
 mod model;
 mod overlay;
 
+pub use bundle::*;
 pub use model::*;
 pub use overlay::*;
 
@@ -265,6 +267,37 @@ pub fn write_plan(workspace_root: &Path, plan: &Plan) -> io::Result<PathBuf> {
         }
     }
     Ok(artifact_dir)
+}
+
+/// Returns deterministic Docker resource names that a generated plan would claim.
+pub fn planned_docker_resource_names(plan: &Plan) -> BTreeMap<String, BTreeSet<String>> {
+    let mut names = BTreeMap::<String, BTreeSet<String>>::new();
+    let Ok(compose) = serde_yaml::from_str::<Value>(&plan.compose_yaml) else {
+        return names;
+    };
+    if let Some(services) = compose.get("services").and_then(Value::as_object) {
+        for service in services.values() {
+            if let Some(name) = service.get("container_name").and_then(Value::as_str) {
+                names
+                    .entry("container".into())
+                    .or_default()
+                    .insert(name.to_owned());
+            }
+        }
+    }
+    for (section, kind) in [("networks", "network"), ("volumes", "volume")] {
+        if let Some(values) = compose.get(section).and_then(Value::as_object) {
+            for value in values.values() {
+                if let Some(name) = value.get("name").and_then(Value::as_str) {
+                    names
+                        .entry(kind.into())
+                        .or_default()
+                        .insert(name.to_owned());
+                }
+            }
+        }
+    }
+    names
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
