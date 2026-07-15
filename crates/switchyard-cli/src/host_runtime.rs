@@ -1,6 +1,6 @@
 use std::{
     env, fmt, fs, io,
-    net::{SocketAddr, TcpStream},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream},
     os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use router_config::RouterConfig;
+use router_config::{GatewayExposureSummary, RouterConfig};
 use serde::{Deserialize, Serialize};
 use switchyard_planner::Plan;
 
@@ -44,17 +44,26 @@ impl From<io::Error> for HostRuntimeError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HostGatewayStatus {
     NotConfigured,
-    Stopped,
-    Running { pid: u32 },
-    Drifted { detail: String },
+    Stopped {
+        exposure: GatewayExposureSummary,
+    },
+    Running {
+        pid: u32,
+        exposure: GatewayExposureSummary,
+    },
+    Drifted {
+        detail: String,
+    },
 }
 
 impl fmt::Display for HostGatewayStatus {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotConfigured => formatter.write_str("not configured"),
-            Self::Stopped => formatter.write_str("stopped"),
-            Self::Running { pid } => write!(formatter, "running (pid {pid})"),
+            Self::Stopped { exposure } => write!(formatter, "stopped; exposure: {exposure}"),
+            Self::Running { pid, exposure } => {
+                write!(formatter, "running (pid {pid}); exposure: {exposure}")
+            }
             Self::Drifted { detail } => write!(formatter, "drifted ({detail})"),
         }
     }
@@ -107,10 +116,7 @@ impl<'a> HostRuntime<'a> {
             if let Some(state) = self.read_state(&paths)? {
                 self.validate_state_ownership(&state, &paths)?;
                 if matches!(inspect_process(&state)?, ProcessIdentity::Owned) {
-                    return Err(HostRuntimeError::StaleState(
-                        "an owned host gateway is running with a different definition; run `switchyard down` before up"
-                            .into(),
-                    ));
+                    return Ok(true);
                 }
             }
         }
@@ -130,10 +136,22 @@ impl<'a> HostRuntime<'a> {
             }
             return Ok(HostGatewayStatus::NotConfigured);
         };
+        let planned_exposure = self.planned_exposure()?;
+        if planned_exposure.mode == router_config::GatewayExposureMode::Lan {
+            eprintln!(
+                "WARNING: LAN exposure is enabled; host-gateway listeners are reachable at: {}",
+                planned_exposure
+                    .exposed_addresses
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         match status {
-            HostGatewayStatus::Running { pid } => {
+            HostGatewayStatus::Running { pid, exposure } => {
                 if self.running_config_matches_published_upstreams()? {
-                    return Ok(HostGatewayStatus::Running { pid });
+                    return Ok(HostGatewayStatus::Running { pid, exposure });
                 }
                 self.stop()?;
                 eprintln!(
@@ -141,10 +159,10 @@ impl<'a> HostRuntime<'a> {
                 );
             }
             HostGatewayStatus::Drifted { detail } => {
-                self.recover_stale_state()?;
+                self.recover_for_restart()?;
                 eprintln!("switchyard: recovered {detail}");
             }
-            HostGatewayStatus::NotConfigured | HostGatewayStatus::Stopped => {}
+            HostGatewayStatus::NotConfigured | HostGatewayStatus::Stopped { .. } => {}
         }
         if env::var_os("SWITCHYARD_ROUTER_TOKEN").is_none() {
             return Err(HostRuntimeError::Startup(
@@ -159,7 +177,18 @@ impl<'a> HostRuntime<'a> {
             .spec
             .listeners
             .iter()
-            .map(|listener| SocketAddr::new(listener.bind.host, listener.bind.port))
+            .map(|listener| {
+                let host = match listener.bind.host {
+                    IpAddr::V4(address) if address.is_unspecified() => {
+                        IpAddr::V4(Ipv4Addr::LOCALHOST)
+                    }
+                    IpAddr::V6(address) if address.is_unspecified() => {
+                        IpAddr::V6(Ipv6Addr::LOCALHOST)
+                    }
+                    address => address,
+                };
+                SocketAddr::new(host, listener.bind.port)
+            })
             .collect::<Vec<_>>();
         let paths = self.runtime_paths(true)?;
         require_missing_or_regular(&paths.config, "runtime configuration")?;
@@ -230,7 +259,10 @@ impl<'a> HostRuntime<'a> {
                 TcpStream::connect_timeout(address, Duration::from_millis(50)).is_ok()
             });
             if listeners_ready && admin_socket.exists() {
-                return Ok(HostGatewayStatus::Running { pid });
+                return Ok(HostGatewayStatus::Running {
+                    pid,
+                    exposure: planned_exposure,
+                });
             }
             if Instant::now() >= deadline {
                 let _ = child.kill();
@@ -331,7 +363,9 @@ impl<'a> HostRuntime<'a> {
                             .into(),
                 });
             }
-            return Ok(HostGatewayStatus::Stopped);
+            return Ok(HostGatewayStatus::Stopped {
+                exposure: self.planned_exposure()?,
+            });
         };
         if state.deployment != self.plan.deployment || state.api_version != STATE_API_VERSION {
             return Ok(HostGatewayStatus::Drifted {
@@ -350,7 +384,10 @@ impl<'a> HostRuntime<'a> {
             });
         }
         match inspect_process(&state)? {
-            ProcessIdentity::Owned => Ok(HostGatewayStatus::Running { pid: state.pid }),
+            ProcessIdentity::Owned => Ok(HostGatewayStatus::Running {
+                pid: state.pid,
+                exposure: self.planned_exposure()?,
+            }),
             ProcessIdentity::Missing => Ok(HostGatewayStatus::Drifted {
                 detail: "process exited but owned state remains; the next up/down will recover it"
                     .into(),
@@ -359,7 +396,26 @@ impl<'a> HostRuntime<'a> {
         }
     }
 
-    fn recover_stale_state(&self) -> Result<(), HostRuntimeError> {
+    fn planned_exposure(&self) -> Result<GatewayExposureSummary, HostRuntimeError> {
+        let encoded =
+            self.plan.host_router_config.as_ref().ok_or_else(|| {
+                HostRuntimeError::InvalidPlan("hostRouter is not configured".into())
+            })?;
+        let config: RouterConfig = serde_json::from_str(encoded)
+            .map_err(|error| HostRuntimeError::InvalidPlan(error.to_string()))?;
+        let interfaces = if config.spec.needs_interface_enumeration() {
+            local_ip_address::list_afinet_netifas()
+                .map_err(|error| HostRuntimeError::InvalidPlan(error.to_string()))?
+                .into_iter()
+                .map(|(_, address)| address)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        Ok(config.spec.exposure_summary(&interfaces))
+    }
+
+    fn recover_for_restart(&self) -> Result<(), HostRuntimeError> {
         let paths = self.runtime_paths(false)?;
         let Some(state) = self.read_state(&paths)? else {
             remove_regular_or_socket(&paths.socket)?;
@@ -367,10 +423,7 @@ impl<'a> HostRuntime<'a> {
         };
         self.validate_state_ownership(&state, &paths)?;
         match inspect_process(&state)? {
-            ProcessIdentity::Owned => Err(HostRuntimeError::StaleState(
-                "an owned process is still running with a different definition; run `switchyard down`"
-                    .into(),
-            )),
+            ProcessIdentity::Owned => self.stop(),
             ProcessIdentity::Missing | ProcessIdentity::Different(_) => {
                 self.remove_state_files(&paths)
             }
@@ -959,7 +1012,16 @@ mod tests {
 
     #[test]
     fn token_is_required_only_when_a_configured_host_process_needs_starting() {
-        assert!(host_token_required(true, &HostGatewayStatus::Stopped));
+        let exposure = GatewayExposureSummary {
+            mode: router_config::GatewayExposureMode::Loopback,
+            exposed_addresses: Vec::new(),
+        };
+        assert!(host_token_required(
+            true,
+            &HostGatewayStatus::Stopped {
+                exposure: exposure.clone()
+            }
+        ));
         assert!(host_token_required(
             true,
             &HostGatewayStatus::Drifted {
@@ -968,7 +1030,7 @@ mod tests {
         ));
         assert!(!host_token_required(
             true,
-            &HostGatewayStatus::Running { pid: 42 }
+            &HostGatewayStatus::Running { pid: 42, exposure }
         ));
         assert!(!host_token_required(
             false,
@@ -996,7 +1058,10 @@ mod tests {
             route_configs: Default::default(),
             sidecars: Default::default(),
             managed_profiles: Default::default(),
-            host_router_config: Some("{}".into()),
+            host_router_config: Some(
+                include_str!("../../router-config/tests/fixtures/valid/v1alpha1-minimal.json")
+                    .into(),
+            ),
             host_upstreams: Default::default(),
             source_identities: Default::default(),
             origins: Default::default(),

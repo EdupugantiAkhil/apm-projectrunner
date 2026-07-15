@@ -599,12 +599,23 @@ async fn deployment_list_and_detail_include_applied_manifest_and_reconciliation(
     let temp = tempfile::tempdir().unwrap();
     fs::create_dir_all(temp.path().join(".switchyard/generated/demo")).unwrap();
     let (mut store, _) = StateStore::open(temp.path().join(".switchyard/state.sqlite3")).unwrap();
+    let mut host_router: Value = serde_json::from_str(include_str!(
+        "../../router-config/tests/fixtures/valid/v1alpha1-minimal.json"
+    ))
+    .unwrap();
+    host_router["spec"]["listeners"] = json!([{
+        "bind": {"host": "127.0.0.1", "port": 18080},
+        "protocol": "http",
+        "destinations": [{
+            "kind": "custom_domain",
+            "slot": "web",
+            "domain": "demo.localhost"
+        }]
+    }]);
     let snapshot = AppliedSnapshot::from_json(json!({
         "spec": {
             "bindings": {"consumer-a": "feature"},
-            "hostRouter": {"listeners": [
-                {"kind": "custom_domain", "domain": "demo.localhost"}
-            ]}
+            "hostRouter": host_router
         }
     }))
     .unwrap();
@@ -656,6 +667,15 @@ async fn deployment_list_and_detail_include_applied_manifest_and_reconciliation(
         "succeeded"
     );
     assert_eq!(list["deployments"][0]["customDomains"][0], "demo.localhost");
+    assert_eq!(
+        list["deployments"][0]["gatewayExposure"]["mode"],
+        "loopback"
+    );
+    assert!(
+        list["deployments"][0]["gatewayExposure"]["exposedAddresses"]
+            .as_array()
+            .is_some_and(|addresses| !addresses.is_empty())
+    );
 
     let (status, body) = request(
         &api,
@@ -674,6 +694,10 @@ async fn deployment_list_and_detail_include_applied_manifest_and_reconciliation(
     );
     assert_eq!(detail["bindings"]["consumer-a"], "feature");
     assert_eq!(detail["reconciliation"]["deployment"], "demo");
+    assert_eq!(
+        detail["gatewayExposure"],
+        list["deployments"][0]["gatewayExposure"]
+    );
 
     let (status, _) = request(
         &api,

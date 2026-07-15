@@ -10,7 +10,7 @@ use std::{
 };
 
 use rcgen::{CertificateParams, DnType, KeyPair};
-use router_config::{ListenerDestination, Protocol, RouterConfig};
+use router_config::{GatewayExposureSummary, ListenerDestination, Protocol, RouterConfig};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
@@ -25,6 +25,7 @@ pub enum HostGatewayError {
     PortConflict { address: String, source: io::Error },
     DomainConflict { domain: String },
     UnsafeUpstream { provider: String, host: String },
+    InterfaceEnumeration(String),
     Certificate { path: PathBuf, message: String },
     Io(io::Error),
 }
@@ -51,6 +52,9 @@ impl fmt::Display for HostGatewayError {
                 formatter,
                 "host provider `{provider}` must use a loopback upstream, not `{host}`"
             ),
+            Self::InterfaceEnumeration(message) => {
+                write!(formatter, "could not enumerate LAN interfaces: {message}")
+            }
             Self::Certificate { path, message } => {
                 write!(formatter, "certificate {}: {message}", path.display())
             }
@@ -74,6 +78,20 @@ pub struct CertificateReport {
     pub external: Vec<PathBuf>,
 }
 
+/// Resolves wildcard LAN binds to the concrete local interface addresses they expose.
+pub fn exposure_summary(config: &RouterConfig) -> Result<GatewayExposureSummary, HostGatewayError> {
+    let interfaces = if config.spec.needs_interface_enumeration() {
+        local_ip_address::list_afinet_netifas()
+            .map_err(|error| HostGatewayError::InterfaceEnumeration(error.to_string()))?
+            .into_iter()
+            .map(|(_, address)| address)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    Ok(config.spec.exposure_summary(&interfaces))
+}
+
 /// Checks all host claims without writing files or starting a partial data plane.
 pub fn preflight(config: &RouterConfig) -> Result<(), HostGatewayError> {
     config.validate().map_err(|errors| {
@@ -88,7 +106,7 @@ pub fn preflight(config: &RouterConfig) -> Result<(), HostGatewayError> {
 
     let mut domains = BTreeMap::new();
     for listener in &config.spec.listeners {
-        if !listener.bind.host.is_loopback() {
+        if !listener.bind.host.is_loopback() && !config.spec.lan_exposure_acknowledged() {
             return Err(HostGatewayError::InvalidConfiguration(format!(
                 "listener {}:{} is not loopback-bound",
                 listener.bind.host, listener.bind.port
@@ -816,6 +834,58 @@ mod tests {
         assert!(matches!(
             preflight(&config),
             Err(HostGatewayError::DomainConflict { .. })
+        ));
+    }
+
+    #[test]
+    fn exposure_summary_expands_wildcard_binds_to_actual_interfaces() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = config(
+            18080,
+            &directory.path().join("host.pem"),
+            &directory.path().join("host-key.pem"),
+        );
+        config.spec.exposure = Some(router_config::GatewayExposure {
+            mode: router_config::GatewayExposureMode::Lan,
+            acknowledge_lan_exposure_risk: true,
+        });
+        config.spec.listeners[0].bind.host = "0.0.0.0".parse().unwrap();
+
+        let summary = config.spec.exposure_summary(&[
+            "127.0.0.1".parse().unwrap(),
+            "192.0.2.20".parse().unwrap(),
+            "2001:db8::20".parse().unwrap(),
+        ]);
+        assert_eq!(summary.mode, router_config::GatewayExposureMode::Lan);
+        assert_eq!(
+            summary.exposed_addresses,
+            ["127.0.0.1:18080", "192.0.2.20:18080"]
+                .map(str::parse)
+                .map(Result::unwrap)
+        );
+    }
+
+    #[test]
+    fn provider_upstreams_remain_loopback_only_with_and_without_lan_mode() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = config(
+            18080,
+            &directory.path().join("host.pem"),
+            &directory.path().join("host-key.pem"),
+        );
+        config.spec.providers[0].endpoint.host = "192.0.2.10".into();
+        assert!(matches!(
+            preflight(&config),
+            Err(HostGatewayError::UnsafeUpstream { .. })
+        ));
+
+        config.spec.exposure = Some(router_config::GatewayExposure {
+            mode: router_config::GatewayExposureMode::Lan,
+            acknowledge_lan_exposure_risk: true,
+        });
+        assert!(matches!(
+            preflight(&config),
+            Err(HostGatewayError::InvalidConfiguration(_))
         ));
     }
 

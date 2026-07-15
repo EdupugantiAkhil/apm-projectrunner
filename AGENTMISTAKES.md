@@ -152,3 +152,12 @@
   toward the schema-only `hooks.postReady`; Codex correctly stopped on the gap.
   Correction: task-lifecycle init service plus a recorded Phase 7 work item for the
   inert hooks. Lesson: brief wording should name mechanisms verified to exist.
+
+## 2026-07-15 — Phase 7 LAN exposure Part 1
+
+- The first LAN round-trip test reused the general routing-matrix fixture, whose
+  sidecar-oriented providers intentionally include non-loopback Docker DNS names, so
+  the new host-LAN provider guard correctly rejected it. Correction: make the test's
+  upstreams loopback-only, matching host-gateway semantics. Lesson: a shared router
+  schema fixture is not automatically valid for every execution mode; tests for
+  host-only policy must establish host-mode preconditions explicitly.

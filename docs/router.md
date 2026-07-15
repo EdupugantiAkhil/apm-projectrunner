@@ -46,11 +46,54 @@ SWITCHYARD_ROUTER_TOKEN="$(openssl rand -hex 32)" \
   cargo run --package switchyard-router -- host host-router.json /tmp/switchyard-host.sock
 ```
 
-Host listeners and their container upstreams must both use loopback addresses. Custom
-domains are exact, case-insensitive matches; duplicate domain claims and occupied ports
-fail before certificate files are changed. Unprivileged ports are the default. Binding
-ports below 1024 requires an explicit operating-system capability or redirect and is
-not performed by Switchyard.
+Host listeners use loopback addresses by default, and container upstreams must always
+remain loopback-only. Custom domains are exact, case-insensitive matches; duplicate
+domain claims and occupied ports fail before certificate files are changed. Unprivileged
+ports are the default. Binding ports below 1024 requires an explicit operating-system
+capability or redirect and is not performed by Switchyard.
+
+### LAN exposure
+
+LAN listener binding is an explicit host-router opt-in. Add the exposure block and the
+risk acknowledgement, then change the listeners that should be reachable to a specific
+local interface address or a wildcard address such as `0.0.0.0`:
+
+```yaml
+hostRouter:
+  apiVersion: switchyard.dev/router/v1alpha1
+  kind: RouterConfiguration
+  metadata: { deployment: demo }
+  spec:
+    exposure:
+      mode: lan
+      acknowledgeLanExposureRisk: true
+    listeners:
+      - bind: { host: 0.0.0.0, port: 18080 }
+        protocol: http
+        destinations:
+          - { kind: loopback, slot: web }
+    # snapshot, providers, and routes omitted
+```
+
+Omitting `exposure` means loopback-only. `mode: lan` without
+`acknowledgeLanExposureRisk: true` is rejected, as is any non-loopback bind without the
+acknowledged opt-in. The setting applies to all listeners in this host router: listeners
+that remain bound to `127.0.0.1` or `::1` remain local, while specific non-loopback and
+wildcard binds are exposed. Provider upstreams are never widened by LAN mode and must
+still resolve to loopback. Review every exposed listener before acknowledging the risk,
+especially database or internal-provider protocols.
+
+`switchyard up` prints a warning with every concrete `interface-address:port` exposed by
+LAN wildcard or specific binds. `switchyard status` reports `exposure: loopback` or
+`exposure: LAN` with the same addresses. The daemon deployment list/detail responses
+also include `gatewayExposure.mode` and `gatewayExposure.exposedAddresses`, and the
+router log contains a structured `lan_exposure_warning` startup event.
+
+To revert, restore every listener bind to loopback and remove the `exposure` block (or
+set `mode: loopback`), then run the normal `switchyard up` apply again. The owned host
+gateway is stopped before the replacement starts, closing the LAN listeners. Public
+internet exposure, port-forwarding, and production ingress are explicitly out of scope;
+LAN mode is intended only for trusted private networks.
 
 When a deployment includes `hostRouter`, `switchyard up` starts the native gateway
 after Compose reports healthy and waits for all listeners plus its administration

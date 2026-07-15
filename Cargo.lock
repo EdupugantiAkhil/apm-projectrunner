@@ -2775,6 +2775,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "http-body-util",
+ "local-ip-address",
  "router-config",
  "serde",
  "serde_json",
@@ -2795,6 +2796,7 @@ dependencies = [
  "axum",
  "futures-util",
  "http-body-util",
+ "local-ip-address",
  "router-config",
  "serde",
  "serde_json",
@@ -2832,6 +2834,7 @@ dependencies = [
  "bytes",
  "h2",
  "http",
+ "local-ip-address",
  "rcgen",
  "router-config",
  "router-core",

@@ -1,6 +1,11 @@
 //! The `switchyard.dev/router/v1alpha1` router configuration schema.
 
-use std::{collections::BTreeMap, fmt, net::IpAddr, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -80,10 +85,27 @@ impl RouterConfig {
             &mut errors,
         );
 
+        if self.spec.exposure.as_ref().is_some_and(|exposure| {
+            exposure.mode == GatewayExposureMode::Lan && !exposure.acknowledge_lan_exposure_risk
+        }) {
+            errors.push(ValidationError::new(
+                ValidationCode::LanExposureRiskNotAcknowledged,
+                "spec.exposure.acknowledgeLanExposureRisk",
+                "LAN exposure requires acknowledgeLanExposureRisk: true",
+            ));
+        }
+
         let mut listener_keys = BTreeMap::new();
         let mut slots = BTreeMap::new();
         for (index, listener) in self.spec.listeners.iter().enumerate() {
             let path = format!("spec.listeners[{index}]");
+            if !listener.bind.host.is_loopback() && !self.spec.lan_exposure_acknowledged() {
+                errors.push(ValidationError::new(
+                    ValidationCode::LanExposureNotEnabled,
+                    &format!("{path}.bind.host"),
+                    "non-loopback listener binds require acknowledged LAN exposure",
+                ));
+            }
             if listener.bind.port == 0 {
                 errors.push(ValidationError::new(
                     ValidationCode::InvalidListener,
@@ -207,6 +229,15 @@ impl RouterConfig {
         let mut providers = BTreeMap::new();
         for (index, provider) in self.spec.providers.iter().enumerate() {
             let path = format!("spec.providers[{index}]");
+            if self.spec.exposure_mode() == GatewayExposureMode::Lan
+                && !is_loopback_host(&provider.endpoint.host)
+            {
+                errors.push(ValidationError::new(
+                    ValidationCode::UnsafeLanProvider,
+                    &format!("{path}.endpoint.host"),
+                    "LAN exposure does not permit non-loopback provider upstreams",
+                ));
+            }
             validate_identifier(
                 provider.id.as_str(),
                 true,
@@ -378,6 +409,9 @@ pub struct ConfigMetadata {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RouterSpec {
     pub snapshot: RouteSnapshot,
+    /// Host-gateway listener exposure. Omission preserves the secure loopback-only default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<GatewayExposure>,
     #[serde(default)]
     pub listeners: Vec<Listener>,
     #[serde(default)]
@@ -392,6 +426,94 @@ pub struct RouterSpec {
     pub browser_routes: Vec<BrowserRoute>,
     #[serde(default)]
     pub identity: IdentityPolicy,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GatewayExposure {
+    pub mode: GatewayExposureMode,
+    /// LAN exposure must remain a deliberate, reviewable acknowledgement in desired state.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub acknowledge_lan_exposure_risk: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayExposureMode {
+    Loopback,
+    Lan,
+}
+
+/// Effective listener exposure after wildcard binds are expanded to local interfaces.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayExposureSummary {
+    pub mode: GatewayExposureMode,
+    pub exposed_addresses: Vec<SocketAddr>,
+}
+
+impl fmt::Display for GatewayExposureSummary {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mode = match self.mode {
+            GatewayExposureMode::Loopback => "loopback",
+            GatewayExposureMode::Lan => "LAN",
+        };
+        write!(formatter, "{mode}")?;
+        if !self.exposed_addresses.is_empty() {
+            write!(
+                formatter,
+                " ({})",
+                self.exposed_addresses
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl RouterSpec {
+    pub fn exposure_mode(&self) -> GatewayExposureMode {
+        self.exposure
+            .as_ref()
+            .map_or(GatewayExposureMode::Loopback, |exposure| exposure.mode)
+    }
+
+    pub fn lan_exposure_acknowledged(&self) -> bool {
+        self.exposure.as_ref().is_some_and(|exposure| {
+            exposure.mode == GatewayExposureMode::Lan && exposure.acknowledge_lan_exposure_risk
+        })
+    }
+
+    pub fn needs_interface_enumeration(&self) -> bool {
+        self.exposure_mode() == GatewayExposureMode::Lan
+            && self
+                .listeners
+                .iter()
+                .any(|listener| listener.bind.host.is_unspecified())
+    }
+
+    pub fn exposure_summary(&self, interfaces: &[IpAddr]) -> GatewayExposureSummary {
+        let mode = self.exposure_mode();
+        let mut addresses = BTreeSet::new();
+        for listener in &self.listeners {
+            if mode == GatewayExposureMode::Lan && listener.bind.host.is_unspecified() {
+                for address in interfaces {
+                    if address.is_ipv4() == listener.bind.host.is_ipv4() {
+                        addresses.insert(SocketAddr::new(*address, listener.bind.port));
+                    }
+                }
+            } else {
+                addresses.insert(SocketAddr::new(listener.bind.host, listener.bind.port));
+            }
+        }
+        GatewayExposureSummary {
+            mode,
+            exposed_addresses: addresses.into_iter().collect(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -632,6 +754,9 @@ pub enum ValidationCode {
     IncompatibleProtocol,
     IncompleteGroup,
     AmbiguousRoute,
+    LanExposureNotEnabled,
+    LanExposureRiskNotAcknowledged,
+    UnsafeLanProvider,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -732,6 +857,13 @@ fn is_local_host(host: &str) -> bool {
     normalized == "localhost"
         || normalized.ends_with(".localhost")
         || normalized
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
             .parse::<IpAddr>()
             .is_ok_and(|address| address.is_loopback())
 }

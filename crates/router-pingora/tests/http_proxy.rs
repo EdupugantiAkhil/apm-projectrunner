@@ -490,6 +490,12 @@ fn explicit_identity_is_rejected_on_non_loopback_listener() {
     let proxy_port = unused_port();
     let mut config = browser_config(proxy_port, upstream.address.port());
     config.spec.listeners[0].bind.host = "0.0.0.0".parse().unwrap();
+    // Even with acknowledged LAN exposure, the explicit identity header must stay
+    // untrusted on non-loopback listeners.
+    config.spec.exposure = Some(router_config::GatewayExposure {
+        mode: router_config::GatewayExposureMode::Lan,
+        acknowledge_lan_exposure_risk: true,
+    });
     let engine = Arc::new(RouteEngine::new(config.clone()).unwrap());
     let running = HttpDataPlane::new(
         engine,

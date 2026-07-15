@@ -41,9 +41,9 @@ use crate::contract::{
     API_VERSION, ApiErrorV1, CommandKind, CommandRequestV1, CommandResultV1,
     CreateDeploymentRequestV1, CreateWorktreeRequestV1, DaemonStatusV1, DeploymentDefinitionV1,
     DeploymentDetailV1, DeploymentOperationSummaryV1, DeploymentRoutesV1, DeploymentSummaryV1,
-    DeploymentValidationV1, DeploymentsV1, DiscoveryV1, EventKindV1, EventV1, OperationStatusV1,
-    OperationV1, RegisterSourceRequestV1, RemoveWorktreeRequestV1, RouteHistoryV1, RouterBindingV1,
-    TransitionPolicyV1, UpdateDeploymentDefinitionRequestV1,
+    DeploymentValidationV1, DeploymentsV1, DiscoveryV1, EventKindV1, EventV1, GatewayExposureV1,
+    OperationStatusV1, OperationV1, RegisterSourceRequestV1, RemoveWorktreeRequestV1,
+    RouteHistoryV1, RouterBindingV1, TransitionPolicyV1, UpdateDeploymentDefinitionRequestV1,
 };
 
 const LOCK_TTL_MILLIS: i64 = 15_000;
@@ -1318,6 +1318,25 @@ fn snapshot_fields(snapshot: Option<&Value>) -> (Vec<String>, Value) {
     (domains, bindings)
 }
 
+fn snapshot_gateway_exposure(snapshot: Option<&Value>) -> Option<GatewayExposureV1> {
+    let config: router_config::RouterConfig =
+        serde_json::from_value(snapshot?.pointer("/spec/hostRouter")?.clone()).ok()?;
+    let interfaces = if config.spec.needs_interface_enumeration() {
+        local_ip_address::list_afinet_netifas()
+            .ok()?
+            .into_iter()
+            .map(|(_, address)| address)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let summary = config.spec.exposure_summary(&interfaces);
+    Some(GatewayExposureV1 {
+        mode: summary.mode,
+        exposed_addresses: summary.exposed_addresses,
+    })
+}
+
 fn read_manifest(root: &Path, deployment: &str) -> Option<Value> {
     let path = root
         .join(".switchyard/generated")
@@ -1728,6 +1747,7 @@ async fn list_deployments(State(inner): State<Arc<Inner>>) -> Response {
                 .and_then(|value| serde_json::from_str::<Value>(value).ok());
             let manifest = read_manifest(&inner.config.project_root, &stored.deployment);
             let (custom_domains, bindings) = snapshot_fields(snapshot.as_ref());
+            let gateway_exposure = snapshot_gateway_exposure(snapshot.as_ref());
             DeploymentSummaryV1 {
                 name: stored.deployment,
                 definition_hash: stored.definition_hash,
@@ -1748,6 +1768,7 @@ async fn list_deployments(State(inner): State<Arc<Inner>>) -> Response {
                 }),
                 custom_domains,
                 bindings,
+                gateway_exposure,
             }
         })
         .collect();
@@ -1827,6 +1848,7 @@ async fn deployment_detail(
         }
     };
     let (custom_domains, bindings) = snapshot_fields(snapshot.as_ref());
+    let gateway_exposure = snapshot_gateway_exposure(snapshot.as_ref());
     Json(DeploymentDetailV1 {
         api_version: API_VERSION.into(),
         deployment,
@@ -1840,6 +1862,7 @@ async fn deployment_detail(
         resources,
         custom_domains,
         bindings,
+        gateway_exposure,
     })
     .into_response()
 }

@@ -454,3 +454,43 @@ implemented shape and the evidence used to close a phase.
   rerunning the empty-state test with a live decoy-labeled container. `check.sh audit`
   now names the toolchain-compatible install (`cargo install cargo-audit --locked
   --version 0.22.1`; 0.22.2+ needs rustc 1.88, the workspace pins 1.85).
+
+## Phase 7 LAN and private-network access — Part 1
+
+- Added the versioned `spec.exposure` host-router contract. Omission remains
+  loopback-only; LAN binding requires both `mode: lan` and
+  `acknowledgeLanExposureRisk: true`. Stable validation codes cover non-loopback binds
+  without opt-in, missing acknowledgement, and non-loopback providers in LAN mode.
+- Host mode now accepts acknowledged non-loopback listener binds while keeping provider
+  upstreams loopback-only. Wildcard binds expand to concrete local interface addresses,
+  emitted in a structured `lan_exposure_warning` startup event and retained in the
+  shared exposure summary.
+- CLI apply/status output and daemon deployment list/detail inspection surface the
+  effective mode and addresses. A changed owned host-router definition is stopped and
+  replaced during normal re-apply, so reverting to loopback closes LAN listeners before
+  the replacement starts.
+- Contract round-trip and invalid-fixture tests cover the secure default and all three
+  LAN validation failures; host-gateway tests cover concrete wildcard expansion. Final
+  verification: `cargo fmt --all --check` and workspace/all-target clippy with
+  `-D warnings` passed; router-config passed all 8 tests; daemon passed all 18 tests;
+  CLI passed all 34 non-socket unit tests plus daemon parity; router passed all 10
+  non-socket unit tests plus its tokenless host-command test. The sandbox refused the
+  existing TCP/Unix-listener tests with `Operation not permitted`; those tests and the
+  requested second-machine LAN reachability check remain for reviewer execution on a
+  socket-capable host.
+
+### Part 1 reviewer verification (2026-07-15)
+
+- Reviewer fix: `explicit_identity_is_rejected_on_non_loopback_listener`
+  (router-pingora, socket-dependent, outside the Codex sandbox's reach) now opts in
+  to acknowledged LAN exposure so validation passes, and proves the explicit
+  identity header stays untrusted on non-loopback listeners even in LAN mode.
+- `./scripts/check.sh`: PASSED end to end (fmt, full workspace tests, clippy
+  `-D warnings`, rustdoc `-D warnings`).
+- Live LAN proof on this host (192.168.1.10) against a second machine
+  (poco-f1-nixos, 192.168.1.167): LAN-mode host router on `0.0.0.0:18980` emitted
+  the structured `lan_exposure_warning` listing every concrete interface address;
+  a remote curl through the custom domain returned 200 with proxied backend
+  content; the same config without the exposure opt-in was refused with
+  `LanExposureNotEnabled`; reverting the bind to loopback made the remote curl
+  unreachable again while local traffic kept working.

@@ -4,7 +4,7 @@ use switchyard_router::{
     AdminOptions, RouterProcess,
     host_gateway::{
         cleanup_certificates, cleanup_proxy_credentials, ensure_certificates,
-        ensure_proxy_credentials, preflight, trust_guidance,
+        ensure_proxy_credentials, exposure_summary, preflight, trust_guidance,
     },
 };
 
@@ -51,6 +51,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = read_config(config_path).await?;
     if host_mode {
         preflight(&config)?;
+        let exposure = exposure_summary(&config)?;
+        if exposure.mode == router_config::GatewayExposureMode::Lan {
+            eprintln!(
+                "{}",
+                serde_json::json!({
+                    "event": "lan_exposure_warning",
+                    "level": "warning",
+                    "mode": "lan",
+                    "exposedAddresses": exposure.exposed_addresses,
+                })
+            );
+        }
         let report = ensure_certificates(&config)?;
         for path in ensure_proxy_credentials(&config)? {
             eprintln!("generated managed-profile credential {}", path.display());

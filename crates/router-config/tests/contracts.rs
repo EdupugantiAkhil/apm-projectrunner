@@ -1,7 +1,8 @@
 use std::fs;
 
 use router_config::{
-    BindingId, BrowserIdentity, BrowserIdentitySource, RouterConfig, ValidationCode,
+    BindingId, BrowserIdentity, BrowserIdentitySource, GatewayExposure, GatewayExposureMode,
+    RouterConfig, ValidationCode,
 };
 
 fn fixture(path: &str) -> RouterConfig {
@@ -107,6 +108,28 @@ fn provider_identity_header_opt_in_defaults_false_and_round_trips() {
 }
 
 #[test]
+fn lan_exposure_defaults_to_loopback_and_round_trips_when_acknowledged() {
+    let mut config = fixture("valid/routing-matrix.json");
+    assert_eq!(config.spec.exposure_mode(), GatewayExposureMode::Loopback);
+
+    config.spec.exposure = Some(GatewayExposure {
+        mode: GatewayExposureMode::Lan,
+        acknowledge_lan_exposure_risk: true,
+    });
+    config.spec.listeners[0].bind.host = "0.0.0.0".parse().unwrap();
+    for provider in &mut config.spec.providers {
+        provider.endpoint.host = "127.0.0.1".into();
+    }
+    let encoded = serde_json::to_string(&config).unwrap();
+    assert!(encoded.contains("acknowledgeLanExposureRisk"));
+    let decoded: RouterConfig = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(decoded, config);
+    decoded
+        .validate()
+        .expect("acknowledged LAN exposure is valid");
+}
+
+#[test]
 fn invalid_fixtures_report_stable_codes() {
     let cases = [
         (
@@ -124,6 +147,18 @@ fn invalid_fixtures_report_stable_codes() {
         (
             "invalid/incomplete-group.json",
             ValidationCode::IncompleteGroup,
+        ),
+        (
+            "invalid/lan-bind-without-opt-in.json",
+            ValidationCode::LanExposureNotEnabled,
+        ),
+        (
+            "invalid/lan-opt-in-without-acknowledgement.json",
+            ValidationCode::LanExposureRiskNotAcknowledged,
+        ),
+        (
+            "invalid/lan-non-loopback-provider.json",
+            ValidationCode::UnsafeLanProvider,
         ),
     ];
 

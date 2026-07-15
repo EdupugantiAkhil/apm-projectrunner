@@ -1,6 +1,6 @@
 //! Framework-neutral version 1 control-plane API contract.
 
-use std::path::PathBuf;
+use std::{net::SocketAddr, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -253,6 +253,15 @@ pub struct DeploymentSummaryV1 {
     pub last_operation: Option<DeploymentOperationSummaryV1>,
     pub custom_domains: Vec<String>,
     pub bindings: Value,
+    pub gateway_exposure: Option<GatewayExposureV1>,
+}
+
+/// Effective host-gateway listener exposure for deployment inspection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayExposureV1 {
+    pub mode: router_config::GatewayExposureMode,
+    pub exposed_addresses: Vec<SocketAddr>,
 }
 
 /// Versioned deployment-list response.
@@ -319,6 +328,7 @@ pub struct DeploymentDetailV1 {
     pub resources: Vec<switchyard_state::OwnedResourceObservation>,
     pub custom_domains: Vec<String>,
     pub bindings: Value,
+    pub gateway_exposure: Option<GatewayExposureV1>,
 }
 
 /// Project-local daemon discovery document. Its containing file is mode 0600.

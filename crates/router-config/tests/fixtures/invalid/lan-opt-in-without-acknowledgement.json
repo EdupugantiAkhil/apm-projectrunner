@@ -1,0 +1,24 @@
+{
+  "apiVersion": "switchyard.dev/router/v1alpha1",
+  "kind": "RouterConfiguration",
+  "metadata": { "deployment": "unacknowledged-lan" },
+  "spec": {
+    "snapshot": {
+      "id": "unacknowledged-lan-initial",
+      "version": 1,
+      "transitions": {
+        "http": { "strategy": "close" },
+        "https": { "strategy": "close" },
+        "websocket": { "strategy": "close" },
+        "grpc": { "strategy": "close" },
+        "tcp": { "strategy": "close" }
+      }
+    },
+    "exposure": { "mode": "lan" },
+    "listeners": [{
+      "bind": { "host": "0.0.0.0", "port": 18080 },
+      "protocol": "http",
+      "destinations": [{ "kind": "loopback", "slot": "web" }]
+    }]
+  }
+}

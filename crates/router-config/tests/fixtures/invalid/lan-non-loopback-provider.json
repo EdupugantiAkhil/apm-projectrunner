@@ -1,0 +1,28 @@
+{
+  "apiVersion": "switchyard.dev/router/v1alpha1",
+  "kind": "RouterConfiguration",
+  "metadata": { "deployment": "unsafe-provider" },
+  "spec": {
+    "snapshot": {
+      "id": "unsafe-provider-initial",
+      "version": 1,
+      "transitions": {
+        "http": { "strategy": "close" },
+        "https": { "strategy": "close" },
+        "websocket": { "strategy": "close" },
+        "grpc": { "strategy": "close" },
+        "tcp": { "strategy": "close" }
+      }
+    },
+    "exposure": { "mode": "lan", "acknowledgeLanExposureRisk": true },
+    "listeners": [{
+      "bind": { "host": "0.0.0.0", "port": 18080 },
+      "protocol": "http",
+      "destinations": [{ "kind": "loopback", "slot": "web" }]
+    }],
+    "providers": [{
+      "id": "remote-web",
+      "endpoint": { "protocol": "http", "host": "192.0.2.10", "port": 8080 }
+    }]
+  }
+}

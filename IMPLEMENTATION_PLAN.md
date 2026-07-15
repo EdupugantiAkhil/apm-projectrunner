@@ -405,7 +405,7 @@ Entry gate: the product MVP is stable for local single-developer use.
 
 ### LAN and private-network access
 
-- [ ] Implement opt-in LAN gateway binding with an explicit exposure warning.
+- [x] Implement opt-in LAN gateway binding with an explicit exposure warning.
 - [ ] Implement mDNS publication and preflight checks.
 - [ ] Detect firewall, subnet, guest-network, VPN, and name-resolution limitations where
       practical.
