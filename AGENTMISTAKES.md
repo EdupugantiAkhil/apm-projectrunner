@@ -227,3 +227,11 @@
   fail-closed 503s on a loaded ARM board. Lesson: reliability tests assert what
   the declared policy guarantees, not what a quiet machine happens to produce,
   and their harness must be more robust than the system under test.
+
+## 2026-07-16 — Phase 7 release and diagnostics Part 7
+
+- The first diagnostics redactor used `if let` chains, which this workspace's pinned
+  Rust 1.85 compiler still rejects even under edition 2024. Correction: use explicit
+  nested matches for optional discovery-token parsing. Lesson: edition selection does
+  not imply stabilization of adjacent language features; compile new syntax against
+  the repository's pinned compiler before relying on it.

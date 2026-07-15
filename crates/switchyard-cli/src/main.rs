@@ -2,6 +2,7 @@
 
 mod browser;
 mod cli;
+mod diagnostics;
 mod host_runtime;
 mod lan_preflight;
 mod runtime;
@@ -37,6 +38,14 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         return Ok(ExitCode::SUCCESS);
     }
     let workspace_root = env::current_dir()?;
+    if let CliCommand::Diagnostics { deployment, output } = &command {
+        let path = diagnostics::write_bundle(&workspace_root, deployment, output.as_deref())?;
+        println!(
+            "wrote diagnostics to {}; review the file before sharing",
+            path.display()
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
     if let Some(code) = handle_daemon_command(&workspace_root, &command)? {
         return Ok(code);
     }
@@ -301,7 +310,8 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         | CliCommand::SourceRegister { .. }
         | CliCommand::SourceDeregister { .. }
         | CliCommand::WorktreeCreate { .. }
-        | CliCommand::WorktreeRemove { .. } => unreachable!("handled before command dispatch"),
+        | CliCommand::WorktreeRemove { .. }
+        | CliCommand::Diagnostics { .. } => unreachable!("handled before command dispatch"),
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -363,6 +373,7 @@ fn daemon_compatible(command: &CliCommand) -> bool {
         | CliCommand::OverlayDiff { .. }
         | CliCommand::BundleExport { .. }
         | CliCommand::BundleImport { .. } => false,
+        CliCommand::Diagnostics { .. } => false,
         _ => true,
     }
 }
@@ -774,6 +785,7 @@ fn daemon_request(
         | CliCommand::WorktreeRemove { .. }
         | CliCommand::BundleExport { .. }
         | CliCommand::BundleImport { .. }
+        | CliCommand::Diagnostics { .. }
         | CliCommand::OverlayValidate { .. }
         | CliCommand::OverlayDiff { .. } => unreachable!("not delegated"),
     }

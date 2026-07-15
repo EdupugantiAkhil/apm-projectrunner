@@ -876,28 +876,10 @@ where
         };
         events.emit(
             event_kind,
-            json!({"line": redact_event_line(&line), "stderr": stderr}),
+            json!({"line": switchyard_planner::redact_event_line(&line), "stderr": stderr}),
         );
     }
     Ok(captured)
-}
-
-fn redact_event_line(line: &str) -> &str {
-    let normalized = line.to_ascii_lowercase();
-    if [
-        "authorization",
-        "password",
-        "secret",
-        "token",
-        "private_key",
-    ]
-    .iter()
-    .any(|word| normalized.contains(word))
-    {
-        "[REDACTED]"
-    } else {
-        line
-    }
 }
 
 struct EventLog {

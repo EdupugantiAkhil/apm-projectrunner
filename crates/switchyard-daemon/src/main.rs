@@ -15,6 +15,17 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(argument) = env::args_os().nth(1) {
+        if argument == "--version" || argument == "-V" {
+            println!("switchyard-daemon {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        if argument == "--help" || argument == "-h" {
+            println!("usage: switchyard-daemon [--help|--version]");
+            return Ok(());
+        }
+        return Err("usage: switchyard-daemon [--help|--version]".into());
+    }
     let project_root = env::current_dir()?;
     let cli_program = env::var_os("SWITCHYARD_CLI")
         .map(PathBuf::from)
@@ -28,7 +39,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(path) = env::var_os("SWITCHYARD_GUI_DIST") {
         config.gui_dist = PathBuf::from(path);
+    } else if let Some(path) = installed_gui_dist() {
+        config.gui_dist = path;
     }
     run_blocking(config)?;
     Ok(())
+}
+
+fn installed_gui_dist() -> Option<PathBuf> {
+    let executable = env::current_exe().ok()?;
+    let prefix = executable.parent()?.parent()?;
+    let candidate = prefix.join("share/switchyard/web");
+    candidate.is_dir().then_some(candidate)
 }

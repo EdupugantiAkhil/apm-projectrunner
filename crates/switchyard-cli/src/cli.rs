@@ -12,6 +12,10 @@ pub enum CliCommand {
         into: PathBuf,
         force: bool,
     },
+    Diagnostics {
+        deployment: PathBuf,
+        output: Option<PathBuf>,
+    },
     Validate {
         bundle: PathBuf,
     },
@@ -122,6 +126,7 @@ Usage:
   switchyard up <deployment.yaml> [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
   switchyard bundle export <deployment.yaml> [--with <overlay.yaml>]... [--output <file>]
   switchyard bundle import <bundle-file> --into <directory> [--force]
+  switchyard diagnostics <deployment.yaml> [--output <path>]
   switchyard overlay validate <overlay.yaml>
   switchyard overlay diff <deployment.yaml> --with <overlay.yaml> [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
   switchyard bind <deployment.yaml> <consumer> <group> [--transition close|drain|pin] [--drain-timeout-ms <ms>]
@@ -167,6 +172,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
     match command {
         "bundle" if rest.len() >= 2 && rest[0] == "export" => parse_bundle_export(rest),
         "bundle" if rest.len() >= 3 && rest[0] == "import" => parse_bundle_import(rest),
+        "diagnostics" if !rest.is_empty() => parse_diagnostics(rest),
         "validate" if rest.len() == 1 => Ok(CliCommand::Validate { bundle: bundle()? }),
         "plan" if !rest.is_empty() => {
             let (bundle, options, _) = parse_deployment_options(rest, false)?;
@@ -251,6 +257,20 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
             "invalid {command} arguments\n\n{USAGE}"
         ))),
     }
+}
+
+fn parse_diagnostics(rest: &[String]) -> Result<CliCommand, UsageError> {
+    let deployment = PathBuf::from(&rest[0]);
+    let output = match rest {
+        [_] => None,
+        [_, flag, path] if flag == "--output" => Some(PathBuf::from(path)),
+        _ => {
+            return Err(UsageError(format!(
+                "invalid diagnostics arguments\n\n{USAGE}"
+            )));
+        }
+    };
+    Ok(CliCommand::Diagnostics { deployment, output })
 }
 
 fn parse_bundle_export(rest: &[String]) -> Result<CliCommand, UsageError> {
@@ -481,6 +501,24 @@ mod tests {
             }
         );
         assert!(parse(args(&["bundle", "import", "demo.switchyard-bundle.json"])).is_err());
+    }
+
+    #[test]
+    fn parses_diagnostics_output() {
+        assert_eq!(
+            parse(args(&[
+                "diagnostics",
+                "demo.yaml",
+                "--output",
+                "report.json"
+            ]))
+            .unwrap(),
+            CliCommand::Diagnostics {
+                deployment: "demo.yaml".into(),
+                output: Some("report.json".into()),
+            }
+        );
+        assert!(parse(args(&["diagnostics", "demo.yaml", "--output"])).is_err());
     }
 
     #[test]

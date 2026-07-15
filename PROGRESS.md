@@ -719,3 +719,76 @@ implemented shape and the evidence used to close a phase.
   provider_unhealthy rejections inside flap windows, and no fd/RSS growth.
 - `./scripts/check.sh`: PASSED end to end (fast suite runtime unchanged; all
   heavy tests are `#[ignore]`).
+
+## Phase 7 reliability — Part 7: release packaging and diagnostics
+
+- Added native host release assembly in `scripts/release.sh`: Rust release builds for
+  `switchyard`, `switchyard-daemon`, and `switchyard-router`; a clean Node.js 24 GUI
+  build; a version derived from the workspace version plus `git describe`; a platform
+  tarball; generated release notes; mandatory SHA-256 checksums; and optional SSH
+  signatures in the fixed `switchyard-release` namespace. No cross-compilation or
+  host-dependent GPG tooling is used.
+- The archive contains ownership-aware prefix installation and uninstallation. Upgrade
+  replacement and deletion require the prior installed-files manifest plus matching
+  per-file hashes, non-Switchyard paths are never overwritten, the default prefix is
+  user-writable `~/.local`, and the daemon discovers the GUI installed below that
+  prefix. `scripts/release-smoke.sh` provides the fast no-Docker artifact checksum,
+  extraction, install, executable, uninstall, and clean-prefix proof.
+- Added `switchyard diagnostics <deployment.yaml> [--output <path>]`. Its one-file JSON
+  report gathers host/tool/runtime versions, planner validation and definition identity,
+  daemon detail or deployment-scoped generated/runtime state, host-gateway logs, live
+  router events when authenticated locally, and best-effort read-only Docker ownership
+  observations. Missing external/runtime services remain structured unavailable data.
+- Redaction is recursive and happens before the owner-only file write. Diagnostics and
+  daemon event capture now share the planner's line convention; diagnostics also reuse
+  the portable-bundle credential-key heuristic, replace process environment and known
+  router/daemon token values, and never resolve overlay secret references. Unit tests
+  plant credential fields, embedded environment values, router/daemon tokens, and an
+  authorization log line and assert none survive while redaction markers do.
+- `docs/release.md` documents build, checksum/signature verification, install,
+  ownership-checked upgrade/uninstall, the authoritative upgrade/recovery pointer, and
+  diagnostics contents and guarantees. Full release and GUI builds require reviewer
+  execution where Cargo/npm network or caches are available; verification status is
+  recorded below.
+
+### Part 7 sandbox verification (2026-07-16)
+
+- `cargo fmt --all --check`: PASSED.
+- `cargo clippy --workspace --all-targets -- -D warnings`: PASSED.
+- `bash -n scripts/release.sh scripts/release-smoke.sh`: PASSED; the packaged install
+  and uninstall assets also pass `bash -n`.
+- `cargo test -p switchyard-cli -p switchyard-planner`: the new diagnostics/parser
+  tests and all planner tests pass. The unfiltered command reaches the pre-existing
+  `host_runtime::tests::failed_startup_cleanup_allows_a_clean_retry` sandbox failure
+  (`Operation not permitted` while exercising process signaling); rerunning with that
+  one host-permission test skipped passes 43 CLI unit tests, daemon parity, all 26
+  planner unit/integration tests, and planner doc tests.
+- A real `target/debug/switchyard diagnostics` run against `routing-matrix` wrote an
+  owner-only (`0600`) JSON report, captured generated/runtime/log state, and represented
+  unavailable Docker access as best-effort structured data. A synthetic package using
+  the built executables passed fresh install, manifest-owned upgrade with obsolete GUI
+  removal, executable placement, hash-checked uninstall, and clean-prefix assertions.
+- `scripts/release.sh`, signed/unsigned artifact generation, and the full
+  `scripts/release-smoke.sh` remain for reviewer execution because the requested clean
+  `npm ci`/release build may require network access unavailable in this sandbox.
+
+### Part 7 reviewer verification (2026-07-16)
+
+- Reviewer fix: the diagnostics redactor now scrubs only the values of
+  credential-looking process environment variable names (shared planner
+  heuristic) plus the daemon discovery and router tokens, instead of every
+  process environment value — replacing benign values like `$HOME` erased every
+  absolute path from the report (proven on a live bundle), and a variable
+  holding a common short word would have mangled arbitrary text.
+  `docs/release.md` states the scoped guarantee.
+- `./scripts/check.sh`: PASSED end to end.
+- `./scripts/release.sh`: PASSED unsigned and signed (throwaway ed25519 key);
+  `ssh-keygen -Y verify` accepted `SHA256SUMS.sig` and `sha256sum -c` passed.
+- `./scripts/release-smoke.sh`: PASSED (checksum verification, temp-prefix
+  install, installed binaries invoke, ownership-checked uninstall, clean
+  prefix).
+- Live `switchyard diagnostics` against the running routing-matrix deployment
+  with a planted `SWITCHYARD_ROUTER_TOKEN`: token absent from the report,
+  output mode 0600, all sections present, paths still readable after the
+  scoped-redaction fix.
+- `/dist/` added to `.gitignore` so release artifacts cannot be committed.

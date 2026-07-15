@@ -710,7 +710,11 @@ fn input_prefix(kind: &RequiredLocalInputKind) -> &'static str {
     }
 }
 
-fn credential_like_key(key: &str) -> bool {
+/// Returns whether a field name conventionally carries credential material.
+///
+/// Portable bundle sanitization and diagnostics redaction deliberately share this
+/// heuristic so a value cannot become shareable merely by moving between outputs.
+pub fn credential_like_key(key: &str) -> bool {
     let upper = key.to_ascii_uppercase();
     upper.contains("PASSWORD")
         || upper.contains("PASSWD")
@@ -721,6 +725,25 @@ fn credential_like_key(key: &str) -> bool {
         || upper.ends_with("_KEY")
         || upper.contains("PRIVATE_KEY")
         || upper.contains("AUTH")
+}
+
+/// Applies the conservative line-level redaction used for captured runtime events.
+pub fn redact_event_line(line: &str) -> &str {
+    let normalized = line.to_ascii_lowercase();
+    if [
+        "authorization",
+        "password",
+        "secret",
+        "token",
+        "private_key",
+    ]
+    .iter()
+    .any(|word| normalized.contains(word))
+    {
+        "[REDACTED]"
+    } else {
+        line
+    }
 }
 
 fn slug(value: &str) -> String {
