@@ -210,3 +210,40 @@ implemented shape and the evidence used to close a phase.
   worktree adapter-path regression test.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passed.
 - `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps`: passed.
+
+### Source and worktree management (Part 2)
+
+- `switchyard-sources` is a synchronous, daemon-neutral library: read-only Git
+  inspection (repository root, linked-worktree detection, branch/detached HEAD, commit,
+  staged/unstaged/untracked summary, ahead/behind), managed worktree/clone creation
+  under `.switchyard/worktrees` and `.switchyard/clones`, and non-destructive removal.
+  Non-repo paths and a missing git binary degrade to explicit unknown codes.
+- Every mutating operation passes one `guard_mutation` gate: unmanaged sources are
+  never mutated (deregistration only forgets the record), canonicalized paths must stay
+  inside the managed roots, dirty working trees refuse removal without an explicit
+  `allow_dirty` override, and unknown Git state refuses removal. No git command ever
+  uses `--force`.
+- SQLite schema version 4 (`registered_sources`) persists name, immutable
+  managed/unmanaged kind, path, repository path, requested ref, and managed-relative
+  location; live Git observations are always derived, never persisted as truth.
+- `/api/v1/sources` (GET/POST/DELETE) and `/api/v1/worktrees` (GET/POST/DELETE) follow
+  the existing bearer-auth and stable-error-code conventions. Review hardening moved
+  all five handlers onto the Tokio blocking pool so a slow clone or worktree operation
+  cannot stall async workers.
+- CLI: `source list [--json]`, `source register/deregister`, `worktree create/remove
+  [--allow-dirty]` with daemon-first execution and byte-stable one-shot fallback.
+- Plans, manifests, and `switchyard status` now carry per-instance live source
+  identities (path, repository, ref, commit, dirty) captured at plan time; definition
+  and resource hashes still derive only from desired state.
+- Documentation: `docs/control-plane-api.md` endpoints and a sources/worktrees section
+  in `docs/development.md`.
+
+### Phase 6 Part 2 verification
+
+- `cargo fmt --all -- --check`: passed.
+- `cargo test --workspace --all-features`: passed on this host (Codex-side run reached
+  the known sandbox socket restriction only).
+- Post-review daemon/sources rerun after the blocking-pool hardening: passed
+  (daemon 4 unit + 9 API + parity, sources 6).
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passed.
+- `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps`: passed.

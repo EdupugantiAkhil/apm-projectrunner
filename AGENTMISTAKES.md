@@ -115,3 +115,11 @@
 - A test appended to `planner.rs` reused the local variable name `bundle`, shadowing the
   `bundle()` fixture helper within the same function and failing compilation. Lesson:
   fixture helpers and locals sharing a name cannot coexist in one test body.
+
+## 2026-07-15 — Phase 6 source management
+
+- The first daemon source/worktree handlers ran Git subprocesses and SQLite access
+  directly on async worker threads; a slow clone would have stalled unrelated API
+  requests. Correction: run each handler body through `spawn_blocking`. Lesson: any
+  handler that shells out or does filesystem-heavy work belongs on the blocking pool,
+  even when it is "usually fast".

@@ -20,6 +20,7 @@ sha2 = "0.10.8"
 switchyard-state = { path = "../switchyard-state" }
 switchyard-planner = { path = "../switchyard-planner" }
 switchyard-router-admin = { path = "../switchyard-router-admin" }
+switchyard-sources = { path = "../switchyard-sources" }
 tokio = { version = "1.45.1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 
 [dev-dependencies]

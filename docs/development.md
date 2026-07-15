@@ -83,3 +83,37 @@ dependency chain.
 No elevated privileges are expected for builds or unit tests. Configure Docker so the
 current user or Docker context can reach the daemon instead of routinely invoking
 development commands through `sudo`.
+
+## Sources and worktrees
+
+Switchyard distinguishes ownership at registration time. An existing developer path is
+always `unmanaged`: registration records its canonical path and live-inspects Git, but
+never grants Switchyard permission to reset, clean, checkout, remove, or otherwise
+modify it. Deregistration only forgets that database record. A source cannot later be
+promoted from unmanaged to managed.
+
+Managed linked worktrees are created below `.switchyard/worktrees/`; managed clones
+created through the library are below `.switchyard/clones/`. Every mutation verifies
+the canonical target remains below its matching root and never passes Git `--force`.
+Removal refuses staged, unstaged, and untracked changes by default. The explicit
+`--allow-dirty` flag is the only override and still cannot remove an unmanaged or
+out-of-root path.
+
+```sh
+switchyard source register product /code/product
+switchyard source list
+switchyard source list --json
+switchyard worktree create product feature/api --name feature-api
+switchyard worktree remove feature-api
+# only after reviewing the exact dirty counts:
+switchyard worktree remove feature-api --allow-dirty
+switchyard source deregister feature-api
+switchyard source deregister product
+```
+
+These commands use the authenticated daemon when it is running and the same synchronous
+state/source libraries as a one-shot fallback otherwise. Git absence and plain paths
+degrade to explicit unknown inspection fields; they do not block use of a plain-path
+deployment. Generated manifests and `switchyard status` append the source path,
+repository, requested ref, commit, and dirty flag captured for each instance at plan
+time. Live commit and dirty observations are never persisted as registry truth.

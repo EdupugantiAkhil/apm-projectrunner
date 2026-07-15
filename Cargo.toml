@@ -11,6 +11,7 @@ members = [
     "crates/switchyard-planner",
     "crates/switchyard-router",
     "crates/switchyard-router-admin",
+    "crates/switchyard-sources",
     "crates/switchyard-state",
 ]
 resolver = "3"

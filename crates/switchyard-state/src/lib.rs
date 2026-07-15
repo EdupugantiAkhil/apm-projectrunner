@@ -57,7 +57,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The schema version understood by this crate.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 /// Ownership label used by the existing Docker runtime.
 pub const MANAGED_LABEL: &str = "dev.switchyard.managed";
 /// Deployment ownership label used by the existing Docker runtime.
@@ -69,7 +69,58 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("migrations/001_initial.sql")),
     (2, include_str!("migrations/002_routes.sql")),
     (3, include_str!("migrations/003_live_routes.sql")),
+    (4, include_str!("migrations/004_sources.sql")),
 ];
+
+/// Durable ownership classification for a registered source.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegisteredSourceKind {
+    /// An existing path recorded without ownership.
+    Unmanaged,
+    /// A clone or worktree created under Switchyard's managed roots.
+    Managed,
+}
+
+impl RegisteredSourceKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unmanaged => "unmanaged",
+            Self::Managed => "managed",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, StateError> {
+        match value {
+            "unmanaged" => Ok(Self::Unmanaged),
+            "managed" => Ok(Self::Managed),
+            _ => Err(invalid(
+                "invalid_source_kind",
+                format!("unknown source kind `{value}`"),
+            )),
+        }
+    }
+}
+
+/// A registered source record. Git observations are deliberately absent and derived live.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisteredSource {
+    /// Stable user-facing name.
+    pub name: String,
+    /// Immutable ownership kind.
+    pub kind: RegisteredSourceKind,
+    /// Absolute selected source path.
+    pub path: PathBuf,
+    /// Repository path used for managed worktree operations.
+    pub repository_path: Option<PathBuf>,
+    /// Requested branch, tag, or revision.
+    pub requested_ref: Option<String>,
+    /// Registration or creation timestamp in Unix milliseconds.
+    pub created_at: i64,
+    /// Location relative to the appropriate managed root.
+    pub managed_relative_path: Option<PathBuf>,
+}
 
 /// Stable state-layer failures suitable for API translation.
 #[derive(Debug)]
@@ -302,6 +353,22 @@ fn invalid(code: &'static str, context: impl Into<String>) -> StateError {
     }
 }
 
+fn source_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegisteredSource> {
+    let kind = row.get::<_, String>(1)?;
+    let kind = RegisteredSourceKind::parse(&kind).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    Ok(RegisteredSource {
+        name: row.get(0)?,
+        kind,
+        path: PathBuf::from(row.get::<_, String>(2)?),
+        repository_path: row.get::<_, Option<String>>(3)?.map(PathBuf::from),
+        requested_ref: row.get(4)?,
+        created_at: row.get(5)?,
+        managed_relative_path: row.get::<_, Option<String>>(6)?.map(PathBuf::from),
+    })
+}
+
 /// Synchronous project state store. A future daemon can serialize access around it.
 pub struct StateStore {
     connection: Connection,
@@ -361,6 +428,74 @@ impl StateStore {
     /// Returns the explicit database path supplied by the caller.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Registers a source without persisting any live Git observations.
+    pub fn register_source(&self, source: &RegisteredSource) -> Result<(), StateError> {
+        validate_id("source name", &source.name)?;
+        if source.path.as_os_str().is_empty() {
+            return Err(invalid(
+                "invalid_source_path",
+                "source path cannot be empty",
+            ));
+        }
+        if source.kind == RegisteredSourceKind::Unmanaged && source.managed_relative_path.is_some()
+        {
+            return Err(invalid(
+                "invalid_source_registration",
+                "unmanaged sources cannot have a managed location",
+            ));
+        }
+        if source.kind == RegisteredSourceKind::Managed && source.managed_relative_path.is_none() {
+            return Err(invalid(
+                "invalid_source_registration",
+                "managed sources require a managed location",
+            ));
+        }
+        self.connection.execute(
+            "INSERT INTO registered_sources(name,kind,path,repository_path,requested_ref,created_at,managed_relative_path) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![source.name, source.kind.as_str(), source.path.to_string_lossy(), source.repository_path.as_ref().map(|path| path.to_string_lossy()), source.requested_ref, source.created_at, source.managed_relative_path.as_ref().map(|path| path.to_string_lossy())],
+        ).map_err(|error| match error {
+            rusqlite::Error::SqliteFailure(ref failure, _) if failure.code == rusqlite::ErrorCode::ConstraintViolation => invalid("source_already_registered", format!("source `{}` or path `{}` is already registered", source.name, source.path.display())),
+            other => other.into(),
+        })?;
+        Ok(())
+    }
+
+    /// Loads a registered source by name.
+    pub fn source(&self, name: &str) -> Result<Option<RegisteredSource>, StateError> {
+        self.connection.query_row(
+            "SELECT name,kind,path,repository_path,requested_ref,created_at,managed_relative_path FROM registered_sources WHERE name=?1",
+            [name],
+            source_from_row,
+        ).optional().map_err(Into::into)
+    }
+
+    /// Lists registered sources in stable name order.
+    pub fn sources(&self) -> Result<Vec<RegisteredSource>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT name,kind,path,repository_path,requested_ref,created_at,managed_relative_path FROM registered_sources ORDER BY name",
+        )?;
+        let rows = statement.query_map([], source_from_row)?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    /// Forgets a source record without modifying its path.
+    pub fn deregister_source(&self, name: &str) -> Result<(), StateError> {
+        let changed = self
+            .connection
+            .execute("DELETE FROM registered_sources WHERE name=?1", [name])?;
+        if changed == 0 {
+            return Err(invalid(
+                "source_not_found",
+                format!("source `{name}` is not registered"),
+            ));
+        }
+        Ok(())
     }
 
     /// Records the last successfully applied resolved snapshot and appends history.
@@ -1489,7 +1624,7 @@ mod tests {
         drop(connection);
 
         let (store, report) = StateStore::open(&path).unwrap();
-        assert_eq!(report.applied_migrations, vec![2, 3]);
+        assert_eq!(report.applied_migrations, vec![2, 3, 4]);
         let backup = report.backup_path.unwrap();
         assert!(backup.is_file());
         let versions = store
@@ -1500,7 +1635,7 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(versions, vec![1, 2, 3]);
+        assert_eq!(versions, vec![1, 2, 3, 4]);
         let backup_connection = Connection::open(backup).unwrap();
         assert_eq!(current_schema_version(&backup_connection).unwrap(), 1);
     }

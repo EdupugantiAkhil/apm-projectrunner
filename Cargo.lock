@@ -2781,6 +2781,8 @@ dependencies = [
  "switchyard-daemon",
  "switchyard-planner",
  "switchyard-router-admin",
+ "switchyard-sources",
+ "switchyard-state",
  "tempfile",
  "tokio",
  "tower",
@@ -2799,6 +2801,7 @@ dependencies = [
  "sha2",
  "switchyard-planner",
  "switchyard-router-admin",
+ "switchyard-sources",
  "switchyard-state",
  "tempfile",
  "tokio",
@@ -2816,6 +2819,7 @@ dependencies = [
  "sha2",
  "switchyard-adapter-sdk",
  "switchyard-adapters",
+ "switchyard-sources",
  "tempfile",
  "yaml_serde",
 ]
@@ -2848,6 +2852,18 @@ dependencies = [
  "router-config",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "switchyard-sources"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "switchyard-adapter-sdk",
+ "switchyard-adapters",
+ "switchyard-state",
+ "tempfile",
 ]
 
 [[package]]

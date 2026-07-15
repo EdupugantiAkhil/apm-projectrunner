@@ -32,6 +32,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     if let Some(code) = handle_daemon_command(&workspace_root, &command)? {
         return Ok(code);
     }
+    if let Some(code) = handle_source_command(&workspace_root, &command)? {
+        return Ok(code);
+    }
     if env::var_os("SWITCHYARD_BYPASS_DAEMON").is_none() {
         let (kind, request) = daemon_request(&command);
         match switchyard_daemon::client::execute_if_running(&workspace_root, kind, &request)? {
@@ -124,6 +127,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 "Host gateway: {}",
                 host_runtime::HostRuntime::new(&workspace_root, &plan).status()?
             );
+            print_source_identities(&plan);
             if routes {
                 print_routes(&workspace_root, &plan)?;
             }
@@ -181,9 +185,206 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         CliCommand::Help
         | CliCommand::DaemonRun
         | CliCommand::DaemonStatus
-        | CliCommand::DaemonStop => unreachable!("handled before command dispatch"),
+        | CliCommand::DaemonStop
+        | CliCommand::SourceList { .. }
+        | CliCommand::SourceRegister { .. }
+        | CliCommand::SourceDeregister { .. }
+        | CliCommand::WorktreeCreate { .. }
+        | CliCommand::WorktreeRemove { .. } => unreachable!("handled before command dispatch"),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn handle_source_command(
+    workspace_root: &Path,
+    command: &CliCommand,
+) -> Result<Option<ExitCode>, Box<dyn std::error::Error>> {
+    use switchyard_daemon::contract::{CreateWorktreeRequestV1, RegisterSourceRequestV1};
+    let bypass = env::var_os("SWITCHYARD_BYPASS_DAEMON").is_some();
+    let state = || {
+        switchyard_state::StateStore::open(workspace_root.join(".switchyard/state.sqlite3"))
+            .map(|value| value.0)
+    };
+    let manager = switchyard_sources::SourceManager::new(workspace_root);
+    match command {
+        CliCommand::SourceList { json } => {
+            let daemon_sources = if !bypass {
+                switchyard_daemon::client::sources(workspace_root)?
+            } else {
+                None
+            };
+            let sources = match daemon_sources {
+                Some(sources) => sources,
+                None => manager.list(&state()?)?,
+            };
+            print_sources(&sources, *json)?;
+        }
+        CliCommand::SourceRegister { name, path } => {
+            let path = absolute_from(workspace_root, path);
+            let request = RegisterSourceRequestV1 {
+                name: name.clone(),
+                path: path.clone(),
+            };
+            let source = if !bypass {
+                switchyard_daemon::client::register_source(workspace_root, &request)?
+            } else {
+                None
+            }
+            .map_or_else(
+                || {
+                    let store = state()?;
+                    let source = manager.register_unmanaged(&store, name, &path)?;
+                    let inspection = manager.inspect(&source.path, source.requested_ref.as_deref());
+                    Ok::<_, Box<dyn std::error::Error>>(
+                        switchyard_sources::RegisteredSourceInspection { source, inspection },
+                    )
+                },
+                Ok,
+            )?;
+            println!(
+                "registered unmanaged source `{}` at {}",
+                source.source.name,
+                source.source.path.display()
+            );
+        }
+        CliCommand::SourceDeregister { name } => {
+            if bypass
+                || switchyard_daemon::client::deregister_source(workspace_root, name)?.is_none()
+            {
+                manager.deregister(&state()?, name)?;
+            }
+            println!("deregistered source `{name}`; no files were changed");
+        }
+        CliCommand::WorktreeCreate {
+            repository,
+            r#ref,
+            path,
+            name,
+        } => {
+            let name = name.clone().unwrap_or_else(|| sanitize_source_name(r#ref));
+            let path = path
+                .as_ref()
+                .map(|path| absolute_from(workspace_root, path));
+            let request = CreateWorktreeRequestV1 {
+                repository: repository.clone(),
+                r#ref: r#ref.clone(),
+                path: path.clone(),
+                name: Some(name.clone()),
+            };
+            let source = if !bypass {
+                switchyard_daemon::client::create_worktree(workspace_root, &request)?
+            } else {
+                None
+            }
+            .map_or_else(
+                || {
+                    let store = state()?;
+                    let source = manager.create_worktree(
+                        &store,
+                        repository,
+                        r#ref,
+                        &name,
+                        path.as_deref(),
+                    )?;
+                    let inspection = manager.inspect(&source.path, source.requested_ref.as_deref());
+                    Ok::<_, Box<dyn std::error::Error>>(
+                        switchyard_sources::RegisteredSourceInspection { source, inspection },
+                    )
+                },
+                Ok,
+            )?;
+            println!(
+                "created managed worktree `{}` at {}",
+                source.source.name,
+                source.source.path.display()
+            );
+        }
+        CliCommand::WorktreeRemove { name, allow_dirty } => {
+            let daemon_dirty = if !bypass {
+                switchyard_daemon::client::remove_worktree(workspace_root, name, *allow_dirty)?
+            } else {
+                None
+            };
+            let dirty = match daemon_dirty {
+                Some(dirty) => dirty,
+                None => manager.remove(&state()?, name, *allow_dirty)?,
+            };
+            println!(
+                "removed managed worktree `{name}` (staged={}, unstaged={}, untracked={})",
+                dirty.staged, dirty.unstaged, dirty.untracked
+            );
+        }
+        _ => return Ok(None),
+    }
+    Ok(Some(ExitCode::SUCCESS))
+}
+
+fn print_sources(
+    sources: &[switchyard_sources::RegisteredSourceInspection],
+    json: bool,
+) -> Result<(), serde_json::Error> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(sources)?);
+        return Ok(());
+    }
+    println!("NAME\tKIND\tPATH\tREF\tCOMMIT\tDIRTY\tAHEAD/BEHIND");
+    for entry in sources {
+        let inspection = &entry.inspection;
+        let commit = inspection
+            .identity
+            .commit
+            .as_deref()
+            .map(|value| &value[..value.len().min(12)])
+            .unwrap_or("-");
+        let reference = inspection
+            .branch
+            .as_deref()
+            .or(inspection.identity.r#ref.as_deref())
+            .unwrap_or("-");
+        let dirty = inspection
+            .identity
+            .dirty
+            .map_or("?", |value| if value { "*" } else { "-" });
+        let ahead_behind = match (inspection.ahead, inspection.behind) {
+            (Some(ahead), Some(behind)) => format!("{ahead}/{behind}"),
+            _ => "-".into(),
+        };
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            entry.source.name,
+            match entry.source.kind {
+                switchyard_state::RegisteredSourceKind::Managed => "managed",
+                switchyard_state::RegisteredSourceKind::Unmanaged => "unmanaged",
+            },
+            entry.source.path.display(),
+            reference,
+            commit,
+            dirty,
+            ahead_behind
+        );
+    }
+    Ok(())
+}
+
+fn absolute_from(root: &Path, path: &Path) -> std::path::PathBuf {
+    if path.is_absolute() {
+        path.to_owned()
+    } else {
+        root.join(path)
+    }
+}
+
+fn sanitize_source_name(reference: &str) -> String {
+    reference
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 fn print_route_versions(routes: &switchyard_daemon::contract::DeploymentRoutesV1) {
@@ -203,6 +404,26 @@ fn print_route_versions(routes: &switchyard_daemon::contract::DeploymentRoutesV1
             version(binding.previous_version),
             version(binding.observed_version),
             binding.status,
+        );
+    }
+}
+
+fn print_source_identities(plan: &Plan) {
+    if plan.source_identities.is_empty() {
+        return;
+    }
+    println!("Source identities (plan time):");
+    for (instance, identity) in &plan.source_identities {
+        println!(
+            "  {} path={} repository={} ref={} commit={} dirty={}",
+            instance,
+            identity.path,
+            identity.repository.as_deref().unwrap_or("-"),
+            identity.r#ref.as_deref().unwrap_or("-"),
+            identity.commit.as_deref().unwrap_or("-"),
+            identity
+                .dirty
+                .map_or("unknown", |dirty| if dirty { "yes" } else { "no" }),
         );
     }
 }
@@ -319,7 +540,12 @@ fn daemon_request(
         CliCommand::Help
         | CliCommand::DaemonRun
         | CliCommand::DaemonStatus
-        | CliCommand::DaemonStop => unreachable!("not delegated"),
+        | CliCommand::DaemonStop
+        | CliCommand::SourceList { .. }
+        | CliCommand::SourceRegister { .. }
+        | CliCommand::SourceDeregister { .. }
+        | CliCommand::WorktreeCreate { .. }
+        | CliCommand::WorktreeRemove { .. } => unreachable!("not delegated"),
     }
 }
 

@@ -909,3 +909,141 @@ async fn applied_domains_bindings_and_deleted_database_recovery_survive_daemon_r
             .any(|diagnostic| diagnostic.code == switchyard_state::DriftCode::AppliedStateMissing)
     );
 }
+
+fn init_git_repository(path: &Path) {
+    fs::create_dir_all(path).unwrap();
+    for arguments in [
+        vec!["init", "-b", "main"],
+        vec!["config", "user.email", "tests@switchyard.invalid"],
+        vec!["config", "user.name", "Switchyard Tests"],
+    ] {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+    fs::write(path.join("tracked"), "initial\n").unwrap();
+    for arguments in [vec!["add", "tracked"], vec!["commit", "-m", "initial"]] {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+}
+
+#[tokio::test]
+async fn source_and_worktree_endpoints_enforce_auth_validation_and_non_destructive_errors() {
+    let temp = TempDir::new().unwrap();
+    let repository = temp.path().join("repository");
+    init_git_repository(&repository);
+    let daemon = start_api(&temp, Arc::new(StubBackend), 2);
+    assert_eq!(
+        request(&daemon, None, "GET", "/api/v1/sources", None, &[])
+            .await
+            .0,
+        401
+    );
+    let (status, body) = request(
+        &daemon,
+        Some(&daemon.token),
+        "POST",
+        "/api/v1/sources",
+        Some(json!({"name":"repo","path":repository})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 201, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        request(
+            &daemon,
+            Some(&daemon.token),
+            "POST",
+            "/api/v1/sources",
+            Some(json!({"name":"missing","path":temp.path().join("missing")})),
+            &[]
+        )
+        .await
+        .0,
+        400
+    );
+    let (status, body) = request(
+        &daemon,
+        Some(&daemon.token),
+        "POST",
+        "/api/v1/worktrees",
+        Some(json!({"repository":"repo","ref":"HEAD","name":"feature"})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 201, "{}", String::from_utf8_lossy(&body));
+    let created: switchyard_daemon::contract::SourceV1 = json_body(&body);
+    fs::write(created.source.path.join("untracked"), "dirty\n").unwrap();
+    let (status, body) = request(
+        &daemon,
+        Some(&daemon.token),
+        "DELETE",
+        "/api/v1/worktrees/feature",
+        Some(json!({"allowDirty":false})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 409);
+    let error: switchyard_daemon::contract::ApiErrorV1 = json_body(&body);
+    assert_eq!(error.code, "source_dirty");
+    assert_eq!(
+        request(
+            &daemon,
+            Some(&daemon.token),
+            "DELETE",
+            "/api/v1/worktrees/feature",
+            Some(json!({"allowDirty":true})),
+            &[]
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        request(
+            &daemon,
+            Some(&daemon.token),
+            "DELETE",
+            "/api/v1/sources/feature",
+            None,
+            &[]
+        )
+        .await
+        .0,
+        204
+    );
+    let (status, body) = request(
+        &daemon,
+        Some(&daemon.token),
+        "DELETE",
+        "/api/v1/worktrees/repo",
+        Some(json!({"allowDirty":true})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 400);
+    let error: switchyard_daemon::contract::ApiErrorV1 = json_body(&body);
+    assert_eq!(error.code, "source_unmanaged");
+    let (status, body) = request(
+        &daemon,
+        Some(&daemon.token),
+        "GET",
+        "/api/v1/worktrees?repository=repo",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let worktrees: Vec<switchyard_daemon::contract::WorktreeV1> = json_body(&body);
+    assert_eq!(worktrees.len(), 1);
+}

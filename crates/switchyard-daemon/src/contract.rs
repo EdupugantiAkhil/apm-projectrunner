@@ -307,6 +307,40 @@ pub struct DeploymentRoutesV1 {
     pub history: Vec<RouteHistoryV1>,
 }
 
+/// Request to register an existing path without taking ownership.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegisterSourceRequestV1 {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+/// Request to create a managed linked worktree.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateWorktreeRequestV1 {
+    pub repository: String,
+    pub r#ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// Explicit destructive confirmation for dirty managed-source removal.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoveWorktreeRequestV1 {
+    #[serde(default)]
+    pub allow_dirty: bool,
+}
+
+/// Registered source with live-derived identity and Git state.
+pub type SourceV1 = switchyard_sources::RegisteredSourceInspection;
+
+/// Live worktree inspection entry.
+pub type WorktreeV1 = switchyard_sources::WorktreeInspection;
+
 impl EventKindV1 {
     pub const fn as_str(self) -> &'static str {
         match self {

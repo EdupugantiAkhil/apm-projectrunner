@@ -15,9 +15,10 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use switchyard_adapter_sdk::{
     AdapterKind, ConsumerSlot, Diagnostic as AdapterDiagnostic, Protocol as AdapterProtocol,
-    ProviderCapability, RegisteredAdapter, RouteValidationContext,
+    ProviderCapability, RegisteredAdapter, RouteValidationContext, SourceIdentity,
 };
 use switchyard_adapters::built_in_registry;
+use switchyard_sources::SourceManager;
 
 #[derive(Debug)]
 pub enum PlannerError {
@@ -108,6 +109,9 @@ pub struct Plan {
     pub host_router_config: Option<String>,
     #[serde(default)]
     pub host_upstreams: BTreeMap<String, HostUpstreamPlan>,
+    /// Exact live-derived source identity captured for every instance at plan time.
+    #[serde(default)]
+    pub source_identities: BTreeMap<String, SourceIdentity>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1326,6 +1330,8 @@ fn generate(
     let managed_profiles = managed_profiles(bundle);
     let host_router_config = generate_host_router_config(bundle, &managed_profiles)?;
     let host_upstreams = host_upstreams(bundle);
+    let mut source_identities = BTreeMap::new();
+    let source_manager = SourceManager::new(&bundle.workspace_root);
 
     for instance in &bundle.spec.instances {
         let mut instance_labels = labels.clone();
@@ -1335,6 +1341,11 @@ fn generate(
             &bundle.definition_dir,
             &bundle.spec.sources[&instance.source].path,
         );
+        let source_definition = &bundle.spec.sources[&instance.source];
+        let identity = source_manager
+            .inspect(&source, source_definition.r#ref.as_deref())
+            .identity;
+        source_identities.insert(instance.name.clone(), identity);
         let consumer_service = block
             .services
             .iter()
@@ -1488,6 +1499,7 @@ fn generate(
         "hostRouterConfig": host_router_config.as_ref().map(|_| artifact_dir.join("host-router.json")),
         "hostUpstreams": host_upstreams,
         "ownershipLabels": labels,
+        "sourceIdentities": source_identities,
     });
     let manifest_json = serde_json::to_string_pretty(&manifest)?;
 
@@ -1505,6 +1517,7 @@ fn generate(
         managed_profiles,
         host_router_config,
         host_upstreams,
+        source_identities,
     })
 }
 

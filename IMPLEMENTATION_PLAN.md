@@ -348,11 +348,11 @@ Entry gate: the persistent control plane is complete.
 
 ### Source and worktree management
 
-- [ ] Inspect existing repositories, worktrees, branches, commits, and dirty state.
-- [ ] Register unmanaged paths without taking ownership of them.
-- [ ] Create and remove managed clones and worktrees non-destructively.
-- [ ] Prevent destructive Git operations against unmanaged or dirty worktrees.
-- [ ] Surface exact source identity for every running instance.
+- [x] Inspect existing repositories, worktrees, branches, commits, and dirty state.
+- [x] Register unmanaged paths without taking ownership of them.
+- [x] Create and remove managed clones and worktrees non-destructively.
+- [x] Prevent destructive Git operations against unmanaged or dirty worktrees.
+- [x] Surface exact source identity for every running instance.
 
 ### Overlays and variations
 

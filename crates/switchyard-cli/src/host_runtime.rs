@@ -998,6 +998,7 @@ mod tests {
             managed_profiles: Default::default(),
             host_router_config: Some("{}".into()),
             host_upstreams: Default::default(),
+            source_identities: Default::default(),
         };
         assert!(
             HostRuntime::new(&root, &plan)

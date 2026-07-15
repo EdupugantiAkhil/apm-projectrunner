@@ -42,6 +42,26 @@ pub enum CliCommand {
     DaemonRun,
     DaemonStatus,
     DaemonStop,
+    SourceList {
+        json: bool,
+    },
+    SourceRegister {
+        name: String,
+        path: PathBuf,
+    },
+    SourceDeregister {
+        name: String,
+    },
+    WorktreeCreate {
+        repository: String,
+        r#ref: String,
+        path: Option<PathBuf>,
+        name: Option<String>,
+    },
+    WorktreeRemove {
+        name: String,
+        allow_dirty: bool,
+    },
     Help,
 }
 
@@ -78,6 +98,11 @@ Usage:
   switchyard daemon run
   switchyard daemon status
   switchyard daemon stop
+  switchyard source list [--json]
+  switchyard source register <name> <path>
+  switchyard source deregister <name>
+  switchyard worktree create <repository-source> <ref> [--path <path>] [--name <name>]
+  switchyard worktree remove <name> [--allow-dirty]
 ";
 
 pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand, UsageError> {
@@ -135,10 +160,61 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
         "daemon" if rest == ["run"] => Ok(CliCommand::DaemonRun),
         "daemon" if rest == ["status"] => Ok(CliCommand::DaemonStatus),
         "daemon" if rest == ["stop"] => Ok(CliCommand::DaemonStop),
+        "source" if rest == ["list"] => Ok(CliCommand::SourceList { json: false }),
+        "source" if rest == ["list", "--json"] => Ok(CliCommand::SourceList { json: true }),
+        "source" if rest.len() == 3 && rest[0] == "register" => Ok(CliCommand::SourceRegister {
+            name: rest[1].clone(),
+            path: PathBuf::from(&rest[2]),
+        }),
+        "source" if rest.len() == 2 && rest[0] == "deregister" => {
+            Ok(CliCommand::SourceDeregister {
+                name: rest[1].clone(),
+            })
+        }
+        "worktree" if rest.len() >= 3 && rest[0] == "create" => parse_worktree_create(rest),
+        "worktree" if rest.len() == 2 && rest[0] == "remove" => Ok(CliCommand::WorktreeRemove {
+            name: rest[1].clone(),
+            allow_dirty: false,
+        }),
+        "worktree" if rest.len() == 3 && rest[0] == "remove" && rest[2] == "--allow-dirty" => {
+            Ok(CliCommand::WorktreeRemove {
+                name: rest[1].clone(),
+                allow_dirty: true,
+            })
+        }
         _ => Err(UsageError(format!(
             "invalid {command} arguments\n\n{USAGE}"
         ))),
     }
+}
+
+fn parse_worktree_create(rest: &[String]) -> Result<CliCommand, UsageError> {
+    let mut path = None;
+    let mut name = None;
+    let mut index = 3;
+    while index < rest.len() {
+        match rest[index].as_str() {
+            "--path" if index + 1 < rest.len() => {
+                path = Some(PathBuf::from(&rest[index + 1]));
+                index += 2;
+            }
+            "--name" if index + 1 < rest.len() => {
+                name = Some(rest[index + 1].clone());
+                index += 2;
+            }
+            _ => {
+                return Err(UsageError(format!(
+                    "invalid worktree create arguments\n\n{USAGE}"
+                )));
+            }
+        }
+    }
+    Ok(CliCommand::WorktreeCreate {
+        repository: rest[1].clone(),
+        r#ref: rest[2].clone(),
+        path,
+        name,
+    })
 }
 
 fn parse_bind(rest: &[String]) -> Result<CliCommand, UsageError> {
@@ -251,6 +327,47 @@ mod tests {
             CliCommand::Open {
                 bundle: "demo.yaml".into(),
                 ui: "ui-1".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_source_and_worktree_commands() {
+        assert_eq!(
+            parse(args(&["source", "list", "--json"])).unwrap(),
+            CliCommand::SourceList { json: true }
+        );
+        assert_eq!(
+            parse(args(&["source", "register", "repo", "/code/repo"])).unwrap(),
+            CliCommand::SourceRegister {
+                name: "repo".into(),
+                path: "/code/repo".into()
+            }
+        );
+        assert_eq!(
+            parse(args(&[
+                "worktree",
+                "create",
+                "repo",
+                "feature/x",
+                "--name",
+                "feature-x",
+                "--path",
+                ".switchyard/worktrees/x"
+            ]))
+            .unwrap(),
+            CliCommand::WorktreeCreate {
+                repository: "repo".into(),
+                r#ref: "feature/x".into(),
+                path: Some(".switchyard/worktrees/x".into()),
+                name: Some("feature-x".into())
+            }
+        );
+        assert_eq!(
+            parse(args(&["worktree", "remove", "feature-x", "--allow-dirty"])).unwrap(),
+            CliCommand::WorktreeRemove {
+                name: "feature-x".into(),
+                allow_dirty: true
             }
         );
     }

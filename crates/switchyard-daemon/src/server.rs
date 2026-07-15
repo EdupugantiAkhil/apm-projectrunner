@@ -15,15 +15,16 @@ use std::{
 
 use axum::{
     Json, Router,
-    extract::{Path as AxumPath, State, rejection::JsonRejection},
+    extract::{Path as AxumPath, Query, State, rejection::JsonRejection},
     http::{HeaderMap, Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response, Sse, sse::Event},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use futures_util::{Stream, stream};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use switchyard_sources::{SourceError, SourceManager};
 use switchyard_state::{
     AppliedSnapshot, GeneratedManifest, LockRequest, OperationKind, OperationRecord,
     OperationStatus, ReconciliationInput, ReconciliationReport, RouterApplyRecord,
@@ -37,8 +38,9 @@ use tokio::{
 };
 
 use crate::contract::{
-    API_VERSION, ApiErrorV1, CommandKind, CommandRequestV1, CommandResultV1, DaemonStatusV1,
-    DeploymentRoutesV1, DiscoveryV1, EventKindV1, EventV1, OperationStatusV1, OperationV1,
+    API_VERSION, ApiErrorV1, CommandKind, CommandRequestV1, CommandResultV1,
+    CreateWorktreeRequestV1, DaemonStatusV1, DeploymentRoutesV1, DiscoveryV1, EventKindV1, EventV1,
+    OperationStatusV1, OperationV1, RegisterSourceRequestV1, RemoveWorktreeRequestV1,
     RouteHistoryV1, RouterBindingV1, TransitionPolicyV1,
 };
 
@@ -1192,10 +1194,244 @@ fn routes(inner: Arc<Inner>) -> Router {
             "/api/v1/deployments/{deployment}/routes",
             get(deployment_routes),
         )
+        .route("/api/v1/sources", get(list_sources).post(register_source))
+        .route("/api/v1/sources/{name}", delete(deregister_source))
+        .route(
+            "/api/v1/worktrees",
+            get(list_worktrees).post(create_worktree),
+        )
+        .route("/api/v1/worktrees/{name}", delete(remove_worktree))
         .fallback(api_not_found)
         .method_not_allowed_fallback(api_method_not_allowed)
         .with_state(inner.clone())
         .layer(middleware::from_fn_with_state(inner, auth_middleware))
+}
+
+/// Runs Git-subprocess and SQLite source work on the blocking pool so a slow
+/// repository operation cannot stall the async workers serving other requests.
+async fn blocking_source_response<F>(task: F) -> Response
+where
+    F: FnOnce() -> Response + Send + 'static,
+{
+    match tokio::task::spawn_blocking(task).await {
+        Ok(response) => response,
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "source_task_failed",
+            &error.to_string(),
+        ),
+    }
+}
+
+async fn list_sources(State(inner): State<Arc<Inner>>) -> Response {
+    blocking_source_response(move || {
+        let store = inner
+            .store
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match SourceManager::new(&inner.config.project_root).list(&store) {
+            Ok(sources) => Json(sources).into_response(),
+            Err(error) => source_api_error(error),
+        }
+    })
+    .await
+}
+
+async fn register_source(
+    State(inner): State<Arc<Inner>>,
+    payload: Result<Json<RegisterSourceRequestV1>, JsonRejection>,
+) -> Response {
+    let Json(request) = match payload {
+        Ok(payload) => payload,
+        Err(error) => {
+            return api_error(StatusCode::BAD_REQUEST, "invalid_json", &error.body_text());
+        }
+    };
+    blocking_source_response(move || {
+        let store = inner
+            .store
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let manager = SourceManager::new(&inner.config.project_root);
+        match manager.register_unmanaged(&store, &request.name, &request.path) {
+            Ok(source) => {
+                let inspection = manager.inspect(&source.path, source.requested_ref.as_deref());
+                (
+                    StatusCode::CREATED,
+                    Json(switchyard_sources::RegisteredSourceInspection { source, inspection }),
+                )
+                    .into_response()
+            }
+            Err(error) => source_api_error(error),
+        }
+    })
+    .await
+}
+
+async fn deregister_source(
+    State(inner): State<Arc<Inner>>,
+    AxumPath(name): AxumPath<String>,
+) -> Response {
+    blocking_source_response(move || {
+        let store = inner
+            .store
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match SourceManager::new(&inner.config.project_root).deregister(&store, &name) {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(error) => source_api_error(error),
+        }
+    })
+    .await
+}
+
+#[derive(serde::Deserialize)]
+struct WorktreeQuery {
+    repository: String,
+}
+
+async fn list_worktrees(
+    State(inner): State<Arc<Inner>>,
+    Query(query): Query<WorktreeQuery>,
+) -> Response {
+    blocking_source_response(move || {
+        let store = inner
+            .store
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let repository = match store.source(&query.repository) {
+            Ok(Some(source)) => source.repository_path.unwrap_or(source.path),
+            Ok(None) => {
+                return api_error(
+                    StatusCode::NOT_FOUND,
+                    "repository_unregistered",
+                    &format!("repository source `{}` is not registered", query.repository),
+                );
+            }
+            Err(error) => {
+                return api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    error.code(),
+                    &error.to_string(),
+                );
+            }
+        };
+        match SourceManager::new(&inner.config.project_root).worktrees(&repository) {
+            Ok(worktrees) => Json(worktrees).into_response(),
+            Err(error) => source_api_error(error),
+        }
+    })
+    .await
+}
+
+async fn create_worktree(
+    State(inner): State<Arc<Inner>>,
+    payload: Result<Json<CreateWorktreeRequestV1>, JsonRejection>,
+) -> Response {
+    let Json(request) = match payload {
+        Ok(payload) => payload,
+        Err(error) => {
+            return api_error(StatusCode::BAD_REQUEST, "invalid_json", &error.body_text());
+        }
+    };
+    if request.r#ref.is_empty() {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_source_ref",
+            "worktree ref cannot be empty",
+        );
+    }
+    let name = request
+        .name
+        .unwrap_or_else(|| sanitize_source_name(&request.r#ref));
+    if name.is_empty() {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_source_name",
+            "worktree name cannot be empty",
+        );
+    }
+    blocking_source_response(move || {
+        let store = inner
+            .store
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let manager = SourceManager::new(&inner.config.project_root);
+        match manager.create_worktree(
+            &store,
+            &request.repository,
+            &request.r#ref,
+            &name,
+            request.path.as_deref(),
+        ) {
+            Ok(source) => {
+                let inspection = manager.inspect(&source.path, source.requested_ref.as_deref());
+                (
+                    StatusCode::CREATED,
+                    Json(switchyard_sources::RegisteredSourceInspection { source, inspection }),
+                )
+                    .into_response()
+            }
+            Err(error) => source_api_error(error),
+        }
+    })
+    .await
+}
+
+async fn remove_worktree(
+    State(inner): State<Arc<Inner>>,
+    AxumPath(name): AxumPath<String>,
+    payload: Result<Json<RemoveWorktreeRequestV1>, JsonRejection>,
+) -> Response {
+    let request = match payload {
+        Ok(Json(request)) => request,
+        Err(error) => {
+            return api_error(StatusCode::BAD_REQUEST, "invalid_json", &error.body_text());
+        }
+    };
+    blocking_source_response(move || {
+        let store = inner
+            .store
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match SourceManager::new(&inner.config.project_root).remove(
+            &store,
+            &name,
+            request.allow_dirty,
+        ) {
+            Ok(changes) => Json(changes).into_response(),
+            Err(error) => source_api_error(error),
+        }
+    })
+    .await
+}
+
+fn sanitize_source_name(reference: &str) -> String {
+    reference
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+fn source_api_error(error: SourceError) -> Response {
+    let status = match error.code() {
+        "source_not_found" | "repository_unregistered" => StatusCode::NOT_FOUND,
+        "source_already_registered"
+        | "source_target_exists"
+        | "source_dirty"
+        | "source_managed_exists" => StatusCode::CONFLICT,
+        "source_io" | "state_io" | "state_sqlite" | "git_unavailable" => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+        _ => StatusCode::BAD_REQUEST,
+    };
+    api_error(status, error.code(), &error.to_string())
 }
 
 async fn deployment_routes(

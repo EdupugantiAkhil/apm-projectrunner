@@ -11,9 +11,72 @@ use std::{
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::contract::{
-    API_VERSION, ApiErrorV1, CommandKind, CommandRequestV1, DaemonStatusV1, DeploymentRoutesV1,
-    DiscoveryV1, OperationV1,
+    API_VERSION, ApiErrorV1, CommandKind, CommandRequestV1, CreateWorktreeRequestV1,
+    DaemonStatusV1, DeploymentRoutesV1, DiscoveryV1, OperationV1, RegisterSourceRequestV1,
+    RemoveWorktreeRequestV1, SourceV1,
 };
+
+/// Lists sources through a discovered daemon, or returns `None` for one-shot fallback.
+pub fn sources(project_root: &Path) -> Result<Option<Vec<SourceV1>>, ClientError> {
+    let Some(discovery) = load_discovery(project_root)? else {
+        return Ok(None);
+    };
+    json_request::<(), _>(&discovery, "GET", "/api/v1/sources", None).map(Some)
+}
+
+/// Registers an unmanaged source through a discovered daemon.
+pub fn register_source(
+    project_root: &Path,
+    request: &RegisterSourceRequestV1,
+) -> Result<Option<SourceV1>, ClientError> {
+    let Some(discovery) = load_discovery(project_root)? else {
+        return Ok(None);
+    };
+    json_request(&discovery, "POST", "/api/v1/sources", Some(request)).map(Some)
+}
+
+/// Deregisters a source through a discovered daemon.
+pub fn deregister_source(project_root: &Path, name: &str) -> Result<Option<()>, ClientError> {
+    let Some(discovery) = load_discovery(project_root)? else {
+        return Ok(None);
+    };
+    json_request::<(), serde_json::Value>(
+        &discovery,
+        "DELETE",
+        &format!("/api/v1/sources/{name}"),
+        None,
+    )
+    .map(|_| Some(()))
+}
+
+/// Creates a managed worktree through a discovered daemon.
+pub fn create_worktree(
+    project_root: &Path,
+    request: &CreateWorktreeRequestV1,
+) -> Result<Option<SourceV1>, ClientError> {
+    let Some(discovery) = load_discovery(project_root)? else {
+        return Ok(None);
+    };
+    json_request(&discovery, "POST", "/api/v1/worktrees", Some(request)).map(Some)
+}
+
+/// Removes a managed worktree through a discovered daemon.
+pub fn remove_worktree(
+    project_root: &Path,
+    name: &str,
+    allow_dirty: bool,
+) -> Result<Option<switchyard_sources::DirtyState>, ClientError> {
+    let Some(discovery) = load_discovery(project_root)? else {
+        return Ok(None);
+    };
+    json_request(
+        &discovery,
+        "DELETE",
+        &format!("/api/v1/worktrees/{name}"),
+        Some(&RemoveWorktreeRequestV1 { allow_dirty }),
+    )
+    .map(Some)
+}
 
 /// Result of optional daemon discovery used by transparent CLI delegation.
 #[derive(Clone, Debug, Eq, PartialEq)]

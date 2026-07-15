@@ -44,6 +44,12 @@ fn compose_and_manifest_are_deterministic_and_owned() {
     assert_eq!(first.route_configs.len(), 2);
     assert_ne!(first.definition_hash, "");
     assert_ne!(first.resource_hash, "");
+    assert_eq!(first.source_identities.len(), bundle.spec.instances.len());
+    let manifest: serde_json::Value = serde_json::from_str(&first.manifest_json).unwrap();
+    assert_eq!(
+        manifest["sourceIdentities"]["consumer-a"]["path"],
+        first.source_identities["consumer-a"].path
+    );
 }
 
 #[test]

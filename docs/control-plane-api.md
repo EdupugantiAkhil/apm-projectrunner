@@ -55,6 +55,12 @@ optional `context` fields. Framework types are not part of the public Rust contr
 | `POST` | `/api/v1/operations/{id}/cancel` | Request cooperative cancellation |
 | `GET` | `/api/v1/operations/{id}/events` | Observe or resume the operation SSE stream |
 | `GET` | `/api/v1/deployments/{deployment}/routes` | Query route versions and activation history |
+| `GET` | `/api/v1/sources` | List registrations with live source identity |
+| `POST` | `/api/v1/sources` | Register an existing path as unmanaged |
+| `DELETE` | `/api/v1/sources/{name}` | Forget a registration without deleting files |
+| `GET` | `/api/v1/worktrees?repository={source}` | Inspect every Git worktree for a registered repository |
+| `POST` | `/api/v1/worktrees` | Create a managed linked worktree |
+| `DELETE` | `/api/v1/worktrees/{name}` | Remove a managed worktree after the dirty-state guard |
 
 A command request always contains `bundle`. Command-specific fields are `consumer` and
 `group` for bind, `routes` for status, `target` for logs, `ui` for open, and `confirmed`
@@ -65,6 +71,17 @@ for cleanup. A bind may also carry `transition` as `close`, `pin`, or `drain` wi
 stderr, and exit code remain available while an operation is active or retained in
 memory; terminal status and structured error data are durable in SQLite across restart.
 Raw output is deliberately not persisted because it can contain application secrets.
+
+Source registration accepts `{ "name": "app", "path": "/code/app" }` and always
+records the path as `unmanaged`. Worktree creation accepts `repository`, `ref`, and
+optional `name` and `path`; any explicit path must remain under the project's
+`.switchyard/worktrees` root. Worktree removal requires a JSON body containing
+`allowDirty`. Omitting it or setting it to false returns `source_dirty` with staged,
+unstaged, and untracked counts. Setting it to true is the distinct destructive
+confirmation, but it still cannot target unmanaged or out-of-root paths. Expected
+validation failures use stable codes including `source_path_not_found`,
+`repository_unregistered`, `source_target_exists`, `source_ref_unknown`,
+`source_unmanaged`, `source_dirty`, and `source_outside_managed_root`.
 
 The daemon keeps the 64 most recent terminal operations in memory, including their raw
 output and resumable event logs. Older terminal operations are evicted from memory;
