@@ -304,15 +304,15 @@ Entry gate: the routing proof release is complete.
 
 ### SQLite state
 
-- [ ] Add versioned SQLite migrations and automatic backup before migration.
-- [ ] Store the last applied resolved desired-state snapshot and definition hash.
-- [ ] Store deployment, operation, resource, health, route, and snapshot history.
-- [ ] Store locks and recover or expire abandoned operations safely.
-- [ ] Keep secrets out of SQLite and persist references only.
-- [ ] Reconcile SQLite records, generated manifests, and Docker ownership labels at
+- [x] Add versioned SQLite migrations and automatic backup before migration.
+- [x] Store the last applied resolved desired-state snapshot and definition hash.
+- [x] Store deployment, operation, resource, health, route, and snapshot history.
+- [x] Store locks and recover or expire abandoned operations safely.
+- [x] Keep secrets out of SQLite and persist references only.
+- [x] Reconcile SQLite records, generated manifests, and Docker ownership labels at
       daemon startup.
-- [ ] Rebuild observed state when SQLite is deleted or restored from backup.
-- [ ] Detect and report desired/applied/observed drift.
+- [x] Rebuild observed state when SQLite is deleted or restored from backup.
+- [x] Detect and report desired/applied/observed drift.
 
 ### Live router control
 

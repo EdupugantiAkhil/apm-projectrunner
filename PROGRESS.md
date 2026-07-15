@@ -1,11 +1,11 @@
 # Switchyard implementation progress
 
-Updated: 2026-07-14
+Updated: 2026-07-15
 
 ## Release status
 
 - Routing proof (Phases 0–4): complete.
-- Product MVP (Phases 5–6): not started.
+- Product MVP (Phases 5–6): Phase 5 in progress.
 - Team release (Phase 7): not started.
 
 `IMPLEMENTATION_PLAN.md` remains the task-level checklist. This file records the
@@ -45,3 +45,33 @@ implemented shape and the evidence used to close a phase.
   29.5.2 and Docker Compose 5.1.4; its cleanup left zero owned containers and volumes.
 - Rust formatting was checked with the available Nix-provided Rust 1.95 `rustfmt`; the
   shell's `cargo-fmt` shim could not launch because its dynamic loader is absent.
+
+## Phase 5 (in progress)
+
+### SQLite state
+
+- `switchyard-state` is a synchronous, daemon-neutral library using bundled SQLite at
+  an explicit caller-provided path; `.switchyard/state.sqlite3` is the documented
+  per-project convention.
+- Two ordered embedded migrations establish applied deployment snapshots, append-only
+  deployment/operation/resource/health/route history, immutable route-snapshot
+  activation records, and expiring operation leases. Existing databases receive a
+  non-overwriting pre-migration file backup, and newer schemas are refused.
+- Applied snapshots and structured contexts reject literal values in secret-bearing
+  fields. The public secret type represents environment-variable and file references,
+  and reconciliation retains only Switchyard ownership labels from Docker observations.
+- Reconciliation compares generated manifest definition/resource hashes, nullable
+  last-applied state, and injected Docker-label observations. It records observations
+  without changing runtime resources or promoting recovered manifests to desired state.
+  Stable drift codes cover missing, mismatched, multiply hashed, and invalidly owned
+  state. A deleted or older restored database therefore recovers observations without
+  inventing a successful apply.
+- Focused offline evidence: 9 unit tests passed; isolated crate Clippy passed with
+  `-D warnings`; isolated crate rustdoc passed with `RUSTDOCFLAGS=-D warnings`; and
+  workspace formatting passed.
+- The required repository-level state test, workspace test, workspace Clippy, and
+  workspace rustdoc commands were attempted, but Cargo stopped before compilation
+  because this shell could not resolve `index.crates.io` while fetching the pre-existing
+  `bytes` dependency of `router-pingora`. They must be rerun in a network-enabled or
+  fully vendored environment; this is an environment verification gap, not a recorded
+  pass.

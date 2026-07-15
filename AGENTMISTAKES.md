@@ -1,5 +1,22 @@
 # Agent mistakes and lessons
 
+## 2026-07-15 — Phase 5 SQLite state
+
+- The first snapshot-upsert SQL used Rust line continuations without preserving spaces,
+  joining `SET` to the following identifier. Correction: preserve explicit spaces at
+  every continued SQL boundary; the snapshot round-trip and reconciliation tests now
+  execute the statement. Lesson: multiline SQL embedded with escaped newlines needs an
+  execution test, not only schema compilation.
+- The repository test invocation initially attempted a crates.io index refresh in a
+  network-restricted shell. Correction: validate the new crate against locally cached
+  bundled-SQLite sources first, while retaining the required repository-level commands
+  for final verification. Lesson: a newly introduced dependency can require lock/index
+  preparation even when its source archive is already cached.
+- A public observed-resource query was initially inserted just outside the `StateStore`
+  implementation block. Correction: move it into the implementation and rerun tests,
+  Clippy, and rustdoc. Lesson: after a large implementation block, anchor method patches
+  to the closing method body as well as the surrounding function name.
+
 ## 2026-07-14 — Phase 4 routing proof
 
 - A custom-domain listener was initially emitted without `consumer: gateway`, so its
