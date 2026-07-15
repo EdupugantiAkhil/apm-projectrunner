@@ -428,6 +428,157 @@ async fn deployment_and_adapter_endpoints_are_authenticated_and_shape_empty_stat
     assert!(first.get("configurationSchema").is_some());
 }
 
+fn definition_yaml(name: &str) -> String {
+    format!(
+        "apiVersion: switchyard.dev/v1alpha1\nkind: Deployment\nmetadata:\n  name: {name}\nspec: {{}}\n"
+    )
+}
+
+#[tokio::test]
+async fn deployment_definition_endpoints_validate_and_write_atomically() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = start_api(&temp, Arc::new(ImmediateBackend), 1);
+    let yaml = definition_yaml("demo");
+
+    for (method, path) in [
+        ("POST", "/api/v1/deployments"),
+        ("GET", "/api/v1/deployments/demo/definition"),
+        ("PUT", "/api/v1/deployments/demo/definition"),
+    ] {
+        assert_eq!(request(&api, None, method, path, None, &[]).await.0, 401);
+    }
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/deployments",
+        Some(json!({"name":"demo","yaml":yaml,"validateOnly":true})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(json_body::<Value>(&body)["valid"], true);
+    assert!(!temp.path().join("deployments/demo.yaml").exists());
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/deployments",
+        Some(json!({"name":"demo","yaml":yaml})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 201);
+    let created = json_body::<Value>(&body);
+    assert_eq!(created["yaml"], yaml);
+    assert!(Path::new(created["path"].as_str().unwrap()).is_absolute());
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "GET",
+        "/api/v1/deployments/demo/definition",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let definition = json_body::<Value>(&body);
+    let updated_yaml = format!("{}# edited\n", definition_yaml("demo"));
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "PUT",
+        "/api/v1/deployments/demo/definition",
+        Some(json!({"yaml":updated_yaml,"expectedHash":definition["hash"]})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let updated = json_body::<Value>(&body);
+    assert_eq!(updated["yaml"], updated_yaml);
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "PUT",
+        "/api/v1/deployments/demo/definition",
+        Some(json!({"yaml":"not: [valid","expectedHash":updated["hash"]})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 422);
+    let error = json_body::<Value>(&body);
+    assert_eq!(error["code"], "validation_failed");
+    assert!(error["context"]["diagnostics"].is_array());
+    assert_eq!(
+        fs::read_to_string(temp.path().join("deployments/demo.yaml")).unwrap(),
+        updated_yaml
+    );
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/deployments",
+        Some(json!({"name":"demo","yaml":yaml})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 409);
+    assert_eq!(json_body::<Value>(&body)["code"], "deployment_exists");
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "PUT",
+        "/api/v1/deployments/demo/definition",
+        Some(json!({"yaml":yaml,"expectedHash":"stale"})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 409);
+    assert_eq!(json_body::<Value>(&body)["code"], "definition_conflict");
+}
+
+#[tokio::test]
+async fn definition_absence_and_validation_failures_have_stable_structured_errors() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = start_api(&temp, Arc::new(ImmediateBackend), 1);
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "GET",
+        "/api/v1/deployments/missing/definition",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 404);
+    assert_eq!(
+        json_body::<Value>(&body)["code"],
+        "deployment_definition_not_found"
+    );
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/deployments",
+        Some(json!({"name":"demo","yaml":"not: [valid"})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 422);
+    let error = json_body::<Value>(&body);
+    assert_eq!(error["code"], "validation_failed");
+    assert_eq!(error["context"]["diagnostics"][0]["code"], "invalid_yaml");
+    assert!(error["context"]["diagnostics"][0]["message"].is_string());
+    assert!(!temp.path().join("deployments/demo.yaml").exists());
+}
+
 #[tokio::test]
 async fn deployment_list_and_detail_include_applied_manifest_and_reconciliation() {
     let temp = tempfile::tempdir().unwrap();

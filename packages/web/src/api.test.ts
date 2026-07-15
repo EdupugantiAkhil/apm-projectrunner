@@ -40,4 +40,14 @@ describe('ApiClient', () => {
     subscription.close()
     expect(source.closed).toBe(true)
   })
+
+  it('validates before updating an optimistic deployment definition', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ apiVersion: 'v1', name: 'demo', valid: true, diagnostics: [], preview: {} }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ apiVersion: 'v1', name: 'demo', path: '/demo.yaml', yaml: 'next', hash: 'new' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    await new ApiClient('token').updateDefinitionValidated('demo', 'next', 'old')
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/deployments'); expect(fetchMock.mock.calls[0][1].body).toBe(JSON.stringify({ name: 'demo', yaml: 'next', validateOnly: true }))
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/deployments/demo/definition'); expect(fetchMock.mock.calls[1][1].body).toBe(JSON.stringify({ yaml: 'next', expectedHash: 'old' }))
+  })
 })

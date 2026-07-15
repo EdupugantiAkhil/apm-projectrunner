@@ -313,3 +313,44 @@ implemented shape and the evidence used to close a phase.
 - Verification: workspace tests passed on this host (daemon API 12); fmt, workspace
   clippy `-D warnings`, and rustdoc `-D warnings` passed; `npm run build` passed and
   `npm test` passed (6 Vitest tests).
+
+### Schema-driven GUI completion (Part 4b)
+
+- Deployment definition API: `GET /api/v1/deployments/{name}/definition`,
+  `POST /api/v1/deployments` (validate-first, `validateOnly` dry-run with plan
+  preview, atomic hard-link create refusing overwrite), and
+  `PUT .../definition` (SHA-256 optimistic concurrency, validate-first, atomic
+  rename). All definition and source handlers run on the Tokio blocking pool because
+  planner validation shells out to git for source identities.
+- Patch bay: typed consumer/provider/group lanes, SVG cables colored by capability
+  with direction arrows, node inspector (source, health, resources, active routes),
+  keyboard-first switching through compatible-group selects (incompatible groups are
+  omitted with an explanatory count), an always-available accessible route-matrix
+  table that is also the narrow-viewport rendering, and reduced-motion compliance.
+- Atomic switching: selecting a group prepares a pending change set; a preview dialog
+  shows the complete replacement route table (old→new provider per slot) and the
+  superseded snapshot version, with close/drain(timeout)/pin transition selection;
+  apply goes through the existing `bind` command and surfaces
+  acknowledgement/rollback results.
+- Deployment builder: name validation, block instances with schema-driven adapter
+  configuration, source selection from registered sources, parameters, continuous
+  validation through the dry-run endpoint, expanded-service/compose preview, save,
+  optional follow-up Up.
+- `SchemaForm` renders draft 2020-12 object schemas (string/number/integer/boolean/
+  enum/nested object/string array, required markers, descriptions) and degrades to a
+  validated JSON textarea for unsupported constructs; a read-only block library lists
+  registered adapters from `/api/v1/adapters`. No hard-coded per-adapter forms exist.
+- Routing panel: custom domains, browser identity routes, and managed profiles are
+  edited through the authored definition with a full line diff, validate-first gating,
+  and optional plan/up follow-through — the CLI/API equivalent is the definition file
+  plus `switchyard validate`.
+- Per-instance log access from instance cards passes the existing `target` command
+  field (review addition), completing combined and per-service logs in the GUI.
+
+### Phase 6 Part 4 verification
+
+- `cargo fmt --all -- --check`: passed.
+- `cargo test --workspace --all-features`: passed on this host.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passed.
+- `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps`: passed.
+- `npm run build`: passed; `npm test`: 12 Vitest tests passed.

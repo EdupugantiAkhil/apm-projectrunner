@@ -39,10 +39,11 @@ use tokio::{
 
 use crate::contract::{
     API_VERSION, ApiErrorV1, CommandKind, CommandRequestV1, CommandResultV1,
-    CreateWorktreeRequestV1, DaemonStatusV1, DeploymentDetailV1, DeploymentOperationSummaryV1,
-    DeploymentRoutesV1, DeploymentSummaryV1, DeploymentsV1, DiscoveryV1, EventKindV1, EventV1,
-    OperationStatusV1, OperationV1, RegisterSourceRequestV1, RemoveWorktreeRequestV1,
-    RouteHistoryV1, RouterBindingV1, TransitionPolicyV1,
+    CreateDeploymentRequestV1, CreateWorktreeRequestV1, DaemonStatusV1, DeploymentDefinitionV1,
+    DeploymentDetailV1, DeploymentOperationSummaryV1, DeploymentRoutesV1, DeploymentSummaryV1,
+    DeploymentValidationV1, DeploymentsV1, DiscoveryV1, EventKindV1, EventV1, OperationStatusV1,
+    OperationV1, RegisterSourceRequestV1, RemoveWorktreeRequestV1, RouteHistoryV1, RouterBindingV1,
+    TransitionPolicyV1, UpdateDeploymentDefinitionRequestV1,
 };
 
 const LOCK_TTL_MILLIS: i64 = 15_000;
@@ -1208,7 +1209,14 @@ fn routes(inner: Arc<Inner>) -> Router {
             "/api/v1/deployments/{deployment}/routes",
             get(deployment_routes),
         )
-        .route("/api/v1/deployments", get(list_deployments))
+        .route(
+            "/api/v1/deployments",
+            get(list_deployments).post(create_deployment),
+        )
+        .route(
+            "/api/v1/deployments/{deployment}/definition",
+            get(deployment_definition).put(update_deployment_definition),
+        )
         .route("/api/v1/deployments/{deployment}", get(deployment_detail))
         .route("/api/v1/adapters", get(list_adapters))
         .route("/api/v1/sources", get(list_sources).post(register_source))
@@ -1309,6 +1317,376 @@ fn read_manifest(root: &Path, deployment: &str) -> Option<Value> {
         .join(deployment)
         .join("manifest.json");
     serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+fn definition_hash(yaml: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(yaml.as_bytes());
+    format!("{:x}", digest.finalize())
+}
+
+fn valid_deployment_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 63
+        && name.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit() && index > 0
+                || byte == b'-' && index > 0
+        })
+        && !name.ends_with('-')
+}
+
+fn definition_path(inner: &Inner, deployment: &str) -> PathBuf {
+    let recorded = inner
+        .store
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .deployments()
+        .ok()
+        .and_then(|entries| {
+            entries
+                .into_iter()
+                .find(|entry| entry.deployment == deployment)
+        })
+        .and_then(|entry| entry.snapshot_json)
+        .and_then(|snapshot| serde_json::from_str::<Value>(&snapshot).ok())
+        .and_then(|snapshot| {
+            [
+                "/definitionPath",
+                "/definition/path",
+                "/metadata/definitionPath",
+            ]
+            .into_iter()
+            .find_map(|pointer| {
+                snapshot
+                    .pointer(pointer)
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from)
+            })
+        });
+    recorded
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                inner.config.project_root.join(path)
+            }
+        })
+        .unwrap_or_else(|| {
+            inner
+                .config
+                .project_root
+                .join("deployments")
+                .join(format!("{deployment}.yaml"))
+        })
+}
+
+fn validation_error(message: impl Into<String>, diagnostics: Value) -> Response {
+    let mut error = ApiErrorV1::new("validation_failed", message);
+    error.context = Some(json!({"diagnostics": diagnostics}));
+    (StatusCode::UNPROCESSABLE_ENTITY, Json(error)).into_response()
+}
+
+fn validate_definition(
+    root: &Path,
+    name: &str,
+    yaml: &str,
+) -> Result<DeploymentValidationV1, Response> {
+    if !valid_deployment_name(name) {
+        return Err(validation_error(
+            "deployment definition is invalid",
+            json!([{"code":"invalid_name","path":"metadata.name","message":"name must be a lowercase DNS label (letters, digits, and hyphens)"}]),
+        ));
+    }
+    let directory = root.join("deployments");
+    if let Err(error) = fs::create_dir_all(&directory) {
+        return Err(api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "definition_write_failed",
+            &error.to_string(),
+        ));
+    }
+    let temporary = directory.join(format!(
+        ".{name}.validate-{}-{}.yaml",
+        std::process::id(),
+        random_hex(6).unwrap_or_else(|_| "fallback".into())
+    ));
+    if let Err(error) = fs::write(&temporary, yaml) {
+        return Err(api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "definition_write_failed",
+            &error.to_string(),
+        ));
+    }
+    let loaded = switchyard_planner::load_bundle(&temporary);
+    let result = match loaded {
+        Err(error) => Err(validation_error(
+            "deployment definition is invalid",
+            json!([{"code":"invalid_yaml","path":"$","message":error.to_string()}]),
+        )),
+        Ok(bundle) => match switchyard_planner::plan(&bundle) {
+            Err(diagnostics) => Err(validation_error(
+                "deployment definition is invalid",
+                serde_json::to_value(diagnostics).unwrap_or_else(|_| json!([])),
+            )),
+            Ok(plan) if plan.deployment != name => Err(validation_error(
+                "deployment definition name does not match the requested name",
+                json!([{"code":"invalid_name","path":"metadata.name","message":format!("expected `{name}`, found `{}`", plan.deployment)}]),
+            )),
+            Ok(plan) => {
+                let resolved = serde_json::to_value(&bundle).unwrap_or_else(|_| json!({}));
+                let blocks = resolved.pointer("/spec/blocks").and_then(Value::as_object);
+                let instances = resolved
+                    .pointer("/spec/instances")
+                    .and_then(Value::as_array);
+                let expanded_service_count = instances.map_or(0, |instances| {
+                    instances
+                        .iter()
+                        .map(|instance| {
+                            instance
+                                .get("block")
+                                .and_then(Value::as_str)
+                                .and_then(|block| blocks.and_then(|blocks| blocks.get(block)))
+                                .and_then(|block| block.get("services"))
+                                .and_then(Value::as_object)
+                                .map_or(0, serde_json::Map::len)
+                        })
+                        .sum::<usize>()
+                });
+                Ok(DeploymentValidationV1 {
+                    api_version: API_VERSION.into(),
+                    name: name.into(),
+                    valid: true,
+                    diagnostics: Vec::new(),
+                    preview: json!({
+                        "expandedServiceCount": expanded_service_count,
+                        "composeYaml": plan.compose_yaml,
+                        "manifest": serde_json::from_str::<Value>(&plan.manifest_json).unwrap_or_else(|_| json!({})),
+                        "routes": plan.route_configs.keys().collect::<Vec<_>>(),
+                        "definition": resolved,
+                    }),
+                })
+            }
+        },
+    };
+    let _ = fs::remove_file(temporary);
+    result
+}
+
+async fn deployment_definition(
+    State(inner): State<Arc<Inner>>,
+    AxumPath(deployment): AxumPath<String>,
+) -> Response {
+    if !valid_deployment_name(&deployment) {
+        return api_error(
+            StatusCode::NOT_FOUND,
+            "deployment_definition_not_found",
+            "deployment definition not found",
+        );
+    }
+    blocking_source_response(move || {
+        let path = definition_path(&inner, &deployment);
+        match fs::read_to_string(&path) {
+            Ok(yaml) => Json(DeploymentDefinitionV1 {
+                api_version: API_VERSION.into(),
+                name: deployment,
+                path: fs::canonicalize(&path).unwrap_or(path),
+                hash: definition_hash(&yaml),
+                yaml,
+            })
+            .into_response(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => api_error(
+                StatusCode::NOT_FOUND,
+                "deployment_definition_not_found",
+                "deployment definition not found",
+            ),
+            Err(error) => api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "definition_read_failed",
+                &error.to_string(),
+            ),
+        }
+    })
+    .await
+}
+
+async fn create_deployment(
+    State(inner): State<Arc<Inner>>,
+    payload: Result<Json<CreateDeploymentRequestV1>, JsonRejection>,
+) -> Response {
+    let request = match payload {
+        Ok(Json(request)) => request,
+        Err(error) => {
+            return api_error(StatusCode::BAD_REQUEST, "invalid_json", &error.body_text());
+        }
+    };
+    blocking_source_response(move || create_deployment_blocking(&inner, request)).await
+}
+
+fn create_deployment_blocking(inner: &Inner, request: CreateDeploymentRequestV1) -> Response {
+    let validation =
+        match validate_definition(&inner.config.project_root, &request.name, &request.yaml) {
+            Ok(validation) => validation,
+            Err(response) => return response,
+        };
+    if request.validate_only {
+        return Json(validation).into_response();
+    }
+    let target = inner
+        .config
+        .project_root
+        .join("deployments")
+        .join(format!("{}.yaml", request.name));
+    let temporary = target.with_extension(format!(
+        "yaml.tmp-{}-{}",
+        std::process::id(),
+        random_hex(6).unwrap_or_else(|_| "fallback".into())
+    ));
+    if let Err(error) = fs::write(&temporary, request.yaml.as_bytes()) {
+        return api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "definition_write_failed",
+            &error.to_string(),
+        );
+    }
+    match fs::hard_link(&temporary, &target) {
+        Ok(()) => {
+            let _ = fs::remove_file(&temporary);
+            (
+                StatusCode::CREATED,
+                Json(DeploymentDefinitionV1 {
+                    api_version: API_VERSION.into(),
+                    name: request.name,
+                    path: fs::canonicalize(&target).unwrap_or(target),
+                    hash: definition_hash(&request.yaml),
+                    yaml: request.yaml,
+                }),
+            )
+                .into_response()
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            let _ = fs::remove_file(temporary);
+            api_error(
+                StatusCode::CONFLICT,
+                "deployment_exists",
+                "deployment definition already exists",
+            )
+        }
+        Err(error) => {
+            let _ = fs::remove_file(temporary);
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "definition_write_failed",
+                &error.to_string(),
+            )
+        }
+    }
+}
+
+async fn update_deployment_definition(
+    State(inner): State<Arc<Inner>>,
+    AxumPath(deployment): AxumPath<String>,
+    payload: Result<Json<UpdateDeploymentDefinitionRequestV1>, JsonRejection>,
+) -> Response {
+    let request = match payload {
+        Ok(Json(request)) => request,
+        Err(error) => {
+            return api_error(StatusCode::BAD_REQUEST, "invalid_json", &error.body_text());
+        }
+    };
+    blocking_source_response(move || {
+        update_deployment_definition_blocking(&inner, &deployment, request)
+    })
+    .await
+}
+
+fn update_deployment_definition_blocking(
+    inner: &Inner,
+    deployment: &str,
+    request: UpdateDeploymentDefinitionRequestV1,
+) -> Response {
+    let path = definition_path(inner, deployment);
+    let current = match fs::read_to_string(&path) {
+        Ok(current) => current,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return api_error(
+                StatusCode::NOT_FOUND,
+                "deployment_definition_not_found",
+                "deployment definition not found",
+            );
+        }
+        Err(error) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "definition_read_failed",
+                &error.to_string(),
+            );
+        }
+    };
+    if definition_hash(&current) != request.expected_hash {
+        return api_error(
+            StatusCode::CONFLICT,
+            "definition_conflict",
+            "deployment definition changed since it was loaded",
+        );
+    }
+    if let Err(response) =
+        validate_definition(&inner.config.project_root, deployment, &request.yaml)
+    {
+        return response;
+    }
+    match fs::read_to_string(&path) {
+        Ok(latest) if definition_hash(&latest) != request.expected_hash => {
+            return api_error(
+                StatusCode::CONFLICT,
+                "definition_conflict",
+                "deployment definition changed since it was loaded",
+            );
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return api_error(
+                StatusCode::NOT_FOUND,
+                "deployment_definition_not_found",
+                "deployment definition not found",
+            );
+        }
+        Err(error) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "definition_read_failed",
+                &error.to_string(),
+            );
+        }
+    }
+    let temporary = path.with_extension(format!(
+        "yaml.tmp-{}-{}",
+        std::process::id(),
+        random_hex(6).unwrap_or_else(|_| "fallback".into())
+    ));
+    if let Err(error) = fs::write(&temporary, request.yaml.as_bytes()) {
+        return api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "definition_write_failed",
+            &error.to_string(),
+        );
+    }
+    if let Err(error) = fs::rename(&temporary, &path) {
+        let _ = fs::remove_file(temporary);
+        return api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "definition_write_failed",
+            &error.to_string(),
+        );
+    }
+    Json(DeploymentDefinitionV1 {
+        api_version: API_VERSION.into(),
+        name: deployment.to_owned(),
+        path: fs::canonicalize(&path).unwrap_or(path),
+        hash: definition_hash(&request.yaml),
+        yaml: request.yaml,
+    })
+    .into_response()
 }
 
 async fn list_deployments(State(inner): State<Arc<Inner>>) -> Response {

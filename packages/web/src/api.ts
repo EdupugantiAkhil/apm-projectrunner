@@ -1,5 +1,5 @@
 export type OperationStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled'
-export type CommandKind = 'validate' | 'plan' | 'apply' | 'status' | 'routes' | 'logs' | 'open' | 'down' | 'cleanup'
+export type CommandKind = 'validate' | 'plan' | 'apply' | 'bind' | 'status' | 'routes' | 'logs' | 'open' | 'down' | 'cleanup'
 
 export interface ApiErrorBody { code: string; message: string; context?: unknown }
 export class ApiError extends Error {
@@ -40,7 +40,7 @@ export interface DeploymentDetail {
   definitionHash: string | null
   resourceHash: string | null
   appliedAt: number | null
-  snapshot: { spec?: { instances?: Array<{ name: string; block?: string; source?: string }>; bindings?: Record<string, string> } } | null
+  snapshot: DeploymentSnapshot | null
   manifest: Record<string, unknown> | null
   sourceIdentities: Record<string, SourceIdentity>
   reconciliation: { deployment: string; diagnostics: Array<{ code: string; path: string; message: string }> }
@@ -48,6 +48,26 @@ export interface DeploymentDetail {
   customDomains: string[]
   bindings: Record<string, string>
 }
+export interface DeploymentSnapshot { spec?: {
+  instances?: Array<{ name: string; block?: string; source?: string; parameters?: Record<string, string> }>
+  blocks?: Record<string, {
+    parameters?: Record<string, { required?: boolean; default?: string }>
+    services?: Record<string, {
+      provides?: Record<string, { protocol?: string; port?: number }>
+      consumes?: Record<string, { protocol?: string; address?: { host?: string; port?: number } }>
+      execution?: Record<string, unknown>
+      probe?: Record<string, unknown>
+      publish?: number[]
+      volumes?: unknown[]
+    }>
+  }>
+  groups?: Record<string, { extends?: string; providers?: Record<string, string> }>
+  bindings?: Record<string, string>
+  routes?: Record<string, Record<string, string>>
+  uiRoutes?: Record<string, { origin: string; backend: string; downstreamGroup: string }>
+  managedProfiles?: Record<string, { route: string; startUrl: string }>
+  hostRouter?: Record<string, unknown>
+} }
 export interface SourceIdentity { path: string; repository?: string | null; ref?: string | null; commit?: string | null; dirty?: boolean | null }
 export interface SourceRecord {
   source: { name: string; kind: 'managed' | 'unmanaged'; path: string; requestedRef?: string | null }
@@ -66,6 +86,10 @@ export interface RouteState {
   history: unknown[]
 }
 export interface OperationEvent { id: number; operationId: string; kind: 'operation' | 'build' | 'health' | 'route' | 'log'; timestamp: number; data: Record<string, unknown> }
+export interface DeploymentDefinition { apiVersion: string; name: string; path: string; yaml: string; hash: string }
+export interface DeploymentValidation { apiVersion: string; name: string; valid: boolean; diagnostics: Array<{ code: string; path: string; message: string }>; preview: Record<string, unknown> }
+export interface AdapterRecord { kind: string; declaration: { id?: string; version?: string; capabilities?: string[]; [key: string]: unknown }; configurationSchema: JsonSchema }
+export interface JsonSchema { type?: string | string[]; title?: string; description?: string; enum?: unknown[]; properties?: Record<string, JsonSchema>; required?: string[]; items?: JsonSchema; default?: unknown; oneOf?: unknown[]; anyOf?: unknown[]; allOf?: unknown[]; [key: string]: unknown }
 
 let memoryToken = ''
 export function captureTokenFromFragment(location: Location = window.location, history: History = window.history): string {
@@ -101,7 +125,12 @@ export class ApiClient {
   deployments() { return this.request<{ apiVersion: string; deployments: DeploymentSummary[] }>('/deployments') }
   deployment(name: string) { return this.request<DeploymentDetail>(`/deployments/${encodeURIComponent(name)}`) }
   routes(name: string) { return this.request<RouteState>(`/deployments/${encodeURIComponent(name)}/routes`) }
-  adapters() { return this.request<unknown[]>('/adapters') }
+  adapters() { return this.request<AdapterRecord[]>('/adapters') }
+  definition(name: string) { return this.request<DeploymentDefinition>(`/deployments/${encodeURIComponent(name)}/definition`) }
+  validateDeployment(name: string, yaml: string) { return this.request<DeploymentValidation>('/deployments', { method: 'POST', body: JSON.stringify({ name, yaml, validateOnly: true }) }) }
+  createDeployment(name: string, yaml: string) { return this.request<DeploymentDefinition>('/deployments', { method: 'POST', body: JSON.stringify({ name, yaml }) }) }
+  updateDefinition(name: string, yaml: string, expectedHash: string) { return this.request<DeploymentDefinition>(`/deployments/${encodeURIComponent(name)}/definition`, { method: 'PUT', body: JSON.stringify({ yaml, expectedHash }) }) }
+  async updateDefinitionValidated(name: string, yaml: string, expectedHash: string) { await this.validateDeployment(name, yaml); return this.updateDefinition(name, yaml, expectedHash) }
   sources() { return this.request<SourceRecord[]>('/sources') }
   registerSource(name: string, path: string) { return this.request<SourceRecord>('/sources', { method: 'POST', body: JSON.stringify({ name, path }) }) }
   createWorktree(repository: string, ref: string, name?: string, path?: string) {

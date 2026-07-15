@@ -57,6 +57,9 @@ optional `context` fields. Framework types are not part of the public Rust contr
 | `GET` | `/api/v1/deployments/{deployment}/routes` | Query route versions and activation history |
 | `GET` | `/api/v1/deployments` | List known deployments with applied hashes, latest operation, domains, and bindings |
 | `GET` | `/api/v1/deployments/{deployment}` | Read the applied snapshot, generated source identities, resources, and reconciliation summary |
+| `GET` | `/api/v1/deployments/{deployment}/definition` | Read authored YAML, absolute path, and SHA-256 edit hash |
+| `POST` | `/api/v1/deployments` | Validate and atomically create a non-existing authored definition |
+| `PUT` | `/api/v1/deployments/{deployment}/definition` | Validate and atomically replace an authored definition using its expected hash |
 | `GET` | `/api/v1/adapters` | List built-in adapter declarations and configuration JSON Schemas |
 | `GET` | `/api/v1/sources` | List registrations with live source identity |
 | `POST` | `/api/v1/sources` | Register an existing path as unmanaged |
@@ -74,6 +77,18 @@ for cleanup. A bind may also carry `transition` as `close`, `pin`, or `drain` wi
 stderr, and exit code remain available while an operation is active or retained in
 memory; terminal status and structured error data are durable in SQLite across restart.
 Raw output is deliberately not persisted because it can contain application secrets.
+
+Definition creation accepts `{ "name": "demo", "yaml": "..." }`. Setting
+`"validateOnly": true` runs the identical planner load/validate/plan path and returns
+structured diagnostics plus a resource preview without retaining a file. A normal
+create writes `deployments/<name>.yaml` atomically and returns HTTP 409
+`deployment_exists` instead of overwriting. Definition replacement accepts
+`{ "yaml": "...", "expectedHash": "<sha256>" }`; a stale hash receives HTTP 409
+`definition_conflict`. Both writes validate before mutation. Planner validation errors
+use HTTP 422 `validation_failed` with `context.diagnostics`; absent definitions use
+`deployment_definition_not_found`. GET prefers a definition path recorded in an
+applied snapshot when present and otherwise checks the project-local deployments
+directory.
 
 Source registration accepts `{ "name": "app", "path": "/code/app" }` and always
 records the path as `unmanaged`. Worktree creation accepts `repository`, `ref`, and

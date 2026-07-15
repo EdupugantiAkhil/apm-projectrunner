@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { ApiClient, ApiError, type DeploymentDetail, type DeploymentSummary, type Operation, type OperationEvent, type RouteState, type SourceRecord } from './api'
+import { ApiClient, ApiError, type AdapterRecord, type DeploymentDetail, type DeploymentSummary, type Operation, type OperationEvent, type RouteState, type SourceRecord } from './api'
+import DeploymentWorkspace, { RoutingEditor } from './DeploymentWorkspace'
+import DeploymentBuilder, { BlockLibrary } from './DeploymentBuilder'
 import './App.css'
 
-type View = 'deployments' | 'sources' | 'operations'
+type View = 'deployments' | 'sources' | 'operations' | 'builder' | 'library'
 const terminal = (status: Operation['status']) => ['succeeded', 'failed', 'cancelled'].includes(status)
 const short = (value?: string | null) => value ? value.slice(0, 9) : 'unknown'
 const dirtyText = (source: SourceRecord) => {
@@ -17,6 +19,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
   const [detail, setDetail] = useState<DeploymentDetail | null>(null)
   const [routes, setRoutes] = useState<RouteState | null>(null)
   const [sources, setSources] = useState<SourceRecord[]>([])
+  const [adapters, setAdapters] = useState<AdapterRecord[]>([])
   const [operations, setOperations] = useState<Operation[]>([])
   const [events, setEvents] = useState<OperationEvent[]>([])
   const [drawerOpen, setDrawerOpen] = useState(true)
@@ -34,13 +37,12 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
     } catch (value) { report(value) }
   }
   const loadSources = async () => { try { setSources(await client.sources()) } catch (value) { report(value) } }
+  const loadSelected = async () => { if (!selected) return; const [nextDetail, nextRoutes] = await Promise.all([client.deployment(selected), client.routes(selected)]); setDetail(nextDetail); setRoutes(nextRoutes) }
 
-  useEffect(() => { void loadDeployments(); void loadSources() }, [])
+  useEffect(() => { void loadDeployments(); void loadSources(); void client.adapters().then(setAdapters).catch(report) }, [])
   useEffect(() => {
     if (!selected) { setDetail(null); setRoutes(null); return }
-    void Promise.all([client.deployment(selected), client.routes(selected)])
-      .then(([nextDetail, nextRoutes]) => { setDetail(nextDetail); setRoutes(nextRoutes) })
-      .catch(report)
+    void loadSelected().catch(report)
   }, [selected])
   useEffect(() => () => { for (const subscription of subscriptions.current.values()) subscription.close() }, [])
 
@@ -60,7 +62,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
       void loadDeployments()
     }).catch(report)
   }
-  const runCommand = async (kind: 'validate' | 'plan' | 'status' | 'logs' | 'apply' | 'down' | 'cleanup') => {
+  const runCommand = async (kind: 'validate' | 'plan' | 'status' | 'logs' | 'apply' | 'down' | 'cleanup', target?: string) => {
     if (!selected) return
     if (kind === 'apply' && Object.values(detail?.sourceIdentities ?? {}).some((identity) => identity.dirty) && !window.confirm('One or more source worktrees are modified. Continue with Up?')) {
       setNotice('up cancelled: modified worktrees were not acknowledged')
@@ -71,11 +73,11 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
       if (typed !== selected) { setNotice(`${kind} cancelled: confirmation did not match`); return }
     }
     const bundle = `.switchyard/generated/${selected}/resolved-deployment.yaml`
-    try { observe(await client.command(kind, bundle, kind === 'cleanup' ? { confirmed: true } : {})); setView('operations') } catch (value) { report(value) }
+    try { observe(await client.command(kind, bundle, { ...(kind === 'cleanup' ? { confirmed: true } : {}), ...(kind === 'logs' && target ? { target } : {}) })); setView('operations') } catch (value) { report(value) }
   }
   const navKeys = (event: KeyboardEvent<HTMLElement>) => {
     if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return
-    const views: View[] = ['deployments', 'sources', 'operations']
+    const views: View[] = ['deployments', 'sources', 'operations', 'library']
     const offset = event.key === 'ArrowRight' ? 1 : -1
     setView(views[(views.indexOf(view) + offset + views.length) % views.length])
     event.preventDefault()
@@ -86,7 +88,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
     <aside className="rail" aria-label="Deployment rail">
       <div className="brand">SWITCHYARD <span>LOCAL</span></div>
       <nav aria-label="Main views" onKeyDown={navKeys}>
-        {(['deployments', 'sources', 'operations'] as View[]).map((item) => <button key={item} aria-current={view === item ? 'page' : undefined} onClick={() => setView(item)}>{item}</button>)}
+        {(['deployments', 'sources', 'operations', 'library'] as View[]).map((item) => <button key={item} aria-current={view === item ? 'page' : undefined} onClick={() => setView(item)}>{item === 'library' ? 'block library' : item}</button>)}
       </nav>
       <h2>Deployments</h2>
       <div className="deployment-list">
@@ -99,12 +101,15 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
           </button>
         })}
       </div>
+      <button className="new-deployment" onClick={() => setView('builder')}>+ New deployment</button>
     </aside>
     <main className="canvas" id="main-content">
       {error && <div className="error" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError('')}>×</button></div>}
-      {view === 'deployments' && <DeploymentView detail={detail} routes={routes} onCommand={runCommand} />}
+      {view === 'deployments' && <DeploymentView client={client} detail={detail} routes={routes} onCommand={runCommand} observe={observe} refresh={async () => { await loadSelected(); await loadDeployments() }} report={report} />}
       {view === 'sources' && <SourcesView client={client} sources={sources} reload={loadSources} report={report} />}
       {view === 'operations' && <OperationsView operations={operations} onCancel={async (id) => { if (!window.confirm('Cancel this running operation?')) return; try { const cancelled = await client.cancel(id); setOperations((current) => current.map((item) => item.id === id ? cancelled : item)) } catch (value) { report(value) } }} />}
+      {view === 'builder' && <DeploymentBuilder client={client} sources={sources} close={() => setView('deployments')} onOperation={observe} report={report} saved={async (name) => { await loadDeployments(); setSelected(name); setView('deployments'); setNotice(`Deployment ${name} saved; use Up when ready`) }} />}
+      {view === 'library' && <BlockLibrary adapters={adapters} />}
     </main>
     <aside className="inspector" aria-label="Inspector">
       <h2>Inspector</h2>
@@ -120,13 +125,16 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
   </div>
 }
 
-function DeploymentView({ detail, routes, onCommand }: { detail: DeploymentDetail | null; routes: RouteState | null; onCommand: (kind: 'validate' | 'plan' | 'status' | 'logs' | 'apply' | 'down' | 'cleanup') => void }) {
+function DeploymentView({ client, detail, routes, onCommand, observe, refresh, report }: { client: ApiClient; detail: DeploymentDetail | null; routes: RouteState | null; onCommand: (kind: 'validate' | 'plan' | 'status' | 'logs' | 'apply' | 'down' | 'cleanup', target?: string) => void; observe: (operation: Operation) => void; refresh: () => Promise<void>; report: (error: unknown) => void }) {
   if (!detail) return <section><h1>Deployments</h1><p>No applied deployment selected.</p></section>
   const instances = detail.snapshot?.spec?.instances ?? Object.keys(detail.sourceIdentities).map((name) => ({ name }))
   return <section><div className="title-row"><div><p className="eyebrow">Deployment</p><h1>{detail.deployment}</h1></div><span className="state-label">● {detail.reconciliation.diagnostics.length ? 'Needs attention' : 'Reconciled'}</span></div>
     <div className="command-bar" aria-label="Deployment commands"><button onClick={() => onCommand('validate')}>Validate</button><button onClick={() => onCommand('plan')}>Plan</button><button onClick={() => onCommand('status')}>Status</button><button onClick={() => onCommand('logs')}>Logs</button><button className="primary" onClick={() => onCommand('apply')}>Up</button><button className="danger" onClick={() => onCommand('down')}>Down</button><button className="danger" onClick={() => onCommand('cleanup')}>Cleanup</button></div>
-    <h2>Instances</h2><div className="instance-grid">{instances.map((instance) => { const identity = detail.sourceIdentities[instance.name]; const resource = detail.resources.find((item) => item.labels['dev.switchyard.instance'] === instance.name || item.name.includes(instance.name)); return <article className="instance-card" key={instance.name}><header><h3>{instance.name}</h3><span>{resource?.state ?? 'state unknown'}</span></header>{identity ? <dl><dt>Path</dt><dd className="mono">{identity.path}</dd><dt>Ref</dt><dd className="mono">{identity.ref ?? 'detached'}</dd><dt>Commit</dt><dd className="mono">{short(identity.commit)} {identity.dirty ? <span className="dirty">● modified</span> : 'clean'}</dd></dl> : <p>Source identity unavailable</p>}</article> })}</div>
-    <h2>Active routes</h2>{routes?.bindings.length ? <table><thead><tr><th>Consumer</th><th>Router</th><th>Version</th><th>Status</th></tr></thead><tbody>{routes.bindings.map((route) => <tr key={`${route.router}-${route.binding}`}><td className="mono">{route.binding}</td><td className="mono">{route.router}</td><td className="mono">v{route.currentVersion ?? route.desiredVersion ?? '—'}</td><td>{route.status}{route.lastErrorCode ? ` · ${route.lastErrorCode}` : ''}</td></tr>)}</tbody></table> : <p className="muted">No active route versions recorded.</p>}</section>
+    <h2>Instances</h2><div className="instance-grid">{instances.map((instance) => { const identity = detail.sourceIdentities[instance.name]; const resource = detail.resources.find((item) => item.labels['dev.switchyard.instance'] === instance.name || item.name.includes(instance.name)); return <article className="instance-card" key={instance.name}><header><h3>{instance.name}</h3><span>{resource?.state ?? 'state unknown'}</span><button aria-label={`Logs for ${instance.name}`} onClick={() => onCommand('logs', instance.name)}>Logs</button></header>{identity ? <dl><dt>Path</dt><dd className="mono">{identity.path}</dd><dt>Ref</dt><dd className="mono">{identity.ref ?? 'detached'}</dd><dt>Commit</dt><dd className="mono">{short(identity.commit)} {identity.dirty ? <span className="dirty">● modified</span> : 'clean'}</dd></dl> : <p>Source identity unavailable</p>}</article> })}</div>
+    <DeploymentWorkspace client={client} detail={detail} routes={routes} onOperation={observe} refresh={refresh} report={report} />
+    <h2>Active routes</h2>{routes?.bindings.length ? <table><thead><tr><th>Consumer</th><th>Router</th><th>Version</th><th>Status</th></tr></thead><tbody>{routes.bindings.map((route) => <tr key={`${route.router}-${route.binding}`}><td className="mono">{route.binding}</td><td className="mono">{route.router}</td><td className="mono">v{route.currentVersion ?? route.desiredVersion ?? '—'}</td><td>{route.status}{route.lastErrorCode ? ` · ${route.lastErrorCode}` : ''}</td></tr>)}</tbody></table> : <p className="muted">No active route versions recorded.</p>}
+    <RoutingEditor client={client} deployment={detail.deployment} onSaved={refresh} onOperation={observe} report={report} />
+  </section>
 }
 
 function SourcesView({ client, sources, reload, report }: { client: ApiClient; sources: SourceRecord[]; reload: () => Promise<void>; report: (error: unknown) => void }) {

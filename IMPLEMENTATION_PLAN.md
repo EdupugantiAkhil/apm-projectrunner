@@ -365,15 +365,15 @@ Entry gate: the persistent control plane is complete.
 
 ### Schema-driven GUI
 
-- [ ] Implement the deployment list and creation flow.
-- [ ] Implement the patch-bay topology view for instances, groups, and bindings.
-- [ ] Implement instance inspection with source, health, resources, and active routes.
-- [ ] Implement atomic group and backend switching with a complete change preview.
-- [ ] Implement custom-domain and browser-routing management.
-- [ ] Implement combined and per-service logs and operation progress.
-- [ ] Generate basic adapter forms from JSON Schema.
-- [ ] Meet keyboard navigation, screen-reader, contrast, and responsive-layout criteria.
-- [ ] Ensure every common GUI operation has an equivalent CLI and API operation.
+- [x] Implement the deployment list and creation flow.
+- [x] Implement the patch-bay topology view for instances, groups, and bindings.
+- [x] Implement instance inspection with source, health, resources, and active routes.
+- [x] Implement atomic group and backend switching with a complete change preview.
+- [x] Implement custom-domain and browser-routing management.
+- [x] Implement combined and per-service logs and operation progress.
+- [x] Generate basic adapter forms from JSON Schema.
+- [x] Meet keyboard navigation, screen-reader, contrast, and responsive-layout criteria.
+- [x] Ensure every common GUI operation has an equivalent CLI and API operation.
 
 ### Real-codebase validation
 

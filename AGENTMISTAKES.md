@@ -123,3 +123,15 @@
   requests. Correction: run each handler body through `spawn_blocking`. Lesson: any
   handler that shells out or does filesystem-heavy work belongs on the blocking pool,
   even when it is "usually fast".
+
+## 2026-07-15 — Phase 6 GUI
+
+- The deployment-definition handlers repeated the async-blocking mistake from the
+  source endpoints: planner validation (which invokes git for source identities) ran
+  directly on async workers and review had to move it to `spawn_blocking` again.
+  Lesson: repo-wide review lessons must be restated in every subsequent brief, not
+  assumed remembered.
+- The GUI initially exposed only deployment-level logs even though the command
+  contract already carried an optional per-instance `target`; review wired instance
+  cards to it. Lesson: check the existing contract surface before concluding a
+  capability needs new plumbing — and before shipping a screen without it.

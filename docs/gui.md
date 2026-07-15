@@ -31,15 +31,40 @@ Static files below `/gui/` are public on the loopback listener. This permits the
 page load before the JavaScript client has consumed its fragment credential. It does
 not weaken API authentication: all `/api/v1` endpoints remain protected.
 
-## Current views
+## Deployment workspace
 
-The shell provides keyboard-accessible Deployments, Sources, and Operations views,
-plus a collapsible event/log drawer. Deployment detail shows source identities,
-resource state, route versions, domains, and bindings. Sources supports unmanaged
-registration and managed-worktree creation/removal; dirty removal has a separate
-second confirmation. Commands started by this browser session appear in the operation
-timeline and stream build, health, route, operation, and log events into the drawer.
+The shell provides keyboard-accessible Deployments, Sources, Operations, and Block
+library views, plus a collapsible event/log drawer. Deployment detail contains a live
+patch bay with UI-consumer, backend/provider, and provider-group lanes. Cables carry a
+direction arrow and a capability label as well as their capability color. The route
+matrix toggle exposes the identical topology as a table; viewports below 1280 pixels
+select that table automatically.
 
-The patch-bay editor, domain forms, route switching controls, and JSON Schema form
-renderer are intentionally reserved for Part 4b. The `/api/v1/adapters` endpoint and
-the three-pane shell are their extension points.
+Select a consumer node to change its complete provider-group binding. The select lists
+only groups that satisfy every current slot. Selection prepares a modal preview of all
+old and new slot providers and the route snapshot being superseded. Nothing changes
+until **Apply complete change** is activated. Close, drain (with timeout), and pin
+connection policies map directly to the `switchyard bind` CLI options. The resulting
+operation acknowledgement or structured rollback failure appears in Operations and
+the event drawer.
+
+The Routing panel loads the authored YAML with its optimistic hash. Domain listener,
+`uiRoutes`, and managed-profile changes show a full line diff and planner diagnostics.
+Apply performs a dry-run validation before the definition PUT; an optional follow-up
+can plan or run Up. This is deliberately the same portable workflow available without
+the GUI: edit `deployments/<name>.yaml`, run `switchyard validate`, then plan or apply.
+
+## Builder and schema forms
+
+**New deployment** opens the creation flow. Names use planner DNS-label rules. An
+instance selects a source and block, while execution configuration comes entirely from
+the chosen adapter's draft 2020-12 JSON Schema. The form supports scalar types, enums,
+nested objects, and string arrays; an unsupported schema becomes a labeled JSON editor
+with syntax validation. The Block library renders the same schemas read-only, so there
+are no product-specific adapter forms in the client.
+
+Builder changes are validated after a short idle period and may also be validated
+explicitly. A successful result shows planner-derived expanded service and route data
+before save. Save refuses overwrite through the daemon definition API and can
+optionally start Up. Sources still supports unmanaged registration and managed
+worktree creation/removal; dirty removal has its separate second confirmation.

@@ -263,6 +263,46 @@ pub struct DeploymentsV1 {
     pub deployments: Vec<DeploymentSummaryV1>,
 }
 
+/// Authored deployment definition returned to editors.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentDefinitionV1 {
+    pub api_version: String,
+    pub name: String,
+    pub path: PathBuf,
+    pub yaml: String,
+    pub hash: String,
+}
+
+/// Create or validate-only request for an authored deployment definition.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateDeploymentRequestV1 {
+    pub name: String,
+    pub yaml: String,
+    #[serde(default)]
+    pub validate_only: bool,
+}
+
+/// Optimistic replacement request for an authored deployment definition.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateDeploymentDefinitionRequestV1 {
+    pub yaml: String,
+    pub expected_hash: String,
+}
+
+/// Successful validation, with a planner-derived resource preview for builders.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentValidationV1 {
+    pub api_version: String,
+    pub name: String,
+    pub valid: bool,
+    pub diagnostics: Vec<switchyard_planner::Diagnostic>,
+    pub preview: Value,
+}
+
 /// Applied deployment state plus the daemon's live reconciliation projection.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
