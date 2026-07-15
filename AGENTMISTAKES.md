@@ -1,5 +1,23 @@
 # Agent mistakes and lessons
 
+## 2026-07-15 — Phase 5 daemon and API
+
+- The first API integration tests started real loopback listeners, but this execution
+  sandbox rejects socket creation with `EPERM`, including a pre-existing Unix-socket CLI
+  test. Correction: factor the exact Axum router into a transport-independent harness
+  and keep loopback binding in the production startup path. Lesson: HTTP behavior,
+  concurrency, and streaming can be proven in memory while listener policy is tested
+  separately without weakening production restrictions.
+- An initial multi-file patch omitted the second file marker, so its context was checked
+  against the wrong manifest and rejected. Correction: split the patch at explicit file
+  boundaries and verify target context. Lesson: keep dependency and implementation
+  edits in clearly delimited patch sections.
+- The first workspace Clippy run exposed a pre-existing `format_collect` warning in the
+  router's random credential encoding under the current toolchain. Correction: replace
+  it with allocation-equivalent direct hexadecimal encoding and rerun the exact command.
+  Lesson: repository-wide `-D warnings` can surface toolchain drift outside the changed
+  crate; keep such fixes mechanical and behavior-preserving.
+
 ## 2026-07-15 — Phase 5 SQLite state
 
 - The first snapshot-upsert SQL used Rust line continuations without preserving spaces,

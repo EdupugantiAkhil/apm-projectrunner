@@ -5,6 +5,7 @@ members = [
     "crates/router-pingora",
     "crates/router-tcp",
     "crates/switchyard-cli",
+    "crates/switchyard-daemon",
     "crates/switchyard-planner",
     "crates/switchyard-router",
     "crates/switchyard-state",

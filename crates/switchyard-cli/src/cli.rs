@@ -38,6 +38,9 @@ pub enum CliCommand {
         bundle: PathBuf,
         confirmed: bool,
     },
+    DaemonRun,
+    DaemonStatus,
+    DaemonStop,
     Help,
 }
 
@@ -64,6 +67,9 @@ Usage:
   switchyard open <deployment.yaml> <ui>
   switchyard down <deployment.yaml>
   switchyard cleanup <deployment.yaml> --yes
+  switchyard daemon run
+  switchyard daemon status
+  switchyard daemon stop
 ";
 
 pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand, UsageError> {
@@ -122,6 +128,9 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
             bundle: bundle()?,
             confirmed: true,
         }),
+        "daemon" if rest == ["run"] => Ok(CliCommand::DaemonRun),
+        "daemon" if rest == ["status"] => Ok(CliCommand::DaemonStatus),
+        "daemon" if rest == ["stop"] => Ok(CliCommand::DaemonStop),
         _ => Err(UsageError(format!(
             "invalid {command} arguments\n\n{USAGE}"
         ))),

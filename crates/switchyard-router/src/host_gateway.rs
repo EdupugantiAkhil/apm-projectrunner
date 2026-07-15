@@ -288,10 +288,12 @@ pub fn ensure_proxy_credentials(config: &RouterConfig) -> Result<Vec<PathBuf>, H
         create_private_parent(path)?;
         let mut random = [0_u8; 32];
         io::Read::read_exact(&mut fs::File::open("/dev/urandom")?, &mut random)?;
-        let token = random
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut token = String::with_capacity(random.len() * 2);
+        for byte in random {
+            token.push(char::from(HEX[usize::from(byte >> 4)]));
+            token.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
         write_atomic(path, token.as_bytes(), 0o600)?;
         let marker = CredentialMarker {
             api_version: CERTIFICATE_API_VERSION.into(),

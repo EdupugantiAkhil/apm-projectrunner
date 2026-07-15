@@ -435,6 +435,41 @@ impl StateStore {
         Ok(())
     }
 
+    /// Loads an operation by its stable identifier.
+    pub fn operation(&self, id: &str) -> Result<Option<StoredOperation>, StateError> {
+        self.connection
+            .query_row(
+                "SELECT id, deployment_id, kind, status, started_at, finished_at, error_code, error_context_json FROM operations WHERE id=?1",
+                [id],
+                |row| {
+                    let error_code = row.get::<_, Option<String>>(6)?;
+                    let error_context = row.get::<_, Option<String>>(7)?;
+                    Ok(StoredOperation {
+                        id: row.get(0)?,
+                        deployment: row.get(1)?,
+                        kind: row.get(2)?,
+                        status: row.get(3)?,
+                        started_at: row.get(4)?,
+                        finished_at: row.get(5)?,
+                        error_code,
+                        error_context_json: error_context,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Marks operations left running by an earlier daemon as failed during recovery.
+    pub fn recover_abandoned_operations(&self, finished_at: i64) -> Result<usize, StateError> {
+        self.connection
+            .execute(
+                "UPDATE operations SET status='failed', finished_at=?1, error_code='daemon_restarted', error_context_json='{}' WHERE status IN ('pending','running')",
+                [finished_at],
+            )
+            .map_err(Into::into)
+    }
+
     /// Appends a health/readiness observation.
     pub fn record_health(&self, observation: &HealthObservation) -> Result<(), StateError> {
         self.connection.execute(
@@ -846,6 +881,19 @@ pub struct OperationRecord {
     pub finished_at: Option<i64>,
     /// Structured terminal failure, when applicable.
     pub error: Option<OperationError>,
+}
+
+/// Persisted operation fields returned to the control plane without framework types.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredOperation {
+    pub id: String,
+    pub deployment: String,
+    pub kind: String,
+    pub status: String,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub error_code: Option<String>,
+    pub error_context_json: Option<String>,
 }
 /// Health and readiness history input.
 #[derive(Clone, Debug, PartialEq)]

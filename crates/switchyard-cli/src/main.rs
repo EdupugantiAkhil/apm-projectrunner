@@ -6,7 +6,7 @@ mod cli;
 mod host_runtime;
 mod runtime;
 
-use std::{env, fmt, fs, io, path::Path, process::ExitCode};
+use std::{env, fmt, fs, io, net::SocketAddr, path::Path, process::ExitCode};
 
 use cli::{CliCommand, USAGE};
 use router_config::RouterConfig;
@@ -15,7 +15,7 @@ use switchyard_planner::{Bundle, Plan};
 
 fn main() -> ExitCode {
     match run() {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(error) => {
             eprintln!("switchyard: {error}");
             ExitCode::FAILURE
@@ -23,13 +23,31 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
+fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let command = cli::parse(env::args_os().skip(1))?;
     if command == CliCommand::Help {
         print!("{USAGE}");
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
     let workspace_root = env::current_dir()?;
+    if let Some(code) = handle_daemon_command(&workspace_root, &command)? {
+        return Ok(code);
+    }
+    if env::var_os("SWITCHYARD_BYPASS_DAEMON").is_none() {
+        let (kind, request) = daemon_request(&command);
+        match switchyard_daemon::client::execute_if_running(&workspace_root, kind, &request)? {
+            switchyard_daemon::client::DaemonExecution::NotRunning => {}
+            switchyard_daemon::client::DaemonExecution::Completed(operation) => {
+                let result = operation.result.ok_or_else(|| {
+                    MessageError("daemon completed the operation without a command result".into())
+                })?;
+                print!("{}", result.stdout);
+                eprint!("{}", result.stderr);
+                let code = u8::try_from(result.exit_code).unwrap_or(1);
+                return Ok(ExitCode::from(code));
+            }
+        }
+    }
     let runtime = DockerRuntime::default();
     match command {
         CliCommand::Validate { bundle } => {
@@ -149,9 +167,115 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 plan.deployment
             );
         }
-        CliCommand::Help => unreachable!("handled before command dispatch"),
+        CliCommand::Help
+        | CliCommand::DaemonRun
+        | CliCommand::DaemonStatus
+        | CliCommand::DaemonStop => unreachable!("handled before command dispatch"),
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
+}
+
+fn handle_daemon_command(
+    workspace_root: &Path,
+    command: &CliCommand,
+) -> Result<Option<ExitCode>, Box<dyn std::error::Error>> {
+    match command {
+        CliCommand::DaemonRun => {
+            let mut config = switchyard_daemon::DaemonConfig::new(
+                workspace_root.to_owned(),
+                env::current_exe()?,
+            );
+            if let Some(bind) = env::var_os("SWITCHYARD_DAEMON_BIND") {
+                config.bind = bind.to_string_lossy().parse::<SocketAddr>()?;
+            }
+            if let Some(limit) = env::var_os("SWITCHYARD_DAEMON_MAX_HEAVY") {
+                config.max_heavy_operations = limit.to_string_lossy().parse()?;
+            }
+            switchyard_daemon::run_blocking(config)?;
+            Ok(Some(ExitCode::SUCCESS))
+        }
+        CliCommand::DaemonStatus => {
+            match switchyard_daemon::client::daemon_status(workspace_root)? {
+                Some(status) => println!(
+                    "daemon running (API {}, pid {}, active {}, heavy limit {})",
+                    status.api_version,
+                    status.pid,
+                    status.active_operations,
+                    status.max_heavy_operations
+                ),
+                None => println!("daemon not running"),
+            }
+            Ok(Some(ExitCode::SUCCESS))
+        }
+        CliCommand::DaemonStop => {
+            if switchyard_daemon::client::daemon_stop(workspace_root)? {
+                println!("daemon stop requested");
+            } else {
+                println!("daemon not running");
+            }
+            Ok(Some(ExitCode::SUCCESS))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn daemon_request(
+    command: &CliCommand,
+) -> (
+    switchyard_daemon::contract::CommandKind,
+    switchyard_daemon::contract::CommandRequestV1,
+) {
+    use switchyard_daemon::contract::{CommandKind, CommandRequestV1};
+    let empty = |bundle| CommandRequestV1 {
+        bundle,
+        consumer: None,
+        group: None,
+        target: None,
+        ui: None,
+        routes: false,
+        confirmed: false,
+    };
+    match command {
+        CliCommand::Validate { bundle } => (CommandKind::Validate, empty(bundle.clone())),
+        CliCommand::Plan { bundle } => (CommandKind::Plan, empty(bundle.clone())),
+        CliCommand::Up { bundle } => (CommandKind::Apply, empty(bundle.clone())),
+        CliCommand::Bind {
+            bundle,
+            consumer,
+            group,
+        } => {
+            let mut request = empty(bundle.clone());
+            request.consumer = Some(consumer.clone());
+            request.group = Some(group.clone());
+            (CommandKind::Bind, request)
+        }
+        CliCommand::Status { bundle, routes } => {
+            let mut request = empty(bundle.clone());
+            request.routes = *routes;
+            (CommandKind::Status, request)
+        }
+        CliCommand::Routes { bundle } => (CommandKind::Routes, empty(bundle.clone())),
+        CliCommand::Logs { bundle, target } => {
+            let mut request = empty(bundle.clone());
+            request.target = target.clone();
+            (CommandKind::Logs, request)
+        }
+        CliCommand::Open { bundle, ui } => {
+            let mut request = empty(bundle.clone());
+            request.ui = Some(ui.clone());
+            (CommandKind::Open, request)
+        }
+        CliCommand::Down { bundle } => (CommandKind::Down, empty(bundle.clone())),
+        CliCommand::Cleanup { bundle, confirmed } => {
+            let mut request = empty(bundle.clone());
+            request.confirmed = *confirmed;
+            (CommandKind::Cleanup, request)
+        }
+        CliCommand::Help
+        | CliCommand::DaemonRun
+        | CliCommand::DaemonStatus
+        | CliCommand::DaemonStop => unreachable!("not delegated"),
+    }
 }
 
 fn load_and_plan(path: &Path) -> Result<(Bundle, Plan), Box<dyn std::error::Error>> {

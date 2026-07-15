@@ -295,12 +295,12 @@ Entry gate: the routing proof release is complete.
 
 ### Daemon and API
 
-- [ ] Implement the long-running Switchyard control-plane daemon.
-- [ ] Define a versioned HTTP API shared by the CLI and future GUI.
-- [ ] Add Server-Sent Events for operations, builds, health, routes, and logs.
-- [ ] Serialize mutations per deployment and enforce a global concurrency limit.
-- [ ] Add cancellation and resumable observation for long-running operations.
-- [ ] Move one-shot CLI behavior behind the API without removing script-friendly output.
+- [x] Implement the long-running Switchyard control-plane daemon.
+- [x] Define a versioned HTTP API shared by the CLI and future GUI.
+- [x] Add Server-Sent Events for operations, builds, health, routes, and logs.
+- [x] Serialize mutations per deployment and enforce a global concurrency limit.
+- [x] Add cancellation and resumable observation for long-running operations.
+- [x] Move one-shot CLI behavior behind the API without removing script-friendly output.
 
 ### SQLite state
 

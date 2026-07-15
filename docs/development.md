@@ -1,5 +1,8 @@
 # Development prerequisites
 
+The persistent daemon and authenticated versioned API are documented in
+[`control-plane-api.md`](control-plane-api.md).
+
 Switchyard development is Linux-first. Native Linux on `x86_64` or `aarch64` with a
 Linux Docker Engine and Docker Compose v2 is the supported path; CI runs on `x86_64`
 Linux. The runtime relies on Docker-provided Linux network namespaces for

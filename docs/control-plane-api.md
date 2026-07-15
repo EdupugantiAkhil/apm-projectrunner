@@ -1,0 +1,100 @@
+# Local control-plane API
+
+Switchyard's persistent control plane is available as either `switchyard daemon run`
+or the equivalent `switchyard-daemon` binary. The CLI command is the normal developer
+entry point because it can reuse the exact `switchyard` executable for script-compatible
+operations. The separate binary is useful to service managers and packagers; set
+`SWITCHYARD_CLI` when `switchyard` is not on its `PATH`.
+
+The daemon always binds a loopback address. Its default is an ephemeral port on
+`127.0.0.1`; a non-loopback `SWITCHYARD_DAEMON_BIND` is rejected. The global limit for
+heavy build/start work defaults to two and can be set with
+`SWITCHYARD_DAEMON_MAX_HEAVY`.
+
+## Discovery and authentication
+
+On startup, the daemon migrates `.switchyard/state.sqlite3`, reconciles generated
+manifests and best-effort Docker label observations through `switchyard-state`, and
+atomically writes `.switchyard/daemon.json`:
+
+```json
+{
+  "apiVersion": "v1",
+  "address": "127.0.0.1:49152",
+  "token": "<random bearer credential>",
+  "pid": 1234
+}
+```
+
+The file is mode `0600`. Clients reject files accessible by group or other users,
+incompatible versions, empty credentials, and non-loopback addresses. Every API request
+requires `Authorization: Bearer <token>`. Missing and invalid credentials both receive
+HTTP 401 and error code `unauthorized`; token comparison has no content-dependent early
+exit. Credentials and secret-bearing output lines are never written to daemon events.
+
+## Version 1 endpoints
+
+All supported routes are below `/api/v1`. JSON errors have stable `code`, `message`, and
+optional `context` fields. Framework types are not part of the public Rust contract.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/v1/system/status` | Daemon identity, PID, active count, and heavy-operation limit |
+| `POST` | `/api/v1/system/shutdown` | Graceful authenticated shutdown |
+| `POST` | `/api/v1/commands/validate` | Validate desired state |
+| `POST` | `/api/v1/commands/plan` | Render the deterministic plan |
+| `POST` | `/api/v1/commands/apply` | Apply/build/start (`switchyard up`) |
+| `POST` | `/api/v1/commands/bind` | Change a binding |
+| `POST` | `/api/v1/commands/status` | Inspect status, optionally including routes |
+| `POST` | `/api/v1/commands/routes` | Inspect route snapshots |
+| `POST` | `/api/v1/commands/logs` | Observe deployment or service logs |
+| `POST` | `/api/v1/commands/open` | Open a managed browser profile |
+| `POST` | `/api/v1/commands/down` | Stop while preserving volumes |
+| `POST` | `/api/v1/commands/cleanup` | Ownership-checked destructive cleanup |
+| `GET` | `/api/v1/operations/{id}` | Fetch current or durable terminal operation state |
+| `POST` | `/api/v1/operations/{id}/cancel` | Request cooperative cancellation |
+| `GET` | `/api/v1/operations/{id}/events` | Observe or resume the operation SSE stream |
+
+A command request always contains `bundle`. Command-specific fields are `consumer` and
+`group` for bind, `routes` for status, `target` for logs, `ui` for open, and `confirmed`
+for cleanup. Creation returns HTTP 202 and a versioned operation document. Status is
+`pending`, `running`, `succeeded`, `failed`, or `cancelled`. Script-compatible stdout,
+stderr, and exit code remain available for the daemon lifetime; terminal status and
+structured error data are durable in SQLite across restart. Raw output is deliberately
+not persisted because it can contain application secrets.
+
+Mutations acquire an expiring, heartbeated `switchyard-state` lease keyed by planned
+deployment ID. A second mutation receives HTTP 409 and `operation_lock_contended`;
+reads remain independent. Apply operations additionally acquire the global heavy-work
+semaphore. Shutdown and cancellation terminate child commands cooperatively, record
+`cancelled`, and release the lease.
+
+## Server-Sent Events
+
+`GET /api/v1/operations/{id}/events` emits standard SSE records. IDs start at one and
+increase monotonically per operation stream. Event names are `operation`, `build`,
+`health`, `route`, and `log`. Send the last processed ID in `Last-Event-ID` to replay
+retained later events. Streams retain the latest 2,048 records for the daemon lifetime
+and close after the terminal event. Disconnecting an observer does not cancel work.
+
+## Compatibility policy
+
+The URL prefix and `apiVersion` fields version the contract independently of the daemon
+executable. Version 1 may gain optional fields, new event data, new error codes, and new
+endpoints. Existing field meanings, required request fields, enum values, and endpoint
+behavior do not change within v1. An incompatible change requires `/api/v2`; v1 remains
+available for at least the next minor release and until the bundled CLI and supported
+GUI have migrated.
+
+## CLI behavior and test boundary
+
+Ordinary `switchyard` commands inspect secure project-local discovery first. A reachable
+daemon returns the existing stdout, stderr, and exit code. Missing or stale discovery
+falls back to the original one-shot path, so scripts do not require a daemon.
+`SWITCHYARD_BYPASS_DAEMON=1` is an internal recursion guard for the daemon backend.
+
+Auth, versioning, SSE replay, locking, the heavy limit, cancellation, restart state, and
+CLI output parity are tested with an in-memory HTTP service and stub operations, without
+Docker. Real startup additionally needs permission to bind a loopback socket. Apply,
+status, logs, down, cleanup, and Docker-label observation need a working Docker CLI for
+meaningful runtime results; startup continues when Docker observation is unavailable.

@@ -75,3 +75,36 @@ implemented shape and the evidence used to close a phase.
   `bytes` dependency of `router-pingora`. They must be rerun in a network-enabled or
   fully vendored environment; this is an environment verification gap, not a recorded
   pass.
+
+### Daemon and API
+
+- `switchyard-daemon` provides a standalone binary and the developer-facing
+  `switchyard daemon run/status/stop` group. It binds loopback only, runs migrations and
+  startup reconciliation, writes an atomic mode-0600 discovery document, and cancels
+  and joins active operations before graceful shutdown.
+- Axum is the small HTTP routing layer on the existing Tokio runtime. Versioned serde
+  contract types remain framework-neutral. Every endpoint is under `/api/v1`, uses
+  stable JSON error codes, and requires a random project-local bearer credential.
+- The subprocess backend reuses the exact one-shot CLI implementation with an internal
+  recursion guard, preserving stdout, stderr, and exit codes. Secure discovery selects
+  the daemon when reachable; absent or stale discovery retains the old one-shot path.
+- Mutations use heartbeated `switchyard-state` deployment leases; apply work also uses a
+  configurable global semaphore. Reads acquire neither. Cancellation, shutdown,
+  subprocess completion, durable status updates, and lock release share a terminal path.
+- Per-operation SSE publishes operation, build, health, route, and log events with
+  monotonic IDs, retains 2,048 records, and replays records after `Last-Event-ID`.
+  Status and structured errors survive restart in SQLite; raw command output and event
+  buffers remain memory-only to avoid persisting possible application secrets.
+- Docker-free tests cover auth, versioned-only routing, every SSE category and replay,
+  mutation contention, global limiting, mid-operation cancellation, SQLite restart
+  recovery, no-daemon fallback, and byte-identical API-backend CLI output. The production
+  listener and Docker observation paths remain integration boundaries; this execution
+  sandbox rejects socket creation with `EPERM`.
+- Verification for this increment: `cargo test -p switchyard-daemon --all-features`
+  passed (6 tests plus doc tests); the focused CLI fallback/API parity integration test
+  passed; workspace Clippy with `-D warnings` passed; workspace rustdoc with
+  `RUSTDOCFLAGS="-D warnings"` passed; and workspace formatting passed. The exact
+  workspace test built successfully and passed every test reached before the first
+  socket-based Pingora integration test (`grpc_h2c`) failed to bind with sandbox
+  `EPERM`. An earlier isolated CLI run reached the same restriction in its pre-existing
+  Unix-socket host-runtime test. This is the sole repository-test verification gap.
