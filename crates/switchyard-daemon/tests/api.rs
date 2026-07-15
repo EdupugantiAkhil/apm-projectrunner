@@ -577,6 +577,21 @@ async fn definition_absence_and_validation_failures_have_stable_structured_error
     assert_eq!(error["context"]["diagnostics"][0]["code"], "invalid_yaml");
     assert!(error["context"]["diagnostics"][0]["message"].is_string());
     assert!(!temp.path().join("deployments/demo.yaml").exists());
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "PUT",
+        "/api/v1/deployments/..%2Fescape/definition",
+        Some(json!({"yaml":"unused","expectedHash":"unused"})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 404);
+    assert_eq!(
+        json_body::<Value>(&body)["code"],
+        "deployment_definition_not_found"
+    );
 }
 
 #[tokio::test]

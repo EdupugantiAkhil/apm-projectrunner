@@ -1605,6 +1605,13 @@ fn update_deployment_definition_blocking(
     deployment: &str,
     request: UpdateDeploymentDefinitionRequestV1,
 ) -> Response {
+    if !valid_deployment_name(deployment) {
+        return api_error(
+            StatusCode::NOT_FOUND,
+            "deployment_definition_not_found",
+            "deployment definition not found",
+        );
+    }
     let path = definition_path(inner, deployment);
     let current = match fs::read_to_string(&path) {
         Ok(current) => current,

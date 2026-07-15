@@ -428,3 +428,27 @@ implemented shape and the evidence used to close a phase.
   new `parses_operation_cancel`, plus the daemon-parity integration test).
 - Earlier per-part verification is recorded in the Part 1–5 sections above; the
   routing proof remains covered by `scripts/phase4-proof.sh`.
+
+## Post-phase-6 full review and re-verification (2026-07-15)
+
+- `./scripts/phase6-proof.sh`: re-run PASSED end to end on this host, including the
+  live jas-base smoke with clean ownership-scoped teardown.
+- `examples/routing-matrix/smoke.sh`: re-run PASSED (the standing live gate for
+  Phases 4 and 5; `phase4-proof.sh`/`phase5-proof.sh` are this plus already-passed
+  workspace/daemon tests).
+- `./scripts/check.sh audit`: cargo-audit 0.22.1 (0.22.2 needs rustc 1.88; the
+  workspace toolchain is 1.85) with the two documented protobuf ignores.
+- Manual code review of the highest-risk paths (daemon auth middleware and SSE
+  query-token scope, GUI static serving traversal guard, definition create/update
+  atomicity and optimistic concurrency, live-bind rollback/compensation, state-store
+  lease acquire/heartbeat/release, sources `guard_mutation` containment, overlay file
+  injection and secret placeholder/runtime injection, daemon discovery client): no
+  major defects found.
+- Review fix: `PUT /api/v1/deployments/{name}/definition` now validates the
+  deployment name before deriving the definition path (the GET already did),
+  closing a percent-encoded traversal-shaped read; covered by a new 404 assertion in
+  `definition_absence_and_validation_failures_have_stable_structured_errors`.
+- Note for test runs: the daemon test suite's startup reconciliation observes real
+  Docker labels, so running it concurrently with a live smoke script can leak that
+  smoke's deployments into `deployment_and_adapter_endpoints_are_authenticated_and_
+  shape_empty_state`; run them sequentially.
