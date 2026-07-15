@@ -792,3 +792,56 @@ implemented shape and the evidence used to close a phase.
   output mode 0600, all sections present, paths still readable after the
   scoped-redaction fix.
 - `/dist/` added to `.gitignore` so release artifacts cannot be committed.
+
+## Phase 7 security and support policies — Part 8
+
+- Audited host listeners, browser-extension permissions, router and daemon
+  administration channels, host/mDNS/Tailscale state, Docker ownership and cleanup,
+  overlay/script/bundle/diagnostics file paths, secret references and redaction, and
+  release archive inputs against DESIGN.md section 8.
+- Published `docs/security-review.md` with concrete implementation/test evidence,
+  adversarial checks, and nine stable findings. Severity count: critical 0, high 4,
+  medium 4, low 0, informational 1. No product code was changed; remediation remains for
+  reviewer triage.
+- Published `docs/support-policy.md` covering alpha configuration and state schemas,
+  deliberate compatibility goldens, the one-minor/90-day parsing and API overlap window,
+  additive `/api/v1` evolution, same-release CLI/daemon support, ordered forward-only
+  SQLite migration/backups, newer-schema refusal, and backup-only downgrade.
+- Linked both policies from `docs/development.md` and the repository README. The Phase 7
+  implementation-plan checkboxes remain untouched for reviewer verification.
+- Part 8 verification: `cargo fmt --all --check` passed; every new relative Markdown
+  link target was inspected and exists; `git diff --check` passed.
+
+### Part 8 reviewer verification and Phase 7 exit gate (2026-07-16)
+
+- Security review (`docs/security-review.md`): the reviewer independently
+  verified the four high findings against the code. SR-2 (unowned Compose-project
+  orphans deletable via `up --remove-orphans` without the ownership proof that
+  `down`/`cleanup` already required) was confirmed and fixed during sign-off:
+  `DockerRuntime::up` now runs the same `discover_compose_project` +
+  `verify_ownership` preflight, proven by
+  `up_refuses_when_the_compose_project_contains_an_unowned_container`. SR-3, SR-4,
+  and SR-7 (high) and the four mediums are accurate and recorded as an explicit
+  unchecked remediation item in Phase 7 — their fixes need deliberate design
+  decisions, not rushed patches. Support/deprecation policies published in
+  `docs/support-policy.md`.
+- Exit gate evidence:
+  - LAN sharing explicit/inspectable/reversible/secure-by-default: Parts 1–3
+    live proofs (opt-in + acknowledgement, exposure warnings and status/API
+    surfacing, remote reachability and revert-to-loopback closure verified from
+    a second machine, mDNS withdrawal on down, advisory-only tailnet
+    publication).
+  - Bundle round-trip across supported machines: routing-matrix exported here,
+    imported and validated with the *installed release binary* on a second
+    aarch64 Linux machine (poco-f1-nixos, NixOS): checksum verified,
+    `Compatibility: ok`, required-local-inputs scaffolded, definition validates;
+    sanitization tests prove no secrets/absolute paths embedded.
+  - Release artifacts: `release-smoke.sh` locally plus on the second machine a
+    full checksum-verify → install → run → reinstall (upgrade) → uninstall
+    sequence ending with zero files in the prefix; an accidental default-prefix
+    install was also fully removed by the manifest-driven uninstall, a
+    real-world ownership-cleanup proof. Recovery procedures remain covered by
+    the tested `docs/upgrade-recovery.md` paths (pre-migration backups,
+    newer-schema refusal, SQLite delete/restore rebuild).
+- Phase 7 remains open only on the tracked security-remediation item; every
+  other Phase 7 task and the exit gate are complete.

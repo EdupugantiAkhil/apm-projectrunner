@@ -56,6 +56,10 @@ proof is documented in
 [examples/routing-matrix/README.md](examples/routing-matrix/README.md).
 Browser tab identity, the unpacked Chromium extension, and managed-profile fallback are
 documented in [docs/browser-routing.md](docs/browser-routing.md).
+The current security audit is documented in
+[docs/security-review.md](docs/security-review.md), and version compatibility and
+deprecation commitments are documented in
+[docs/support-policy.md](docs/support-policy.md).
 
 Run the routing-proof release gate from a clean checkout with
 `./scripts/phase4-proof.sh`; see the

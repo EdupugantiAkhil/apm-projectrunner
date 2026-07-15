@@ -209,6 +209,14 @@ impl<E: CommandExecutor> DockerRuntime<E> {
                 detail: "SWITCHYARD_ROUTER_TOKEN must be set".into(),
             });
         }
+        // `--remove-orphans` can delete containers in this Compose project, so apply
+        // demands the same ownership proof as `down` and `cleanup` (SR-2): every
+        // resource already carrying this deployment's or project's labels must be
+        // Switchyard-owned before a destructive flag is passed.
+        verify_ownership(
+            &plan.deployment,
+            &self.discover_compose_project(&plan.deployment, &plan.compose_project)?,
+        )?;
         let environment = secret_environment(plan)?;
         self.executor.stream_with_environment(
             "docker",
@@ -659,13 +667,20 @@ mod tests {
         let runtime = DockerRuntime::new(FakeExecutor::default());
         runtime.up(&plan()).unwrap();
         let calls = runtime.executor.calls.lock().unwrap();
-        assert_eq!(calls.len(), 2);
+        // Ownership-discovery captures precede the two compose invocations.
+        assert!(calls.len() > 2);
+        assert!(calls.iter().any(|(_, arguments)| {
+            arguments
+                .iter()
+                .any(|argument| argument.starts_with("label=com.docker.compose.project="))
+        }));
+        let build = &calls[calls.len() - 2];
         assert!(
-            calls[0]
+            build
                 .1
                 .ends_with(&["--progress".into(), "plain".into(), "build".into()])
         );
-        assert!(calls[1].1.ends_with(&[
+        assert!(calls[calls.len() - 1].1.ends_with(&[
             "up".into(),
             "--detach".into(),
             "--wait".into(),
@@ -701,6 +716,61 @@ mod tests {
             state: None,
         };
         assert!(verify_ownership("demo", &[resource]).is_err());
+    }
+
+    #[test]
+    fn up_refuses_when_the_compose_project_contains_an_unowned_container() {
+        struct OrphanExecutor {
+            calls: Mutex<Vec<(String, Vec<String>)>>,
+        }
+        impl CommandExecutor for OrphanExecutor {
+            fn capture(
+                &self,
+                program: &str,
+                arguments: &[String],
+            ) -> Result<CommandOutput, RuntimeError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push((program.into(), arguments.to_vec()));
+                let is_container_list = arguments.first().is_some_and(|noun| noun == "container")
+                    && arguments.get(1).is_some_and(|verb| verb == "list");
+                let matches_project = arguments
+                    .iter()
+                    .any(|argument| argument.starts_with("label=com.docker.compose.project="));
+                let stdout = if is_container_list && matches_project {
+                    "orphan1\n".into()
+                } else if arguments.iter().any(|argument| argument == "inspect") {
+                    // A container in the Compose project without Switchyard labels.
+                    r#"[{"Id":"orphan1","Name":"/coincidental","Config":{"Labels":{}},"State":{"Status":"running"}}]"#.into()
+                } else {
+                    String::new()
+                };
+                Ok(CommandOutput {
+                    stdout,
+                    stderr: String::new(),
+                })
+            }
+            fn stream(&self, program: &str, arguments: &[String]) -> Result<(), RuntimeError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push((program.into(), arguments.to_vec()));
+                Ok(())
+            }
+        }
+        let runtime = DockerRuntime::new(OrphanExecutor {
+            calls: Mutex::new(Vec::new()),
+        });
+        let error = runtime.up(&plan()).unwrap_err();
+        assert!(error.to_string().contains("ownership"), "{error}");
+        // The destructive compose invocations must never have been reached.
+        let calls = runtime.executor.calls.lock().unwrap();
+        assert!(!calls.iter().any(|(_, arguments)| {
+            arguments
+                .iter()
+                .any(|argument| argument == "up" || argument == "build")
+        }));
     }
 
     #[test]

@@ -235,3 +235,10 @@
   nested matches for optional discovery-token parsing. Lesson: edition selection does
   not imply stabilization of adjacent language features; compile new syntax against
   the repository's pinned compiler before relying on it.
+
+## 2026-07-16 — Phase 7 security review Part 8
+
+- A documentation link-check loop assigned a filename to lowercase `path`, which is a
+  special zsh array tied to `PATH`; subsequent commands in that shell could not be found.
+  Correction: use a non-special name such as `relative_path`. Lesson: avoid zsh special
+  parameter names in repository scripts and ad hoc verification loops.

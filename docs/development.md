@@ -6,6 +6,9 @@ Overlay composition, secret handling, change previews, and concurrent variations
 documented in [`overlays.md`](overlays.md).
 Portable export/import bundles and safe sharing guidance are documented in
 [`bundles.md`](bundles.md).
+The Phase 7 source audit and its tracked findings are in
+[`security-review.md`](security-review.md). Configuration, HTTP API, state-file, and
+SQLite compatibility commitments are in [`support-policy.md`](support-policy.md).
 
 Switchyard development is Linux-first. Native Linux on `x86_64` or `aarch64` with a
 Linux Docker Engine and Docker Compose v2 is the supported path; CI runs on `x86_64`

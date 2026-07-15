@@ -432,16 +432,24 @@ Entry gate: the product MVP is stable for local single-developer use.
 - [x] Add resource-leak, long-running soak, reload-storm, and high-concurrency tests.
 - [x] Add platform packaging, checksums, signatures, and release notes.
 - [x] Add diagnostics bundle generation with automatic secret redaction.
-- [ ] Complete a security review of host listeners, extension permissions, admin
+- [x] Complete a security review of host listeners, extension permissions, admin
       channels, Docker authority, file mounts, and secret handling.
-- [ ] Publish support and deprecation policies for configuration and API versions.
+      - `docs/security-review.md`; SR-2 (unowned-orphan deletion via
+        `up --remove-orphans`) was fixed during review sign-off.
+- [ ] Remediate the open security-review findings (`docs/security-review.md`):
+      SR-3 broad/writable source-mount validation, SR-4 symlink-safe generated and
+      imported writes, SR-7 literal credential-looking values in artifacts (high);
+      SR-1 GUI symlink serving, SR-5 overlay container-symlink boundary, SR-6
+      script-container non-root default, SR-8 command-result redaction (medium).
+- [x] Publish support and deprecation policies for configuration and API versions.
+      - `docs/support-policy.md`.
 
 ### Phase 7 exit gate — team release
 
-- [ ] LAN/private-network sharing is explicit, inspectable, reversible, and secure by
+- [x] LAN/private-network sharing is explicit, inspectable, reversible, and secure by
       default.
-- [ ] Deployment bundles round-trip across supported machines without embedding secrets.
-- [ ] Release artifacts pass installation, upgrade, recovery, and uninstall tests.
+- [x] Deployment bundles round-trip across supported machines without embedding secrets.
+- [x] Release artifacts pass installation, upgrade, recovery, and uninstall tests.
 
 ## Deferred ideas
 
