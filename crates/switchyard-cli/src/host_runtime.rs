@@ -278,6 +278,9 @@ impl<'a> HostRuntime<'a> {
     }
 
     pub fn stop(&self) -> Result<(), HostRuntimeError> {
+        crate::lan_preflight::LanRuntime::new(self.workspace_root, self.plan)
+            .stop()
+            .map_err(|error| HostRuntimeError::Startup(error.to_string()))?;
         let paths = self.runtime_paths(false)?;
         let Some(state) = self.read_state(&paths)? else {
             return Ok(());

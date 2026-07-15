@@ -3,6 +3,7 @@
 use std::{
     fs,
     future::Future,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     pin::Pin,
     sync::{
@@ -646,6 +647,36 @@ async fn deployment_list_and_detail_include_applied_manifest_and_reconciliation(
         .unwrap(),
     )
     .unwrap();
+    fs::create_dir_all(temp.path().join(".switchyard/run/demo")).unwrap();
+    fs::write(
+        temp.path()
+            .join(".switchyard/run/demo/mdns-publication.json"),
+        serde_json::to_vec(&json!({
+            "apiVersion": "switchyard.dev/mdns-publication/v1alpha1",
+            "deployment": "demo",
+            "definitionHash": "definition-1",
+            "publishers": [{
+                "pid": 42,
+                "startTicks": 99,
+                "executable": "/usr/bin/avahi-publish-address",
+                "name": "demo.local",
+                "address": "192.168.1.5"
+            }],
+            "checks": [{
+                "name": "network-boundaries",
+                "outcome": "warn",
+                "detail": "mDNS stays on one link"
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::set_permissions(
+        temp.path()
+            .join(".switchyard/run/demo/mdns-publication.json"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
     drop(store);
     let api = start_api(&temp, Arc::new(ImmediateBackend), 1);
 
@@ -676,6 +707,10 @@ async fn deployment_list_and_detail_include_applied_manifest_and_reconciliation(
             .as_array()
             .is_some_and(|addresses| !addresses.is_empty())
     );
+    assert_eq!(
+        list["deployments"][0]["mdnsPublication"]["publications"][0]["status"],
+        "published"
+    );
 
     let (status, body) = request(
         &api,
@@ -697,6 +732,10 @@ async fn deployment_list_and_detail_include_applied_manifest_and_reconciliation(
     assert_eq!(
         detail["gatewayExposure"],
         list["deployments"][0]["gatewayExposure"]
+    );
+    assert_eq!(
+        detail["mdnsPublication"],
+        list["deployments"][0]["mdnsPublication"]
     );
 
     let (status, _) = request(

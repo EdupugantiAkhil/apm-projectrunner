@@ -42,8 +42,9 @@ use crate::contract::{
     CreateDeploymentRequestV1, CreateWorktreeRequestV1, DaemonStatusV1, DeploymentDefinitionV1,
     DeploymentDetailV1, DeploymentOperationSummaryV1, DeploymentRoutesV1, DeploymentSummaryV1,
     DeploymentValidationV1, DeploymentsV1, DiscoveryV1, EventKindV1, EventV1, GatewayExposureV1,
-    OperationStatusV1, OperationV1, RegisterSourceRequestV1, RemoveWorktreeRequestV1,
-    RouteHistoryV1, RouterBindingV1, TransitionPolicyV1, UpdateDeploymentDefinitionRequestV1,
+    MdnsCheckV1, MdnsPublicationV1, MdnsPublishedNameV1, OperationStatusV1, OperationV1,
+    RegisterSourceRequestV1, RemoveWorktreeRequestV1, RouteHistoryV1, RouterBindingV1,
+    TransitionPolicyV1, UpdateDeploymentDefinitionRequestV1,
 };
 
 const LOCK_TTL_MILLIS: i64 = 15_000;
@@ -1337,6 +1338,55 @@ fn snapshot_gateway_exposure(snapshot: Option<&Value>) -> Option<GatewayExposure
     })
 }
 
+fn read_mdns_publication(root: &Path, deployment: &str) -> Option<MdnsPublicationV1> {
+    let path = root
+        .join(".switchyard/run")
+        .join(deployment)
+        .join("mdns-publication.json");
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+    if value.get("apiVersion")?.as_str()? != "switchyard.dev/mdns-publication/v1alpha1"
+        || value.get("deployment")?.as_str()? != deployment
+    {
+        return None;
+    }
+    let publications = value
+        .get("publishers")?
+        .as_array()?
+        .iter()
+        .map(|publisher| {
+            Some(MdnsPublishedNameV1 {
+                name: publisher.get("name")?.as_str()?.to_owned(),
+                address: publisher.get("address")?.as_str()?.parse().ok()?,
+                pid: u32::try_from(publisher.get("pid")?.as_u64()?).ok()?,
+                status: "published".into(),
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let checks = value
+        .get("checks")?
+        .as_array()?
+        .iter()
+        .map(|check| {
+            Some(MdnsCheckV1 {
+                name: check.get("name")?.as_str()?.to_owned(),
+                outcome: check.get("outcome")?.as_str()?.to_owned(),
+                detail: check.get("detail")?.as_str()?.to_owned(),
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(MdnsPublicationV1 {
+        publications,
+        checks,
+    })
+}
+
 fn read_manifest(root: &Path, deployment: &str) -> Option<Value> {
     let path = root
         .join(".switchyard/generated")
@@ -1748,6 +1798,8 @@ async fn list_deployments(State(inner): State<Arc<Inner>>) -> Response {
             let manifest = read_manifest(&inner.config.project_root, &stored.deployment);
             let (custom_domains, bindings) = snapshot_fields(snapshot.as_ref());
             let gateway_exposure = snapshot_gateway_exposure(snapshot.as_ref());
+            let mdns_publication =
+                read_mdns_publication(&inner.config.project_root, &stored.deployment);
             DeploymentSummaryV1 {
                 name: stored.deployment,
                 definition_hash: stored.definition_hash,
@@ -1769,6 +1821,7 @@ async fn list_deployments(State(inner): State<Arc<Inner>>) -> Response {
                 custom_domains,
                 bindings,
                 gateway_exposure,
+                mdns_publication,
             }
         })
         .collect();
@@ -1849,6 +1902,7 @@ async fn deployment_detail(
     };
     let (custom_domains, bindings) = snapshot_fields(snapshot.as_ref());
     let gateway_exposure = snapshot_gateway_exposure(snapshot.as_ref());
+    let mdns_publication = read_mdns_publication(&inner.config.project_root, &deployment);
     Json(DeploymentDetailV1 {
         api_version: API_VERSION.into(),
         deployment,
@@ -1863,6 +1917,7 @@ async fn deployment_detail(
         custom_domains,
         bindings,
         gateway_exposure,
+        mdns_publication,
     })
     .into_response()
 }

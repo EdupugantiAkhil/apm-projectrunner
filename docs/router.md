@@ -89,11 +89,56 @@ LAN wildcard or specific binds. `switchyard status` reports `exposure: loopback`
 also include `gatewayExposure.mode` and `gatewayExposure.exposedAddresses`, and the
 router log contains a structured `lan_exposure_warning` startup event.
 
+On Linux, an acknowledged LAN deployment also publishes every custom domain ending in
+`.local` to each concrete, non-loopback exposed address that sits on a genuinely
+LAN-reachable interface; addresses on VPN-style links (`tailscale*`, `tun*`, `wg*`, or
+host routes) and container bridges (`docker*`, `br-*`, `veth*`, `virbr*`) are exposed by
+the gateway but never advertised over mDNS, because other LAN devices could not reach
+them. Install `avahi-utils`, which provides `avahi-publish-address` and `avahi-browse`,
+and run `avahi-daemon`. Switchyard starts one owned
+`avahi-publish-address -a -R <name> <address>` process per name/address pair after the
+gateway is ready (`-R` avoids reverse-PTR collisions with avahi-daemon's own records). Domains with any other suffix and loopback-only deployments
+are never published. Publisher PID identity and the most recent checks are recorded in
+the owner-only `.switchyard/run/<deployment>/mdns-publication.json`; logs are in the
+same directory. `down`, `cleanup`, gateway replacement, and a re-apply that disables
+LAN exposure stop only identity-verified owned publishers and remove the state.
+
+Before publication, `switchyard up` reports these structured LAN checks; `status`
+retains the report and shows each name/address as `published` or `failed`:
+
+- `avahi-publish-address` is a hard requirement. If it is absent, install
+  `avahi-utils`.
+- `avahi-daemon` is probed through a short terminating `avahi-browse`; an unavailable
+  daemon is a hard failure because publication cannot work.
+- `lan-interface` requires at least one exposed, non-loopback, non-VPN interface.
+  Interface names beginning with `tailscale`, `tun`, or `wg`, and `/32` IPv4 or `/128`
+  IPv6 host routes reported by `ip`, are called out as VPN-style links. Publishing a
+  name does not make multicast DNS traverse those links.
+- `firewall-udp-5353` checks an active firewalld zone or an explicit ufw rule when those
+  policies are cheaply readable. nftables rulesets, custom chains, container/network
+  namespaces, upstream access points, and OS firewalls that cannot be read are reported
+  as indeterminate. This check never guesses that a path is open; permit mDNS UDP 5353
+  and the configured gateway TCP port in both host and network policy.
+- `network-boundaries` always warns that mDNS is link-local. It normally does not cross
+  routed subnets, VLANs, VPNs, or guest Wi-Fi/client-isolation boundaries.
+- After publishers start, `name-resolution` uses a short local `getent hosts` lookup.
+  Failure is a warning, not an apply failure, because the publisher can be healthy while
+  local NSS lacks `nss-mdns`. Check `nss-mdns`, Avahi, and UDP 5353 firewall policy. A
+  local pass still does not prove that another LAN device can resolve or reach the name.
+
+The practical end-to-end check is to resolve the `.local` name and connect to the
+configured gateway port from a second device on the same trusted LAN. Guest isolation,
+multicast filtering, or a different subnet can prevent that even when every local check
+passes. The daemon's optional `mdnsPublication` list/detail field mirrors the CLI-owned
+publisher state and preflight report for inspection; it does not start publishers.
+
 To revert, restore every listener bind to loopback and remove the `exposure` block (or
 set `mode: loopback`), then run the normal `switchyard up` apply again. The owned host
-gateway is stopped before the replacement starts, closing the LAN listeners. Public
-internet exposure, port-forwarding, and production ingress are explicitly out of scope;
-LAN mode is intended only for trusted private networks.
+gateway and mDNS publishers are stopped before the replacement starts, closing the LAN
+listeners and withdrawing the names. Public-internet exposure is unsupported and
+explicitly out of scope: Switchyard does not configure router port-forwarding, public
+DNS, TLS ingress, authentication, or production firewall policy. LAN mode is intended
+only for trusted private networks and must not be used as public ingress.
 
 When a deployment includes `hostRouter`, `switchyard up` starts the native gateway
 after Compose reports healthy and waits for all listeners plus its administration

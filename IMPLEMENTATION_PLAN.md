@@ -406,11 +406,11 @@ Entry gate: the product MVP is stable for local single-developer use.
 ### LAN and private-network access
 
 - [x] Implement opt-in LAN gateway binding with an explicit exposure warning.
-- [ ] Implement mDNS publication and preflight checks.
-- [ ] Detect firewall, subnet, guest-network, VPN, and name-resolution limitations where
+- [x] Implement mDNS publication and preflight checks.
+- [x] Detect firewall, subnet, guest-network, VPN, and name-resolution limitations where
       practical.
 - [ ] Add an optional Tailscale or private-DNS publication adapter.
-- [ ] Keep public-internet exposure outside the supported scope.
+- [x] Keep public-internet exposure outside the supported scope.
 
 ### Import, export, and collaboration
 

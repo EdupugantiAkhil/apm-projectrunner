@@ -161,3 +161,32 @@
   upstreams loopback-only, matching host-gateway semantics. Lesson: a shared router
   schema fixture is not automatically valid for every execution mode; tests for
   host-only policy must establish host-mode preconditions explicitly.
+
+## 2026-07-15 — Phase 7 LAN exposure Part 2
+
+- The first preflight draft classified common VPN interface names but did not feed
+  `/32` IPv4 and `/128` IPv6 host routes into the same warning. Correction: parse
+  read-only `ip -o address show` output behind the command seam and test both address
+  families. Lesson: when an acceptance criterion gives multiple detection signals,
+  test every signal independently rather than treating examples as alternatives.
+- The initial status path returned planned publications as failed when no state existed
+  but omitted the check report. Correction: run the same non-mutating injected preflight
+  for unstarted status so both `up` and `status` expose check meanings. Lesson: a
+  structured diagnostic contract should have the same shape before and after resource
+  creation, even when some observations are necessarily unavailable.
+
+## 2026-07-16 — Phase 7 mDNS Part 2 (found only by live verification)
+
+- `find_binary` canonicalizes `avahi-publish-address` to `avahi-publish`, whose
+  argv[0]-based dispatch then fails with "No command specified." Correction: pass
+  `-a` explicitly. Lesson: canonicalizing a multi-call binary's path changes its
+  behavior; sandboxed unit tests with a fake runner cannot catch this.
+- `avahi-publish -a` also registers a reverse PTR record, which collides with
+  avahi-daemon's own record for the host's primary address ("Local name
+  collision"). Correction: pass `-R`. The immediate-exit error now includes the
+  publisher's last log line so the next such failure is self-explanatory.
+- Publication targeted every exposed non-loopback address, including Tailscale and
+  Docker bridge addresses that other LAN devices cannot reach (and avahi may
+  refuse). Correction: advertise only non-VPN, non-container-bridge interface
+  addresses while preflight still warns about the excluded ones. Lesson: "exposed"
+  (listener binds) and "advertisable" (mDNS targets) are different sets.

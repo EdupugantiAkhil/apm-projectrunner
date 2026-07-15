@@ -1,6 +1,9 @@
 //! Framework-neutral version 1 control-plane API contract.
 
-use std::{net::SocketAddr, path::PathBuf};
+use std::{
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -254,6 +257,7 @@ pub struct DeploymentSummaryV1 {
     pub custom_domains: Vec<String>,
     pub bindings: Value,
     pub gateway_exposure: Option<GatewayExposureV1>,
+    pub mdns_publication: Option<MdnsPublicationV1>,
 }
 
 /// Effective host-gateway listener exposure for deployment inspection.
@@ -262,6 +266,31 @@ pub struct DeploymentSummaryV1 {
 pub struct GatewayExposureV1 {
     pub mode: router_config::GatewayExposureMode,
     pub exposed_addresses: Vec<SocketAddr>,
+}
+
+/// CLI-owned mDNS publisher state and its most recent LAN preflight report.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MdnsPublicationV1 {
+    pub publications: Vec<MdnsPublishedNameV1>,
+    pub checks: Vec<MdnsCheckV1>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MdnsPublishedNameV1 {
+    pub name: String,
+    pub address: IpAddr,
+    pub pid: u32,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MdnsCheckV1 {
+    pub name: String,
+    pub outcome: String,
+    pub detail: String,
 }
 
 /// Versioned deployment-list response.
@@ -329,6 +358,7 @@ pub struct DeploymentDetailV1 {
     pub custom_domains: Vec<String>,
     pub bindings: Value,
     pub gateway_exposure: Option<GatewayExposureV1>,
+    pub mdns_publication: Option<MdnsPublicationV1>,
 }
 
 /// Project-local daemon discovery document. Its containing file is mode 0600.

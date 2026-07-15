@@ -3,6 +3,7 @@
 mod browser;
 mod cli;
 mod host_runtime;
+mod lan_preflight;
 mod runtime;
 
 use std::{
@@ -110,6 +111,8 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                     ))
                 })?;
             println!("host gateway: {host}");
+            let mdns = lan_preflight::LanRuntime::new(&workspace_root, &plan).start()?;
+            print_mdns_status(&mdns);
             println!("deployment `{}` is healthy", plan.deployment);
         }
         CliCommand::Bind {
@@ -136,6 +139,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 "Host gateway: {}",
                 host_runtime::HostRuntime::new(&workspace_root, &plan).status()?
             );
+            print_mdns_status(&lan_preflight::LanRuntime::new(&workspace_root, &plan).status()?);
             print_source_identities(&plan);
             if routes {
                 print_routes(&workspace_root, &plan)?;
@@ -213,6 +217,25 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         | CliCommand::WorktreeRemove { .. } => unreachable!("handled before command dispatch"),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn print_mdns_status(status: &lan_preflight::MdnsStatus) {
+    if status.is_empty() {
+        println!("mDNS publication: not configured");
+        return;
+    }
+    for publication in &status.publications {
+        println!(
+            "mDNS publication: {} {} -> {} ({})",
+            publication.outcome, publication.name, publication.address, publication.detail
+        );
+    }
+    for check in &status.checks {
+        println!(
+            "LAN check [{}] {}: {}",
+            check.outcome, check.name, check.detail
+        );
+    }
 }
 
 fn daemon_compatible(command: &CliCommand) -> bool {

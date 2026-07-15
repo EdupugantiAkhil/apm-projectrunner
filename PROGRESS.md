@@ -494,3 +494,59 @@ implemented shape and the evidence used to close a phase.
   content; the same config without the exposure opt-in was refused with
   `LanExposureNotEnabled`; reverting the bind to loopback made the remote curl
   unreachable again while local traffic kept working.
+
+## Phase 7 LAN and private-network access — Part 2
+
+- Added CLI-owned `.local` mDNS publication for acknowledged LAN host gateways. The CLI
+  derives only custom domains ending in `.local`, expands them across concrete exposed
+  non-loopback addresses, and launches one `avahi-publish-address` process per pair only
+  after gateway readiness. Owner-only state records deployment/definition ownership,
+  PID start ticks, executable, exact name/address arguments, and the check report.
+- Gateway stop, replacement, `down`, `cleanup`, and re-apply to loopback now terminate
+  identity-verified publishers and remove their state. Missing `avahi-utils`, an
+  unreachable Avahi daemon, or an immediately exiting publisher fails apply with an
+  actionable diagnostic and cleans partial publication state.
+- Added structured preflight results for Avahi tools/daemon reachability, usable LAN
+  interfaces, VPN-style names and `/32`/`/128` host routes, best-effort firewalld/ufw/
+  nftables visibility, the always-on link-boundary limitation, and post-publication
+  local name resolution. CLI `up` and `status` show checks plus per-name/address
+  published/failed state.
+- Daemon deployment list/detail now expose optional `mdnsPublication`, derived from the
+  CLI's owner-only state; the daemon does not manage Avahi processes. Router docs cover
+  setup, check meanings, detection limits, same-link/guest/VPN/firewall/NSS constraints,
+  reversal, and the unsupported public-internet boundary.
+- Hermetic tests cover `.local` selection, loopback exclusion, state JSON/permissions,
+  preflight report shaping, firewall result shaping through command injection,
+  VPN/host-route classification, and daemon list/detail projection. Verification run:
+  `cargo fmt --all --check`, all 18 daemon tests, 39 CLI unit tests plus daemon parity,
+  and workspace/all-target clippy with `-D warnings` passed. The exact requested
+  combined package test reached 39/40 CLI tests; only the pre-existing Unix-listener
+  startup-cleanup test was blocked by the sandbox's `Operation not permitted`, so the
+  CLI suite was re-run successfully with that one socket test filtered out.
+- Live verification remains required on a Linux host with `avahi-utils`, Avahi and
+  sockets available: confirm publication and local resolution, resolve/connect from a
+  second same-LAN machine, observe firewall and VPN warnings on representative hosts,
+  verify publisher cleanup on down/re-apply, and exercise the immediate-exit diagnostic
+  with Avahi stopped.
+
+### Part 2 reviewer verification (2026-07-16)
+
+- Reviewer fixes after live testing (details in AGENTMISTAKES.md): spawn publishers
+  with `-a -R` (argv[0] dispatch and reverse-PTR collision), advertise only
+  non-VPN/non-bridge interface addresses while preflight warns on the rest, and
+  include the publisher log tail in immediate-exit errors.
+- `./scripts/check.sh`: PASSED end to end after the fixes.
+- Live proof (radxa 192.168.1.10 publishing, poco-f1-nixos 192.168.1.167
+  observing): `switchyard up` on the LAN-enabled routing-matrix fixture published
+  `ui-1.routing-matrix.local -> 192.168.1.10` with the full check report (pass:
+  avahi binary, avahi-daemon, lan-interface; warn: vpn-interface for tailscale0,
+  firewall indeterminate under nftables, network-boundaries, name-resolution
+  without nss-mdns). A unicast mDNS query from the second machine returned the
+  correct A record and a curl through the published name returned 200 via the
+  gateway. `switchyard down` stopped the owned publisher, removed the state file,
+  and the name stopped answering.
+- Environmental limitation observed and documented: this Wi-Fi network does not
+  propagate the radxa host's outbound multicast (its own hostname `.local` record
+  also never reaches other devices), so passive discovery from the second machine
+  fails while unicast queries and TCP connects succeed — exactly the failure mode
+  the preflight's `network-boundaries`/`firewall-udp-5353` warnings describe.
