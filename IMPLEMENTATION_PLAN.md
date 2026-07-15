@@ -428,8 +428,8 @@ Entry gate: the product MVP is stable for local single-developer use.
       - Resolved by removal: the schema now rejects `hooks` with an unknown-field
         error; task-lifecycle script services are the documented mechanism
         (`docs/adapters.md`).
-- [ ] Add upgrade tests across every supported configuration and SQLite schema version.
-- [ ] Add resource-leak, long-running soak, reload-storm, and high-concurrency tests.
+- [x] Add upgrade tests across every supported configuration and SQLite schema version.
+- [x] Add resource-leak, long-running soak, reload-storm, and high-concurrency tests.
 - [ ] Add platform packaging, checksums, signatures, and release notes.
 - [ ] Add diagnostics bundle generation with automatic secret redaction.
 - [ ] Complete a security review of host listeners, extension permissions, admin

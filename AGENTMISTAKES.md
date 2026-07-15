@@ -207,3 +207,23 @@
   host-path fields such as sources and overlay file/env references. Lesson: portability
   checks must understand schema meaning; string-shaped data is not automatically a host
   path.
+
+## 2026-07-16 — Phase 7 reliability Part 6
+
+- While relocating compatibility deployment fixtures, an attempted shell rewrite failed
+  because path delimiters in the replacement expression were not escaped correctly.
+  Correction: make fixture relocations as explicit patches. Lesson: for schema goldens,
+  visible diffs are safer than clever bulk text edits.
+
+## 2026-07-16 — Phase 7 reliability tests (Part 6 review)
+
+- Four storm/soak test-design errors survived sandboxed development because they
+  only manifest under real socket load: a cross-thread version-monotonicity
+  check that races benignly (per-observer state is the sound formulation); a
+  zero-incomplete-exchange assertion under a `Close`-policy storm (Close kills
+  in-flight connections by design — Pin is the policy whose storm guarantees
+  completeness); a serial, nonblocking-socket test stub that collapsed under
+  concurrent clients; and 50ms health-check timeouts that manufactured
+  fail-closed 503s on a loaded ARM board. Lesson: reliability tests assert what
+  the declared policy guarantees, not what a quiet machine happens to produce,
+  and their harness must be more robust than the system under test.

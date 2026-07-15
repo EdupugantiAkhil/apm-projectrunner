@@ -1,0 +1,273 @@
+apiVersion: switchyard.dev/v1alpha1
+kind: Deployment
+metadata:
+  name: routing-matrix
+spec:
+  routerImage: &fixture-image switchyard-routing-matrix:local
+  sources:
+    ui-one: &fixture-source { path: ../../../.. }
+    ui-two: *fixture-source
+    ui-three: *fixture-source
+    backend-one: *fixture-source
+    backend-two: *fixture-source
+    services-main: *fixture-source
+    services-feature: *fixture-source
+    services-shared: *fixture-source
+  blocks:
+    fixture-image:
+      services:
+        builder:
+          execution:
+            type: container
+            image: *fixture-image
+            build:
+              context: .
+              dockerfile: examples/routing-matrix/Dockerfile
+            command: ["/usr/local/bin/routing-fixture", "hold"]
+    ui:
+      parameters:
+        FIXTURE_UI: { required: true }
+      services:
+        app:
+          execution:
+            type: container
+            image: *fixture-image
+            command: ["/usr/local/bin/routing-fixture", "ui-configured", "0.0.0.0:8080"]
+          provides:
+            ui: { protocol: http, port: 8080 }
+          publish: [8080]
+          probe: { type: http, path: /health, port: 8080 }
+    catalog-provider:
+      parameters:
+        FIXTURE_PROVIDER: { required: true }
+      services:
+        app:
+          execution:
+            type: container
+            image: *fixture-image
+            command: ["/usr/local/bin/routing-fixture", "provider-configured", "0.0.0.0:8080", "catalog"]
+          provides:
+            catalog: { protocol: http, port: 8080 }
+          probe: { type: http, path: /health, port: 8080 }
+    search-provider:
+      parameters:
+        FIXTURE_PROVIDER: { required: true }
+      services:
+        app:
+          execution:
+            type: container
+            image: *fixture-image
+            command: ["/usr/local/bin/routing-fixture", "provider-configured", "0.0.0.0:8080", "search"]
+          provides:
+            search: { protocol: http, port: 8080 }
+          probe: { type: http, path: /health, port: 8080 }
+    reports-provider:
+      parameters:
+        FIXTURE_PROVIDER: { required: true }
+      services:
+        app:
+          execution:
+            type: container
+            image: *fixture-image
+            command: ["/usr/local/bin/routing-fixture", "provider-configured", "0.0.0.0:8080", "reports"]
+          provides:
+            reports: { protocol: http, port: 8080 }
+          probe: { type: http, path: /health, port: 8080 }
+    scheduler-provider:
+      parameters:
+        FIXTURE_PROVIDER: { required: true }
+      services:
+        app:
+          execution:
+            type: container
+            image: *fixture-image
+            command: ["/usr/local/bin/routing-fixture", "provider-configured", "0.0.0.0:8080", "scheduler"]
+          provides:
+            scheduler: { protocol: http, port: 8080 }
+          probe: { type: http, path: /health, port: 8080 }
+    audit-provider:
+      parameters:
+        FIXTURE_PROVIDER: { required: true }
+      services:
+        app:
+          execution:
+            type: container
+            image: *fixture-image
+            command: ["/usr/local/bin/routing-fixture", "provider-configured", "0.0.0.0:8080", "audit"]
+          provides:
+            audit: { protocol: http, port: 8080 }
+          probe: { type: http, path: /health, port: 8080 }
+    backend:
+      parameters:
+        FIXTURE_BACKEND: { required: true }
+      services:
+        app:
+          execution:
+            type: container
+            image: *fixture-image
+            command: ["/usr/local/bin/routing-fixture", "backend-configured", "0.0.0.0:8080", "/data/request-count"]
+          consumes:
+            catalog: { protocol: http, address: { host: 127.0.0.1, port: 8001 } }
+            search: { protocol: http, address: { host: 127.0.0.1, port: 8002 } }
+            reports: { protocol: http, address: { host: 127.0.0.1, port: 8003 } }
+            scheduler: { protocol: http, address: { host: 127.0.0.1, port: 8004 } }
+            audit: { protocol: http, address: { host: 127.0.0.1, port: 8005 } }
+          provides:
+            backend: { protocol: http, port: 8080 }
+          publish: [8080]
+          volumes:
+            - { name: data, target: /data }
+          probe: { type: http, path: /health, port: 8080 }
+  instances:
+    - { name: fixture-image, block: fixture-image, source: services-shared }
+    - name: ui-1
+      block: ui
+      source: ui-one
+      parameters: { FIXTURE_UI: ui-1 }
+    - name: ui-2
+      block: ui
+      source: ui-two
+      parameters: { FIXTURE_UI: ui-2 }
+    - name: ui-3
+      block: ui
+      source: ui-three
+      parameters: { FIXTURE_UI: ui-3 }
+    - name: services-main-catalog
+      block: catalog-provider
+      source: services-main
+      parameters: { FIXTURE_PROVIDER: services-main/catalog }
+    - name: services-main-search
+      block: search-provider
+      source: services-main
+      parameters: { FIXTURE_PROVIDER: services-main/search }
+    - name: services-main-reports
+      block: reports-provider
+      source: services-main
+      parameters: { FIXTURE_PROVIDER: services-main/reports }
+    - name: services-main-scheduler
+      block: scheduler-provider
+      source: services-main
+      parameters: { FIXTURE_PROVIDER: services-main/scheduler }
+    - name: services-feature-catalog
+      block: catalog-provider
+      source: services-feature
+      parameters: { FIXTURE_PROVIDER: services-feature/catalog, FIXTURE_STARTUP_DELAY_MS: "1200" }
+    - name: services-feature-search
+      block: search-provider
+      source: services-feature
+      parameters: { FIXTURE_PROVIDER: services-feature/search }
+    - name: services-feature-reports
+      block: reports-provider
+      source: services-feature
+      parameters: { FIXTURE_PROVIDER: services-feature/reports }
+    - name: services-feature-scheduler
+      block: scheduler-provider
+      source: services-feature
+      parameters: { FIXTURE_PROVIDER: services-feature/scheduler }
+    - name: services-shared-audit
+      block: audit-provider
+      source: services-shared
+      parameters: { FIXTURE_PROVIDER: services-shared/audit }
+    - name: backend-1
+      block: backend
+      source: backend-one
+      parameters: { FIXTURE_BACKEND: backend-1 }
+    - name: backend-2
+      block: backend
+      source: backend-two
+      parameters: { FIXTURE_BACKEND: backend-2 }
+  groups:
+    main-services:
+      providers:
+        catalog: services-main-catalog/app
+        search: services-main-search/app
+        reports: services-main-reports/app
+        scheduler: services-main-scheduler/app
+        audit: services-shared-audit/app
+    feature-services:
+      providers:
+        catalog: services-feature-catalog/app
+        search: services-feature-search/app
+        reports: services-feature-reports/app
+        scheduler: services-feature-scheduler/app
+        audit: services-shared-audit/app
+  bindings:
+    backend-1: feature-services
+    backend-2: main-services
+  uiRoutes:
+    ui-1:
+      origin: http://ui-1.routing-matrix.localhost:18080
+      backend: backend-1
+      downstreamGroup: feature-services
+    ui-2:
+      origin: http://ui-2.routing-matrix.localhost:18080
+      backend: backend-2
+      downstreamGroup: main-services
+    ui-3:
+      origin: http://ui-3.routing-matrix.localhost:18080
+      backend: backend-1
+      downstreamGroup: feature-services
+  hostRouter:
+    apiVersion: switchyard.dev/router/v1alpha1
+    kind: RouterConfiguration
+    metadata: { deployment: routing-matrix }
+    spec:
+      snapshot:
+        id: routing-matrix-host-initial
+        version: 1
+        transitions:
+          http: { strategy: drain, timeoutMs: 5000 }
+          https: { strategy: drain, timeoutMs: 5000 }
+          websocket: { strategy: pin }
+          grpc: { strategy: drain, timeoutMs: 5000 }
+          tcp: { strategy: close }
+      identity:
+        explicitHeader: X-Switchyard-Route
+        stripBeforeForwarding: true
+      listeners:
+        - consumer: gateway
+          bind: { host: 127.0.0.1, port: 18080 }
+          protocol: http
+          destinations:
+            - { kind: custom_domain, slot: ui-1-domain, domain: ui-1.routing-matrix.localhost }
+            - { kind: custom_domain, slot: ui-2-domain, domain: ui-2.routing-matrix.localhost }
+            - { kind: custom_domain, slot: ui-3-domain, domain: ui-3.routing-matrix.localhost }
+        - bind: { host: 127.0.0.1, port: 10081 }
+          protocol: http
+          destinations:
+            - { kind: legacy_localhost, slot: browser-backend, host: localhost }
+      providers:
+        - id: ui-1
+          endpoint: { protocol: http, host: 127.0.0.1, port: 0 }
+          healthCheck: { protocol: http, path: /health, intervalMs: 1000, timeoutMs: 500 }
+        - id: ui-2
+          endpoint: { protocol: http, host: 127.0.0.1, port: 0 }
+          healthCheck: { protocol: http, path: /health, intervalMs: 1000, timeoutMs: 500 }
+        - id: ui-3
+          endpoint: { protocol: http, host: 127.0.0.1, port: 0 }
+          healthCheck: { protocol: http, path: /health, intervalMs: 1000, timeoutMs: 500 }
+        - id: backend-1
+          endpoint: { protocol: http, host: 127.0.0.1, port: 0 }
+          healthCheck: { protocol: http, path: /health, intervalMs: 1000, timeoutMs: 500 }
+        - id: backend-2
+          endpoint: { protocol: http, host: 127.0.0.1, port: 0 }
+          healthCheck: { protocol: http, path: /health, intervalMs: 1000, timeoutMs: 500 }
+      groups: []
+      bindings: []
+      routes:
+        - { consumer: gateway, slot: ui-1-domain, provider: ui-1 }
+        - { consumer: gateway, slot: ui-2-domain, provider: ui-2 }
+        - { consumer: gateway, slot: ui-3-domain, provider: ui-3 }
+      browserRoutes:
+        - { identity: { source: origin, origin: "http://ui-1.routing-matrix.localhost:18080" }, destination: browser-backend, provider: backend-1 }
+        - { identity: { source: origin, origin: "http://ui-2.routing-matrix.localhost:18080" }, destination: browser-backend, provider: backend-2 }
+        - { identity: { source: origin, origin: "http://ui-3.routing-matrix.localhost:18080" }, destination: browser-backend, provider: backend-1 }
+        - { identity: { source: explicit_header, value: ui-1 }, destination: browser-backend, provider: backend-1 }
+        - { identity: { source: explicit_header, value: ui-2 }, destination: browser-backend, provider: backend-2 }
+        - { identity: { source: explicit_header, value: ui-3 }, destination: browser-backend, provider: backend-1 }
+  hostUpstreams:
+    ui-1: { instance: ui-1, service: app, port: 8080 }
+    ui-2: { instance: ui-2, service: app, port: 8080 }
+    ui-3: { instance: ui-3, service: app, port: 8080 }
+    backend-1: { instance: backend-1, service: app, port: 8080 }
+    backend-2: { instance: backend-2, service: app, port: 8080 }

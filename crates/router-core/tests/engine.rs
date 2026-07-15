@@ -1,4 +1,10 @@
-use std::sync::Arc;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 use router_config::{
     BindingId, BrowserIdentity, BrowserRoute, ComponentId, InstanceId, RouteSlotId, RouterConfig,
@@ -118,6 +124,124 @@ fn lookups_never_observe_partial_group_reload() {
     for thread in threads {
         thread.join().unwrap();
     }
+}
+
+#[test]
+#[ignore = "duration-based reliability test; run via scripts/reliability.sh"]
+fn reload_storm_preserves_group_atomicity_and_version_order() {
+    let duration = std::env::var("SWITCHYARD_RELOAD_STORM_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(30));
+    let mut initial = config();
+    initial.spec.snapshot.version = 1;
+    let engine = Arc::new(RouteEngine::new(initial).unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let partial_groups = Arc::new(AtomicUsize::new(0));
+    let stale_acceptances = Arc::new(AtomicUsize::new(0));
+    let version_regressions = Arc::new(AtomicUsize::new(0));
+    let highest_seen = Arc::new(AtomicU64::new(1));
+
+    let mut threads = Vec::new();
+    let workers = std::env::var("SWITCHYARD_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(8);
+    for _ in 0..workers {
+        let engine = Arc::clone(&engine);
+        let stop = Arc::clone(&stop);
+        let partial_groups = Arc::clone(&partial_groups);
+        let version_regressions = Arc::clone(&version_regressions);
+        let highest_seen = Arc::clone(&highest_seen);
+        threads.push(std::thread::spawn(move || {
+            let consumer = InstanceId::from("backend-1");
+            let slots = [
+                RouteSlotId::from("catalog"),
+                RouteSlotId::from("search"),
+                RouteSlotId::from("reports"),
+                RouteSlotId::from("scheduler"),
+            ];
+            // Monotonicity is only guaranteed per observer: between one thread's
+            // `snapshot()` and a shared fetch_max, another thread can legitimately
+            // observe a newer version, so a global high-water check would produce
+            // false regressions. Track the last version seen by this thread.
+            let mut last_version = 0_u64;
+            while !stop.load(Ordering::Relaxed) {
+                let snapshot = engine.snapshot();
+                let version = snapshot.version();
+                if version < last_version {
+                    version_regressions.fetch_add(1, Ordering::Relaxed);
+                }
+                last_version = version;
+                highest_seen.fetch_max(version, Ordering::SeqCst);
+                let providers = slots
+                    .iter()
+                    .map(|slot| {
+                        snapshot
+                            .lookup_consumer(&consumer, slot)
+                            .map(|route| route.provider.to_string())
+                    })
+                    .collect::<Vec<_>>();
+                let all_main = providers.iter().all(|provider| {
+                    provider
+                        .as_deref()
+                        .is_some_and(|provider| provider.starts_with("services-main/"))
+                });
+                let all_feature = providers.iter().all(|provider| {
+                    provider
+                        .as_deref()
+                        .is_some_and(|provider| provider.starts_with("services-feature/"))
+                });
+                if !(all_main || all_feature) {
+                    partial_groups.fetch_add(1, Ordering::Relaxed);
+                }
+                assert_eq!(
+                    snapshot
+                        .lookup_consumer(&consumer, &RouteSlotId::from("audit"))
+                        .unwrap()
+                        .provider
+                        .as_str(),
+                    "services-shared/audit"
+                );
+            }
+        }));
+    }
+
+    let deadline = Instant::now() + duration;
+    let mut version = 2_u64;
+    while Instant::now() < deadline {
+        let mut next = config();
+        next.spec.snapshot.version = version;
+        let group = if version % 2 == 0 {
+            "main-services"
+        } else {
+            "feature-services"
+        };
+        next.spec.bindings[0].group = router_config::GroupId::from(group);
+        assert_eq!(
+            engine.apply(next).unwrap().status,
+            ActivationStatus::Activated
+        );
+
+        let mut stale = config();
+        stale.spec.snapshot.version = version - 1;
+        if engine.apply(stale).unwrap().status == ActivationStatus::Activated {
+            stale_acceptances.fetch_add(1, Ordering::Relaxed);
+        }
+        version += 1;
+    }
+
+    stop.store(true, Ordering::Relaxed);
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    assert_eq!(partial_groups.load(Ordering::Relaxed), 0);
+    assert_eq!(stale_acceptances.load(Ordering::Relaxed), 0);
+    assert_eq!(version_regressions.load(Ordering::Relaxed), 0);
+    assert!(engine.snapshot().version() >= 2);
+    // Readers must have actually observed reloads, or the storm proved nothing.
+    assert!(highest_seen.load(Ordering::SeqCst) >= 2);
 }
 
 #[test]

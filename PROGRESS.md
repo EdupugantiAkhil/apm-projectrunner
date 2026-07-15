@@ -666,3 +666,56 @@ implemented shape and the evidence used to close a phase.
   and the live `examples/jas-base/smoke.sh` PASSED, proving task-lifecycle
   database initialization, live group switching, persistence, and
   ownership-scoped cleanup all still work after the removal.
+
+## Phase 7 reliability — Part 6: upgrade and heavy reliability tests
+
+- Added fast SQLite upgrade-matrix tests for schema versions 1, 2, and 3 in
+  `switchyard-state`. The fixtures are built through the actual historical DDL
+  embedded in `src/migrations` rather than committed binary databases; this keeps
+  the rows readable in review, avoids SQLite-file portability churn, and still
+  exercises the production migration and backup path. Each version inserts
+  representative values into every table that existed at that version, verifies
+  current-schema migration to version 4, asserts row values, checks the
+  pre-migration backup, and runs `PRAGMA integrity_check` plus foreign-key checks.
+- Added a failed-migration recovery test that uses a test-only migration list to
+  create the same pre-migration backup production would create, leaves the
+  original version-2 database intact after a transaction failure, restores the
+  backup to a new path, and verifies the normal current migration succeeds.
+- Added schema compatibility goldens: router-config pins a Phase-7 host-router
+  JSON fixture with `exposure` LAN/Tailscale fields; switchyard-planner pins
+  copied compat deployments for `examples/routing-matrix` and `examples/jas-base`
+  with expected definition/resource hashes and deterministic generated router
+  configs.
+- Added ignored heavy reliability tests and `scripts/reliability.sh`. The suite
+  covers router-core reload storms, TCP and Pingora HTTP reload storms under
+  concurrent clients, Linux fd/RSS leak sampling, an HTTP soak with health-check
+  flapping, and in-process daemon API concurrency with global heavy-operation
+  limiting plus per-deployment lock contention. Socket-bound tests are compiled
+  here but must be executed by the reviewer on a host that permits loopback
+  binding.
+
+### Part 6 reviewer verification (2026-07-16)
+
+- Reviewer fixes, all in the new tests (no product defects found; details in
+  AGENTMISTAKES.md): the router-core storm's version-monotonicity check is now
+  per-observer-thread (the global fetch_max compare raced benignly across
+  threads); the TCP storm flips targets under `Pin`, where every client exchange
+  must complete intact (asserting zero incomplete exchanges under `Close` denies
+  the policy's defined behavior; `Close` stays covered by its dedicated test and
+  the pre-storm sequence, and the pre-storm sequence now asserts that a pinned
+  connection survives a later `Close` reload, matching
+  `pin_policy_survives_later_route_changes`); the HTTP test upstream stub handles
+  connections concurrently on blocking sockets and tolerates dirty disconnects
+  (single-threaded serial handling with inherited nonblocking sockets collapsed
+  under storm load); the storm providers declare no health checks and the soak
+  uses a generous 2s health timeout (50ms timeouts manufactured fail-closed 503s
+  under load); soak flap correlation uses timestamped windows with recovery slack
+  instead of a boolean read after the response; fd-leak assertions compare
+  growth (`end <= warmup`) instead of exact equality.
+- `./scripts/reliability.sh` (defaults): PASSED — router-core storm 30s,
+  router-tcp storm+leak 30s, HTTP storm+leak 31s, HTTP soak+flap 30s, daemon
+  high-concurrency 2s.
+- 120-second HTTP soak: PASSED with zero unexpected errors, all
+  provider_unhealthy rejections inside flap windows, and no fd/RSS growth.
+- `./scripts/check.sh`: PASSED end to end (fast suite runtime unchanged; all
+  heavy tests are `#[ignore]`).

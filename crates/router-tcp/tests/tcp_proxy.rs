@@ -1,4 +1,12 @@
-use std::{io, net::SocketAddr, time::Duration};
+use std::{
+    fs, io,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 use router_tcp::{
     TcpProxy, TcpProxyOptions, TcpTarget, TcpTelemetry, TcpTelemetrySnapshot, TransitionPolicy,
@@ -87,6 +95,26 @@ async fn wait_for_telemetry(
     })
     .await
     .expect("telemetry was not updated")
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug)]
+struct ResourceSample {
+    fds: usize,
+    rss_kb: usize,
+}
+
+#[cfg(target_os = "linux")]
+fn resource_sample() -> ResourceSample {
+    let fds = fs::read_dir("/proc/self/fd").unwrap().count();
+    let status = fs::read_to_string("/proc/self/status").unwrap();
+    let rss_kb = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))
+        .and_then(|line| line.split_whitespace().next())
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    ResourceSample { fds, rss_kb }
 }
 
 #[tokio::test]
@@ -218,4 +246,134 @@ async fn idle_and_shutdown_timeouts_bound_long_lived_connections() -> io::Result
     assert_eq!(after_shutdown.active_connections, 0);
     assert_eq!(after_shutdown.errors, 1);
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "socket-bound reliability test; run via scripts/reliability.sh"]
+async fn reload_storm_under_concurrent_clients_has_no_partial_tcp_responses_or_leaks() {
+    let duration = std::env::var("SWITCHYARD_RELOAD_STORM_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(30));
+    let clients = std::env::var("SWITCHYARD_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(16);
+    let first = backend(b'A').await;
+    let second = backend(b'B').await;
+    let proxy = Arc::new(
+        TcpProxy::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            first.address.into(),
+            options(),
+        )
+        .await
+        .unwrap(),
+    );
+    let telemetry = proxy.telemetry();
+
+    let mut pinned = connect(&proxy, b'A').await;
+    proxy.reload(second.address.into(), TransitionPolicy::Pin);
+    round_trip(&mut pinned, 7).await;
+    proxy.reload(first.address.into(), TransitionPolicy::Close);
+    // A connection receives exactly one transition policy: the one declared by the
+    // reload that changed its route. This connection was pinned then, so a later
+    // `Close` reload must not retroactively terminate it — pin means the
+    // connection lives on its existing target until it closes naturally.
+    round_trip(&mut pinned, 9).await;
+    drop(pinned);
+    wait_for_telemetry(&telemetry, |snapshot| snapshot.active_connections == 0).await;
+
+    #[cfg(target_os = "linux")]
+    let warmup = resource_sample();
+    let stop = Arc::new(AtomicBool::new(false));
+    let invalid_responses = Arc::new(AtomicUsize::new(0));
+    let incomplete_responses = Arc::new(AtomicUsize::new(0));
+    let client_errors = Arc::new(AtomicUsize::new(0));
+    let mut tasks = Vec::new();
+    for _ in 0..clients {
+        let proxy = Arc::clone(&proxy);
+        let stop = Arc::clone(&stop);
+        let invalid_responses = Arc::clone(&invalid_responses);
+        let incomplete_responses = Arc::clone(&incomplete_responses);
+        let client_errors = Arc::clone(&client_errors);
+        tasks.push(tokio::spawn(async move {
+            while !stop.load(Ordering::Relaxed) {
+                match TcpStream::connect(proxy.local_addr()).await {
+                    Ok(mut stream) => {
+                        let mut identity = [0_u8];
+                        if stream.read_exact(&mut identity).await.is_err() {
+                            incomplete_responses.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                        if !matches!(identity[0], b'A' | b'B') {
+                            invalid_responses.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                        let payload = identity[0].wrapping_add(1);
+                        if stream.write_all(&[payload]).await.is_err() {
+                            incomplete_responses.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                        let mut echoed = [0_u8];
+                        if stream.read_exact(&mut echoed).await.is_err() || echoed[0] != payload {
+                            incomplete_responses.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    Err(_) => {
+                        client_errors.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }));
+    }
+
+    let deadline = Instant::now() + duration;
+    let mut use_first = false;
+    while Instant::now() < deadline {
+        let target = if use_first {
+            first.address
+        } else {
+            second.address
+        };
+        // Storm with Pin: existing connections must complete naturally against the
+        // backend they started with, so every client exchange is required to finish
+        // intact no matter how often the target flips. (Close terminates in-flight
+        // connections by design — that behavior is covered by
+        // `close_policy_terminates_old_connections` and the pre-storm sequence —
+        // so a zero-incomplete assertion is only sound under Pin.)
+        proxy.reload(target.into(), TransitionPolicy::Pin);
+        use_first = !use_first;
+        tokio::task::yield_now().await;
+    }
+    stop.store(true, Ordering::Relaxed);
+    for task in tasks {
+        task.await.unwrap();
+    }
+    wait_for_telemetry(&telemetry, |snapshot| snapshot.active_connections == 0).await;
+
+    assert_eq!(invalid_responses.load(Ordering::Relaxed), 0);
+    assert_eq!(incomplete_responses.load(Ordering::Relaxed), 0);
+    assert_eq!(client_errors.load(Ordering::Relaxed), 0);
+    assert_eq!(telemetry.snapshot().active_connections, 0);
+
+    #[cfg(target_os = "linux")]
+    {
+        let end = resource_sample();
+        // A leak is growth; warmup may have sampled a transient socket, so fewer
+        // descriptors at the end is fine.
+        assert!(
+            end.fds <= warmup.fds,
+            "TCP reload storm leaked file descriptors: {} -> {}",
+            warmup.fds,
+            end.fds
+        );
+        let rss_growth = end.rss_kb.saturating_sub(warmup.rss_kb);
+        assert!(
+            rss_growth <= 32 * 1024,
+            "TCP reload storm RSS grew by {rss_growth} KiB"
+        );
+    }
+    proxy.shutdown().await.unwrap();
 }

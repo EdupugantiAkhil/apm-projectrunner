@@ -1,0 +1,74 @@
+{
+  "apiVersion": "switchyard.dev/router/v1alpha1",
+  "kind": "RouterConfiguration",
+  "metadata": { "deployment": "compat-lan" },
+  "spec": {
+    "snapshot": {
+      "id": "compat-host-lan-1",
+      "version": 7,
+      "transitions": {
+        "http": { "strategy": "drain", "timeoutMs": 5000 },
+        "https": { "strategy": "drain", "timeoutMs": 5000 },
+        "websocket": { "strategy": "pin" },
+        "grpc": { "strategy": "drain", "timeoutMs": 5000 },
+        "tcp": { "strategy": "close" }
+      }
+    },
+    "exposure": {
+      "mode": "lan",
+      "acknowledgeLanExposureRisk": true,
+      "publishTailscale": true
+    },
+    "identity": {
+      "explicitHeader": "X-Switchyard-Route",
+      "stripBeforeForwarding": true
+    },
+    "listeners": [
+      {
+        "consumer": "gateway",
+        "bind": { "host": "0.0.0.0", "port": 18080 },
+        "protocol": "http",
+        "destinations": [
+          {
+            "kind": "custom_domain",
+            "slot": "ui-domain",
+            "domain": "compat-lan.localhost"
+          }
+        ]
+      },
+      {
+        "bind": { "host": "127.0.0.1", "port": 10081 },
+        "protocol": "http",
+        "destinations": [
+          {
+            "kind": "legacy_localhost",
+            "slot": "browser-backend",
+            "host": "localhost"
+          }
+        ]
+      }
+    ],
+    "providers": [
+      {
+        "id": "ui",
+        "endpoint": { "protocol": "http", "host": "127.0.0.1", "port": 3000 }
+      },
+      {
+        "id": "backend",
+        "endpoint": { "protocol": "http", "host": "127.0.0.1", "port": 8080 }
+      }
+    ],
+    "groups": [],
+    "bindings": [],
+    "routes": [
+      { "consumer": "gateway", "slot": "ui-domain", "provider": "ui" }
+    ],
+    "browserRoutes": [
+      {
+        "identity": { "source": "origin", "origin": "http://compat-lan.localhost:18080" },
+        "destination": "browser-backend",
+        "provider": "backend"
+      }
+    ]
+  }
+}

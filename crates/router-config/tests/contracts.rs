@@ -32,6 +32,33 @@ fn v1alpha1_minimal_document_remains_compatible() {
 }
 
 #[test]
+fn compat_host_router_with_lan_exposure_remains_readable() {
+    // This fixture is a Phase-7 compatibility golden. Regenerate it only as part
+    // of a deliberate, versioned router schema change; update the fixture and
+    // this assertion in the same commit so unversioned breaking changes fail CI.
+    let source = include_str!("compat/host-router-lan.json");
+    let config: RouterConfig =
+        serde_json::from_str(source).expect("compat host router should parse");
+    config
+        .validate()
+        .expect("compat host router should validate");
+    assert_eq!(config.spec.exposure_mode(), GatewayExposureMode::Lan);
+    assert!(config.spec.lan_exposure_acknowledged());
+    assert!(
+        config
+            .spec
+            .exposure
+            .as_ref()
+            .is_some_and(|exposure| exposure.publish_tailscale)
+    );
+
+    let encoded = serde_json::to_string_pretty(&config).expect("config should serialize");
+    let reparsed: RouterConfig =
+        serde_json::from_str(&encoded).expect("serialized compat router should parse");
+    assert_eq!(reparsed, config);
+}
+
+#[test]
 fn browser_identity_precedence_is_fixed() {
     assert_eq!(
         BrowserIdentitySource::PRECEDENCE,

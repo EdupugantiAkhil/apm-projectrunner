@@ -1652,6 +1652,299 @@ mod tests {
         }
     }
 
+    fn historical_database(path: &Path, version: i64) {
+        let connection = Connection::open(path).unwrap();
+        for (migration_version, sql) in MIGRATIONS
+            .iter()
+            .filter(|(migration_version, _)| *migration_version <= version)
+        {
+            connection.execute_batch(sql).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_versions(version, applied_at) VALUES (?1, ?2)",
+                    params![migration_version, migration_version * 100],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO deployments(id,applied_definition_hash,applied_snapshot_json,applied_at,last_observed_at) VALUES (?1,?2,?3,?4,?5)",
+                params![
+                    format!("demo-v{version}"),
+                    format!("definition-v{version}"),
+                    format!(r#"{{"deployment":"demo-v{version}","schema":{version}}}"#),
+                    1_000 + version,
+                    2_000 + version
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO deployment_history(deployment_id,event,definition_hash,recorded_at,context_json) VALUES (?1,?2,?3,?4,?5)",
+                params![
+                    format!("demo-v{version}"),
+                    "applied",
+                    format!("definition-v{version}"),
+                    3_000 + version,
+                    format!(r#"{{"history":"v{version}"}}"#)
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO operations(id,deployment_id,kind,status,started_at,finished_at,error_code,error_context_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![
+                    format!("operation-v{version}"),
+                    format!("demo-v{version}"),
+                    "apply",
+                    "succeeded",
+                    4_000 + version,
+                    4_100 + version,
+                    Option::<String>::None,
+                    Option::<String>::None
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO resources(deployment_id,kind,runtime_id,name,resource_hash,state,labels_json,observed_at,active) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1)",
+                params![
+                    format!("demo-v{version}"),
+                    "container",
+                    format!("container-v{version}"),
+                    format!("api-v{version}"),
+                    format!("resource-v{version}"),
+                    "running",
+                    format!(r#"{{"dev.switchyard.deployment":"demo-v{version}","dev.switchyard.managed":"true"}}"#),
+                    5_000 + version
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO health_observations(deployment_id,subject,health,readiness,observed_at,context_json) VALUES (?1,?2,?3,?4,?5,?6)",
+                params![
+                    format!("demo-v{version}"),
+                    "api",
+                    "healthy",
+                    "ready",
+                    6_000 + version,
+                    format!(r#"{{"health":"v{version}"}}"#)
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO operation_locks(deployment_id,owner_instance,owner_pid,owner_started_at,token,heartbeat_at,expires_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                params![
+                    format!("locked-v{version}"),
+                    format!("owner-v{version}"),
+                    42,
+                    7_000 + version,
+                    format!("token-v{version}"),
+                    8_000 + version,
+                    9_000 + version
+                ],
+            )
+            .unwrap();
+        if version >= 2 {
+            connection
+                .execute(
+                    "INSERT INTO routes(deployment_id,route_key,consumer,provider,protocol,recorded_at) VALUES (?1,?2,?3,?4,?5,?6)",
+                    params![
+                        format!("demo-v{version}"),
+                        "api-to-search",
+                        "api",
+                        "search",
+                        "http",
+                        10_000 + version
+                    ],
+                )
+                .unwrap();
+            if version == 2 {
+                connection
+                    .execute(
+                        "INSERT INTO route_snapshots(deployment_id,version,checksum,activation_status,recorded_at,context_json) VALUES (?1,?2,?3,?4,?5,?6)",
+                        params![
+                            format!("demo-v{version}"),
+                            version,
+                            format!("checksum-v{version}"),
+                            "active",
+                            11_000 + version,
+                            format!(r#"{{"snapshot":"v{version}"}}"#)
+                        ],
+                    )
+                    .unwrap();
+            }
+        }
+        if version >= 3 {
+            connection
+                .execute(
+                    "INSERT INTO route_snapshots(deployment_id,version,checksum,activation_status,recorded_at,context_json,router_id,binding_id,operation_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                    params![
+                        format!("demo-v{version}"),
+                        version,
+                        format!("checksum-v{version}"),
+                        "active",
+                        11_000 + version,
+                        format!(r#"{{"snapshot":"v{version}"}}"#),
+                        "sidecar:api",
+                        "api",
+                        format!("operation-v{version}")
+                    ],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO router_bindings(deployment_id,router_id,binding_id,desired_version,desired_checksum,current_version,current_checksum,previous_version,previous_checksum,observed_version,observed_checksum,apply_status,transition_json,last_error_code,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                    params![
+                        format!("demo-v{version}"),
+                        "sidecar:api",
+                        "api",
+                        version,
+                        format!("checksum-v{version}"),
+                        version,
+                        format!("checksum-v{version}"),
+                        version - 1,
+                        format!("checksum-v{}", version - 1),
+                        version,
+                        format!("checksum-v{version}"),
+                        "active",
+                        r#"{"strategy":"close"}"#,
+                        Option::<String>::None,
+                        12_000 + version
+                    ],
+                )
+                .unwrap();
+        }
+    }
+
+    fn scalar<T: rusqlite::types::FromSql>(connection: &Connection, sql: &str) -> T {
+        connection.query_row(sql, [], |row| row.get(0)).unwrap()
+    }
+
+    fn assert_consistent(connection: &Connection) {
+        assert_eq!(scalar::<String>(connection, "PRAGMA integrity_check"), "ok");
+        assert_eq!(scalar::<i64>(connection, "PRAGMA foreign_keys"), 1);
+        assert_eq!(
+            scalar::<i64>(connection, "SELECT COUNT(*) FROM pragma_foreign_key_check"),
+            0
+        );
+    }
+
+    fn assert_historical_values(connection: &Connection, version: i64) {
+        assert_eq!(
+            scalar::<String>(
+                connection,
+                "SELECT applied_snapshot_json FROM deployments ORDER BY id"
+            ),
+            format!(r#"{{"deployment":"demo-v{version}","schema":{version}}}"#)
+        );
+        assert_eq!(
+            scalar::<String>(
+                connection,
+                "SELECT context_json FROM deployment_history ORDER BY sequence"
+            ),
+            format!(r#"{{"history":"v{version}"}}"#)
+        );
+        assert_eq!(
+            scalar::<String>(
+                connection,
+                "SELECT id || ':' || status FROM operations ORDER BY id"
+            ),
+            format!("operation-v{version}:succeeded")
+        );
+        assert_eq!(
+            scalar::<String>(
+                connection,
+                "SELECT runtime_id || ':' || name || ':' || resource_hash FROM resources ORDER BY sequence"
+            ),
+            format!("container-v{version}:api-v{version}:resource-v{version}")
+        );
+        assert_eq!(
+            scalar::<String>(
+                connection,
+                "SELECT subject || ':' || health || ':' || readiness || ':' || context_json FROM health_observations ORDER BY sequence"
+            ),
+            format!(r#"api:healthy:ready:{{"health":"v{version}"}}"#)
+        );
+        assert_eq!(
+            scalar::<String>(
+                connection,
+                "SELECT owner_instance || ':' || token FROM operation_locks ORDER BY deployment_id"
+            ),
+            format!("owner-v{version}:token-v{version}")
+        );
+        if version >= 2 {
+            assert_eq!(
+                scalar::<String>(
+                    connection,
+                    "SELECT route_key || ':' || consumer || ':' || provider || ':' || protocol FROM routes ORDER BY sequence"
+                ),
+                "api-to-search:api:search:http"
+            );
+            assert_eq!(
+                scalar::<String>(
+                    connection,
+                    "SELECT checksum || ':' || activation_status || ':' || context_json FROM route_snapshots ORDER BY sequence"
+                ),
+                format!(r#"checksum-v{version}:active:{{"snapshot":"v{version}"}}"#)
+            );
+        }
+        if version >= 3 {
+            assert_eq!(
+                scalar::<String>(
+                    connection,
+                    "SELECT router_id || ':' || binding_id || ':' || operation_id FROM route_snapshots ORDER BY sequence"
+                ),
+                format!("sidecar:api:api:operation-v{version}")
+            );
+            assert_eq!(
+                scalar::<String>(
+                    connection,
+                    "SELECT router_id || ':' || binding_id || ':' || apply_status || ':' || transition_json FROM router_bindings ORDER BY router_id,binding_id"
+                ),
+                r#"sidecar:api:api:active:{"strategy":"close"}"#
+            );
+        }
+    }
+
+    fn open_with_test_migrations(
+        path: &Path,
+        migrations: &[(i64, &str)],
+    ) -> Result<OpenReport, StateError> {
+        let existed = path.exists();
+        let mut connection = Connection::open(path)?;
+        connection.pragma_update(None, "foreign_keys", "ON")?;
+        let current = current_schema_version(&connection)?;
+        let pending = migrations
+            .iter()
+            .filter(|(version, _)| *version > current)
+            .collect::<Vec<_>>();
+        let backup_path = if existed && !pending.is_empty() {
+            let backup = backup_path(path, current);
+            backup_database(&connection, &backup)?;
+            Some(backup)
+        } else {
+            None
+        };
+        let transaction = connection.transaction()?;
+        let mut applied_migrations = Vec::new();
+        for (version, sql) in pending {
+            transaction.execute_batch(sql)?;
+            transaction.execute(
+                "INSERT INTO schema_versions(version, applied_at) VALUES (?1, 1)",
+                [version],
+            )?;
+            applied_migrations.push(*version);
+        }
+        transaction.commit()?;
+        Ok(OpenReport {
+            applied_migrations,
+            backup_path,
+        })
+    }
+
     #[test]
     fn migrations_are_ordered_and_existing_database_is_backed_up() {
         let temp = TempDir::new().unwrap();
@@ -1700,6 +1993,74 @@ mod tests {
         let error = StateStore::open(&path).err().unwrap();
         assert_eq!(error.code(), "newer_schema");
         assert!(!backup_path(&path, 99).exists());
+    }
+
+    #[test]
+    fn historical_schema_versions_migrate_with_backups_and_preserve_rows() {
+        for version in 1..=3 {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join(format!("state-v{version}.sqlite3"));
+            historical_database(&path, version);
+
+            let (store, report) = StateStore::open(&path).unwrap();
+            assert_eq!(
+                report.applied_migrations,
+                ((version + 1)..=SCHEMA_VERSION).collect::<Vec<_>>()
+            );
+            let backup = report
+                .backup_path
+                .expect("old database should be backed up");
+            assert!(backup.is_file());
+
+            assert_consistent(&store.connection);
+            assert_eq!(
+                scalar::<i64>(
+                    &store.connection,
+                    "SELECT MAX(version) FROM schema_versions"
+                ),
+                SCHEMA_VERSION
+            );
+            assert_historical_values(&store.connection, version);
+            assert_eq!(
+                scalar::<i64>(&store.connection, "SELECT COUNT(*) FROM registered_sources"),
+                0
+            );
+
+            let backup_connection = Connection::open(backup).unwrap();
+            assert_eq!(current_schema_version(&backup_connection).unwrap(), version);
+            assert_historical_values(&backup_connection, version);
+        }
+    }
+
+    #[test]
+    fn failed_migration_backup_can_be_reopened_and_migrated_successfully() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("state.sqlite3");
+        historical_database(&path, 2);
+        let failing = [
+            MIGRATIONS[0],
+            MIGRATIONS[1],
+            (
+                3,
+                "CREATE TABLE migration_failure(id INTEGER);\nSELECT missing_function();",
+            ),
+        ];
+
+        let error = open_with_test_migrations(&path, &failing).unwrap_err();
+        assert_eq!(error.code(), "state_sqlite");
+        let backup = PathBuf::from(format!("{}.pre-migration-v2.bak", path.display()));
+        assert!(backup.is_file());
+        let original = Connection::open(&path).unwrap();
+        assert_eq!(current_schema_version(&original).unwrap(), 2);
+        assert_historical_values(&original, 2);
+        drop(original);
+
+        let restored = temp.path().join("restored-from-backup.sqlite3");
+        fs::copy(&backup, &restored).unwrap();
+        let (store, report) = StateStore::open(&restored).unwrap();
+        assert_eq!(report.applied_migrations, vec![3, 4]);
+        assert_consistent(&store.connection);
+        assert_historical_values(&store.connection, 2);
     }
 
     #[test]

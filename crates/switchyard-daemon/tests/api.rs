@@ -396,6 +396,23 @@ async fn wait_terminal(api: &TestApi, id: &str) -> OperationV1 {
     }
 }
 
+fn named_fixture(temp: &TempDir, name: &str) -> PathBuf {
+    let original = fs::read_to_string(fixture()).unwrap();
+    let path = temp.path().join(format!("{name}.yaml"));
+    fs::write(
+        &path,
+        original.replace("name: comparison", &format!("name: {name}")),
+    )
+    .unwrap();
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../switchyard-planner/tests/fixtures/process-compose.yaml"),
+        temp.path().join("process-compose.yaml"),
+    )
+    .unwrap();
+    path
+}
+
 #[tokio::test]
 async fn deployment_and_adapter_endpoints_are_authenticated_and_shape_empty_state() {
     let temp = tempfile::tempdir().unwrap();
@@ -427,6 +444,115 @@ async fn deployment_and_adapter_endpoints_are_authenticated_and_shape_empty_stat
     assert!(first.get("kind").is_some());
     assert!(first.get("declaration").is_some());
     assert!(first.get("configurationSchema").is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "duration/concurrency reliability test; run via scripts/reliability.sh"]
+async fn high_concurrency_api_respects_global_limit_deployment_locks_and_sqlite_consistency() {
+    let temp = tempfile::tempdir().unwrap();
+    let active = Arc::new(AtomicUsize::new(0));
+    let maximum = Arc::new(AtomicUsize::new(0));
+    let api = start_api(
+        &temp,
+        Arc::new(CountingBackend {
+            active: Arc::clone(&active),
+            maximum: Arc::clone(&maximum),
+        }),
+        3,
+    );
+    let mut bundles = Vec::new();
+    for index in 0..8 {
+        bundles.push(named_fixture(&temp, &format!("comparison-{index}")));
+    }
+
+    let same = named_fixture(&temp, "same-deployment");
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/commands/apply",
+        Some(command_body(&same)),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 202);
+    let first_same: OperationV1 = json_body(&body);
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/commands/apply",
+        Some(command_body(&same)),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 409);
+    assert_eq!(
+        json_body::<Value>(&body)["code"],
+        "operation_lock_contended"
+    );
+
+    let mut readers = Vec::new();
+    for _ in 0..24 {
+        let api = api.clone();
+        readers.push(tokio::spawn(async move {
+            for _ in 0..25 {
+                for path in ["/api/v1/system/status", "/api/v1/deployments"] {
+                    let (status, _) = request(&api, Some(&api.token), "GET", path, None, &[]).await;
+                    assert_eq!(status, 200, "{path} failed under concurrency");
+                }
+                tokio::task::yield_now().await;
+            }
+        }));
+    }
+
+    let mut operations = vec![first_same.id.clone()];
+    let mut starters = Vec::new();
+    for bundle in bundles {
+        let api = api.clone();
+        starters.push(tokio::spawn(async move {
+            let (status, body) = request(
+                &api,
+                Some(&api.token),
+                "POST",
+                "/api/v1/commands/apply",
+                Some(command_body(&bundle)),
+                &[],
+            )
+            .await;
+            assert_eq!(status, 202);
+            json_body::<OperationV1>(&body).id
+        }));
+    }
+    for starter in starters {
+        operations.push(starter.await.unwrap());
+    }
+    for reader in readers {
+        reader.await.unwrap();
+    }
+
+    for id in &operations {
+        let terminal = wait_terminal(&api, id).await;
+        assert!(terminal.status.terminal());
+    }
+    assert!(
+        maximum.load(Ordering::SeqCst) <= 3,
+        "backend observed {} concurrent heavy operations",
+        maximum.load(Ordering::SeqCst)
+    );
+    assert_eq!(active.load(Ordering::SeqCst), 0);
+
+    let reopened = StateStore::open(temp.path().join(".switchyard/state.sqlite3"))
+        .unwrap()
+        .0;
+    let stored = reopened.deployments().unwrap();
+    assert!(
+        stored
+            .iter()
+            .filter_map(|deployment| deployment.last_operation.as_ref())
+            .all(|operation| operation.status == "failed" || operation.status == "succeeded"),
+        "non-terminal operation leaked into SQLite: {stored:?}"
+    );
 }
 
 fn definition_yaml(name: &str) -> String {

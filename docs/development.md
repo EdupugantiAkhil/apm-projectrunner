@@ -100,6 +100,26 @@ No elevated privileges are expected for builds or unit tests. Configure Docker s
 current user or Docker context can reach the daemon instead of routinely invoking
 development commands through `sudo`.
 
+## Reliability Suite
+
+The heavy reliability tests are opt-in and are not called by `scripts/check.sh`:
+
+```sh
+./scripts/reliability.sh
+```
+
+The script builds the needed test binaries, then runs only `#[ignore]` tests with
+`--ignored`. It does not require Docker, but several tests bind loopback sockets and
+must be run on a host where local socket binding is permitted. The default runtime is
+short for review loops: `SWITCHYARD_RELOAD_STORM_SECONDS=30`,
+`SWITCHYARD_SOAK_SECONDS=30`, and `SWITCHYARD_CONCURRENCY=16`. Increase those
+environment variables for longer soak or higher client-load runs.
+
+The suite covers router-core snapshot reload storms, TCP and HTTP data-plane reload
+storms with Linux `/proc` fd/RSS leak checks, an HTTP soak with health flapping, and an
+in-process daemon API concurrency test. Each test duration is printed by the script,
+and any failed assertion exits non-zero.
+
 ## Sources and worktrees
 
 Switchyard distinguishes ownership at registration time. An existing developer path is
