@@ -4,6 +4,7 @@
 
 pub mod client;
 pub mod contract;
+pub mod device;
 pub mod server;
 
 pub use server::{DaemonConfig, DaemonError, RunningDaemon};

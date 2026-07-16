@@ -396,6 +396,114 @@ async fn wait_terminal(api: &TestApi, id: &str) -> OperationV1 {
     }
 }
 
+#[tokio::test]
+async fn device_crud_and_check_status_are_persisted() {
+    let temp = TempDir::new().unwrap();
+    let fake_ssh = temp.path().join("fake-ssh");
+    fs::write(
+        &fake_ssh,
+        "#!/bin/sh\nprintf 'Permission denied (publickey).\\n' >&2\nexit 255\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_ssh, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut config = DaemonConfig::new(temp.path().into(), "unused".into());
+    config.ssh_program = fake_ssh;
+    let (router, token, reconciliation) =
+        api_for_tests(config, Arc::new(ImmediateBackend)).unwrap();
+    let api = TestApi {
+        router,
+        token,
+        reconciliation,
+    };
+
+    let (status, body) = request(&api, Some(&api.token), "POST", "/api/v1/devices", Some(json!({
+        "name": "build-host", "host": "host.test", "user": "dev", "identityFile": "keys/id_ed25519"
+    })), &[]).await;
+    assert_eq!(status, 201);
+    assert_eq!(json_body::<Value>(&body)["port"], 22);
+
+    let (status, _) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/devices",
+        Some(json!({
+            "name": "build-host", "host": "host.test", "user": "dev"
+        })),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 409);
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/devices/build-host/check",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let checked: Value = json_body(&body);
+    assert_eq!(checked["lastCheckStatus"], "auth-failed");
+    assert!(checked["lastCheckedAt"].as_i64().is_some());
+
+    let (status, body) = request(&api, Some(&api.token), "GET", "/api/v1/devices", None, &[]).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        json_body::<Value>(&body)[0]["lastCheckStatus"],
+        "auth-failed"
+    );
+
+    let (status, _) = request(
+        &api,
+        Some(&api.token),
+        "DELETE",
+        "/api/v1/devices/build-host",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 204);
+}
+
+#[tokio::test]
+async fn device_check_reports_missing_ssh_distinctly() {
+    let temp = TempDir::new().unwrap();
+    let mut config = DaemonConfig::new(temp.path().into(), "unused".into());
+    config.ssh_program = temp.path().join("missing-ssh");
+    let (router, token, reconciliation) =
+        api_for_tests(config, Arc::new(ImmediateBackend)).unwrap();
+    let api = TestApi {
+        router,
+        token,
+        reconciliation,
+    };
+    let _ = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/devices",
+        Some(json!({
+            "name": "build-host", "host": "host.test", "user": "dev"
+        })),
+        &[],
+    )
+    .await;
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/devices/build-host/check",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 500);
+    assert_eq!(json_body::<Value>(&body)["code"], "ssh_unavailable");
+}
+
 fn named_fixture(temp: &TempDir, name: &str) -> PathBuf {
     let original = fs::read_to_string(fixture()).unwrap();
     let path = temp.path().join(format!("{name}.yaml"));

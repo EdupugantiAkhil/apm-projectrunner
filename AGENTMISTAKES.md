@@ -1,5 +1,16 @@
 # Agent mistakes and lessons
 
+## 2026-07-16 — Device registry migration
+
+- Adding schema v5 initially left two recovery tests with hard-coded v4 migration
+  suffixes. Correction: update the expectations and retain the dedicated v4-to-v5
+  upgrade test. Lesson: every schema increment must search for all literal migration
+  sequences, even when the main historical test already derives its suffix.
+- The first GUI check handler briefly mutated the `devices` prop before reloading it.
+  Correction: treat props as immutable and use the requested server refresh as the
+  sole row update. Lesson: an immediate refresh does not make transient prop mutation
+  safe or necessary.
+
 ## 2026-07-16 — GUI asset base path
 
 - The GUI build used Vite's default root-absolute asset paths even though the daemon

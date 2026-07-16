@@ -8,6 +8,38 @@ Updated: 2026-07-16
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
 
+## 2026-07-16 device registry and SSH checks
+
+- SQLite schema v5 adds validated, uniquely named device registrations and durable
+  last-check status without any password or key-material fields. Historical v4 stores
+  upgrade transactionally with the existing pre-migration backup guarantees.
+- The authenticated v1 API and CLI provide device list/add/remove/check parity. Checks
+  invoke `ssh` with a direct argument vector, batch mode, a five-second timeout, and
+  host-key `accept-new`; status mapping and missing-SSH behavior are covered without a
+  live network dependency.
+- The GUI adds a Devices rail view with inline add validation, persisted status and
+  timestamps, row refresh after checks, and confirmed removal.
+- Verification: state and daemon suites passed (including 16 API tests plus one
+  pre-existing ignored reliability test); the CLI suite passed with only the
+  sandbox-blocked host-runtime socket test filtered; workspace Clippy passed with
+  `-D warnings`; all 16 GUI tests and the production GUI build passed. The exact
+  combined Rust command was attempted first and stopped at that pre-existing socket
+  test with `EPERM`.
+- Review fixes applied after the Codex pass: device user/host values may no longer
+  start with `-` (and the user may not contain `@`), closing an SSH option-injection
+  path where a crafted user such as `-oProxyCommand=...` became the leading token of
+  the `user@host` destination argument; and the daemon check endpoint no longer holds
+  the state-store mutex across the SSH subprocess, so a slow connect cannot stall
+  unrelated API requests.
+- Local re-verification after the fixes: full `switchyard-state`/`switchyard-daemon`/
+  `switchyard-cli` suites pass unfiltered (including the socket test the Codex sandbox
+  blocked), workspace clippy passes with `-D warnings`, all 16 GUI tests and the
+  production build pass. Live proof on this machine: device add/check/list/remove via
+  the built CLI against a LAN host and an unreachable TEST-NET address produced real
+  `ssh` runs with correct `unreachable` mapping for both timeout and
+  connection-refused, persisted timestamps/details in the store, and the injection
+  attempt was rejected with `invalid_device_user`.
+
 `IMPLEMENTATION_PLAN.md` remains the task-level checklist. This file records the
 implemented shape and the evidence used to close a phase.
 

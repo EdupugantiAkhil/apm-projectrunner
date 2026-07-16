@@ -26,9 +26,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use switchyard_sources::{SourceError, SourceManager};
 use switchyard_state::{
-    AppliedSnapshot, GeneratedManifest, LockRequest, OperationKind, OperationRecord,
-    OperationStatus, ReconciliationInput, ReconciliationReport, RouterApplyRecord,
-    RouterApplyStatus, StateError, StateStore, StructuredContext,
+    AppliedSnapshot, DeviceCheckStatus, GeneratedManifest, LockRequest, OperationKind,
+    OperationRecord, OperationStatus, ReconciliationInput, ReconciliationReport, RegisteredDevice,
+    RouterApplyRecord, RouterApplyStatus, StateError, StateStore, StructuredContext,
 };
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -43,8 +43,9 @@ use crate::contract::{
     DeploymentDetailV1, DeploymentOperationSummaryV1, DeploymentRoutesV1, DeploymentSummaryV1,
     DeploymentValidationV1, DeploymentsV1, DiscoveryV1, EventKindV1, EventV1, GatewayExposureV1,
     MdnsCheckV1, MdnsPublicationV1, MdnsPublishedNameV1, OperationStatusV1, OperationV1,
-    RegisterSourceRequestV1, RemoveWorktreeRequestV1, RouteHistoryV1, RouterBindingV1,
-    TailscalePublicationV1, TransitionPolicyV1, UpdateDeploymentDefinitionRequestV1,
+    RegisterDeviceRequestV1, RegisterSourceRequestV1, RemoveWorktreeRequestV1, RouteHistoryV1,
+    RouterBindingV1, TailscalePublicationV1, TransitionPolicyV1,
+    UpdateDeploymentDefinitionRequestV1,
 };
 
 const LOCK_TTL_MILLIS: i64 = 15_000;
@@ -59,6 +60,8 @@ pub struct DaemonConfig {
     pub max_heavy_operations: usize,
     pub cli_program: PathBuf,
     pub gui_dist: PathBuf,
+    /// SSH executable used for device checks; injectable for hermetic tests.
+    pub ssh_program: PathBuf,
 }
 
 impl DaemonConfig {
@@ -70,6 +73,7 @@ impl DaemonConfig {
             max_heavy_operations: 2,
             cli_program,
             gui_dist,
+            ssh_program: "ssh".into(),
         }
     }
 }
@@ -1222,6 +1226,9 @@ fn routes(inner: Arc<Inner>) -> Router {
         .route("/api/v1/adapters", get(list_adapters))
         .route("/api/v1/sources", get(list_sources).post(register_source))
         .route("/api/v1/sources/{name}", delete(deregister_source))
+        .route("/api/v1/devices", get(list_devices).post(register_device))
+        .route("/api/v1/devices/{name}", delete(deregister_device))
+        .route("/api/v1/devices/{name}/check", post(check_device))
         .route(
             "/api/v1/worktrees",
             get(list_worktrees).post(create_worktree),
@@ -2049,6 +2056,128 @@ async fn deregister_source(
         }
     })
     .await
+}
+
+async fn list_devices(State(inner): State<Arc<Inner>>) -> Response {
+    blocking_source_response(move || {
+        let store = inner
+            .store
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match store.devices() {
+            Ok(devices) => Json(devices).into_response(),
+            Err(error) => device_state_api_error(error),
+        }
+    })
+    .await
+}
+
+async fn register_device(
+    State(inner): State<Arc<Inner>>,
+    payload: Result<Json<RegisterDeviceRequestV1>, JsonRejection>,
+) -> Response {
+    let Json(request) = match payload {
+        Ok(payload) => payload,
+        Err(error) => {
+            return api_error(StatusCode::BAD_REQUEST, "invalid_json", &error.body_text());
+        }
+    };
+    blocking_source_response(move || {
+        let store = inner
+            .store
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let device = RegisteredDevice {
+            name: request.name,
+            host: request.host,
+            port: request.port,
+            user: request.user,
+            identity_file: request.identity_file,
+            created_at: now_millis(),
+            last_checked_at: None,
+            last_check_status: DeviceCheckStatus::Never,
+            last_check_detail: None,
+        };
+        match store.register_device(&device) {
+            Ok(()) => (StatusCode::CREATED, Json(device)).into_response(),
+            Err(error) => device_state_api_error(error),
+        }
+    })
+    .await
+}
+
+async fn deregister_device(
+    State(inner): State<Arc<Inner>>,
+    AxumPath(name): AxumPath<String>,
+) -> Response {
+    blocking_source_response(move || {
+        let store = inner
+            .store
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match store.deregister_device(&name) {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(error) => device_state_api_error(error),
+        }
+    })
+    .await
+}
+
+async fn check_device(
+    State(inner): State<Arc<Inner>>,
+    AxumPath(name): AxumPath<String>,
+) -> Response {
+    blocking_source_response(move || {
+        // Do not hold the store lock across the SSH subprocess: the connect
+        // timeout alone can take seconds and would stall every other request.
+        let device = {
+            let store = inner
+                .store
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            match store.device(&name) {
+                Ok(Some(device)) => device,
+                Ok(None) => {
+                    return api_error(
+                        StatusCode::NOT_FOUND,
+                        "device_not_found",
+                        &format!("device `{name}` is not registered"),
+                    );
+                }
+                Err(error) => return device_state_api_error(error),
+            }
+        };
+        let (status, detail) =
+            match crate::device::check_with_program(&inner.config.ssh_program, &device) {
+                Ok(result) => result,
+                Err(error) => {
+                    return api_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        error.code(),
+                        &error.to_string(),
+                    );
+                }
+            };
+        let store = inner
+            .store
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match store.record_device_check(&name, now_millis(), status, Some(&detail)) {
+            Ok(updated) => Json(updated).into_response(),
+            Err(error) => device_state_api_error(error),
+        }
+    })
+    .await
+}
+
+fn device_state_api_error(error: StateError) -> Response {
+    let status = match error.code() {
+        "device_not_found" => StatusCode::NOT_FOUND,
+        "device_already_registered" => StatusCode::CONFLICT,
+        "state_io" | "state_sqlite" => StatusCode::INTERNAL_SERVER_ERROR,
+        _ => StatusCode::BAD_REQUEST,
+    };
+    api_error(status, error.code(), &error.to_string())
 }
 
 #[derive(serde::Deserialize)]
@@ -3473,6 +3602,7 @@ mod tests {
             max_heavy_operations: 1,
             cli_program: "unused".into(),
             gui_dist: temp.path().join("dist"),
+            ssh_program: "ssh".into(),
         };
         struct Unused;
         impl OperationBackend for Unused {

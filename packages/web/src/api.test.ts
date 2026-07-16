@@ -50,4 +50,17 @@ describe('ApiClient', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/deployments'); expect(fetchMock.mock.calls[0][1].body).toBe(JSON.stringify({ name: 'demo', yaml: 'next', validateOnly: true }))
     expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/deployments/demo/definition'); expect(fetchMock.mock.calls[1][1].body).toBe(JSON.stringify({ yaml: 'next', expectedHash: 'old' }))
   })
+
+  it('uses encoded versioned device endpoints', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ name: 'build host' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('token')
+    await client.devices(); await client.checkDevice('build host'); await client.removeDevice('build host')
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/devices')
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/devices/build%20host/check')
+    expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/devices/build%20host')
+  })
 })

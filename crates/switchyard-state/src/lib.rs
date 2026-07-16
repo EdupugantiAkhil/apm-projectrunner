@@ -57,7 +57,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The schema version understood by this crate.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 /// Ownership label used by the existing Docker runtime.
 pub const MANAGED_LABEL: &str = "dev.switchyard.managed";
 /// Deployment ownership label used by the existing Docker runtime.
@@ -70,7 +70,63 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (2, include_str!("migrations/002_routes.sql")),
     (3, include_str!("migrations/003_live_routes.sql")),
     (4, include_str!("migrations/004_sources.sql")),
+    (5, include_str!("migrations/005_devices.sql")),
 ];
+
+/// Persisted outcome of the most recent SSH connectivity check.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeviceCheckStatus {
+    Never,
+    Ok,
+    Unreachable,
+    AuthFailed,
+}
+
+impl DeviceCheckStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::Ok => "ok",
+            Self::Unreachable => "unreachable",
+            Self::AuthFailed => "auth-failed",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, StateError> {
+        match value {
+            "never" => Ok(Self::Never),
+            "ok" => Ok(Self::Ok),
+            "unreachable" => Ok(Self::Unreachable),
+            "auth-failed" => Ok(Self::AuthFailed),
+            _ => Err(invalid(
+                "invalid_device_status",
+                format!("unknown device status `{value}`"),
+            )),
+        }
+    }
+}
+
+impl fmt::Display for DeviceCheckStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// A remote machine registered for future SSH-backed execution.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisteredDevice {
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub identity_file: Option<PathBuf>,
+    pub created_at: i64,
+    pub last_checked_at: Option<i64>,
+    pub last_check_status: DeviceCheckStatus,
+    pub last_check_detail: Option<String>,
+}
 
 /// Durable ownership classification for a registered source.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -369,6 +425,24 @@ fn source_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegisteredSource
     })
 }
 
+fn device_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegisteredDevice> {
+    let status = row.get::<_, String>(7)?;
+    let status = DeviceCheckStatus::parse(&status).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    Ok(RegisteredDevice {
+        name: row.get(0)?,
+        host: row.get(1)?,
+        port: row.get(2)?,
+        user: row.get(3)?,
+        identity_file: row.get::<_, Option<String>>(4)?.map(PathBuf::from),
+        created_at: row.get(5)?,
+        last_checked_at: row.get(6)?,
+        last_check_status: status,
+        last_check_detail: row.get(8)?,
+    })
+}
+
 /// Synchronous project state store. A future daemon can serialize access around it.
 pub struct StateStore {
     connection: Connection,
@@ -496,6 +570,82 @@ impl StateStore {
             ));
         }
         Ok(())
+    }
+
+    /// Registers a remote SSH device. Only an identity path is retained, never key material.
+    pub fn register_device(&self, device: &RegisteredDevice) -> Result<(), StateError> {
+        validate_device(device)?;
+        self.connection.execute(
+            "INSERT INTO devices(name,host,port,user,identity_file,created_at,last_checked_at,last_check_status,last_check_detail) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![device.name, device.host, device.port, device.user, device.identity_file.as_ref().map(|path| path.to_string_lossy()), device.created_at, device.last_checked_at, device.last_check_status.as_str(), device.last_check_detail],
+        ).map_err(|error| match error {
+            rusqlite::Error::SqliteFailure(ref failure, _) if failure.code == rusqlite::ErrorCode::ConstraintViolation => invalid("device_already_registered", format!("device `{}` is already registered", device.name)),
+            other => other.into(),
+        })?;
+        Ok(())
+    }
+
+    /// Loads a registered device by name.
+    pub fn device(&self, name: &str) -> Result<Option<RegisteredDevice>, StateError> {
+        self.connection.query_row(
+            "SELECT name,host,port,user,identity_file,created_at,last_checked_at,last_check_status,last_check_detail FROM devices WHERE name=?1",
+            [name], device_from_row,
+        ).optional().map_err(Into::into)
+    }
+
+    /// Lists devices in stable name order.
+    pub fn devices(&self) -> Result<Vec<RegisteredDevice>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT name,host,port,user,identity_file,created_at,last_checked_at,last_check_status,last_check_detail FROM devices ORDER BY name",
+        )?;
+        let rows = statement.query_map([], device_from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Removes a device registration without touching SSH configuration or files.
+    pub fn deregister_device(&self, name: &str) -> Result<(), StateError> {
+        let changed = self
+            .connection
+            .execute("DELETE FROM devices WHERE name=?1", [name])?;
+        if changed == 0 {
+            return Err(invalid(
+                "device_not_found",
+                format!("device `{name}` is not registered"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Persists a connectivity check and returns the updated record.
+    pub fn record_device_check(
+        &self,
+        name: &str,
+        checked_at: i64,
+        status: DeviceCheckStatus,
+        detail: Option<&str>,
+    ) -> Result<RegisteredDevice, StateError> {
+        if status == DeviceCheckStatus::Never {
+            return Err(invalid(
+                "invalid_device_status",
+                "a completed check cannot have status `never`",
+            ));
+        }
+        let changed = self.connection.execute(
+            "UPDATE devices SET last_checked_at=?2,last_check_status=?3,last_check_detail=?4 WHERE name=?1",
+            params![name, checked_at, status.as_str(), detail],
+        )?;
+        if changed == 0 {
+            return Err(invalid(
+                "device_not_found",
+                format!("device `{name}` is not registered"),
+            ));
+        }
+        self.device(name)?.ok_or_else(|| {
+            invalid(
+                "device_not_found",
+                format!("device `{name}` is not registered"),
+            )
+        })
     }
 
     /// Records the last successfully applied resolved snapshot and appends history.
@@ -1051,6 +1201,48 @@ fn validate_id(name: &str, value: &str) -> Result<(), StateError> {
     } else {
         Ok(())
     }
+}
+
+fn validate_device(device: &RegisteredDevice) -> Result<(), StateError> {
+    validate_id("device name", &device.name)?;
+    if device.host.trim().is_empty()
+        || device.host.chars().any(char::is_whitespace)
+        || device.host.starts_with('-')
+    {
+        return Err(invalid(
+            "invalid_device_host",
+            "device host cannot be empty, contain whitespace, or start with `-`",
+        ));
+    }
+    // The SSH destination is passed as `user@host`; a leading `-` would be
+    // parsed by ssh as an option (e.g. -oProxyCommand=...), so reject it.
+    if device.user.trim().is_empty()
+        || device.user.chars().any(char::is_whitespace)
+        || device.user.starts_with('-')
+        || device.user.contains('@')
+    {
+        return Err(invalid(
+            "invalid_device_user",
+            "device user cannot be empty, contain whitespace or `@`, or start with `-`",
+        ));
+    }
+    if device.port == 0 {
+        return Err(invalid(
+            "invalid_device_port",
+            "device port must be between 1 and 65535",
+        ));
+    }
+    if device
+        .identity_file
+        .as_ref()
+        .is_some_and(|path| path.as_os_str().is_empty())
+    {
+        return Err(invalid(
+            "invalid_identity_file",
+            "identity file path cannot be empty",
+        ));
+    }
+    Ok(())
 }
 
 fn ownership_labels_json(labels: &BTreeMap<String, String>) -> Result<String, StateError> {
@@ -1946,6 +2138,107 @@ mod tests {
     }
 
     #[test]
+    fn device_validation_and_store_round_trip() {
+        let temp = TempDir::new().unwrap();
+        let (store, _) = open_temp(&temp);
+        let mut device = RegisteredDevice {
+            name: "build-host".into(),
+            host: "dev.example.test".into(),
+            port: 2222,
+            user: "operator".into(),
+            identity_file: Some(PathBuf::from("keys/device_ed25519")),
+            created_at: 100,
+            last_checked_at: None,
+            last_check_status: DeviceCheckStatus::Never,
+            last_check_detail: None,
+        };
+        store.register_device(&device).unwrap();
+        assert_eq!(store.devices().unwrap(), vec![device.clone()]);
+        assert_eq!(
+            store.register_device(&device).unwrap_err().code(),
+            "device_already_registered"
+        );
+
+        device.last_checked_at = Some(200);
+        device.last_check_status = DeviceCheckStatus::Ok;
+        device.last_check_detail = Some("SSH connection succeeded".into());
+        assert_eq!(
+            store
+                .record_device_check(
+                    "build-host",
+                    200,
+                    DeviceCheckStatus::Ok,
+                    Some("SSH connection succeeded"),
+                )
+                .unwrap(),
+            device
+        );
+        store.deregister_device("build-host").unwrap();
+        assert!(store.devices().unwrap().is_empty());
+
+        let invalid = RegisteredDevice {
+            name: "bad".into(),
+            host: "has whitespace".into(),
+            port: 22,
+            user: "operator".into(),
+            identity_file: None,
+            created_at: 1,
+            last_checked_at: None,
+            last_check_status: DeviceCheckStatus::Never,
+            last_check_detail: None,
+        };
+        assert_eq!(
+            store.register_device(&invalid).unwrap_err().code(),
+            "invalid_device_host"
+        );
+        let mut invalid = invalid;
+        invalid.host = "host.test".into();
+        invalid.port = 0;
+        assert_eq!(
+            store.register_device(&invalid).unwrap_err().code(),
+            "invalid_device_port"
+        );
+        invalid.port = 22;
+        invalid.name.clear();
+        assert_eq!(
+            store.register_device(&invalid).unwrap_err().code(),
+            "invalid_identifier"
+        );
+
+        invalid.name = "bad".into();
+        invalid.user = "-oProxyCommand=payload".into();
+        assert_eq!(
+            store.register_device(&invalid).unwrap_err().code(),
+            "invalid_device_user"
+        );
+        invalid.user = "operator@extra".into();
+        assert_eq!(
+            store.register_device(&invalid).unwrap_err().code(),
+            "invalid_device_user"
+        );
+        invalid.user = "operator".into();
+        invalid.host = "-bad.host".into();
+        assert_eq!(
+            store.register_device(&invalid).unwrap_err().code(),
+            "invalid_device_host"
+        );
+    }
+
+    #[test]
+    fn version_four_store_upgrades_to_devices_schema() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("state-v4.sqlite3");
+        historical_database(&path, 4);
+        let (store, report) = StateStore::open(&path).unwrap();
+        assert_eq!(report.applied_migrations, vec![5]);
+        assert!(report.backup_path.unwrap().is_file());
+        assert_eq!(
+            scalar::<i64>(&store.connection, "SELECT COUNT(*) FROM devices"),
+            0
+        );
+    }
+
+    #[test]
     fn migrations_are_ordered_and_existing_database_is_backed_up() {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("state.sqlite3");
@@ -1960,7 +2253,7 @@ mod tests {
         drop(connection);
 
         let (store, report) = StateStore::open(&path).unwrap();
-        assert_eq!(report.applied_migrations, vec![2, 3, 4]);
+        assert_eq!(report.applied_migrations, vec![2, 3, 4, 5]);
         let backup = report.backup_path.unwrap();
         assert!(backup.is_file());
         let versions = store
@@ -1971,7 +2264,7 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(versions, vec![1, 2, 3, 4]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5]);
         let backup_connection = Connection::open(backup).unwrap();
         assert_eq!(current_schema_version(&backup_connection).unwrap(), 1);
     }
@@ -1997,7 +2290,7 @@ mod tests {
 
     #[test]
     fn historical_schema_versions_migrate_with_backups_and_preserve_rows() {
-        for version in 1..=3 {
+        for version in 1..SCHEMA_VERSION {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join(format!("state-v{version}.sqlite3"));
             historical_database(&path, version);
@@ -2058,7 +2351,7 @@ mod tests {
         let restored = temp.path().join("restored-from-backup.sqlite3");
         fs::copy(&backup, &restored).unwrap();
         let (store, report) = StateStore::open(&restored).unwrap();
-        assert_eq!(report.applied_migrations, vec![3, 4]);
+        assert_eq!(report.applied_migrations, vec![3, 4, 5]);
         assert_consistent(&store.connection);
         assert_historical_values(&store.connection, 2);
     }

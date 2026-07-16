@@ -15,6 +15,7 @@ use std::{
     net::{SocketAddr, TcpListener, ToSocketAddrs},
     path::{Path, PathBuf},
     process::{Command, ExitCode, Stdio},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use cli::{CliCommand, DeploymentOptions, USAGE};
@@ -327,6 +328,10 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         | CliCommand::SourceList { .. }
         | CliCommand::SourceRegister { .. }
         | CliCommand::SourceDeregister { .. }
+        | CliCommand::DeviceList { .. }
+        | CliCommand::DeviceAdd { .. }
+        | CliCommand::DeviceRemove { .. }
+        | CliCommand::DeviceCheck { .. }
         | CliCommand::WorktreeCreate { .. }
         | CliCommand::WorktreeRemove { .. }
         | CliCommand::Diagnostics { .. } => unreachable!("handled before command dispatch"),
@@ -400,7 +405,9 @@ fn handle_source_command(
     workspace_root: &Path,
     command: &CliCommand,
 ) -> Result<Option<ExitCode>, Box<dyn std::error::Error>> {
-    use switchyard_daemon::contract::{CreateWorktreeRequestV1, RegisterSourceRequestV1};
+    use switchyard_daemon::contract::{
+        CreateWorktreeRequestV1, RegisterDeviceRequestV1, RegisterSourceRequestV1,
+    };
     let bypass = env::var_os("SWITCHYARD_BYPASS_DAEMON").is_some();
     let state = || {
         switchyard_state::StateStore::open(workspace_root.join(".switchyard/state.sqlite3"))
@@ -455,6 +462,110 @@ fn handle_source_command(
                 manager.deregister(&state()?, name)?;
             }
             println!("deregistered source `{name}`; no files were changed");
+        }
+        CliCommand::DeviceList { json } => {
+            let devices = if !bypass {
+                switchyard_daemon::client::devices(workspace_root)?
+            } else {
+                None
+            }
+            .map_or_else(
+                || -> Result<_, Box<dyn std::error::Error>> { Ok(state()?.devices()?) },
+                Ok,
+            )?;
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&devices)?);
+            } else if devices.is_empty() {
+                println!("no devices registered");
+            } else {
+                for device in devices {
+                    println!(
+                        "{}\t{}@{}:{}\t{}",
+                        device.name,
+                        device.user,
+                        device.host,
+                        device.port,
+                        device.last_check_status
+                    );
+                }
+            }
+        }
+        CliCommand::DeviceAdd {
+            name,
+            target,
+            identity,
+        } => {
+            let (user, host, port) = parse_device_target(target)?;
+            let request = RegisterDeviceRequestV1 {
+                name: name.clone(),
+                host: host.clone(),
+                port,
+                user: user.clone(),
+                identity_file: identity.clone(),
+            };
+            let device = if !bypass {
+                switchyard_daemon::client::register_device(workspace_root, &request)?
+            } else {
+                None
+            }
+            .map_or_else(
+                || {
+                    let device = switchyard_state::RegisteredDevice {
+                        name: name.clone(),
+                        host,
+                        port,
+                        user,
+                        identity_file: identity.clone(),
+                        created_at: unix_millis(),
+                        last_checked_at: None,
+                        last_check_status: switchyard_state::DeviceCheckStatus::Never,
+                        last_check_detail: None,
+                    };
+                    state()?.register_device(&device)?;
+                    Ok::<_, Box<dyn std::error::Error>>(device)
+                },
+                Ok,
+            )?;
+            println!(
+                "registered device `{}` at {}@{}:{}",
+                device.name, device.user, device.host, device.port
+            );
+        }
+        CliCommand::DeviceRemove { name } => {
+            if bypass
+                || switchyard_daemon::client::deregister_device(workspace_root, name)?.is_none()
+            {
+                state()?.deregister_device(name)?;
+            }
+            println!("removed device `{name}`");
+        }
+        CliCommand::DeviceCheck { name } => {
+            let device = if !bypass {
+                switchyard_daemon::client::check_device(workspace_root, name)?
+            } else {
+                None
+            }
+            .map_or_else(
+                || -> Result<_, Box<dyn std::error::Error>> {
+                    let store = state()?;
+                    let device = store.device(name)?.ok_or_else(|| {
+                        MessageError(format!("device `{name}` is not registered"))
+                    })?;
+                    let (status, detail) = switchyard_daemon::device::check(&device)?;
+                    Ok(store.record_device_check(name, unix_millis(), status, Some(&detail))?)
+                },
+                Ok,
+            )?;
+            println!(
+                "{}: {}{}",
+                device.name,
+                device.last_check_status,
+                device
+                    .last_check_detail
+                    .as_deref()
+                    .map(|detail| format!(" — {detail}"))
+                    .unwrap_or_default()
+            );
         }
         CliCommand::WorktreeCreate {
             repository,
@@ -518,6 +629,41 @@ fn handle_source_command(
         _ => return Ok(None),
     }
     Ok(Some(ExitCode::SUCCESS))
+}
+
+fn unix_millis() -> i64 {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX)
+}
+
+fn parse_device_target(target: &str) -> Result<(String, String, u16), MessageError> {
+    let (user, address) = target
+        .split_once('@')
+        .ok_or_else(|| MessageError("device target must use user@host[:port]".into()))?;
+    if user.is_empty() || address.is_empty() {
+        return Err(MessageError(
+            "device target must use user@host[:port]".into(),
+        ));
+    }
+    let (host, port) = match address.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() && !port.is_empty() && !host.contains(':') => (
+            host,
+            port.parse::<u16>()
+                .map_err(|_| MessageError("device port must be between 1 and 65535".into()))?,
+        ),
+        _ => (address, 22),
+    };
+    if port == 0 {
+        return Err(MessageError(
+            "device port must be between 1 and 65535".into(),
+        ));
+    }
+    Ok((user.into(), host.into(), port))
 }
 
 fn print_sources(
@@ -800,6 +946,10 @@ fn daemon_request(
         | CliCommand::SourceList { .. }
         | CliCommand::SourceRegister { .. }
         | CliCommand::SourceDeregister { .. }
+        | CliCommand::DeviceList { .. }
+        | CliCommand::DeviceAdd { .. }
+        | CliCommand::DeviceRemove { .. }
+        | CliCommand::DeviceCheck { .. }
         | CliCommand::WorktreeCreate { .. }
         | CliCommand::WorktreeRemove { .. }
         | CliCommand::BundleExport { .. }
@@ -1463,6 +1613,20 @@ impl std::error::Error for MessageError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_target_defaults_and_validates_port() {
+        assert_eq!(
+            parse_device_target("dev@host.test").unwrap(),
+            ("dev".into(), "host.test".into(), 22)
+        );
+        assert_eq!(
+            parse_device_target("dev@host.test:2222").unwrap(),
+            ("dev".into(), "host.test".into(), 2222)
+        );
+        assert!(parse_device_target("host.test").is_err());
+        assert!(parse_device_target("dev@host.test:0").is_err());
+    }
 
     #[test]
     fn log_target_resolves_all_instance_services_from_manifest() {

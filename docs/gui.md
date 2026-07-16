@@ -41,7 +41,7 @@ one, preventing an accidental credential rotation while routers may still be run
 
 ## Deployment workspace
 
-The shell provides keyboard-accessible Deployments, Sources, Operations, and Block
+The shell provides keyboard-accessible Deployments, Sources, Devices, Operations, and Block
 library views, plus a collapsible event/log drawer. Deployment detail contains a live
 patch bay with UI-consumer, backend/provider, and provider-group lanes. Cables carry a
 direction arrow and a capability label as well as their capability color. The route
@@ -76,3 +76,15 @@ explicitly. A successful result shows planner-derived expanded service and route
 before save. Save refuses overwrite through the daemon definition API and can
 optionally start Up. Sources still supports unmanaged registration and managed
 worktree creation/removal; dirty removal has its separate second confirmation.
+
+## Devices
+
+The Devices view lists registered SSH targets with a status badge and last-check time.
+Its add form validates name, user, host, and port inline and accepts an optional identity
+file path. **Check connection** refreshes the row with `ok`, `unreachable`, or
+`auth-failed`; **Remove** requires an explicit confirmation and removes only the
+registry entry.
+
+Device authentication uses the daemon user's existing SSH keys, configuration, and
+agent. The GUI and API do not accept passwords or key contents, and SQLite stores only
+the optional identity file path exactly as entered.

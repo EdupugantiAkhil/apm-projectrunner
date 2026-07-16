@@ -86,6 +86,20 @@ pub enum CliCommand {
     SourceDeregister {
         name: String,
     },
+    DeviceList {
+        json: bool,
+    },
+    DeviceAdd {
+        name: String,
+        target: String,
+        identity: Option<PathBuf>,
+    },
+    DeviceRemove {
+        name: String,
+    },
+    DeviceCheck {
+        name: String,
+    },
     WorktreeCreate {
         repository: String,
         r#ref: String,
@@ -150,6 +164,10 @@ Usage:
   switchyard source list [--json]
   switchyard source register <name> <path>
   switchyard source deregister <name>
+  switchyard device list [--json]
+  switchyard device add <name> <user@host[:port]> [--identity <path>]
+  switchyard device remove <name>
+  switchyard device check <name>
   switchyard worktree create <repository-source> <ref> [--path <path>] [--name <name>]
   switchyard worktree remove <name> [--allow-dirty]
 ";
@@ -249,6 +267,26 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
                 name: rest[1].clone(),
             })
         }
+        "device" if rest == ["list"] => Ok(CliCommand::DeviceList { json: false }),
+        "device" if rest == ["list", "--json"] => Ok(CliCommand::DeviceList { json: true }),
+        "device" if rest.len() == 3 && rest[0] == "add" => Ok(CliCommand::DeviceAdd {
+            name: rest[1].clone(),
+            target: rest[2].clone(),
+            identity: None,
+        }),
+        "device" if rest.len() == 5 && rest[0] == "add" && rest[3] == "--identity" => {
+            Ok(CliCommand::DeviceAdd {
+                name: rest[1].clone(),
+                target: rest[2].clone(),
+                identity: Some(PathBuf::from(&rest[4])),
+            })
+        }
+        "device" if rest.len() == 2 && rest[0] == "remove" => Ok(CliCommand::DeviceRemove {
+            name: rest[1].clone(),
+        }),
+        "device" if rest.len() == 2 && rest[0] == "check" => Ok(CliCommand::DeviceCheck {
+            name: rest[1].clone(),
+        }),
         "worktree" if rest.len() >= 3 && rest[0] == "create" => parse_worktree_create(rest),
         "worktree" if rest.len() == 2 && rest[0] == "remove" => Ok(CliCommand::WorktreeRemove {
             name: rest[1].clone(),
@@ -640,6 +678,42 @@ mod tests {
             CliCommand::WorktreeRemove {
                 name: "feature-x".into(),
                 allow_dirty: true
+            }
+        );
+    }
+
+    #[test]
+    fn parses_device_commands() {
+        assert_eq!(
+            parse(args(&["device", "list", "--json"])).unwrap(),
+            CliCommand::DeviceList { json: true }
+        );
+        assert_eq!(
+            parse(args(&[
+                "device",
+                "add",
+                "builder",
+                "dev@host.test:2222",
+                "--identity",
+                "keys/id"
+            ]))
+            .unwrap(),
+            CliCommand::DeviceAdd {
+                name: "builder".into(),
+                target: "dev@host.test:2222".into(),
+                identity: Some("keys/id".into())
+            }
+        );
+        assert_eq!(
+            parse(args(&["device", "remove", "builder"])).unwrap(),
+            CliCommand::DeviceRemove {
+                name: "builder".into()
+            }
+        );
+        assert_eq!(
+            parse(args(&["device", "check", "builder"])).unwrap(),
+            CliCommand::DeviceCheck {
+                name: "builder".into()
             }
         );
     }

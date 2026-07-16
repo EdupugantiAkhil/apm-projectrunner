@@ -80,6 +80,18 @@ export interface SourceRecord {
     unknownCode: string | null
   }
 }
+export type DeviceStatus = 'never' | 'ok' | 'unreachable' | 'auth-failed'
+export interface DeviceRecord {
+  name: string
+  host: string
+  port: number
+  user: string
+  identityFile: string | null
+  createdAt: number
+  lastCheckedAt: number | null
+  lastCheckStatus: DeviceStatus
+  lastCheckDetail: string | null
+}
 export interface RouteState {
   deployment: string
   bindings: Array<{ router: string; binding: string; currentVersion: number | null; desiredVersion: number | null; status: string; lastErrorCode: string | null }>
@@ -132,6 +144,10 @@ export class ApiClient {
   updateDefinition(name: string, yaml: string, expectedHash: string) { return this.request<DeploymentDefinition>(`/deployments/${encodeURIComponent(name)}/definition`, { method: 'PUT', body: JSON.stringify({ yaml, expectedHash }) }) }
   async updateDefinitionValidated(name: string, yaml: string, expectedHash: string) { await this.validateDeployment(name, yaml); return this.updateDefinition(name, yaml, expectedHash) }
   sources() { return this.request<SourceRecord[]>('/sources') }
+  devices() { return this.request<DeviceRecord[]>('/devices') }
+  addDevice(device: { name: string; host: string; port: number; user: string; identityFile?: string }) { return this.request<DeviceRecord>('/devices', { method: 'POST', body: JSON.stringify(device) }) }
+  removeDevice(name: string) { return this.request<void>(`/devices/${encodeURIComponent(name)}`, { method: 'DELETE' }) }
+  checkDevice(name: string) { return this.request<DeviceRecord>(`/devices/${encodeURIComponent(name)}/check`, { method: 'POST' }) }
   registerSource(name: string, path: string) { return this.request<SourceRecord>('/sources', { method: 'POST', body: JSON.stringify({ name, path }) }) }
   createWorktree(repository: string, ref: string, name?: string, path?: string) {
     return this.request<SourceRecord>('/worktrees', { method: 'POST', body: JSON.stringify({ repository, ref, name: name || undefined, path: path || undefined }) })

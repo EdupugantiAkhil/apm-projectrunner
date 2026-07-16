@@ -25,12 +25,16 @@ class MockEventSource extends EventTarget {
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } }) }
 function installFetch() {
   let operationReads = 0
+  let deviceStatus = 'never'
   const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input)
     if (url.endsWith('/deployments') && (!init?.method || init.method === 'GET')) return json({ apiVersion: 'v1', deployments: [{ name: 'comparison', definitionHash: 'definition123', resourceHash: 'resource123', appliedAt: 1, lastOperation: { id: 'old', kind: 'apply', status: 'succeeded', startedAt: 1, finishedAt: 2 }, customDomains: [], bindings: {} }] })
     if (url.endsWith('/deployments/comparison/routes')) return json({ deployment: 'comparison', bindings: [{ router: 'host', binding: 'ui-feature', currentVersion: 4, desiredVersion: 4, status: 'active', lastErrorCode: null }], history: [] })
     if (url.endsWith('/deployments/comparison')) return json(deployment)
     if (url.endsWith('/sources')) return json([source])
+    if (url.endsWith('/devices/build-host/check') && init?.method === 'POST') { deviceStatus = 'ok'; return json({ name: 'build-host', host: 'host.test', port: 22, user: 'dev', identityFile: null, createdAt: 1, lastCheckedAt: 1000, lastCheckStatus: 'ok', lastCheckDetail: 'SSH connection succeeded' }) }
+    if (url.endsWith('/devices') && init?.method === 'POST') return json({ ...JSON.parse(String(init.body)), identityFile: null, createdAt: 1, lastCheckedAt: null, lastCheckStatus: 'never', lastCheckDetail: null }, 201)
+    if (url.endsWith('/devices')) return json([{ name: 'build-host', host: 'host.test', port: 22, user: 'dev', identityFile: null, createdAt: 1, lastCheckedAt: deviceStatus === 'ok' ? 1000 : null, lastCheckStatus: deviceStatus, lastCheckDetail: deviceStatus === 'ok' ? 'SSH connection succeeded' : null }])
     if (url.endsWith('/adapters')) return json([{ kind: 'execution', declaration: { id: 'container', version: '1', capabilities: ['container'] }, configurationSchema: { type: 'object', properties: { type: { type: 'string', enum: ['container'], default: 'container' }, image: { type: 'string' } } } }])
     if (url.endsWith('/deployments/comparison/definition') && (!init?.method || init.method === 'GET')) return json({ apiVersion: 'v1', name: 'comparison', path: '/project/deployments/comparison.yaml', hash: 'hash-one', yaml: 'metadata:\n  name: comparison\nspec:\n  uiRoutes: {}\n' })
     if (url.endsWith('/deployments/comparison/definition') && init?.method === 'PUT') return json({ apiVersion: 'v1', name: 'comparison', path: '/project/deployments/comparison.yaml', hash: 'hash-two', yaml: JSON.parse(String(init.body)).yaml })
@@ -113,6 +117,25 @@ describe('Switchyard GUI', () => {
     deployments.focus()
     await user.keyboard('{ArrowRight}')
     expect(await screen.findByRole('heading', { name: 'Sources', level: 1 })).toBeInTheDocument()
+  })
+
+  it('renders devices and refreshes a row after a connection check', async () => {
+    const user = userEvent.setup(); render(<App client={new ApiClient('test')} />)
+    await user.click(within(screen.getByRole('navigation', { name: 'Main views' })).getByRole('button', { name: 'devices' }))
+    expect(await screen.findByRole('cell', { name: 'dev@host.test:22' })).toBeInTheDocument()
+    expect(screen.getByText('never')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Check connection' }))
+    expect(await screen.findByText('ok')).toBeInTheDocument()
+  })
+
+  it('shows inline add-device validation and submits a valid device', async () => {
+    const user = userEvent.setup(); const fetchMock = vi.mocked(fetch); render(<App client={new ApiClient('test')} />)
+    await user.click(within(screen.getByRole('navigation', { name: 'Main views' })).getByRole('button', { name: 'devices' }))
+    await screen.findByRole('heading', { name: 'Devices' })
+    await user.clear(screen.getByLabelText('Port')); await user.type(screen.getByLabelText('Port'), '70000'); await user.click(screen.getByRole('button', { name: 'Add device' }))
+    expect(screen.getByText('Name is required.')).toBeInTheDocument(); expect(screen.getByText('Port must be between 1 and 65535.')).toBeInTheDocument()
+    await user.type(screen.getByLabelText('Name'), 'runner'); await user.type(screen.getByLabelText('User'), 'dev'); await user.type(screen.getByLabelText('Host'), 'runner.test'); await user.clear(screen.getByLabelText('Port')); await user.type(screen.getByLabelText('Port'), '2222'); await user.click(screen.getByRole('button', { name: 'Add device' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/devices', expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: 'runner', user: 'dev', host: 'runner.test', port: 2222 }) })))
   })
 
   it('renders patch lanes and cables and performs a keyboard-only complete binding switch', async () => {

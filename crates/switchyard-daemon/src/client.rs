@@ -12,9 +12,53 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use crate::contract::{
     API_VERSION, ApiErrorV1, CommandKind, CommandRequestV1, CreateWorktreeRequestV1,
-    DaemonStatusV1, DeploymentDetailV1, DeploymentRoutesV1, DeploymentsV1, DiscoveryV1,
-    OperationV1, RegisterSourceRequestV1, RemoveWorktreeRequestV1, SourceV1,
+    DaemonStatusV1, DeploymentDetailV1, DeploymentRoutesV1, DeploymentsV1, DeviceV1, DiscoveryV1,
+    OperationV1, RegisterDeviceRequestV1, RegisterSourceRequestV1, RemoveWorktreeRequestV1,
+    SourceV1,
 };
+
+pub fn devices(project_root: &Path) -> Result<Option<Vec<DeviceV1>>, ClientError> {
+    let Some(discovery) = load_discovery(project_root)? else {
+        return Ok(None);
+    };
+    json_request::<(), _>(&discovery, "GET", "/api/v1/devices", None).map(Some)
+}
+
+pub fn register_device(
+    project_root: &Path,
+    request: &RegisterDeviceRequestV1,
+) -> Result<Option<DeviceV1>, ClientError> {
+    let Some(discovery) = load_discovery(project_root)? else {
+        return Ok(None);
+    };
+    json_request(&discovery, "POST", "/api/v1/devices", Some(request)).map(Some)
+}
+
+pub fn deregister_device(project_root: &Path, name: &str) -> Result<Option<()>, ClientError> {
+    let Some(discovery) = load_discovery(project_root)? else {
+        return Ok(None);
+    };
+    json_request::<(), serde_json::Value>(
+        &discovery,
+        "DELETE",
+        &format!("/api/v1/devices/{name}"),
+        None,
+    )
+    .map(|_| Some(()))
+}
+
+pub fn check_device(project_root: &Path, name: &str) -> Result<Option<DeviceV1>, ClientError> {
+    let Some(discovery) = load_discovery(project_root)? else {
+        return Ok(None);
+    };
+    json_request::<(), _>(
+        &discovery,
+        "POST",
+        &format!("/api/v1/devices/{name}/check"),
+        None,
+    )
+    .map(Some)
+}
 
 /// Lists sources through a discovered daemon, or returns `None` for one-shot fallback.
 pub fn sources(project_root: &Path) -> Result<Option<Vec<SourceV1>>, ClientError> {

@@ -76,6 +76,10 @@ optional `context` fields. Framework types are not part of the public Rust contr
 | `GET` | `/api/v1/worktrees?repository={source}` | Inspect every Git worktree for a registered repository |
 | `POST` | `/api/v1/worktrees` | Create a managed linked worktree |
 | `DELETE` | `/api/v1/worktrees/{name}` | Remove a managed worktree after the dirty-state guard |
+| `GET` | `/api/v1/devices` | List registered SSH devices and their last check result |
+| `POST` | `/api/v1/devices` | Register a device |
+| `DELETE` | `/api/v1/devices/{name}` | Remove a device registration |
+| `POST` | `/api/v1/devices/{name}/check` | Run and persist an SSH connectivity check |
 
 A command request always contains `bundle`. Command-specific fields are `consumer` and
 `group` for bind, `routes` for status, `target` for logs, `ui` for open, and `confirmed`
@@ -109,6 +113,16 @@ confirmation, but it still cannot target unmanaged or out-of-root paths. Expecte
 validation failures use stable codes including `source_path_not_found`,
 `repository_unregistered`, `source_target_exists`, `source_ref_unknown`,
 `source_unmanaged`, `source_dirty`, and `source_outside_managed_root`.
+
+Device creation accepts `name`, `host`, `user`, optional `port` (default 22), and
+optional `identityFile`. Checks invoke the system `ssh` executable without a shell,
+using batch mode, a five-second connection timeout, host-key `accept-new`, and the
+registered identity path when present. Results are `never`, `ok`, `unreachable`, or
+`auth-failed`; the timestamp and bounded SSH diagnostic are retained in SQLite. A
+missing executable returns `ssh_unavailable` without changing the previous result.
+Switchyard never accepts or stores passwords, private-key material, or agent secrets:
+authentication relies on the invoking user's SSH agent, SSH configuration, and key
+files, and only an identity file path is stored.
 
 The daemon keeps the 64 most recent terminal operations in memory, including their raw
 output and resumable event logs. Older terminal operations are evicted from memory;

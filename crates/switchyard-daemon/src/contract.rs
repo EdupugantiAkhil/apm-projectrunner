@@ -459,6 +459,26 @@ pub struct RegisterSourceRequestV1 {
     pub path: PathBuf,
 }
 
+/// Request to register a remote machine reachable through the user's SSH configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegisterDeviceRequestV1 {
+    pub name: String,
+    pub host: String,
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
+    pub user: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_file: Option<PathBuf>,
+}
+
+const fn default_ssh_port() -> u16 {
+    22
+}
+
+/// Registered device and its most recent persisted connectivity result.
+pub type DeviceV1 = switchyard_state::RegisteredDevice;
+
 /// Request to create a managed linked worktree.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
