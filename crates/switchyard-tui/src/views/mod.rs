@@ -222,10 +222,14 @@ mod tests {
             authentication: GitAuthentication::IdentityFile,
             identity_file: "~/.ssh/id_ed25519".into(),
             panel: AddSourcePanel::GitOptions,
-            active_field: 2,
-            error: Some("Permission denied (publickey).".into()),
+            active_field: 3,
             ..AddForm::default()
         });
+        app.handle_event(crossterm::event::Event::Paste("not-rendered".into()));
+        let Overlay::Add(form) = &mut app.overlay else {
+            panic!("add source form closed")
+        };
+        form.error = Some("Permission denied (publickey).\nCheck the selected key.".into());
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let contents = terminal
             .backend()
@@ -237,8 +241,12 @@ mod tests {
         assert!(contents.contains("Git clone options & SSH authentication"));
         assert!(contents.contains("Identity file"));
         assert!(contents.contains("Unlock encrypted keys with ssh-add"));
-        assert!(contents.contains("Passwords and tokens are never collected"));
+        assert!(contents.contains("SSH credential is used once and never stored"));
         assert!(contents.contains("Change the authentication selection"));
+        assert!(contents.contains("Check the selected key"));
+        assert!(contents.contains("SSH password / key passphrase"));
+        assert!(contents.contains("••••••••••••"));
+        assert!(!contents.contains("not-rendered"));
     }
 
     #[test]

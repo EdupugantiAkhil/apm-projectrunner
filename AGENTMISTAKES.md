@@ -2,6 +2,10 @@
 
 ## 2026-07-16 — TUI source dialog follow-up
 
+- The first SSH askpass helper retained its writable temporary-file descriptor while
+  executing the helper, which Unix rejected with `ETXTBSY`. Correction: close the file
+  descriptor by retaining only the auto-deleting temporary path before execution.
+  Lesson: executable temporary helpers must be finalized and closed before spawning.
 - A follow-up test initially used `assert_eq!` on an internal action enum that does not
   need comparison/debug traits in production. Correction: assert the returned variant
   with pattern matching. Lesson: tests should not expand production trait surfaces just
@@ -17,9 +21,10 @@
   and move Git-only settings to a separate popup. Lesson: mutually exclusive workflows
   should be separate interaction states, not parallel empty inputs.
 - A full-screen Git clone must not fall through to an invisible password or key-
-  passphrase prompt. Correction: use Git/SSH batch mode and integrate only agent/config
-  state or an identity-file path. Lesson: terminal UIs should make credential ownership
-  explicit and keep subprocess authentication non-interactive.
+  passphrase prompt. The first correction forced batch mode, but that also removed normal
+  terminal prompt behavior. Final correction: use batch mode by default and provide a
+  masked, ephemeral askpass response when the user enters one. Lesson: terminal UIs must
+  preserve expected credential prompting while making storage and lifetime explicit.
 
 ## 2026-07-16 — Standalone TUI workflow
 

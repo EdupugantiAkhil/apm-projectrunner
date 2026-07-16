@@ -29,11 +29,15 @@ changes the selected row.
   in the background and its errors remain in the form.
 - In Git mode, Enter always opens a separate options and authentication review before
   cloning (`F2` opens the same popup directly). A clone may select a branch/tag ref and
-  use either existing SSH agent/config state or an existing identity-file path. Enter in
-  that popup starts the clone. Identity contents, passwords, and tokens are never
-  collected or stored.
-  HTTPS continues to use the user's configured Git credential helper. Clone transport is
-  non-interactive: encrypted SSH keys must already be unlocked with `ssh-add`.
+  use either existing SSH agent/config state or an existing identity-file path. SSH
+  clones also expose a masked optional password/key-passphrase field. Its value is held
+  only for that clone attempt, passed to OpenSSH through an ephemeral askpass helper,
+  redacted from debug output, and never written to project state. Enter in the popup
+  starts the clone.
+- The SSH credential answers a password or private-key-passphrase prompt from the remote
+  transport. GitHub SSH does not accept GitHub account passwords, so use a registered
+  key and enter only that key's passphrase when required. HTTPS continues to use the
+  configured Git credential helper.
 - Bracketed paste is enabled, so pasting a path or URL updates only the focused field and
   trailing terminal newlines are discarded.
 - `d` confirms removal. Unmanaged sources are only deregistered; managed sources are

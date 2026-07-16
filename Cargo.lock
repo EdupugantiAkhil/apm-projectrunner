@@ -3047,6 +3047,7 @@ dependencies = [
  "switchyard-adapters",
  "switchyard-state",
  "tempfile",
+ "zeroize",
 ]
 
 [[package]]
@@ -3071,6 +3072,7 @@ dependencies = [
  "switchyard-sources",
  "switchyard-state",
  "yaml_serde",
+ "zeroize",
 ]
 
 [[package]]

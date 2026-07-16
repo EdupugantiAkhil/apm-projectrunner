@@ -15,6 +15,7 @@ use switchyard_state::{
     DeviceCheckStatus, OwnedResourceObservation, RegisteredDevice, RegisteredSourceKind,
     StateStore, StoredDeployment,
 };
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     execution::{self, OperationEvent, OperationSpec},
@@ -198,6 +199,42 @@ pub(crate) enum AddSourcePanel {
     GitOptions,
 }
 
+#[derive(Clone, Default, Eq, PartialEq)]
+pub(crate) struct SecretInput(Zeroizing<String>);
+
+impl std::fmt::Debug for SecretInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SecretInput([REDACTED])")
+    }
+}
+
+impl SecretInput {
+    fn push_str(&mut self, value: &str) {
+        self.0.push_str(value);
+    }
+
+    fn pop(&mut self) {
+        self.0.pop();
+    }
+
+    fn expose(&self) -> &str {
+        self.0.as_str()
+    }
+
+    pub(crate) fn masked(&self) -> String {
+        let length = self.0.chars().count();
+        format!(
+            "{}{}",
+            "•".repeat(length.min(32)),
+            if length > 32 { "…" } else { "" }
+        )
+    }
+
+    fn clear(&mut self) {
+        self.0.zeroize();
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AddForm {
     pub(crate) mode: AddSourceMode,
@@ -205,6 +242,7 @@ pub(crate) struct AddForm {
     pub(crate) git_ref: String,
     pub(crate) authentication: GitAuthentication,
     pub(crate) identity_file: String,
+    pub(crate) ssh_credential: SecretInput,
     pub(crate) panel: AddSourcePanel,
     pub(crate) active_field: usize,
     pub(crate) error: Option<String>,
@@ -218,6 +256,7 @@ impl Default for AddForm {
             git_ref: String::new(),
             authentication: GitAuthentication::AgentOrConfig,
             identity_file: String::new(),
+            ssh_credential: SecretInput::default(),
             panel: AddSourcePanel::Location,
             active_field: 1,
             error: None,
@@ -226,21 +265,62 @@ impl Default for AddForm {
 }
 
 impl AddForm {
-    fn active_value_mut(&mut self) -> Option<&mut String> {
-        match (self.panel, self.active_field) {
-            (AddSourcePanel::Location, 1) => Some(&mut self.location),
-            (AddSourcePanel::GitOptions, 0) => Some(&mut self.git_ref),
-            (AddSourcePanel::GitOptions, 2) => Some(&mut self.identity_file),
-            _ => None,
+    fn credential_field(&self) -> Option<usize> {
+        if self.uses_http_transport() {
+            None
+        } else if self.authentication == GitAuthentication::IdentityFile {
+            Some(3)
+        } else {
+            Some(2)
         }
     }
 
     fn advanced_field_count(&self) -> usize {
-        if self.authentication == GitAuthentication::IdentityFile && !self.uses_http_transport() {
-            3
-        } else {
+        if self.uses_http_transport() {
             2
+        } else if self.authentication == GitAuthentication::IdentityFile {
+            4
+        } else {
+            3
         }
+    }
+
+    fn append_active(&mut self, value: &str) -> bool {
+        match (self.panel, self.active_field) {
+            (AddSourcePanel::Location, 1) => self.location.push_str(value),
+            (AddSourcePanel::GitOptions, 0) => self.git_ref.push_str(value),
+            (AddSourcePanel::GitOptions, 2)
+                if self.authentication == GitAuthentication::IdentityFile =>
+            {
+                self.identity_file.push_str(value)
+            }
+            (AddSourcePanel::GitOptions, field) if Some(field) == self.credential_field() => {
+                self.ssh_credential.push_str(value)
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn pop_active(&mut self) -> bool {
+        match (self.panel, self.active_field) {
+            (AddSourcePanel::Location, 1) => {
+                self.location.pop();
+            }
+            (AddSourcePanel::GitOptions, 0) => {
+                self.git_ref.pop();
+            }
+            (AddSourcePanel::GitOptions, 2)
+                if self.authentication == GitAuthentication::IdentityFile =>
+            {
+                self.identity_file.pop();
+            }
+            (AddSourcePanel::GitOptions, field) if Some(field) == self.credential_field() => {
+                self.ssh_credential.pop();
+            }
+            _ => return false,
+        }
+        true
     }
 
     pub(crate) fn uses_http_transport(&self) -> bool {
@@ -298,14 +378,30 @@ impl AddForm {
             {
                 Err("choose an SSH identity file in F2 Git options".into())
             }
+            AddSourceMode::Git
+                if self.ssh_credential.expose().contains('\0')
+                    || self.ssh_credential.expose().len() > 4096 =>
+            {
+                Err(
+                    "SSH password/passphrase must contain at most 4096 bytes and no NUL character"
+                        .into(),
+                )
+            }
             AddSourceMode::Git => Ok(AddRequest::Clone {
                 name,
                 url: location.into(),
                 git_ref: nonempty(self.git_ref.trim()),
                 identity_file: (self.authentication == GitAuthentication::IdentityFile)
                     .then(|| PathBuf::from(self.identity_file.trim())),
+                ssh_credential: (!self.ssh_credential.expose().is_empty()).then(|| {
+                    switchyard_sources::SshCredential::new(self.ssh_credential.expose())
+                }),
             }),
         }
+    }
+
+    fn clear_credential(&mut self) {
+        self.ssh_credential.clear();
     }
 }
 
@@ -363,6 +459,7 @@ pub(crate) enum AddRequest {
         url: String,
         git_ref: Option<String>,
         identity_file: Option<PathBuf>,
+        ssh_credential: Option<switchyard_sources::SshCredential>,
     },
 }
 
@@ -694,8 +791,7 @@ impl App {
             }
             Event::Paste(value) => {
                 if let Overlay::Add(form) = &mut self.overlay {
-                    if let Some(field) = form.active_value_mut() {
-                        field.push_str(value.trim_end_matches(['\r', '\n']));
+                    if form.append_active(value.trim_end_matches(['\r', '\n'])) {
                         form.error = None;
                     }
                 }
@@ -713,7 +809,10 @@ impl App {
             Overlay::Add(form) => match Self::handle_add_key(form, key) {
                 Some(FormAction::Close) => self.overlay = Overlay::None,
                 Some(FormAction::Submit) if self.busy.is_none() => match form.validate() {
-                    Ok(request) => self.start_add(request),
+                    Ok(request) => {
+                        form.clear_credential();
+                        self.start_add(request);
+                    }
                     Err(error) => form.error = Some(error),
                 },
                 _ => {}
@@ -1257,8 +1356,7 @@ impl App {
                     form.error = None;
                 }
                 KeyCode::Backspace => {
-                    if let Some(value) = form.active_value_mut() {
-                        value.pop();
+                    if form.pop_active() {
                         form.error = None;
                     }
                 }
@@ -1267,8 +1365,7 @@ impl App {
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
-                    if let Some(value) = form.active_value_mut() {
-                        value.push(character);
+                    if form.append_active(&character.to_string()) {
                         form.error = None;
                     }
                 }
@@ -1673,6 +1770,7 @@ impl App {
                     url,
                     git_ref,
                     identity_file,
+                    ssh_credential,
                 } => {
                     let name = unique_source_name(&store, &name)?;
                     let identity_file = identity_file
@@ -1687,6 +1785,7 @@ impl App {
                             &switchyard_sources::GitCloneOptions {
                                 requested_ref: git_ref,
                                 ssh_identity_file: identity_file,
+                                ssh_credential,
                             },
                         )
                         .map_err(|error| error.to_string())?;
@@ -2311,6 +2410,7 @@ mod tests {
                 url: "git@github.com:team/ai-chatbot.git".into(),
                 git_ref: Some("feature".into()),
                 identity_file: None,
+                ssh_credential: None,
             }
         );
         form.location = "https://user:token@example.invalid/team/repo.git".into();
@@ -2388,6 +2488,31 @@ mod tests {
             App::handle_add_key(&mut form, key(KeyCode::Enter)),
             Some(FormAction::Submit)
         ));
+    }
+
+    #[test]
+    fn ssh_credential_input_is_masked_redacted_and_cleared() {
+        let mut form = AddForm {
+            mode: AddSourceMode::Git,
+            location: "git@example.test:team/repo.git".into(),
+            panel: AddSourcePanel::GitOptions,
+            active_field: 2,
+            ..AddForm::default()
+        };
+        assert!(form.append_active("terminal-password"));
+        assert_eq!(form.ssh_credential.masked(), "•".repeat(17));
+        assert!(!format!("{form:?}").contains("terminal-password"));
+        let request = form.validate().unwrap();
+        assert!(!format!("{request:?}").contains("terminal-password"));
+        assert!(matches!(
+            request,
+            AddRequest::Clone {
+                ssh_credential: Some(_),
+                ..
+            }
+        ));
+        form.clear_credential();
+        assert!(form.ssh_credential.masked().is_empty());
     }
     #[test]
     fn device_form_validates_ssh_fields() {

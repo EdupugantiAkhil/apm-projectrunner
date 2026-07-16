@@ -10,6 +10,12 @@ Updated: 2026-07-16
 
 ## 2026-07-16 TUI source-dialog UX and Git SSH authentication
 
+- Follow-up: the Git authentication review now includes a masked optional SSH password/
+  key-passphrase input matching normal terminal prompt behavior. The value is used for
+  one clone through an auto-deleting askpass helper, redacted from debug output, zeroed
+  from owned secret buffers on drop, cleared from the form on submission, and never
+  persisted. Multiline Git errors render as bounded popup lines instead of escaping the
+  modal boundary.
 - Follow-up: Git clone submission now always passes through the authentication review
   popup instead of silently accepting the default from the location screen. Enter opens
   the review, Enter there clones, and authentication failures remain in that popup with
@@ -19,17 +25,19 @@ Updated: 2026-07-16
   final path/repository segment; collisions receive the first available numeric suffix.
 - Git ref and authentication settings moved into a dedicated `F2` popup with contextual
   descriptions for every field. Authentication uses existing SSH agent/config state by
-  default or an existing identity-file path; the UI never accepts passwords, tokens, or
-  private-key contents and explains `ssh-add`/Git credential-helper behavior.
+  default or an existing identity-file path; private-key contents and HTTPS tokens remain
+  outside the TUI, and field descriptions explain GitHub, `ssh-add`, and Git credential-
+  helper behavior.
 - Terminal bracketed-paste mode now delivers a pasted location atomically to its focused
   field and strips trailing CR/LF, preventing URLs from spilling into adjacent inputs.
-- Source cloning disables Git terminal prompts and SSH password/passphrase prompts.
-  Optional identity paths are resolved, checked, shell-quoted for Git's SSH transport,
-  and passed with batch and identities-only modes.
+- Source cloning keeps Git's HTTPS prompts delegated to credential helpers. SSH runs in
+  batch mode without a supplied credential and enables one askpass response when the
+  user supplies one. Optional identity paths are resolved, checked, shell-quoted for
+  Git's SSH transport, and passed with identities-only mode.
 - Clone validation rejects embedded HTTP credentials and option-like/control-character
   refs before invoking Git. Failed clone directories are removed so an authentication
   correction can be retried immediately.
-- Verification: all 10 source-manager and 23 TUI tests pass, including one-location
+- Verification: all 11 source-manager and 24 TUI tests pass, including one-location
   input, inferred naming, isolated bracketed paste, required authentication review and
   retry rendering, identity-path quoting, credential rejection, and failed-clone
   cleanup. The complete workspace test suite passes with only its five declared

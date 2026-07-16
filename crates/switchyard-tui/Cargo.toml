@@ -15,6 +15,7 @@ switchyard-daemon = { path = "../switchyard-daemon" }
 switchyard-planner = { path = "../switchyard-planner" }
 switchyard-sources = { path = "../switchyard-sources" }
 switchyard-state = { path = "../switchyard-state" }
+zeroize = "1.9.0"
 
 [lints]
 workspace = true

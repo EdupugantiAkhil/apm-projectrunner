@@ -2,6 +2,8 @@
 
 use std::{
     fmt, fs, io,
+    io::Write,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Output},
     time::{SystemTime, UNIX_EPOCH},
@@ -12,6 +14,10 @@ use serde_json::json;
 use switchyard_adapter_sdk::{SourceAdapter, SourceIdentity};
 use switchyard_adapters::{SourceGitAdapter, SourcePathAdapter};
 use switchyard_state::{RegisteredSource, RegisteredSourceKind, StateError, StateStore};
+use tempfile::TempPath;
+use zeroize::Zeroizing;
+
+const SSH_CREDENTIAL_ENV: &str = "SWITCHYARD_SSH_ASKPASS_CREDENTIAL";
 
 /// A stable source-management failure suitable for API and CLI translation.
 #[derive(Debug)]
@@ -122,10 +128,33 @@ pub struct RegisteredSourceInspection {
     pub inspection: SourceInspection,
 }
 
+/// Ephemeral SSH password or private-key passphrase used for one clone attempt.
+///
+/// Debug output is always redacted and the allocation is zeroed when dropped.
+#[derive(Clone, Default, Eq, PartialEq)]
+pub struct SshCredential(Zeroizing<String>);
+
+impl SshCredential {
+    /// Wraps an in-memory credential without persisting it.
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(Zeroizing::new(value.into()))
+    }
+
+    fn expose(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl fmt::Debug for SshCredential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SshCredential([REDACTED])")
+    }
+}
+
 /// Optional transport settings for a managed Git clone.
 ///
-/// Secrets are deliberately absent: HTTPS authentication remains in the user's Git
-/// credential helper, while SSH uses existing agent/config state or a key path.
+/// HTTPS authentication remains in the user's Git credential helper. SSH may use
+/// agent/config state, a key path, and an ephemeral prompt response.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct GitCloneOptions {
     /// Optional branch, tag, or other clone-compatible ref.
@@ -133,6 +162,9 @@ pub struct GitCloneOptions {
     /// Optional path to an existing SSH private key. Switchyard passes the path to SSH and
     /// never reads or stores the key contents.
     pub ssh_identity_file: Option<PathBuf>,
+    /// Optional password or private-key passphrase supplied through SSH askpass for this
+    /// clone attempt only. It is never written to state or included in debug output.
+    pub ssh_credential: Option<SshCredential>,
 }
 
 /// The kind of guarded mutation being requested.
@@ -354,6 +386,7 @@ impl SourceManager {
             &GitCloneOptions {
                 requested_ref: requested_ref.map(str::to_owned),
                 ssh_identity_file: None,
+                ssh_credential: None,
             },
         )
     }
@@ -376,6 +409,7 @@ impl SourceManager {
             &GitCloneOptions {
                 requested_ref: requested_ref.map(str::to_owned),
                 ssh_identity_file: None,
+                ssh_credential: None,
             },
         )
     }
@@ -407,6 +441,9 @@ impl SourceManager {
         if let Some(identity) = &options.ssh_identity_file {
             validate_ssh_identity(identity)?;
         }
+        if let Some(credential) = &options.ssh_credential {
+            validate_ssh_credential(credential)?;
+        }
         self.clone_repository(store, repository_url, name, options)
     }
 
@@ -430,6 +467,7 @@ impl SourceManager {
             &self.workspace_root,
             &args,
             options.ssh_identity_file.as_deref(),
+            options.ssh_credential.as_ref(),
         ) {
             remove_failed_clone_target(&target);
             return Err(error);
@@ -696,26 +734,59 @@ fn run_git_clone(
     path: &Path,
     args: &[&str],
     ssh_identity_file: Option<&Path>,
+    ssh_credential: Option<&SshCredential>,
 ) -> Result<String, SourceError> {
-    let ssh_command = ssh_clone_command(ssh_identity_file)?;
-    let output = Command::new("git")
+    let ssh_command = ssh_clone_command(ssh_identity_file, ssh_credential.is_some())?;
+    let askpass = ssh_credential
+        .map(|_| AskpassHelper::new(path))
+        .transpose()?;
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(path)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_SSH_COMMAND", ssh_command)
-        .output()
-        .map_err(|error| {
-            SourceError::new(
-                if error.kind() == io::ErrorKind::NotFound {
-                    "git_unavailable"
-                } else {
-                    "clone_create_failed"
-                },
-                error.to_string(),
-            )
-        })?;
+        .env("GIT_SSH_COMMAND", ssh_command);
+    if let (Some(helper), Some(credential)) = (&askpass, ssh_credential) {
+        command
+            .env("SSH_ASKPASS", helper.path())
+            .env("SSH_ASKPASS_REQUIRE", "force")
+            .env("DISPLAY", "switchyard:0")
+            .env(SSH_CREDENTIAL_ENV, credential.expose());
+    }
+    let output = command.output().map_err(|error| {
+        SourceError::new(
+            if error.kind() == io::ErrorKind::NotFound {
+                "git_unavailable"
+            } else {
+                "clone_create_failed"
+            },
+            error.to_string(),
+        )
+    })?;
     output_text(output, "clone_create_failed")
+}
+
+struct AskpassHelper(TempPath);
+
+impl AskpassHelper {
+    fn new(workspace_root: &Path) -> Result<Self, SourceError> {
+        let runtime_root = workspace_root.join(".switchyard");
+        fs::create_dir_all(&runtime_root)?;
+        let mut file = tempfile::Builder::new()
+            .prefix(".ssh-askpass-")
+            .tempfile_in(runtime_root)?;
+        file.write_all(
+            format!("#!/bin/sh\nprintf '%s\\n' \"${{{SSH_CREDENTIAL_ENV}-}}\"\n").as_bytes(),
+        )?;
+        file.as_file().sync_all()?;
+        fs::set_permissions(file.path(), fs::Permissions::from_mode(0o700))?;
+        Ok(Self(file.into_temp_path()))
+    }
+
+    fn path(&self) -> &Path {
+        self.0.as_ref()
+    }
 }
 
 fn validate_ssh_identity(path: &Path) -> Result<(), SourceError> {
@@ -735,6 +806,17 @@ fn validate_ssh_identity(path: &Path) -> Result<(), SourceError> {
         return Err(SourceError::new(
             "identity_file_not_found",
             format!("SSH identity file `{}` does not exist", path.display()),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_ssh_credential(credential: &SshCredential) -> Result<(), SourceError> {
+    let value = credential.expose();
+    if value.is_empty() || value.contains('\0') || value.len() > 4096 {
+        return Err(SourceError::new(
+            "invalid_ssh_credential",
+            "SSH password/passphrase must contain 1 to 4096 bytes and no NUL character",
         ));
     }
     Ok(())
@@ -772,8 +854,16 @@ fn remove_failed_clone_target(target: &Path) {
     }
 }
 
-fn ssh_clone_command(identity_file: Option<&Path>) -> Result<String, SourceError> {
-    let mut command = "ssh -o BatchMode=yes".to_owned();
+fn ssh_clone_command(
+    identity_file: Option<&Path>,
+    has_credential: bool,
+) -> Result<String, SourceError> {
+    let mut command = if has_credential {
+        "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=no -o NumberOfPasswordPrompts=1"
+    } else {
+        "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+    }
+    .to_owned();
     if let Some(path) = identity_file {
         validate_ssh_identity(path)?;
         let text = path.to_str().expect("validated UTF-8 identity path");
@@ -1106,16 +1196,42 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let identity = temp.path().join("key with ' quote");
         fs::write(&identity, "test-only-key-placeholder").unwrap();
-        assert_eq!(ssh_clone_command(None).unwrap(), "ssh -o BatchMode=yes");
-        let command = ssh_clone_command(Some(&identity)).unwrap();
-        assert!(command.starts_with("ssh -o BatchMode=yes -o IdentitiesOnly=yes -i '"));
+        assert_eq!(
+            ssh_clone_command(None, false).unwrap(),
+            "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+        );
+        assert_eq!(
+            ssh_clone_command(None, true).unwrap(),
+            "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=no -o NumberOfPasswordPrompts=1"
+        );
+        let command = ssh_clone_command(Some(&identity), false).unwrap();
+        assert!(command.starts_with(
+            "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o IdentitiesOnly=yes -i '"
+        ));
         assert!(command.contains("key with '\"'\"' quote"));
         assert_eq!(
-            ssh_clone_command(Some(&temp.path().join("missing")))
+            ssh_clone_command(Some(&temp.path().join("missing")), false)
                 .unwrap_err()
                 .code(),
             "identity_file_not_found"
         );
+    }
+
+    #[test]
+    fn askpass_helper_returns_ephemeral_credential_without_debug_disclosure() {
+        let temp = TempDir::new().unwrap();
+        let credential = SshCredential::new("correct horse battery staple");
+        assert_eq!(format!("{credential:?}"), "SshCredential([REDACTED])");
+        let helper = AskpassHelper::new(temp.path()).unwrap();
+        let output = Command::new(helper.path())
+            .env(SSH_CREDENTIAL_ENV, credential.expose())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"correct horse battery staple\n");
+        let helper_path = helper.path().to_owned();
+        drop(helper);
+        assert!(!helper_path.exists());
     }
 
     #[test]

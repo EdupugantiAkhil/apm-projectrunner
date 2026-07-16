@@ -218,10 +218,29 @@ fn render_git_options(frame: &mut Frame<'_>, form: &AddForm, busy: Option<BusyKi
             )),
         ]);
     }
+    if !form.uses_http_transport() {
+        let credential_field = if form.authentication == GitAuthentication::IdentityFile {
+            3
+        } else {
+            2
+        };
+        lines.extend([
+            Line::from(""),
+            source_field(
+                form.active_field == credential_field,
+                "SSH password / key passphrase (optional)",
+                &form.ssh_credential.masked(),
+            ),
+            Line::from(Span::styled(
+                "  Masked and used once if SSH prompts. GitHub accepts key passphrases, not account passwords.",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]);
+    }
     lines.extend([
         Line::from(""),
         Line::from(Span::styled(
-            "Passwords and tokens are never collected here. HTTPS uses your configured Git credential helper.",
+            "The SSH credential is used once and never stored. HTTPS uses your configured Git credential helper.",
             Style::default().fg(Color::Yellow),
         )),
     ]);
@@ -231,17 +250,27 @@ fn render_git_options(frame: &mut Frame<'_>, form: &AddForm, busy: Option<BusyKi
             Line::from(Span::styled("Cloning…", Style::default().fg(Color::Yellow))),
         ]);
     } else if let Some(error) = form.error.as_deref() {
-        lines.extend([
-            Line::from(""),
-            Line::from(Span::styled(
-                format!("Clone failed: {error}"),
+        lines.push(Line::from(""));
+        for (index, message) in error.lines().take(6).enumerate() {
+            lines.push(Line::from(Span::styled(
+                if index == 0 {
+                    format!("Clone failed: {message}")
+                } else {
+                    message.to_owned()
+                },
                 Style::default().fg(Color::Red),
-            )),
-            Line::from(Span::styled(
-                "Change the authentication selection, then press Enter to retry.",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ]);
+            )));
+        }
+        if error.lines().count() > 6 {
+            lines.push(Line::from(Span::styled(
+                "…additional Git output omitted",
+                Style::default().fg(Color::Red),
+            )));
+        }
+        lines.push(Line::from(Span::styled(
+            "Change the authentication selection or credential, then press Enter to retry.",
+            Style::default().fg(Color::DarkGray),
+        )));
     }
     lines.extend([
         Line::from(""),
