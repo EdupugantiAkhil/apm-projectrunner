@@ -122,6 +122,19 @@ pub struct RegisteredSourceInspection {
     pub inspection: SourceInspection,
 }
 
+/// Optional transport settings for a managed Git clone.
+///
+/// Secrets are deliberately absent: HTTPS authentication remains in the user's Git
+/// credential helper, while SSH uses existing agent/config state or a key path.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct GitCloneOptions {
+    /// Optional branch, tag, or other clone-compatible ref.
+    pub requested_ref: Option<String>,
+    /// Optional path to an existing SSH private key. Switchyard passes the path to SSH and
+    /// never reads or stores the key contents.
+    pub ssh_identity_file: Option<PathBuf>,
+}
+
 /// The kind of guarded mutation being requested.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mutation {
@@ -320,6 +333,7 @@ impl SourceManager {
             .as_deref()
             .unwrap_or(&repository.path);
         if let Some(reference) = requested_ref {
+            validate_clone_ref(reference)?;
             if let Err(error) = git(
                 repository_path,
                 &["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
@@ -337,7 +351,10 @@ impl SourceManager {
             store,
             repository_path.to_string_lossy().as_ref(),
             name,
-            requested_ref,
+            &GitCloneOptions {
+                requested_ref: requested_ref.map(str::to_owned),
+                ssh_identity_file: None,
+            },
         )
     }
 
@@ -352,6 +369,25 @@ impl SourceManager {
         name: &str,
         requested_ref: Option<&str>,
     ) -> Result<RegisteredSource, SourceError> {
+        self.create_clone_from_url_with_options(
+            store,
+            repository_url,
+            name,
+            &GitCloneOptions {
+                requested_ref: requested_ref.map(str::to_owned),
+                ssh_identity_file: None,
+            },
+        )
+    }
+
+    /// Creates a managed URL clone with explicit non-secret transport options.
+    pub fn create_clone_from_url_with_options(
+        &self,
+        store: &StateStore,
+        repository_url: &str,
+        name: &str,
+        options: &GitCloneOptions,
+    ) -> Result<RegisteredSource, SourceError> {
         validate_source_name(name)?;
         if repository_url.trim().is_empty() || repository_url.starts_with('-') {
             return Err(SourceError::new(
@@ -359,7 +395,19 @@ impl SourceManager {
                 "repository URL must be non-empty and may not start with '-'",
             ));
         }
-        self.clone_repository(store, repository_url, name, requested_ref)
+        if has_embedded_http_credentials(repository_url) {
+            return Err(SourceError::new(
+                "repository_credentials_unsupported",
+                "repository URL must not contain credentials; use the Git credential helper",
+            ));
+        }
+        if let Some(reference) = options.requested_ref.as_deref() {
+            validate_clone_ref(reference)?;
+        }
+        if let Some(identity) = &options.ssh_identity_file {
+            validate_ssh_identity(identity)?;
+        }
+        self.clone_repository(store, repository_url, name, options)
     }
 
     fn clone_repository(
@@ -367,25 +415,32 @@ impl SourceManager {
         store: &StateStore,
         repository: &str,
         name: &str,
-        requested_ref: Option<&str>,
+        options: &GitCloneOptions,
     ) -> Result<RegisteredSource, SourceError> {
         let target = self.clone_root.join(name);
         self.guard_mutation(None, &target, Mutation::Create, false, &self.clone_root)?;
         fs::create_dir_all(&self.clone_root)?;
         let mut args = vec!["clone"];
-        if let Some(reference) = requested_ref {
+        if let Some(reference) = options.requested_ref.as_deref() {
             args.extend(["--branch", reference]);
         }
         let target_text = target.to_string_lossy();
         args.extend(["--", repository, target_text.as_ref()]);
-        run_git(&self.workspace_root, &args, "clone_create_failed")?;
+        if let Err(error) = run_git_clone(
+            &self.workspace_root,
+            &args,
+            options.ssh_identity_file.as_deref(),
+        ) {
+            remove_failed_clone_target(&target);
+            return Err(error);
+        }
         let path = target.canonicalize()?;
         let source = RegisteredSource {
             name: name.into(),
             kind: RegisteredSourceKind::Managed,
             path: path.clone(),
             repository_path: Some(path.clone()),
-            requested_ref: requested_ref.map(str::to_owned),
+            requested_ref: options.requested_ref.clone(),
             created_at: now_millis()?,
             managed_relative_path: Some(
                 path.strip_prefix(self.clone_root.canonicalize()?)
@@ -635,6 +690,101 @@ fn run_git(path: &Path, args: &[&str], code: &'static str) -> Result<String, Sou
             )
         })?;
     output_text(output, code)
+}
+
+fn run_git_clone(
+    path: &Path,
+    args: &[&str],
+    ssh_identity_file: Option<&Path>,
+) -> Result<String, SourceError> {
+    let ssh_command = ssh_clone_command(ssh_identity_file)?;
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_SSH_COMMAND", ssh_command)
+        .output()
+        .map_err(|error| {
+            SourceError::new(
+                if error.kind() == io::ErrorKind::NotFound {
+                    "git_unavailable"
+                } else {
+                    "clone_create_failed"
+                },
+                error.to_string(),
+            )
+        })?;
+    output_text(output, "clone_create_failed")
+}
+
+fn validate_ssh_identity(path: &Path) -> Result<(), SourceError> {
+    let Some(text) = path.to_str() else {
+        return Err(SourceError::new(
+            "invalid_identity_file",
+            "SSH identity file path must be valid UTF-8",
+        ));
+    };
+    if text.is_empty() || text.chars().any(char::is_control) {
+        return Err(SourceError::new(
+            "invalid_identity_file",
+            "SSH identity file path cannot be empty or contain control characters",
+        ));
+    }
+    if !path.is_file() {
+        return Err(SourceError::new(
+            "identity_file_not_found",
+            format!("SSH identity file `{}` does not exist", path.display()),
+        ));
+    }
+    Ok(())
+}
+
+fn has_embedded_http_credentials(repository: &str) -> bool {
+    let lowercase = repository.to_ascii_lowercase();
+    ["https://", "http://"].iter().any(|scheme| {
+        lowercase
+            .strip_prefix(scheme)
+            .and_then(|remainder| remainder.split('/').next())
+            .is_some_and(|authority| authority.contains('@'))
+    })
+}
+
+fn validate_clone_ref(reference: &str) -> Result<(), SourceError> {
+    if reference.is_empty() || reference.starts_with('-') || reference.chars().any(char::is_control)
+    {
+        return Err(SourceError::new(
+            "invalid_source_ref",
+            "Git ref must be non-empty, may not start with '-', and may not contain control characters",
+        ));
+    }
+    Ok(())
+}
+
+fn remove_failed_clone_target(target: &Path) {
+    let Ok(metadata) = fs::symlink_metadata(target) else {
+        return;
+    };
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        let _ = fs::remove_file(target);
+    } else if metadata.is_dir() {
+        let _ = fs::remove_dir_all(target);
+    }
+}
+
+fn ssh_clone_command(identity_file: Option<&Path>) -> Result<String, SourceError> {
+    let mut command = "ssh -o BatchMode=yes".to_owned();
+    if let Some(path) = identity_file {
+        validate_ssh_identity(path)?;
+        let text = path.to_str().expect("validated UTF-8 identity path");
+        command.push_str(" -o IdentitiesOnly=yes -i ");
+        command.push_str(&posix_quote(text));
+    }
+    Ok(command)
+}
+
+fn posix_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn output_text(output: Output, code: &'static str) -> Result<String, SourceError> {
@@ -949,6 +1099,62 @@ mod tests {
         assert_eq!(clone.kind, RegisteredSourceKind::Managed);
         manager.remove(&store, "url-clone", false).unwrap();
         manager.deregister(&store, "url-clone").unwrap();
+    }
+
+    #[test]
+    fn ssh_clone_auth_uses_batch_mode_and_safely_quotes_identity_paths() {
+        let temp = TempDir::new().unwrap();
+        let identity = temp.path().join("key with ' quote");
+        fs::write(&identity, "test-only-key-placeholder").unwrap();
+        assert_eq!(ssh_clone_command(None).unwrap(), "ssh -o BatchMode=yes");
+        let command = ssh_clone_command(Some(&identity)).unwrap();
+        assert!(command.starts_with("ssh -o BatchMode=yes -o IdentitiesOnly=yes -i '"));
+        assert!(command.contains("key with '\"'\"' quote"));
+        assert_eq!(
+            ssh_clone_command(Some(&temp.path().join("missing")))
+                .unwrap_err()
+                .code(),
+            "identity_file_not_found"
+        );
+    }
+
+    #[test]
+    fn url_clone_rejects_embedded_credentials_and_malformed_refs() {
+        let temp = TempDir::new().unwrap();
+        let manager = SourceManager::new(temp.path());
+        let store = store(&temp);
+        let error = manager
+            .create_clone_from_url(
+                &store,
+                "HTTPS://user:token@example.invalid/team/repo.git",
+                "credentialed",
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "repository_credentials_unsupported");
+
+        let error = manager
+            .create_clone_from_url(
+                &store,
+                "https://example.invalid/team/repo.git",
+                "bad-ref",
+                Some("--upload-pack=unexpected"),
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "invalid_source_ref");
+    }
+
+    #[test]
+    fn failed_url_clone_leaves_target_available_for_auth_retry() {
+        let temp = TempDir::new().unwrap();
+        let manager = SourceManager::new(temp.path());
+        let store = store(&temp);
+        let missing = temp.path().join("missing-repository");
+        let error = manager
+            .create_clone_from_url(&store, missing.to_str().unwrap(), "retry", None)
+            .unwrap_err();
+        assert_eq!(error.code(), "clone_create_failed");
+        assert!(!temp.path().join(".switchyard/clones/retry").exists());
     }
 
     #[test]

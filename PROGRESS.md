@@ -8,6 +8,30 @@ Updated: 2026-07-16
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
 
+## 2026-07-16 TUI source-dialog UX and Git SSH authentication
+
+- Replaced the four-field source form with a mode selector and exactly one location
+  input. Local directories and Git clone addresses derive stable source names from the
+  final path/repository segment; collisions receive the first available numeric suffix.
+- Git ref and authentication settings moved into a dedicated `F2` popup with contextual
+  descriptions for every field. Authentication uses existing SSH agent/config state by
+  default or an existing identity-file path; the UI never accepts passwords, tokens, or
+  private-key contents and explains `ssh-add`/Git credential-helper behavior.
+- Terminal bracketed-paste mode now delivers a pasted location atomically to its focused
+  field and strips trailing CR/LF, preventing URLs from spilling into adjacent inputs.
+- Source cloning disables Git terminal prompts and SSH password/passphrase prompts.
+  Optional identity paths are resolved, checked, shell-quoted for Git's SSH transport,
+  and passed with batch and identities-only modes.
+- Clone validation rejects embedded HTTP credentials and option-like/control-character
+  refs before invoking Git. Failed clone directories are removed so an authentication
+  correction can be retried immediately.
+- Verification: all 10 source-manager and 22 TUI tests pass, including one-location
+  input, inferred naming, isolated bracketed paste, the separate authentication popup,
+  identity-path quoting, credential rejection, and failed-clone cleanup. The complete
+  workspace test suite passes with only its five declared reliability ignores;
+  workspace Clippy passes for all targets and features with `-D warnings`; workspace
+  formatting and diff checks are clean.
+
 ## 2026-07-16 standalone project TUI workflow
 
 - The intended fresh-project path is now `switchyard init` followed by

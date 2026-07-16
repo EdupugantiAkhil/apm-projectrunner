@@ -1,6 +1,7 @@
 use std::{io, panic, sync::Arc};
 
 use crossterm::{
+    event::{DisableBracketedPaste, EnableBracketedPaste},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -23,7 +24,7 @@ impl TerminalSession {
             panic_hook(info);
         }));
         let mut stdout = io::stdout();
-        if let Err(error) = execute!(stdout, EnterAlternateScreen) {
+        if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableBracketedPaste) {
             restore_hook(&previous_hook);
             restore();
             return Err(error);
@@ -62,5 +63,5 @@ fn restore_hook(previous_hook: &Arc<PanicHook>) {
 
 fn restore() {
     let _ = disable_raw_mode();
-    let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    let _ = execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen);
 }

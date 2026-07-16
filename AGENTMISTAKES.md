@@ -1,5 +1,17 @@
 # Agent mistakes and lessons
 
+## 2026-07-16 — TUI source dialog follow-up
+
+- The first source dialog exposed name, local path, Git URL, and Git ref simultaneously,
+  making mutually exclusive choices look like required fields and making paste behavior
+  hard to understand. Correction: ask for one mode-specific location, infer the name,
+  and move Git-only settings to a separate popup. Lesson: mutually exclusive workflows
+  should be separate interaction states, not parallel empty inputs.
+- A full-screen Git clone must not fall through to an invisible password or key-
+  passphrase prompt. Correction: use Git/SSH batch mode and integrate only agent/config
+  state or an identity-file path. Lesson: terminal UIs should make credential ownership
+  explicit and keep subprocess authentication non-interactive.
+
 ## 2026-07-16 — Standalone TUI workflow
 
 - A registered source is durable project state, but an instance's `source` must still

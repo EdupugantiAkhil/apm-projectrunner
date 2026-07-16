@@ -23,9 +23,17 @@ The Sources table shows each project-registered source's name, managed/unmanaged
 path, current Git branch or requested ref, and live dirty state. Up/Down or `j`/`k`
 changes the selected row.
 
-- `a` opens a form for registering an existing local path or cloning a Git URL into
-  `.switchyard/clones`. A clone may include a branch, tag, or other Git ref. Clone work
-  runs in the background and its errors remain in the form.
+- `a` opens a two-mode dialog. Choose **Local path** or **Git clone**, then enter exactly
+  one directory or clone address. Switchyard derives the registry name from its final
+  path component and adds a numeric suffix if that name is already used. Clone work runs
+  in the background and its errors remain in the form.
+- In Git mode, `F2` opens a separate options and authentication popup. A clone may select
+  a branch/tag ref and use either existing SSH agent/config state or an existing identity-
+  file path. Identity contents, passwords, and tokens are never collected or stored.
+  HTTPS continues to use the user's configured Git credential helper. Clone transport is
+  non-interactive: encrypted SSH keys must already be unlocked with `ssh-add`.
+- Bracketed paste is enabled, so pasting a path or URL updates only the focused field and
+  trailing terminal newlines are discarded.
 - `d` confirms removal. Unmanaged sources are only deregistered; managed sources are
   deleted through Switchyard's ownership and dirty-state safety checks, then
   deregistered. Dirty managed sources are refused.

@@ -110,7 +110,7 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
 }
 
 fn render_help(frame: &mut Frame<'_>) {
-    let area = centered(frame.area(), 64, 27);
+    let area = centered(frame.area(), 68, 29);
     frame.render_widget(Clear, area);
     let lines = vec![
         Line::from(Span::styled(
@@ -126,7 +126,8 @@ fn render_help(frame: &mut Frame<'_>) {
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from("  ↑ / ↓, j / k  select source"),
-        Line::from("  a             add local path or managed clone"),
+        Line::from("  a             add one local path or Git clone address"),
+        Line::from("  F2            Git ref and SSH auth (inside add dialog)"),
         Line::from("  d             remove/deregister selected source"),
         Line::from("  r             refresh live Git state"),
         Line::from("  Esc           close a dialog"),
@@ -187,7 +188,7 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     use super::*;
-    use crate::app::{AddForm, DeviceForm};
+    use crate::app::{AddForm, AddSourceMode, AddSourcePanel, DeviceForm, GitAuthentication};
 
     #[test]
     fn renders_inline_add_error_with_test_backend() {
@@ -195,7 +196,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::with_sources(PathBuf::from("/project"), Vec::new());
         app.overlay = Overlay::Add(AddForm {
-            error: Some("enter either a local path or a git URL".into()),
+            error: Some("enter an existing local directory".into()),
             ..AddForm::default()
         });
         terminal.draw(|frame| render(frame, &app)).unwrap();
@@ -206,7 +207,36 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(contents.contains("enter either a local path or a git URL"));
+        assert!(contents.contains("enter an existing local directory"));
+        assert!(contents.contains("Enter exactly one source location"));
+    }
+
+    #[test]
+    fn renders_descriptive_git_authentication_popup() {
+        let backend = TestBackend::new(110, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::with_sources(PathBuf::from("/project"), Vec::new());
+        app.overlay = Overlay::Add(AddForm {
+            mode: AddSourceMode::Git,
+            location: "git@github.com:team/project.git".into(),
+            authentication: GitAuthentication::IdentityFile,
+            identity_file: "~/.ssh/id_ed25519".into(),
+            panel: AddSourcePanel::GitOptions,
+            active_field: 2,
+            ..AddForm::default()
+        });
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let contents = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(contents.contains("Git clone options & SSH authentication"));
+        assert!(contents.contains("Identity file"));
+        assert!(contents.contains("Unlock encrypted keys with ssh-add"));
+        assert!(contents.contains("Passwords and tokens are never collected"));
     }
 
     #[test]
