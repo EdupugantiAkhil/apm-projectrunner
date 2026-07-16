@@ -18,6 +18,11 @@ pub(crate) enum OperationSpec {
         variation: Option<String>,
         set: Vec<String>,
     },
+    Bind {
+        bundle: PathBuf,
+        consumer: String,
+        group: String,
+    },
     Shell(String),
 }
 
@@ -49,31 +54,50 @@ impl OperationSpec {
         }
     }
 
-    pub(crate) fn arguments(&self) -> Option<Vec<OsString>> {
-        let Self::Structured {
-            command,
+    pub(crate) fn bind(bundle: PathBuf, consumer: String, group: String) -> Self {
+        Self::Bind {
             bundle,
-            overlays,
-            variation,
-            set,
-        } = self
-        else {
-            return None;
-        };
-        let mut args = vec![
-            OsString::from(command.as_str()),
-            bundle.as_os_str().to_owned(),
-        ];
-        for overlay in overlays {
-            args.extend([OsString::from("--with"), OsString::from(overlay)]);
+            consumer,
+            group,
         }
-        if let Some(variation) = variation {
-            args.extend([OsString::from("--variation"), OsString::from(variation)]);
+    }
+
+    pub(crate) fn arguments(&self) -> Option<Vec<OsString>> {
+        match self {
+            Self::Structured {
+                command,
+                bundle,
+                overlays,
+                variation,
+                set,
+            } => {
+                let mut args = vec![
+                    OsString::from(command.as_str()),
+                    bundle.as_os_str().to_owned(),
+                ];
+                for overlay in overlays {
+                    args.extend([OsString::from("--with"), OsString::from(overlay)]);
+                }
+                if let Some(variation) = variation {
+                    args.extend([OsString::from("--variation"), OsString::from(variation)]);
+                }
+                for value in set {
+                    args.extend([OsString::from("--set"), OsString::from(value)]);
+                }
+                Some(args)
+            }
+            Self::Bind {
+                bundle,
+                consumer,
+                group,
+            } => Some(vec![
+                OsString::from("bind"),
+                bundle.as_os_str().to_owned(),
+                OsString::from(consumer),
+                OsString::from(group),
+            ]),
+            Self::Shell(_) => None,
         }
-        for value in set {
-            args.extend([OsString::from("--set"), OsString::from(value)]);
-        }
-        Some(args)
     }
 }
 
@@ -86,7 +110,7 @@ pub(crate) enum OperationEvent {
 
 pub(crate) fn run(project: &Path, spec: OperationSpec, sender: &Sender<OperationEvent>) {
     let mut command = match &spec {
-        OperationSpec::Structured { .. } => {
+        OperationSpec::Structured { .. } | OperationSpec::Bind { .. } => {
             let executable = std::env::var_os("SWITCHYARD_BIN")
                 .map(PathBuf::from)
                 .or_else(|| std::env::current_exe().ok())
@@ -185,6 +209,19 @@ mod tests {
                 "B=two words"
             ]
             .map(OsString::from)
+        );
+    }
+
+    #[test]
+    fn pairing_maps_to_shell_free_bind_arguments() {
+        let spec = OperationSpec::bind(
+            "deployment.yaml".into(),
+            "ui-a".into(),
+            "backend-feature".into(),
+        );
+        assert_eq!(
+            spec.arguments().unwrap(),
+            ["bind", "deployment.yaml", "ui-a", "backend-feature"].map(OsString::from)
         );
     }
 }

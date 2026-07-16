@@ -392,6 +392,9 @@ Entry gate: the persistent control plane is complete.
         retain documented manual procedures for their non-automated portions.
 - [x] Common deployments can be created, inspected, switched, and stopped from both CLI
       and GUI.
+      - The project TUI also supports the fresh `init` workflow with source/device
+        management, validated instance creation, lifecycle controls, and live
+        consumer/provider-group pairing.
 - [x] Database data persists unless the user explicitly requests destructive cleanup.
 - [x] Upgrade and recovery procedures are documented and tested.
       - `docs/upgrade-recovery.md`; `scripts/phase6-proof.sh` is the one-command

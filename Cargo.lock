@@ -3066,6 +3066,8 @@ dependencies = [
  "crossterm",
  "ratatui",
  "serde",
+ "switchyard-daemon",
+ "switchyard-planner",
  "switchyard-sources",
  "switchyard-state",
  "yaml_serde",

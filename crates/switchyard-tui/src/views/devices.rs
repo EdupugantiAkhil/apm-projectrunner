@@ -1,0 +1,167 @@
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph, Row, Table, TableState, Wrap},
+};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use super::centered;
+use crate::app::{App, BusyKind, DeviceForm};
+
+pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let rows = app.devices.iter().map(|device| {
+        Row::new([
+            device.name.clone(),
+            format!("{}@{}:{}", device.user, device.host, device.port),
+            device.last_check_status.to_string(),
+            device
+                .last_checked_at
+                .map_or_else(|| "never".into(), relative_time),
+            device.identity_file.as_ref().map_or_else(
+                || "SSH agent/config".into(),
+                |path| path.display().to_string(),
+            ),
+        ])
+    });
+    let mut state = TableState::default();
+    if !app.devices.is_empty() {
+        state.select(Some(app.device_selected));
+    }
+    let detail = app
+        .devices
+        .get(app.device_selected)
+        .and_then(|device| device.last_check_detail.as_deref())
+        .unwrap_or("Registered devices are SSH connectivity targets; runtime placement is local.");
+    let areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(6), Constraint::Length(4)])
+        .split(area);
+    frame.render_stateful_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Length(18),
+                Constraint::Percentage(35),
+                Constraint::Length(14),
+                Constraint::Length(16),
+                Constraint::Min(18),
+            ],
+        )
+        .header(
+            Row::new(["Name", "SSH target", "Status", "Last checked", "Identity"])
+                .style(Style::default().add_modifier(Modifier::BOLD)),
+        )
+        .row_highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White))
+        .highlight_symbol("› ")
+        .block(Block::default().borders(Borders::ALL).title(" Devices ")),
+        areas[0],
+        &mut state,
+    );
+    frame.render_widget(
+        Paragraph::new(detail)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Check detail "),
+            )
+            .wrap(Wrap { trim: false }),
+        areas[1],
+    );
+}
+
+fn relative_time(timestamp: i64) -> String {
+    let now: i128 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(i128::MAX);
+    let elapsed_seconds = (now - i128::from(timestamp)).max(0) / 1_000;
+    match elapsed_seconds {
+        0..=59 => format!("{elapsed_seconds}s ago"),
+        60..=3_599 => format!("{}m ago", elapsed_seconds / 60),
+        3_600..=86_399 => format!("{}h ago", elapsed_seconds / 3_600),
+        _ => format!("{}d ago", elapsed_seconds / 86_400),
+    }
+}
+
+pub(super) fn render_add(frame: &mut Frame<'_>, form: &DeviceForm, busy: Option<BusyKind>) {
+    let area = centered(frame.area(), 76, 18);
+    frame.render_widget(Clear, area);
+    let block = Block::default().borders(Borders::ALL).title(" Add device ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let values = [
+        ("Name", &form.name),
+        ("SSH user", &form.user),
+        ("Host", &form.host),
+        ("Port", &form.port),
+        ("Identity file (optional)", &form.identity_file),
+    ];
+    let mut lines = vec![Line::from(
+        "Uses existing SSH keys or agent; passwords and key material are never stored.",
+    )];
+    for (index, (label, value)) in values.into_iter().enumerate() {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{} {label}: {value}",
+                if form.active_field == index { ">" } else { " " }
+            ),
+            if form.active_field == index {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default()
+            },
+        )));
+    }
+    lines.push(Line::from(""));
+    if busy == Some(BusyKind::DeviceAdd) {
+        lines.push(Line::from(Span::styled(
+            "Adding device…",
+            Style::default().fg(Color::Yellow),
+        )));
+    } else if let Some(error) = &form.error {
+        lines.push(Line::from(Span::styled(
+            error.clone(),
+            Style::default().fg(Color::Red),
+        )));
+    }
+    lines.push(Line::from("Tab/Shift-Tab fields  Enter add  Esc cancel"));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+pub(super) fn render_confirm(
+    frame: &mut Frame<'_>,
+    name: &str,
+    error: Option<&str>,
+    busy: Option<BusyKind>,
+) {
+    let area = centered(frame.area(), 68, 9);
+    frame.render_widget(Clear, area);
+    let mut lines = vec![
+        Line::from(format!("Remove device registration `{name}`?")),
+        Line::from("SSH keys and configuration will not be changed."),
+        Line::from(""),
+    ];
+    if busy == Some(BusyKind::DeviceRemove) {
+        lines.push(Line::from(Span::styled(
+            "Removing…",
+            Style::default().fg(Color::Yellow),
+        )));
+    } else if let Some(error) = error {
+        lines.push(Line::from(Span::styled(
+            error.to_owned(),
+            Style::default().fg(Color::Red),
+        )));
+    } else {
+        lines.push(Line::from("y remove  n/Esc cancel"));
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(" Confirm "))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}

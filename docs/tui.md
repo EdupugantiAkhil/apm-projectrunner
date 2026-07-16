@@ -1,15 +1,21 @@
 # Switchyard terminal UI
 
-Launch the full-screen project UI from a project directory, or pass one explicitly:
+Create a project and launch its full-screen control plane without switching to separate
+management commands:
 
 ```sh
+switchyard init
+cd <project>
+switchyard tui .
+
+# Existing projects are supported too:
 switchyard tui
 switchyard tui path/to/project
 ```
 
-The top bar switches between **Sources** and **Instances**. Use
-`Tab`, Left, or Right to change views; press `?` for the complete in-app key reference,
-and quit with `q` or Ctrl-C.
+The top bar switches between **Sources**, **Devices**, and **Instances**. Use `Tab` or
+Right to advance, Shift-Tab or Left to go back, press `?` for the complete in-app key
+reference, and quit with `q` or Ctrl-C.
 
 ## Sources
 
@@ -29,6 +35,22 @@ changes the selected row.
 All source records use the same project-local `.switchyard/state.sqlite3` registry as
 the CLI and daemon source commands.
 
+## Devices
+
+The Devices table is an interactive selector for registered SSH targets. Up/Down or
+`j`/`k` changes the selected device.
+
+- `a` registers a name, SSH user, host, port, and optional identity-file path. Existing
+  SSH agent and configuration behavior is preserved; Switchyard never stores passwords
+  or private-key material.
+- `c` checks the selected device in the background and persists its status and detail.
+- `d` confirms removal of the registry entry without touching SSH keys or configuration.
+
+Device registrations currently prove and record SSH connectivity. Switchyard's runtime
+and router are local-development components, so the instance form accurately shows the
+runtime device as `local`; it does not pretend that a registered SSH target can host one
+instance of a distributed deployment.
+
 ## Instances
 
 The Instances view combines authored deployment definitions with the durable
@@ -45,6 +67,15 @@ diagnostic after a normal down or cleanup, rather than presenting it as unknown.
 - The output pane receives stdout and stderr while an operation runs, then displays
   its exit code. `PageUp` and `PageDown` scroll its retained output.
 - If a project contains multiple definitions, `[` and `]` select the deployment.
+- `i` adds another instance to the selected authored definition. The form selects an
+  existing reusable block and either a deployment source or project-registered source.
+  A registered source is added to `spec.sources` automatically. The complete deployment
+  is planned before an atomic save, and the targeted insertion preserves the rest of
+  the YAML, including scaffold comments. Press `u` afterwards to apply the change.
+- `b` opens the pairing selector. Up/Down chooses a consumer and Left/Right or Space
+  chooses a complete provider group. Incompatible groups are omitted. Enter previews
+  the old/new choice in the form and applies it through Switchyard's live, validated
+  `bind` operation.
 - Up/Down or `j`/`k` selects a run script. Enter runs it; `n`, `e`, and `D` create,
   edit, and confirm deletion respectively.
 

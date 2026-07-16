@@ -11,6 +11,8 @@ crossterm = "=0.28.1"
 ratatui = "=0.29.0"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_yaml = { package = "yaml_serde", version = "0.10.4" }
+switchyard-daemon = { path = "../switchyard-daemon" }
+switchyard-planner = { path = "../switchyard-planner" }
 switchyard-sources = { path = "../switchyard-sources" }
 switchyard-state = { path = "../switchyard-state" }
 

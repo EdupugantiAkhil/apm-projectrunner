@@ -8,6 +8,35 @@ Updated: 2026-07-16
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
 
+## 2026-07-16 standalone project TUI workflow
+
+- The intended fresh-project path is now `switchyard init` followed by
+  `switchyard tui .`: Sources, Devices, and Instances are first-class keyboard views,
+  with cyclic forward/back navigation and updated in-app help.
+- Devices support inline validated registration, background SSH connectivity checks,
+  persisted check detail, selectable rows, and confirmed registry-only removal. The TUI
+  reuses the state and SSH safety contracts, including option-injection guards and no
+  password/key-material storage.
+- The Instances view now presents authored instances even before they are running. Its
+  add-instance form selects an existing block and a declared or registered source; a
+  newly selected registered source is inserted into `spec.sources`. Targeted YAML
+  insertion preserves unrelated scaffold content and comments, validates by planning a
+  same-directory draft, and atomically replaces the definition only after success.
+- The pairing selector exposes consumer/provider-group changes with incompatible groups
+  omitted and applies the selected complete replacement through typed, shell-free
+  `switchyard bind` arguments. Durable generated binding state is reloaded after the
+  operation.
+- Runtime placement remains explicitly local. Registered devices are currently SSH
+  connectivity targets; no inert per-instance device field or fake remote placement was
+  added ahead of a distributed-runtime design.
+- Verification: all 19 TUI tests pass, including the exact initialized deployment
+  template with a registered-source instance, view navigation, device rendering and
+  validation, YAML preservation, and bind argument construction. The complete workspace
+  test suite passes with only its five declared reliability ignores; workspace Clippy
+  passes for all targets and features with `-D warnings`; workspace formatting is clean.
+  A live pseudo-terminal smoke initialized and validated a fresh project, launched
+  `switchyard tui <project>`, accepted `q`, and restored the terminal cleanly.
+
 ## 2026-07-16 device registry and SSH checks
 
 - SQLite schema v5 adds validated, uniquely named device registrations and durable

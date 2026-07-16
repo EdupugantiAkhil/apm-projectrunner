@@ -5,13 +5,15 @@ use std::{
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, TryRecvError},
     thread,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
 use switchyard_sources::RegisteredSourceInspection;
 use switchyard_state::{
-    OwnedResourceObservation, RegisteredSourceKind, StateStore, StoredDeployment,
+    DeviceCheckStatus, OwnedResourceObservation, RegisteredDevice, RegisteredSourceKind,
+    StateStore, StoredDeployment,
 };
 
 use crate::{
@@ -22,7 +24,125 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ActiveView {
     Sources,
+    Devices,
     Instances,
+}
+
+impl ActiveView {
+    const fn next(self) -> Self {
+        match self {
+            Self::Sources => Self::Devices,
+            Self::Devices => Self::Instances,
+            Self::Instances => Self::Sources,
+        }
+    }
+
+    const fn previous(self) -> Self {
+        match self {
+            Self::Sources => Self::Instances,
+            Self::Devices => Self::Sources,
+            Self::Instances => Self::Devices,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DeviceForm {
+    pub(crate) name: String,
+    pub(crate) user: String,
+    pub(crate) host: String,
+    pub(crate) port: String,
+    pub(crate) identity_file: String,
+    pub(crate) active_field: usize,
+    pub(crate) error: Option<String>,
+}
+
+impl Default for DeviceForm {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            user: String::new(),
+            host: String::new(),
+            port: "22".into(),
+            identity_file: String::new(),
+            active_field: 0,
+            error: None,
+        }
+    }
+}
+
+impl DeviceForm {
+    fn active_value_mut(&mut self) -> &mut String {
+        match self.active_field {
+            0 => &mut self.name,
+            1 => &mut self.user,
+            2 => &mut self.host,
+            3 => &mut self.port,
+            _ => &mut self.identity_file,
+        }
+    }
+
+    pub(crate) fn device(&self) -> Result<RegisteredDevice, String> {
+        let port = self
+            .port
+            .trim()
+            .parse::<u16>()
+            .map_err(|_| "port must be between 1 and 65535".to_owned())?;
+        let device = RegisteredDevice {
+            name: self.name.trim().into(),
+            host: self.host.trim().into(),
+            port,
+            user: self.user.trim().into(),
+            identity_file: nonempty(self.identity_file.trim()).map(PathBuf::from),
+            created_at: unix_millis(),
+            last_checked_at: None,
+            last_check_status: DeviceCheckStatus::Never,
+            last_check_detail: None,
+        };
+        validate_device_form(&device)?;
+        Ok(device)
+    }
+}
+
+fn validate_device_form(device: &RegisteredDevice) -> Result<(), String> {
+    let valid_name = !device.name.is_empty()
+        && device
+            .name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
+    if !valid_name {
+        return Err("name may contain only ASCII letters, digits, '.', '-', and '_'".into());
+    }
+    if device.user.is_empty()
+        || device.user.chars().any(char::is_whitespace)
+        || device.user.starts_with('-')
+        || device.user.contains('@')
+    {
+        return Err("user cannot be empty, contain whitespace or '@', or start with '-'".into());
+    }
+    if device.host.is_empty()
+        || device.host.chars().any(char::is_whitespace)
+        || device.host.starts_with('-')
+    {
+        return Err("host cannot be empty, contain whitespace, or start with '-'".into());
+    }
+    if device
+        .identity_file
+        .as_ref()
+        .is_some_and(|path| path.as_os_str().is_empty())
+    {
+        return Err("identity file path cannot be empty".into());
+    }
+    Ok(())
+}
+
+fn unix_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(i64::MAX)
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -217,18 +337,74 @@ pub(crate) struct DeploymentEntry {
     pub(crate) bundle: PathBuf,
     pub(crate) state: String,
     pub(crate) services: Vec<ServiceRow>,
+    pub(crate) instances: Vec<InstanceRow>,
+    pub(crate) blocks: Vec<String>,
+    pub(crate) source_choices: Vec<SourceChoice>,
+    pub(crate) bindings: Vec<BindingRow>,
     pub(crate) last_operation: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InstanceRow {
+    pub(crate) name: String,
+    pub(crate) block: String,
+    pub(crate) source: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SourceChoice {
+    pub(crate) name: String,
+    pub(crate) path: PathBuf,
+    pub(crate) declared: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct DefinitionTopology {
+    instances: Vec<InstanceRow>,
+    blocks: Vec<String>,
+    source_choices: Vec<SourceChoice>,
+    bindings: Vec<BindingRow>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InstanceForm {
+    pub(crate) name: String,
+    pub(crate) block_index: usize,
+    pub(crate) source_index: usize,
+    pub(crate) active_field: usize,
+    pub(crate) error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BindingRow {
+    pub(crate) consumer: String,
+    pub(crate) group: String,
+    pub(crate) compatible_groups: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PairForm {
+    pub(crate) consumer_index: usize,
+    pub(crate) group_index: usize,
+    pub(crate) error: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Overlay {
     None,
     Add(AddForm),
+    Device(DeviceForm),
+    ConfirmRemoveDevice {
+        name: String,
+        error: Option<String>,
+    },
     ConfirmRemove {
         name: String,
         error: Option<String>,
     },
     Script(ScriptForm),
+    Instance(InstanceForm),
+    Pair(PairForm),
     ConfirmDown {
         deployment: String,
     },
@@ -249,11 +425,15 @@ pub(crate) enum BusyKind {
     Add,
     Remove,
     Refresh,
+    DeviceAdd,
+    DeviceRemove,
+    DeviceCheck,
     Operation,
 }
 
 enum TaskResult {
     Sources(Result<Vec<RegisteredSourceInspection>, String>, BusyKind),
+    Devices(Result<Vec<RegisteredDevice>, String>, BusyKind),
     Operation(OperationEvent),
 }
 
@@ -262,10 +442,13 @@ pub(crate) struct App {
     pub(crate) active_view: ActiveView,
     pub(crate) sources: Vec<RegisteredSourceInspection>,
     pub(crate) selected: usize,
+    pub(crate) devices: Vec<RegisteredDevice>,
+    pub(crate) device_selected: usize,
     pub(crate) deployments: Vec<DeploymentEntry>,
     pub(crate) deployment_selected: usize,
     pub(crate) scripts: Vec<RunScript>,
     pub(crate) script_selected: usize,
+    pub(crate) binding_selected: usize,
     pub(crate) scripts_error: Option<String>,
     pub(crate) output: Vec<String>,
     pub(crate) output_scroll: usize,
@@ -282,11 +465,13 @@ pub(crate) struct App {
 impl App {
     pub(crate) fn load(project_dir: PathBuf) -> Result<Self, Box<dyn Error>> {
         let sources = list_sources(&project_dir)?;
-        let deployments = list_deployments(&project_dir).map_err(io_error)?;
+        let devices = list_devices(&project_dir).map_err(io_error)?;
+        let deployments = list_deployments(&project_dir, &sources).map_err(io_error)?;
         let (scripts, scripts_error) = run_scripts::load(&project_dir);
         Ok(Self::with_data(
             project_dir,
             sources,
+            devices,
             deployments,
             scripts,
             scripts_error,
@@ -298,12 +483,20 @@ impl App {
         project_dir: PathBuf,
         sources: Vec<RegisteredSourceInspection>,
     ) -> Self {
-        Self::with_data(project_dir, sources, Vec::new(), Vec::new(), None)
+        Self::with_data(
+            project_dir,
+            sources,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+        )
     }
 
     fn with_data(
         project_dir: PathBuf,
         sources: Vec<RegisteredSourceInspection>,
+        devices: Vec<RegisteredDevice>,
         deployments: Vec<DeploymentEntry>,
         scripts: Vec<RunScript>,
         scripts_error: Option<String>,
@@ -314,10 +507,13 @@ impl App {
             active_view: ActiveView::Sources,
             sources,
             selected: 0,
+            devices,
+            device_selected: 0,
             deployments,
             deployment_selected: 0,
             scripts,
             script_selected: 0,
+            binding_selected: 0,
             scripts_error,
             output: Vec::new(),
             output_scroll: 0,
@@ -361,12 +557,23 @@ impl App {
                 },
                 _ => {}
             },
+            Overlay::Device(form) => match Self::handle_device_key(form, key) {
+                Some(FormAction::Close) => self.overlay = Overlay::None,
+                Some(FormAction::Submit) if self.busy.is_none() => match form.device() {
+                    Ok(device) => self.start_device_add(device),
+                    Err(error) => form.error = Some(error),
+                },
+                _ => {}
+            },
+            Overlay::ConfirmRemoveDevice { .. } => self.handle_device_remove_confirm(key),
             Overlay::ConfirmRemove { .. } => self.handle_remove_confirm(key),
             Overlay::Script(form) => match Self::handle_script_key(form, key) {
                 Some(FormAction::Close) => self.overlay = Overlay::None,
                 Some(FormAction::Submit) => self.submit_script(),
                 _ => {}
             },
+            Overlay::Instance(_) => self.handle_instance_key(key),
+            Overlay::Pair(_) => self.handle_pair_key(key),
             Overlay::ConfirmDown { .. } => self.handle_down_confirm(key),
             Overlay::ConfirmDeleteScript { .. } => self.handle_delete_confirm(key),
             Overlay::ShellNotice { .. } => self.handle_shell_notice(key),
@@ -386,13 +593,8 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.overlay = Overlay::Help,
-            KeyCode::Tab | KeyCode::Right | KeyCode::Left => {
-                self.active_view = if self.active_view == ActiveView::Sources {
-                    ActiveView::Instances
-                } else {
-                    ActiveView::Sources
-                }
-            }
+            KeyCode::Tab | KeyCode::Right => self.active_view = self.active_view.next(),
+            KeyCode::BackTab | KeyCode::Left => self.active_view = self.active_view.previous(),
             KeyCode::Down | KeyCode::Char('j') if self.active_view == ActiveView::Sources => {
                 if !self.sources.is_empty() {
                     self.selected = (self.selected + 1).min(self.sources.len() - 1);
@@ -420,6 +622,36 @@ impl App {
                 if self.active_view == ActiveView::Sources && self.busy.is_none() =>
             {
                 self.start_refresh(BusyKind::Refresh)
+            }
+            KeyCode::Down | KeyCode::Char('j') if self.active_view == ActiveView::Devices => {
+                if !self.devices.is_empty() {
+                    self.device_selected = (self.device_selected + 1).min(self.devices.len() - 1);
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') if self.active_view == ActiveView::Devices => {
+                self.device_selected = self.device_selected.saturating_sub(1)
+            }
+            KeyCode::Char('a')
+                if self.active_view == ActiveView::Devices && self.busy.is_none() =>
+            {
+                self.overlay = Overlay::Device(DeviceForm::default())
+            }
+            KeyCode::Char('c')
+                if self.active_view == ActiveView::Devices && self.busy.is_none() =>
+            {
+                if let Some(device) = self.devices.get(self.device_selected) {
+                    self.start_device_check(device.name.clone());
+                }
+            }
+            KeyCode::Char('d')
+                if self.active_view == ActiveView::Devices && self.busy.is_none() =>
+            {
+                if let Some(device) = self.devices.get(self.device_selected) {
+                    self.overlay = Overlay::ConfirmRemoveDevice {
+                        name: device.name.clone(),
+                        error: None,
+                    };
+                }
             }
             KeyCode::Down | KeyCode::Char('j') if self.active_view == ActiveView::Instances => {
                 if !self.scripts.is_empty() {
@@ -451,6 +683,11 @@ impl App {
                 if self.active_view == ActiveView::Instances && self.busy.is_none() =>
             {
                 self.overlay = Overlay::Script(ScriptForm::default())
+            }
+            KeyCode::Char('i')
+                if self.active_view == ActiveView::Instances && self.busy.is_none() =>
+            {
+                self.open_instance_form();
             }
             KeyCode::Char('e')
                 if self.active_view == ActiveView::Instances && self.busy.is_none() =>
@@ -498,8 +735,290 @@ impl App {
                     };
                 }
             }
+            KeyCode::Char('b')
+                if self.active_view == ActiveView::Instances && self.busy.is_none() =>
+            {
+                self.open_pair_form();
+            }
             _ => {}
         }
+    }
+
+    fn open_pair_form(&mut self) {
+        let Some(deployment) = self.current_deployment() else {
+            self.status = Some("error: no deployment definition found".into());
+            return;
+        };
+        if deployment.bindings.is_empty() {
+            self.status = Some(
+                "no group bindings are defined; add consumer bindings to deployment.yaml first"
+                    .into(),
+            );
+            return;
+        }
+        let consumer_index = self
+            .binding_selected
+            .min(deployment.bindings.len().saturating_sub(1));
+        let binding = &deployment.bindings[consumer_index];
+        let group_index = binding
+            .compatible_groups
+            .iter()
+            .position(|group| group == &binding.group)
+            .unwrap_or_default();
+        self.overlay = Overlay::Pair(PairForm {
+            consumer_index,
+            group_index,
+            error: None,
+        });
+    }
+
+    fn open_instance_form(&mut self) {
+        let Some(deployment) = self.current_deployment() else {
+            self.status = Some("error: no deployment definition found".into());
+            return;
+        };
+        if deployment.blocks.is_empty() {
+            self.status = Some("error: the deployment defines no reusable blocks".into());
+            return;
+        }
+        if deployment.source_choices.is_empty() {
+            self.status = Some("error: add or declare a source before adding an instance".into());
+            return;
+        }
+        self.overlay = Overlay::Instance(InstanceForm {
+            name: String::new(),
+            block_index: 0,
+            source_index: 0,
+            active_field: 0,
+            error: None,
+        });
+    }
+
+    fn handle_instance_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Esc {
+            self.overlay = Overlay::None;
+            return;
+        }
+        let Some(deployment) = self.current_deployment() else {
+            self.overlay = Overlay::None;
+            return;
+        };
+        let block_count = deployment.blocks.len();
+        let source_count = deployment.source_choices.len();
+        let Overlay::Instance(form) = &mut self.overlay else {
+            return;
+        };
+        match key.code {
+            KeyCode::Tab | KeyCode::Down => form.active_field = (form.active_field + 1) % 3,
+            KeyCode::BackTab | KeyCode::Up => form.active_field = (form.active_field + 2) % 3,
+            KeyCode::Backspace if form.active_field == 0 => {
+                form.name.pop();
+                form.error = None;
+            }
+            KeyCode::Left | KeyCode::Char('h') if form.active_field == 1 && block_count > 0 => {
+                form.block_index = (form.block_index + block_count - 1) % block_count;
+                form.error = None;
+            }
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ')
+                if form.active_field == 1 && block_count > 0 =>
+            {
+                form.block_index = (form.block_index + 1) % block_count;
+                form.error = None;
+            }
+            KeyCode::Left | KeyCode::Char('h') if form.active_field == 2 && source_count > 0 => {
+                form.source_index = (form.source_index + source_count - 1) % source_count;
+                form.error = None;
+            }
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ')
+                if form.active_field == 2 && source_count > 0 =>
+            {
+                form.source_index = (form.source_index + 1) % source_count;
+                form.error = None;
+            }
+            KeyCode::Char(character)
+                if form.active_field == 0
+                    && !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                form.name.push(character);
+                form.error = None;
+            }
+            KeyCode::Enter => self.submit_instance(),
+            _ => {}
+        }
+    }
+
+    pub(crate) fn instance_selection(&self) -> Option<(&str, &SourceChoice)> {
+        let Overlay::Instance(form) = &self.overlay else {
+            return None;
+        };
+        let deployment = self.current_deployment()?;
+        Some((
+            deployment.blocks.get(form.block_index)?.as_str(),
+            deployment.source_choices.get(form.source_index)?,
+        ))
+    }
+
+    fn submit_instance(&mut self) {
+        let Some((block, source)) = self
+            .instance_selection()
+            .map(|(block, source)| (block.to_owned(), source.clone()))
+        else {
+            return;
+        };
+        let (name, definition, duplicate) = match (&self.overlay, self.current_deployment()) {
+            (Overlay::Instance(form), Some(deployment)) => (
+                form.name.trim().to_owned(),
+                deployment.bundle.clone(),
+                deployment
+                    .instances
+                    .iter()
+                    .any(|instance| instance.name == form.name.trim()),
+            ),
+            _ => return,
+        };
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        {
+            if let Overlay::Instance(form) = &mut self.overlay {
+                form.error =
+                    Some("name may contain only ASCII letters, digits, '.', '-', and '_'".into());
+            }
+            return;
+        }
+        if duplicate {
+            if let Overlay::Instance(form) = &mut self.overlay {
+                form.error = Some(format!("instance `{name}` already exists"));
+            }
+            return;
+        }
+        match append_instance_definition(&definition, &name, &block, &source) {
+            Ok(()) => {
+                self.overlay = Overlay::None;
+                self.status = Some(format!(
+                    "instance `{name}` added; press u to plan and start the updated deployment"
+                ));
+                self.refresh_deployments();
+            }
+            Err(error) => {
+                if let Overlay::Instance(form) = &mut self.overlay {
+                    form.error = Some(error);
+                }
+            }
+        }
+    }
+
+    fn handle_pair_key(&mut self, key: KeyEvent) {
+        if matches!(key.code, KeyCode::Esc | KeyCode::Char('n')) {
+            self.overlay = Overlay::None;
+            return;
+        }
+        let binding_count = self
+            .current_deployment()
+            .map_or(0, |deployment| deployment.bindings.len());
+        if binding_count == 0 {
+            self.overlay = Overlay::None;
+            return;
+        }
+        let Overlay::Pair(form) = &mut self.overlay else {
+            return;
+        };
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                form.consumer_index = form.consumer_index.saturating_sub(1);
+                self.reset_pair_group();
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                form.consumer_index = (form.consumer_index + 1).min(binding_count - 1);
+                self.reset_pair_group();
+            }
+            KeyCode::Left | KeyCode::Char('h') => self.move_pair_group(false),
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => self.move_pair_group(true),
+            KeyCode::Enter | KeyCode::Char('y') if self.busy.is_none() => self.submit_pair(),
+            _ => {}
+        }
+    }
+
+    fn reset_pair_group(&mut self) {
+        let Some((current_group, groups)) = self
+            .pair_binding()
+            .map(|binding| (binding.group.clone(), binding.compatible_groups.clone()))
+        else {
+            return;
+        };
+        if let Overlay::Pair(form) = &mut self.overlay {
+            form.group_index = groups
+                .iter()
+                .position(|group| group == &current_group)
+                .unwrap_or_default();
+            form.error = None;
+        }
+    }
+
+    fn move_pair_group(&mut self, forward: bool) {
+        let count = self
+            .pair_binding()
+            .map_or(0, |binding| binding.compatible_groups.len());
+        if count == 0 {
+            return;
+        }
+        if let Overlay::Pair(form) = &mut self.overlay {
+            form.group_index = if forward {
+                (form.group_index + 1) % count
+            } else {
+                (form.group_index + count - 1) % count
+            };
+            form.error = None;
+        }
+    }
+
+    fn pair_binding(&self) -> Option<&BindingRow> {
+        let Overlay::Pair(form) = &self.overlay else {
+            return None;
+        };
+        self.current_deployment()?.bindings.get(form.consumer_index)
+    }
+
+    pub(crate) fn pair_selection(&self) -> Option<(&BindingRow, &str)> {
+        let Overlay::Pair(form) = &self.overlay else {
+            return None;
+        };
+        let binding = self
+            .current_deployment()?
+            .bindings
+            .get(form.consumer_index)?;
+        let group = binding.compatible_groups.get(form.group_index)?;
+        Some((binding, group))
+    }
+
+    fn submit_pair(&mut self) {
+        let Some((binding, group)) = self
+            .pair_selection()
+            .map(|(binding, group)| (binding.clone(), group.to_owned()))
+        else {
+            if let Overlay::Pair(form) = &mut self.overlay {
+                form.error = Some("no compatible provider group is available".into());
+            }
+            return;
+        };
+        let Some(bundle) = self
+            .current_deployment()
+            .map(|deployment| deployment.bundle.clone())
+        else {
+            return;
+        };
+        self.binding_selected = match &self.overlay {
+            Overlay::Pair(form) => form.consumer_index,
+            _ => 0,
+        };
+        self.overlay = Overlay::None;
+        self.start_operation(
+            format!("pair {} → {group}", binding.consumer),
+            OperationSpec::bind(bundle, binding.consumer, group),
+        );
     }
 
     fn handle_add_key(form: &mut AddForm, key: KeyEvent) -> Option<FormAction> {
@@ -507,6 +1026,29 @@ impl App {
             KeyCode::Esc => return Some(FormAction::Close),
             KeyCode::Tab | KeyCode::Down => form.active_field = (form.active_field + 1) % 4,
             KeyCode::BackTab | KeyCode::Up => form.active_field = (form.active_field + 3) % 4,
+            KeyCode::Backspace => {
+                form.active_value_mut().pop();
+                form.error = None;
+            }
+            KeyCode::Char(character)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                form.active_value_mut().push(character);
+                form.error = None;
+            }
+            KeyCode::Enter => return Some(FormAction::Submit),
+            _ => {}
+        }
+        None
+    }
+
+    fn handle_device_key(form: &mut DeviceForm, key: KeyEvent) -> Option<FormAction> {
+        match key.code {
+            KeyCode::Esc => return Some(FormAction::Close),
+            KeyCode::Tab | KeyCode::Down => form.active_field = (form.active_field + 1) % 5,
+            KeyCode::BackTab | KeyCode::Up => form.active_field = (form.active_field + 4) % 5,
             KeyCode::Backspace => {
                 form.active_value_mut().pop();
                 form.error = None;
@@ -627,6 +1169,19 @@ impl App {
                     _ => return,
                 };
                 self.start_remove(name);
+            }
+            _ => {}
+        }
+    }
+    fn handle_device_remove_confirm(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('n') | KeyCode::Esc => self.overlay = Overlay::None,
+            KeyCode::Char('y') if self.busy.is_none() => {
+                let name = match &self.overlay {
+                    Overlay::ConfirmRemoveDevice { name, .. } => name.clone(),
+                    _ => return,
+                };
+                self.start_device_remove(name);
             }
             _ => {}
         }
@@ -779,12 +1334,46 @@ impl App {
                                 }
                                 .into(),
                             );
+                            self.refresh_deployments();
                         }
                         Err(error) => match (&mut self.overlay, kind) {
                             (Overlay::Add(form), BusyKind::Add) => form.error = Some(error),
                             (Overlay::ConfirmRemove { error: slot, .. }, BusyKind::Remove) => {
                                 *slot = Some(error)
                             }
+                            _ => self.status = Some(format!("error: {error}")),
+                        },
+                    }
+                    break;
+                }
+                TaskResult::Devices(result, kind) => {
+                    self.task = None;
+                    self.busy = None;
+                    match result {
+                        Ok(devices) => {
+                            self.devices = devices;
+                            self.device_selected = self
+                                .device_selected
+                                .min(self.devices.len().saturating_sub(1));
+                            self.overlay = Overlay::None;
+                            self.status = Some(
+                                match kind {
+                                    BusyKind::DeviceAdd => "device added",
+                                    BusyKind::DeviceRemove => "device removed",
+                                    BusyKind::DeviceCheck => "device check finished",
+                                    _ => "devices refreshed",
+                                }
+                                .into(),
+                            );
+                        }
+                        Err(error) => match (&mut self.overlay, kind) {
+                            (Overlay::Device(form), BusyKind::DeviceAdd) => {
+                                form.error = Some(error)
+                            }
+                            (
+                                Overlay::ConfirmRemoveDevice { error: slot, .. },
+                                BusyKind::DeviceRemove,
+                            ) => *slot = Some(error),
                             _ => self.status = Some(format!("error: {error}")),
                         },
                     }
@@ -818,7 +1407,7 @@ impl App {
     }
 
     fn refresh_deployments(&mut self) {
-        match list_deployments(&self.project_dir) {
+        match list_deployments(&self.project_dir, &self.sources) {
             Ok(entries) => {
                 self.deployments = entries;
                 self.deployment_selected = self
@@ -851,6 +1440,42 @@ impl App {
                 }
             }
             manager.list(&store).map_err(|error| error.to_string())
+        });
+    }
+    fn start_device_add(&mut self, device: RegisteredDevice) {
+        self.busy = Some(BusyKind::DeviceAdd);
+        self.spawn_devices(BusyKind::DeviceAdd, move |root| {
+            let store = open_store(&root)?;
+            store
+                .register_device(&device)
+                .map_err(|error| error.to_string())?;
+            store.devices().map_err(|error| error.to_string())
+        });
+    }
+    fn start_device_remove(&mut self, name: String) {
+        self.busy = Some(BusyKind::DeviceRemove);
+        self.spawn_devices(BusyKind::DeviceRemove, move |root| {
+            let store = open_store(&root)?;
+            store
+                .deregister_device(&name)
+                .map_err(|error| error.to_string())?;
+            store.devices().map_err(|error| error.to_string())
+        });
+    }
+    fn start_device_check(&mut self, name: String) {
+        self.busy = Some(BusyKind::DeviceCheck);
+        self.spawn_devices(BusyKind::DeviceCheck, move |root| {
+            let store = open_store(&root)?;
+            let device = store
+                .device(&name)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("device `{name}` is not registered"))?;
+            let (status, detail) =
+                switchyard_daemon::device::check(&device).map_err(|error| error.to_string())?;
+            store
+                .record_device_check(&name, unix_millis(), status, Some(&detail))
+                .map_err(|error| error.to_string())?;
+            store.devices().map_err(|error| error.to_string())
         });
     }
     fn start_remove(&mut self, name: String) {
@@ -893,6 +1518,18 @@ impl App {
         });
         self.task = Some(receiver);
     }
+    fn spawn_devices(
+        &mut self,
+        kind: BusyKind,
+        operation: impl FnOnce(PathBuf) -> Result<Vec<RegisteredDevice>, String> + Send + 'static,
+    ) {
+        let root = self.project_dir.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = sender.send(TaskResult::Devices(operation(root), kind));
+        });
+        self.task = Some(receiver);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -911,6 +1548,123 @@ fn open_store(root: &Path) -> Result<StateStore, String> {
 fn list_sources(root: &Path) -> Result<Vec<RegisteredSourceInspection>, Box<dyn Error>> {
     let store = StateStore::open(root.join(".switchyard/state.sqlite3"))?.0;
     Ok(switchyard_sources::SourceManager::new(root).list(&store)?)
+}
+fn list_devices(root: &Path) -> Result<Vec<RegisteredDevice>, String> {
+    open_store(root)?
+        .devices()
+        .map_err(|error| error.to_string())
+}
+
+fn append_instance_definition(
+    definition: &Path,
+    name: &str,
+    block: &str,
+    source: &SourceChoice,
+) -> Result<(), String> {
+    let input = fs::read_to_string(definition)
+        .map_err(|error| format!("could not read {}: {error}", definition.display()))?;
+    let had_trailing_newline = input.ends_with('\n');
+    let mut lines = input.lines().map(str::to_owned).collect::<Vec<_>>();
+    if !source.declared {
+        let path = serde_yaml::to_string(&source.path.display().to_string())
+            .map_err(|error| format!("could not encode source path: {error}"))?;
+        insert_spec_section(
+            &mut lines,
+            "sources",
+            vec![format!("    {}: {{ path: {} }}", source.name, path.trim())],
+        )?;
+    }
+    insert_spec_section(
+        &mut lines,
+        "instances",
+        vec![
+            format!("    - name: {name}"),
+            format!("      block: {block}"),
+            format!("      source: {}", source.name),
+        ],
+    )?;
+    let mut output = lines.join("\n");
+    if had_trailing_newline {
+        output.push('\n');
+    }
+    validate_and_replace_definition(definition, &output)
+}
+
+fn insert_spec_section(
+    lines: &mut Vec<String>,
+    section: &str,
+    additions: Vec<String>,
+) -> Result<(), String> {
+    let marker = format!("  {section}:");
+    let start = lines
+        .iter()
+        .position(|line| line == &marker)
+        .ok_or_else(|| {
+            format!("cannot add interactively: `spec.{section}` must use an indented YAML block")
+        })?;
+    let mut end = start + 1;
+    while end < lines.len() {
+        let line = &lines[end];
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            end += 1;
+            continue;
+        }
+        let indentation = line.len() - line.trim_start().len();
+        if indentation <= 2 {
+            break;
+        }
+        end += 1;
+    }
+    lines.splice(end..end, additions);
+    Ok(())
+}
+
+fn validate_and_replace_definition(definition: &Path, output: &str) -> Result<(), String> {
+    let parent = definition
+        .parent()
+        .ok_or_else(|| "deployment definition has no parent directory".to_owned())?;
+    let filename = definition
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("deployment.yaml");
+    let temporary = parent.join(format!(
+        ".{filename}.switchyard-tui-{}-{}",
+        std::process::id(),
+        unix_millis()
+    ));
+    let permissions = fs::metadata(definition)
+        .map_err(|error| error.to_string())?
+        .permissions();
+    fs::write(&temporary, output).map_err(|error| {
+        format!(
+            "could not write validation draft {}: {error}",
+            temporary.display()
+        )
+    })?;
+    let validation = (|| {
+        let bundle =
+            switchyard_planner::load_bundle(&temporary).map_err(|error| error.to_string())?;
+        switchyard_planner::plan(&bundle).map_err(|diagnostics| {
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        })?;
+        fs::set_permissions(&temporary, permissions).map_err(|error| error.to_string())?;
+        fs::rename(&temporary, definition).map_err(|error| {
+            format!(
+                "could not atomically update {}: {error}",
+                definition.display()
+            )
+        })?;
+        Ok::<(), String>(())
+    })();
+    if validation.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    validation
 }
 
 #[derive(Deserialize)]
@@ -949,7 +1703,10 @@ fn definition_paths(root: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn list_deployments(root: &Path) -> Result<Vec<DeploymentEntry>, String> {
+fn list_deployments(
+    root: &Path,
+    registered_sources: &[RegisteredSourceInspection],
+) -> Result<Vec<DeploymentEntry>, String> {
     let store = open_store(root)?;
     let stored = store.deployments().map_err(|error| error.to_string())?;
     let mut definitions = BTreeMap::new();
@@ -983,8 +1740,16 @@ fn list_deployments(root: &Path) -> Result<Vec<DeploymentEntry>, String> {
                 .active_resources(&name)
                 .map_err(|error| error.to_string())?;
             let manifest = load_manifest_services(root, &name);
+            let (instances, blocks, source_choices) =
+                load_definition_choices(&bundle, registered_sources);
+            let topology = DefinitionTopology {
+                instances,
+                blocks,
+                source_choices,
+                bindings: load_bindings(root, &name, &bundle),
+            };
             Ok(deployment_entry(
-                name, bundle, record, &resources, &manifest,
+                name, bundle, record, &resources, &manifest, topology,
             ))
         })
         .collect()
@@ -1020,6 +1785,7 @@ fn deployment_entry(
     stored: Option<&StoredDeployment>,
     resources: &[OwnedResourceObservation],
     manifest: &[ManifestService],
+    topology: DefinitionTopology,
 ) -> DeploymentEntry {
     let operation = stored.and_then(|entry| entry.last_operation.as_ref());
     let active_operation =
@@ -1053,8 +1819,98 @@ fn deployment_entry(
         bundle,
         state,
         services,
+        instances: topology.instances,
+        blocks: topology.blocks,
+        source_choices: topology.source_choices,
+        bindings: topology.bindings,
         last_operation,
     }
+}
+
+fn load_definition_choices(
+    definition: &Path,
+    registered_sources: &[RegisteredSourceInspection],
+) -> (Vec<InstanceRow>, Vec<String>, Vec<SourceChoice>) {
+    let Ok(bundle) = switchyard_planner::load_bundle(definition) else {
+        return (Vec::new(), Vec::new(), Vec::new());
+    };
+    let instances = bundle
+        .spec
+        .instances
+        .iter()
+        .map(|instance| InstanceRow {
+            name: instance.name.clone(),
+            block: instance.block.clone(),
+            source: instance.source.clone(),
+        })
+        .collect();
+    let blocks = bundle.spec.blocks.keys().cloned().collect();
+    let mut source_choices = bundle
+        .spec
+        .sources
+        .iter()
+        .map(|(name, source)| SourceChoice {
+            name: name.clone(),
+            path: source.path.clone(),
+            declared: true,
+        })
+        .collect::<Vec<_>>();
+    for source in registered_sources {
+        if !source_choices
+            .iter()
+            .any(|choice| choice.name == source.source.name)
+        {
+            source_choices.push(SourceChoice {
+                name: source.source.name.clone(),
+                path: source.source.path.clone(),
+                declared: false,
+            });
+        }
+    }
+    source_choices.sort_by(|left, right| left.name.cmp(&right.name));
+    (instances, blocks, source_choices)
+}
+
+fn load_bindings(root: &Path, deployment: &str, definition: &Path) -> Vec<BindingRow> {
+    let Ok(mut authored) = switchyard_planner::load_bundle(definition) else {
+        return Vec::new();
+    };
+    let resolved_path = root
+        .join(".switchyard/generated")
+        .join(deployment)
+        .join("resolved-deployment.yaml");
+    if let Ok(resolved) = switchyard_planner::load_bundle(&resolved_path) {
+        if resolved.metadata.name == authored.metadata.name {
+            authored.spec.bindings = resolved.spec.bindings;
+            authored.spec.routes = resolved.spec.routes;
+            authored.spec.ui_routes = resolved.spec.ui_routes;
+        }
+    }
+    authored
+        .spec
+        .bindings
+        .iter()
+        .map(|(consumer, group)| {
+            let mut compatible_groups = authored
+                .spec
+                .groups
+                .keys()
+                .filter(|candidate| {
+                    switchyard_planner::plan_with_binding(&authored, consumer, candidate).is_ok()
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if !compatible_groups.contains(group) {
+                compatible_groups.push(group.clone());
+                compatible_groups.sort();
+            }
+            BindingRow {
+                consumer: consumer.clone(),
+                group: group.clone(),
+                compatible_groups,
+            }
+        })
+        .collect()
 }
 
 fn resource_rows(
@@ -1147,6 +2003,39 @@ mod tests {
                 path: "src".into()
             }
         );
+    }
+    #[test]
+    fn device_form_validates_ssh_fields() {
+        let valid = DeviceForm {
+            name: "builder".into(),
+            user: "dev".into(),
+            host: "host.test".into(),
+            port: "2222".into(),
+            identity_file: "keys/id_ed25519".into(),
+            active_field: 0,
+            error: None,
+        };
+        let device = valid.device().unwrap();
+        assert_eq!(device.port, 2222);
+        assert_eq!(device.identity_file, Some("keys/id_ed25519".into()));
+        for (user, host) in [("-oProxyCommand=bad", "host.test"), ("dev", "-x")] {
+            let mut invalid = valid.clone();
+            invalid.user = user.into();
+            invalid.host = host.into();
+            assert!(invalid.device().is_err());
+        }
+    }
+    #[test]
+    fn tabs_cycle_through_all_control_plane_views() {
+        let mut app = App::with_sources(PathBuf::from("."), Vec::new());
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.active_view, ActiveView::Devices);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.active_view, ActiveView::Instances);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.active_view, ActiveView::Sources);
+        app.handle_key(key(KeyCode::BackTab));
+        assert_eq!(app.active_view, ActiveView::Instances);
     }
     #[test]
     fn confirm_no_closes_without_starting_work() {
@@ -1252,7 +2141,83 @@ mod tests {
             Some(&stored),
             &[],
             &[],
+            DefinitionTopology::default(),
         );
         assert_eq!(entry.state, "stopped");
+    }
+
+    #[test]
+    fn yaml_section_insertion_preserves_existing_lines() {
+        let mut lines = vec![
+            "spec:".into(),
+            "  sources:".into(),
+            "    project: { path: . }".into(),
+            "    # retained source guidance".into(),
+            "  blocks:".into(),
+        ];
+        insert_spec_section(
+            &mut lines,
+            "sources",
+            vec!["    feature: { path: /work/feature }".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            lines,
+            [
+                "spec:",
+                "  sources:",
+                "    project: { path: . }",
+                "    # retained source guidance",
+                "    feature: { path: /work/feature }",
+                "  blocks:"
+            ]
+        );
+    }
+
+    #[test]
+    fn fresh_init_definition_accepts_registered_source_instance() {
+        let root = std::env::temp_dir().join(format!(
+            "switchyard-tui-instance-definition-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("overlays")).unwrap();
+        let definition = root.join("deployment.yaml");
+        fs::write(
+            &definition,
+            include_str!("../../switchyard-cli/templates/init/deployment.yaml")
+                .replace("{{project_name}}", "demo"),
+        )
+        .unwrap();
+        fs::write(
+            root.join("overlays/dev.yaml"),
+            include_str!("../../switchyard-cli/templates/init/overlays/dev.yaml"),
+        )
+        .unwrap();
+        let feature = root.join("feature checkout");
+        fs::create_dir_all(&feature).unwrap();
+        append_instance_definition(
+            &definition,
+            "web-feature",
+            "web",
+            &SourceChoice {
+                name: "feature".into(),
+                path: feature,
+                declared: false,
+            },
+        )
+        .unwrap();
+        let updated = fs::read_to_string(&definition).unwrap();
+        assert!(updated.contains("# Register another local checkout"));
+        let bundle = switchyard_planner::load_bundle(&definition).unwrap();
+        assert!(bundle.spec.sources.contains_key("feature"));
+        assert!(
+            bundle
+                .spec
+                .instances
+                .iter()
+                .any(|instance| instance.name == "web-feature" && instance.source == "feature")
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }

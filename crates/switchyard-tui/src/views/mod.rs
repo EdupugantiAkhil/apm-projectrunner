@@ -1,3 +1,4 @@
+mod devices;
 mod instances;
 mod sources;
 
@@ -22,9 +23,10 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
         .split(frame.area());
     let selected = match app.active_view {
         ActiveView::Sources => 0,
-        ActiveView::Instances => 1,
+        ActiveView::Devices => 1,
+        ActiveView::Instances => 2,
     };
-    let tabs = Tabs::new(["Sources", "Instances"])
+    let tabs = Tabs::new(["Sources", "Devices", "Instances"])
         .select(selected)
         .block(
             Block::default()
@@ -39,6 +41,7 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
     frame.render_widget(tabs, areas[0]);
     match app.active_view {
         ActiveView::Sources => sources::render(frame, areas[1], app),
+        ActiveView::Devices => devices::render(frame, areas[1], app),
         ActiveView::Instances => instances::render(frame, areas[1], app),
     }
     let footer = if let Some(kind) = app.busy {
@@ -49,6 +52,9 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
                 BusyKind::Add => "adding source",
                 BusyKind::Remove => "removing source",
                 BusyKind::Refresh => "refreshing sources",
+                BusyKind::DeviceAdd => "adding device",
+                BusyKind::DeviceRemove => "removing device",
+                BusyKind::DeviceCheck => "checking device",
                 BusyKind::Operation => "running operation",
             }
         )
@@ -57,8 +63,9 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
             ActiveView::Sources => {
                 "a add  d remove  r refresh  ↑/↓ select  Tab view  ? help  q quit"
             }
+            ActiveView::Devices => "a add  c check  d remove  ↑/↓ select  Tab view  ? help  q quit",
             ActiveView::Instances => {
-                "u up  s status  x down  p plan  Enter run  n/e/D scripts  ↑/↓ select  PgUp/PgDn output  Tab view  ? help  q quit"
+                "i add instance  b pair  u/s/x/p lifecycle  Enter run  n/e/D scripts  PgUp/PgDn output  Tab view  ? help  q quit"
             }
         };
         app.status
@@ -69,10 +76,16 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
 
     match &app.overlay {
         Overlay::Add(form) => sources::render_add(frame, form, app.busy),
+        Overlay::Device(form) => devices::render_add(frame, form, app.busy),
+        Overlay::ConfirmRemoveDevice { name, error } => {
+            devices::render_confirm(frame, name, error.as_deref(), app.busy)
+        }
         Overlay::ConfirmRemove { name, error } => {
             sources::render_confirm(frame, name, error.as_deref(), app.busy)
         }
         Overlay::Script(form) => instances::render_script_form(frame, form),
+        Overlay::Instance(form) => instances::render_instance_form(frame, app, form),
+        Overlay::Pair(form) => instances::render_pair_form(frame, app, form),
         Overlay::ConfirmDown { deployment } => instances::render_confirm(
             frame,
             " Confirm down ",
@@ -97,7 +110,7 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
 }
 
 fn render_help(frame: &mut Frame<'_>) {
-    let area = centered(frame.area(), 58, 18);
+    let area = centered(frame.area(), 64, 27);
     frame.render_widget(Clear, area);
     let lines = vec![
         Line::from(Span::styled(
@@ -119,10 +132,19 @@ fn render_help(frame: &mut Frame<'_>) {
         Line::from("  Esc           close a dialog"),
         Line::from(""),
         Line::from(Span::styled(
+            "Devices",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  ↑ / ↓, j / k  select device"),
+        Line::from("  a / c / d     add, check SSH, remove"),
+        Line::from(""),
+        Line::from(Span::styled(
             "Instances",
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from("  u / s / x / p up, status, confirmed down, plan"),
+        Line::from("  i             add an instance (block/source selectors)"),
+        Line::from("  b             select and apply a provider-group pairing"),
         Line::from("  Enter         run selected preset"),
         Line::from("  n / e / D     new, edit, delete preset"),
         Line::from("  PgUp / PgDn   scroll operation output"),
@@ -165,7 +187,7 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     use super::*;
-    use crate::app::AddForm;
+    use crate::app::{AddForm, DeviceForm};
 
     #[test]
     fn renders_inline_add_error_with_test_backend() {
@@ -205,6 +227,31 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(contents.contains("source has 1 staged"));
+    }
+
+    #[test]
+    fn renders_devices_tab_and_inline_device_error() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::with_sources(PathBuf::from("/project"), Vec::new());
+        app.active_view = ActiveView::Devices;
+        app.overlay = Overlay::Device(DeviceForm {
+            error: Some("host cannot be empty".into()),
+            ..DeviceForm::default()
+        });
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let contents = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(contents.contains("Sources"));
+        assert!(contents.contains("Devices"));
+        assert!(contents.contains("Instances"));
+        assert!(contents.contains("host cannot be empty"));
+        assert!(contents.contains("Identity file"));
     }
 
     #[test]

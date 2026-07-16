@@ -1,5 +1,17 @@
 # Agent mistakes and lessons
 
+## 2026-07-16 — Standalone TUI workflow
+
+- A registered source is durable project state, but an instance's `source` must still
+  reference `spec.sources` in the authored deployment. Correction: the TUI instance
+  form inserts a newly selected registered source declaration before inserting the
+  instance, then validates the whole draft. Lesson: registry membership and desired-
+  state references are separate contracts and UI workflows must bridge them explicitly.
+- The device registry describes SSH connectivity for future execution; it is not a
+  distributed placement scheduler. Correction: expose full device management while
+  labeling instance runtime placement as local. Lesson: an interactive selector must
+  not persist choices that the runtime cannot honor.
+
 ## 2026-07-16 — Interactive initializer follow-up
 
 - The initial `switchyard init` implementation only accepted a positional directory,
