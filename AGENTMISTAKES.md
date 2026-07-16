@@ -251,3 +251,11 @@
   special zsh array tied to `PATH`; subsequent commands in that shell could not be found.
   Correction: use a non-special name such as `relative_path`. Lesson: avoid zsh special
   parameter names in repository scripts and ad hoc verification loops.
+
+## 2026-07-16 — Cleaned-up deployment GUI regression
+
+- The first stopped-state test used a singular text query for a status intentionally
+  repeated on every instance card, so the test failed on the correct UI output.
+  Correction: assert the expected collection size. Lesson: accessibility tests for
+  repeated per-resource state should verify the collection, while singular queries are
+  reserved for unique status banners and actions.

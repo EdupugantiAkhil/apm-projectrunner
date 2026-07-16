@@ -60,6 +60,29 @@ describe('Switchyard GUI', () => {
     expect(screen.getByRole('cell', { name: 'v4' })).toBeInTheDocument()
   })
 
+  it('presents a cleaned-up deployment as stopped with a clear Up action and reconciliation reason', async () => {
+    const stopped = { ...deployment, resources: [], customDomains: [], reconciliation: { deployment: 'comparison', diagnostics: [{ code: 'observed_resources_missing', path: 'observed.resources', message: 'no labeled Docker resources were observed' }] } }
+    vi.mocked(fetch).mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.endsWith('/deployments')) return json({ apiVersion: 'v1', deployments: [{ name: 'comparison', definitionHash: 'definition123', resourceHash: 'resource123', appliedAt: 1, lastOperation: null, customDomains: [], bindings: {} }] })
+      if (url.endsWith('/deployments/comparison/routes')) return json({ deployment: 'comparison', bindings: [], history: [] })
+      if (url.endsWith('/deployments/comparison')) return json(stopped)
+      if (url.endsWith('/sources')) return json([source])
+      if (url.endsWith('/adapters')) return json([])
+      throw new Error(`unexpected request ${url}`)
+    })
+    render(<App client={new ApiClient('test')} />)
+    expect(await screen.findByText('Deployment is stopped or cleaned up')).toBeInTheDocument()
+    expect(screen.getAllByText('Stopped / cleaned up').length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/no labeled Docker resources were observed/).length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: 'Run Up' })).toBeInTheDocument()
+    expect(screen.getAllByText('not running')).toHaveLength(6)
+    expect(screen.getByText('Live patch bay unavailable')).toBeInTheDocument()
+    expect(screen.queryByRole('img', { name: 'Route cables' })).not.toBeInTheDocument()
+    expect(screen.queryByText('state unknown')).not.toBeInTheDocument()
+    expect(screen.getByText('Unavailable while stopped')).toBeInTheDocument()
+  })
+
   it('requires an explicit second step before dirty worktree removal', async () => {
     const user = userEvent.setup()
     render(<App client={new ApiClient('test')} />)

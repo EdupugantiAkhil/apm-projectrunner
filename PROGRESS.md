@@ -854,3 +854,19 @@ implemented shape and the evidence used to close a phase.
     newer-schema refusal, SQLite delete/restore rebuild).
 - Phase 7 remains open only on the tracked security-remediation item; every
   other Phase 7 task and the exit gate are complete.
+
+## 2026-07-16 — Cleaned-up deployment GUI state
+
+- The GUI now interprets an empty observed-resource set plus the
+  `observed_resources_missing` reconciliation diagnostic as a stopped/cleaned-up
+  deployment, instead of presenting it as reconciled or filling instance cards with
+  ambiguous `state unknown` labels.
+- Stopped deployments show the reconciliation reason and a prominent `Run Up` action;
+  runtime-only actions are disabled, runtime domains and active routes are explicitly
+  unavailable, and the interactive patch bay is replaced by a stopped-state message.
+- The selected deployment rail entry and inspector project the same state, and command
+  completion refreshes both deployment summary and detail so a successful Up can clear
+  the stopped presentation without a page reload.
+- Verification: all 8 `App.test.tsx` GUI tests pass, including the new cleaned-up-state
+  regression; the production TypeScript/Vite build passes; oxlint completes with only
+  the four pre-existing React hook dependency warnings.

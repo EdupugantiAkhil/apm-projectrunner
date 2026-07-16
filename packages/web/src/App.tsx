@@ -7,6 +7,9 @@ import './App.css'
 type View = 'deployments' | 'sources' | 'operations' | 'builder' | 'library'
 const terminal = (status: Operation['status']) => ['succeeded', 'failed', 'cancelled'].includes(status)
 const short = (value?: string | null) => value ? value.slice(0, 9) : 'unknown'
+const stoppedDiagnostic = (detail: DeploymentDetail) => detail.resources.length === 0
+  ? detail.reconciliation.diagnostics.find((diagnostic) => diagnostic.code === 'observed_resources_missing')
+  : undefined
 const dirtyText = (source: SourceRecord) => {
   const changes = source.inspection.changes
   return changes ? `${changes.staged} staged, ${changes.unstaged} unstaged, ${changes.untracked} untracked` : 'dirty details unavailable'
@@ -59,7 +62,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
       setNotice(`${finished.kind} ${finished.status}`)
       subscription.close()
       subscriptions.current.delete(finished.id)
-      void loadDeployments()
+      void Promise.all([loadDeployments(), loadSelected()]).catch(report)
     }).catch(report)
   }
   const runCommand = async (kind: 'validate' | 'plan' | 'status' | 'logs' | 'open' | 'apply' | 'down' | 'cleanup', target?: string) => {
@@ -94,10 +97,11 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
       <div className="deployment-list">
         {deployments.length === 0 && <p className="muted">No deployments applied</p>}
         {deployments.map((deployment) => {
-          const status = deployment.lastOperation?.status ?? 'unknown'
+          const stopped = selected === deployment.name && detail?.deployment === deployment.name && stoppedDiagnostic(detail)
+          const status = stopped ? 'stopped' : deployment.lastOperation?.status ?? 'unknown'
           return <button className="deployment-button" aria-pressed={selected === deployment.name} key={deployment.name} onClick={() => { setSelected(deployment.name); setView('deployments') }}>
             <span className={`status-dot status-${status}`} aria-hidden="true" />
-            <span><strong>{deployment.name}</strong><small>{status}</small></span>
+            <span><strong>{deployment.name}</strong><small>{stopped ? 'stopped / cleaned up' : status}</small></span>
           </button>
         })}
       </div>
@@ -113,9 +117,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
     </main>
     <aside className="inspector" aria-label="Inspector">
       <h2>Inspector</h2>
-      {detail ? <><p className="eyebrow">Deployment</p><h3>{detail.deployment}</h3><dl><dt>Definition</dt><dd className="mono">{short(detail.definitionHash)}</dd><dt>Resources</dt><dd className="mono">{short(detail.resourceHash)}</dd><dt>Drift</dt><dd>{detail.reconciliation.diagnostics.length ? `${detail.reconciliation.diagnostics.length} warnings` : 'Reconciled'}</dd></dl>
-        <h3>Domains</h3>{detail.customDomains.length ? <ul>{detail.customDomains.map((domain) => <li className="mono" key={domain}>{domain}</li>)}</ul> : <p className="muted">None</p>}
-        <h3>Bindings</h3><dl>{Object.entries(detail.bindings).map(([consumer, group]) => <div key={consumer}><dt className="mono">{consumer}</dt><dd>{group}</dd></div>)}</dl></> : <p className="muted">Select a deployment</p>}
+      {detail ? <DeploymentInspector detail={detail} /> : <p className="muted">Select a deployment</p>}
     </aside>
     <section className={`event-drawer ${drawerOpen ? 'open' : ''}`} aria-label="Events and logs">
       <header><button aria-expanded={drawerOpen} onClick={() => setDrawerOpen((value) => !value)}>Events & logs {drawerOpen ? '▾' : '▴'}</button><label>Deployment <select value={filter} onChange={(event) => setFilter(event.target.value)}><option value="">All</option>{deployments.map((deployment) => <option key={deployment.name}>{deployment.name}</option>)}</select></label><button onClick={() => void navigator.clipboard?.writeText(visibleEvents.map(eventText).join('\n'))}>Copy plain text</button></header>
@@ -128,13 +130,23 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
 function DeploymentView({ client, detail, routes, onCommand, observe, refresh, report }: { client: ApiClient; detail: DeploymentDetail | null; routes: RouteState | null; onCommand: (kind: 'validate' | 'plan' | 'status' | 'logs' | 'open' | 'apply' | 'down' | 'cleanup', target?: string) => void; observe: (operation: Operation) => void; refresh: () => Promise<void>; report: (error: unknown) => void }) {
   if (!detail) return <section><h1>Deployments</h1><p>No applied deployment selected.</p></section>
   const instances = detail.snapshot?.spec?.instances ?? Object.keys(detail.sourceIdentities).map((name) => ({ name }))
-  return <section><div className="title-row"><div><p className="eyebrow">Deployment</p><h1>{detail.deployment}</h1></div><span className="state-label">● {detail.reconciliation.diagnostics.length ? 'Needs attention' : 'Reconciled'}</span></div>
-    <div className="command-bar" aria-label="Deployment commands"><button onClick={() => onCommand('validate')}>Validate</button><button onClick={() => onCommand('plan')}>Plan</button><button onClick={() => onCommand('status')}>Status</button><button onClick={() => onCommand('logs')}>Logs</button><button className="primary" onClick={() => onCommand('apply')}>Up</button><button className="danger" onClick={() => onCommand('down')}>Down</button><button className="danger" onClick={() => onCommand('cleanup')}>Cleanup</button></div>
-    <h2>Instances</h2><div className="instance-grid">{instances.map((instance) => { const identity = detail.sourceIdentities[instance.name]; const resource = detail.resources.find((item) => item.labels['dev.switchyard.instance'] === instance.name || item.name.includes(instance.name)); return <article className="instance-card" key={instance.name}><header><h3>{instance.name}</h3><span>{resource?.state ?? 'state unknown'}</span><button aria-label={`Logs for ${instance.name}`} onClick={() => onCommand('logs', instance.name)}>Logs</button>{detail.snapshot?.spec?.managedProfiles?.[instance.name] && <button aria-label={`Open ${instance.name} in a managed browser profile`} onClick={() => onCommand('open', instance.name)}>Open</button>}</header>{identity ? <dl><dt>Path</dt><dd className="mono">{identity.path}</dd><dt>Ref</dt><dd className="mono">{identity.ref ?? 'detached'}</dd><dt>Commit</dt><dd className="mono">{short(identity.commit)} {identity.dirty ? <span className="dirty">● modified</span> : 'clean'}</dd></dl> : <p>Source identity unavailable</p>}</article> })}</div>
-    <DeploymentWorkspace client={client} detail={detail} routes={routes} onOperation={observe} refresh={refresh} report={report} />
-    <h2>Active routes</h2>{routes?.bindings.length ? <table><thead><tr><th>Consumer</th><th>Router</th><th>Version</th><th>Status</th></tr></thead><tbody>{routes.bindings.map((route) => <tr key={`${route.router}-${route.binding}`}><td className="mono">{route.binding}</td><td className="mono">{route.router}</td><td className="mono">v{route.currentVersion ?? route.desiredVersion ?? '—'}</td><td>{route.status}{route.lastErrorCode ? ` · ${route.lastErrorCode}` : ''}</td></tr>)}</tbody></table> : <p className="muted">No active route versions recorded.</p>}
+  const stopped = stoppedDiagnostic(detail)
+  return <section><div className="title-row"><div><p className="eyebrow">Deployment</p><h1>{detail.deployment}</h1></div><span className={`state-label ${stopped ? 'state-stopped' : ''}`}>● {stopped ? 'Stopped / cleaned up' : detail.reconciliation.diagnostics.length ? 'Needs attention' : 'Reconciled'}</span></div>
+    <div className="command-bar" aria-label="Deployment commands"><button onClick={() => onCommand('validate')}>Validate</button><button onClick={() => onCommand('plan')}>Plan</button><button onClick={() => onCommand('status')}>Status</button><button disabled={Boolean(stopped)} title={stopped ? 'Start the deployment to view runtime logs' : undefined} onClick={() => onCommand('logs')}>Logs</button><button className="primary" onClick={() => onCommand('apply')}>Up</button><button className="danger" disabled={Boolean(stopped)} onClick={() => onCommand('down')}>Down</button><button className="danger" disabled={Boolean(stopped)} onClick={() => onCommand('cleanup')}>Cleanup</button></div>
+    {stopped && <section className="stopped-callout" role="status"><div><h2>Deployment is stopped or cleaned up</h2><p>There is no running endpoint or live route topology for this deployment.</p><p><strong>Reconciliation:</strong> {stopped.message}</p></div><button className="primary" onClick={() => onCommand('apply')}>Run Up</button></section>}
+    <h2>Instances</h2><div className="instance-grid">{instances.map((instance) => { const identity = detail.sourceIdentities[instance.name]; const resource = detail.resources.find((item) => item.labels['dev.switchyard.instance'] === instance.name || item.name.includes(instance.name)); return <article className="instance-card" key={instance.name}><header><h3>{instance.name}</h3><span>{stopped ? 'not running' : resource?.state ?? 'state unknown'}</span><button disabled={Boolean(stopped)} aria-label={`Logs for ${instance.name}`} onClick={() => onCommand('logs', instance.name)}>Logs</button>{detail.snapshot?.spec?.managedProfiles?.[instance.name] && <button disabled={Boolean(stopped)} aria-label={`Open ${instance.name} in a managed browser profile`} onClick={() => onCommand('open', instance.name)}>Open</button>}</header>{identity ? <dl><dt>Path</dt><dd className="mono">{identity.path}</dd><dt>Ref</dt><dd className="mono">{identity.ref ?? 'detached'}</dd><dt>Commit</dt><dd className="mono">{short(identity.commit)} {identity.dirty ? <span className="dirty">● modified</span> : 'clean'}</dd></dl> : <p>Source identity unavailable</p>}</article> })}</div>
+    {stopped ? <section className="runtime-unavailable"><h2>Live patch bay unavailable</h2><p>The saved topology will become interactive after Up starts the deployment.</p></section> : <DeploymentWorkspace client={client} detail={detail} routes={routes} onOperation={observe} refresh={refresh} report={report} />}
+    <h2>Active routes</h2>{stopped ? <p className="muted">No routes are active while the deployment is stopped.</p> : routes?.bindings.length ? <table><thead><tr><th>Consumer</th><th>Router</th><th>Version</th><th>Status</th></tr></thead><tbody>{routes.bindings.map((route) => <tr key={`${route.router}-${route.binding}`}><td className="mono">{route.binding}</td><td className="mono">{route.router}</td><td className="mono">v{route.currentVersion ?? route.desiredVersion ?? '—'}</td><td>{route.status}{route.lastErrorCode ? ` · ${route.lastErrorCode}` : ''}</td></tr>)}</tbody></table> : <p className="muted">No active route versions recorded.</p>}
     <RoutingEditor client={client} deployment={detail.deployment} onSaved={refresh} onOperation={observe} report={report} />
   </section>
+}
+
+function DeploymentInspector({ detail }: { detail: DeploymentDetail }) {
+  const stopped = stoppedDiagnostic(detail)
+  return <><p className="eyebrow">Deployment</p><h3>{detail.deployment}</h3><dl><dt>State</dt><dd>{stopped ? 'Stopped / cleaned up' : 'Active'}</dd><dt>Definition</dt><dd className="mono">{short(detail.definitionHash)}</dd><dt>Resources</dt><dd className="mono">{short(detail.resourceHash)}</dd><dt>Drift</dt><dd>{detail.reconciliation.diagnostics.length ? `${detail.reconciliation.diagnostics.length} warnings` : 'Reconciled'}</dd></dl>
+    {detail.reconciliation.diagnostics.length > 0 && <><h3>Reconciliation</h3><ul className="diagnostic-list">{detail.reconciliation.diagnostics.map((diagnostic) => <li key={`${diagnostic.code}-${diagnostic.path}`}><strong>{diagnostic.code}</strong><br />{diagnostic.message}</li>)}</ul></>}
+    <h3>Runtime domains</h3>{stopped ? <p className="muted">Unavailable while stopped</p> : detail.customDomains.length ? <ul>{detail.customDomains.map((domain) => <li className="mono" key={domain}>{domain}</li>)}</ul> : <p className="muted">None</p>}
+    <h3>{stopped ? 'Saved bindings' : 'Bindings'}</h3><dl>{Object.entries(detail.bindings).map(([consumer, group]) => <div key={consumer}><dt className="mono">{consumer}</dt><dd>{group}</dd></div>)}</dl></>
 }
 
 function SourcesView({ client, sources, reload, report }: { client: ApiClient; sources: SourceRecord[]; reload: () => Promise<void>; report: (error: unknown) => void }) {
