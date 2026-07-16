@@ -46,7 +46,18 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         force,
     } = &command
     {
-        let scaffold = init::scaffold(directory, name.as_deref(), *force)?;
+        let (directory, name) = match directory {
+            Some(directory) => (directory.clone(), name.clone()),
+            None => {
+                let stdin = io::stdin();
+                let mut input = stdin.lock();
+                let stdout = io::stdout();
+                let mut output = stdout.lock();
+                let (directory, name) = init::prompt(&mut input, &mut output, &workspace_root)?;
+                (directory, Some(name))
+            }
+        };
+        let scaffold = init::scaffold(&directory, name.as_deref(), *force)?;
         let (_, plan) = load_and_plan(&scaffold.deployment)?;
         println!(
             "initialized deployment `{}` in {}",

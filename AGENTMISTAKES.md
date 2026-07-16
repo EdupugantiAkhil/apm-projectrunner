@@ -1,5 +1,13 @@
 # Agent mistakes and lessons
 
+## 2026-07-16 — Interactive initializer follow-up
+
+- The initial `switchyard init` implementation only accepted a positional directory,
+  despite project initialization being a discovery-oriented workflow. Correction: keep
+  the positional form for automation and make the no-argument form prompt for the
+  project name and destination. Lesson: initialization commands should provide a
+  guided default while retaining an explicit non-interactive path for scripts.
+
 ## 2026-07-16 — TUI Instances view
 
 - The first health-label projection checked for `healthy` before `unhealthy`, even

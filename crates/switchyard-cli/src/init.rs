@@ -1,5 +1,6 @@
 use std::{
-    fmt, fs, io,
+    fmt, fs,
+    io::{self, BufRead, Write},
     path::{Path, PathBuf},
 };
 
@@ -30,6 +31,7 @@ pub enum InitError {
     Conflicts(Vec<PathBuf>),
     InvalidName(String),
     MissingDirectoryName(PathBuf),
+    PromptClosed,
 }
 
 impl fmt::Display for InitError {
@@ -52,6 +54,7 @@ impl fmt::Display for InitError {
                 "could not derive a project name from directory {}",
                 path.display()
             ),
+            Self::PromptClosed => write!(formatter, "interactive initialization was cancelled"),
         }
     }
 }
@@ -62,6 +65,53 @@ impl From<io::Error> for InitError {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
     }
+}
+
+/// Collect the minimum project details required for `switchyard init` when no
+/// command-line directory was supplied. Relative locations are rooted at `cwd`.
+pub fn prompt<R: BufRead, W: Write>(
+    input: &mut R,
+    output: &mut W,
+    cwd: &Path,
+) -> Result<(PathBuf, String), InitError> {
+    let project_name = loop {
+        write!(
+            output,
+            "Project name (lowercase letters, numbers, and hyphens): "
+        )?;
+        output.flush()?;
+        let mut line = String::new();
+        if input.read_line(&mut line)? == 0 {
+            return Err(InitError::PromptClosed);
+        }
+        let name = line.trim();
+        if valid_metadata_name(name) {
+            break name.to_owned();
+        }
+        writeln!(
+            output,
+            "Please enter a lowercase DNS label up to 63 characters long."
+        )?;
+    };
+
+    write!(output, "Project directory [{project_name}]: ")?;
+    output.flush()?;
+    let mut line = String::new();
+    if input.read_line(&mut line)? == 0 {
+        return Err(InitError::PromptClosed);
+    }
+    let location = line.trim();
+    let directory = if location.is_empty() {
+        cwd.join(&project_name)
+    } else {
+        let location = PathBuf::from(location);
+        if location.is_absolute() {
+            location
+        } else {
+            cwd.join(location)
+        }
+    };
+    Ok((directory, project_name))
 }
 
 pub fn scaffold(
@@ -141,4 +191,21 @@ fn valid_metadata_name(name: &str) -> bool {
                 || byte == b'-' && index > 0
         })
         && !name.ends_with('-')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn prompt_retries_invalid_names_and_defaults_the_directory() {
+        let mut input = Cursor::new("My project\ndemo-project\n\n");
+        let mut output = Vec::new();
+        let (directory, name) = prompt(&mut input, &mut output, Path::new("/workspace")).unwrap();
+
+        assert_eq!(name, "demo-project");
+        assert_eq!(directory, PathBuf::from("/workspace/demo-project"));
+        assert!(String::from_utf8(output).unwrap().contains("Please enter"));
+    }
 }

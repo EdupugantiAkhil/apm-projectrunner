@@ -993,3 +993,10 @@ implemented shape and the evidence used to close a phase.
   this machine: `init` → `validate` → `plan` (dev overlay origin attributed) →
   `up` (container reaches healthy under Docker) → `down` (zero leftover resources),
   plus conflict refusal on re-run and `--force` overwrite.
+
+## 2026-07-16 — Interactive `switchyard init`
+
+- `switchyard init` now starts a guided initializer when no directory is supplied. It
+  asks for a valid deployment name and an optional destination (defaulting to a new
+  folder named after the project), then creates and validates the complete reference
+  template. The existing directory-based command remains available for automation.

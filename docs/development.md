@@ -38,13 +38,16 @@ Follow any reported remediation and rerun it until all checks pass.
 Create a minimal project from the embedded reference template with:
 
 ```sh
-switchyard init my-project
+switchyard init
 cd my-project
 switchyard validate deployment.yaml
 ```
 
-Use `--name <project-name>` to override the directory-derived deployment name. Existing
-scaffold files are preserved unless `--force` is explicitly supplied.
+The guided initializer asks for a lowercase deployment name and destination directory,
+then creates the folder with the deployment, development overlay, README, and gitignore.
+For scripts, `switchyard init <directory>` remains available; use `--name <project-name>`
+to override the directory-derived deployment name. Existing scaffold files are preserved
+unless `--force` is explicitly supplied.
 
 ## Routing-proof platforms
 
