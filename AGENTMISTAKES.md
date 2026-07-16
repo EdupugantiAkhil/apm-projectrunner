@@ -259,3 +259,10 @@
   Correction: assert the expected collection size. Lesson: accessibility tests for
   repeated per-resource state should verify the collection, while singular queries are
   reserved for unique status banners and actions.
+- The stopped-state usability fix made `Run Up` prominent but initially verified only
+  its presentation, not the daemon-to-CLI execution boundary. A live click exposed that
+  the daemon did not supply the router credential required by `switchyard up`.
+  Correction: provision one persistent project credential and test its injection into
+  the real subprocess backend. Lesson: a recovery CTA is not complete until its
+  end-to-end command prerequisites are exercised, especially credentials intentionally
+  absent from browser state.

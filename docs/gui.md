@@ -31,6 +31,14 @@ Static files below `/gui/` are public on the loopback listener. This permits the
 page load before the JavaScript client has consumed its fragment credential. It does
 not weaken API authentication: all `/api/v1` endpoints remain protected.
 
+GUI operations that start or update routers use a separate project router credential.
+The daemon loads or creates `.switchyard/router-token` as an owner-only regular file
+and injects it only into its CLI subprocesses and local router-administration calls; it
+is never returned to browser code. The credential persists across daemon restarts so
+already-running routers remain manageable. An explicitly supplied
+`SWITCHYARD_ROUTER_TOKEN` seeds a missing credential file and must match an existing
+one, preventing an accidental credential rotation while routers may still be running.
+
 ## Deployment workspace
 
 The shell provides keyboard-accessible Deployments, Sources, Operations, and Block

@@ -68,7 +68,11 @@ async fn no_daemon_fallback_and_api_backend_have_identical_output() {
     assert!(!temp.path().join(".switchyard/daemon.json").exists());
 
     let config = DaemonConfig::new(temp.path().into(), binary.into());
-    let backend = Arc::new(CliBackend::new(binary.into(), temp.path().into()));
+    let backend = Arc::new(CliBackend::new(
+        binary.into(),
+        temp.path().into(),
+        "test-router-token".into(),
+    ));
     let (router, token, _) = api_for_tests(config, backend).unwrap();
     let started: OperationV1 = api_request(
         &router,

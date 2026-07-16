@@ -454,6 +454,11 @@ secret file injection can silently materialize content.
 - Router control events redact nested sensitive keys before retention. Daemon SSE events
   replace any output line containing authorization/password/secret/token/private-key
   terms. The proving router test is `token_comparison_and_redaction_are_safe`.
+- Daemon-driven router operations use a separate persistent
+  `.switchyard/router-token`, created as an owner-only regular file and injected only
+  into child commands and local administration calls. The API and GUI never receive
+  it, and mismatched environment overrides are rejected instead of silently rotating
+  the credential beneath running routers.
 - Diagnostics redacts credential-looking object fields, values of credential-looking
   process environment names, the daemon discovery token, the router token when present
   in that environment set, and sensitive-looking log lines before a mode-`0600` write.

@@ -124,17 +124,19 @@ impl EventSink {
 }
 
 /// Backend that executes the existing `switchyard` command implementation.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CliBackend {
     program: PathBuf,
     project_root: PathBuf,
+    router_token: String,
 }
 
 impl CliBackend {
-    pub fn new(program: PathBuf, project_root: PathBuf) -> Self {
+    pub fn new(program: PathBuf, project_root: PathBuf, router_token: String) -> Self {
         Self {
             program,
             project_root,
+            router_token,
         }
     }
 }
@@ -149,11 +151,13 @@ impl OperationBackend for CliBackend {
     ) -> BackendFuture {
         let program = self.program.clone();
         let project_root = self.project_root.clone();
+        let router_token = self.router_token.clone();
         Box::pin(async move {
             let mut child = Command::new(&program)
                 .args(arguments)
                 .current_dir(project_root)
                 .env("SWITCHYARD_BYPASS_DAEMON", "1")
+                .env("SWITCHYARD_ROUTER_TOKEN", router_token)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -212,9 +216,17 @@ impl OperationBackend for CliBackend {
         events: EventSink,
     ) -> Option<BackendFuture> {
         let project_root = self.project_root.clone();
+        let router_token = self.router_token.clone();
         Some(Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                apply_live_binding(&project_root, request, &operation_id, cancellation, events)
+                apply_live_binding(
+                    &project_root,
+                    &router_token,
+                    request,
+                    &operation_id,
+                    cancellation,
+                    events,
+                )
             })
             .await
             .map_err(|error| ApiErrorV1::new("router_apply_task_failed", error.to_string()))?
@@ -269,6 +281,7 @@ impl RouterAdmin for LocalRouterAdmin {
 
 fn apply_live_binding(
     project_root: &Path,
+    token: &str,
     request: CommandRequestV1,
     operation_id: &str,
     cancellation: watch::Receiver<bool>,
@@ -276,6 +289,7 @@ fn apply_live_binding(
 ) -> Result<BackendOutcome, ApiErrorV1> {
     apply_live_binding_with_admin(
         project_root,
+        token,
         request,
         operation_id,
         cancellation,
@@ -286,6 +300,7 @@ fn apply_live_binding(
 
 fn apply_live_binding_with_admin(
     project_root: &Path,
+    token: &str,
     request: CommandRequestV1,
     operation_id: &str,
     cancellation: watch::Receiver<bool>,
@@ -336,12 +351,6 @@ fn apply_live_binding_with_admin(
     };
     let mut plan = switchyard_planner::plan_with_binding(&base, consumer, group)
         .map_err(|errors| ApiErrorV1::new("plan_failed", format_diagnostics(errors)))?;
-    let token = std::env::var("SWITCHYARD_ROUTER_TOKEN").map_err(|_| {
-        ApiErrorV1::new(
-            "router_token_missing",
-            "SWITCHYARD_ROUTER_TOKEN must be set for bind",
-        )
-    })?;
     let transition = request.transition;
     let route_dir = project_root
         .join(&authored_plan.artifact_dir)
@@ -421,7 +430,7 @@ fn apply_live_binding_with_admin(
             failure = Some("operation was cancelled".to_owned());
             break;
         }
-        let observed = match admin.current_snapshot(&target.socket, &token) {
+        let observed = match admin.current_snapshot(&target.socket, token) {
             Ok(observed) => observed,
             Err(error) => {
                 failure = Some(error.to_string());
@@ -457,7 +466,7 @@ fn apply_live_binding_with_admin(
             EventKindV1::Route,
             json!({"router": target.id, "binding": consumer, "desiredVersion": version, "status": "pending"}),
         );
-        match admin.apply_snapshot(&target.socket, &token, &target.candidate) {
+        match admin.apply_snapshot(&target.socket, token, &target.candidate) {
             Ok(ack)
                 if ack.version == version
                     && ack.checksum == checksum
@@ -532,7 +541,7 @@ fn apply_live_binding_with_admin(
             &plan.deployment,
             consumer,
             operation_id,
-            &token,
+            token,
             transition,
             &transition_context,
             &mut targets,
@@ -1030,9 +1039,11 @@ impl From<StateError> for DaemonError {
 
 /// Starts a daemon using the real CLI backend.
 pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
+    let router_token = load_or_create_router_token(&config.project_root)?;
     let backend = Arc::new(CliBackend::new(
         config.cli_program.clone(),
         config.project_root.clone(),
+        router_token,
     ));
     start_with_backend(config, backend).await
 }
@@ -3079,6 +3090,73 @@ fn write_discovery(path: &Path, discovery: &DiscoveryV1) -> Result<(), DaemonErr
     Ok(())
 }
 
+fn load_or_create_router_token(project_root: &Path) -> Result<String, DaemonError> {
+    let configured = std::env::var_os("SWITCHYARD_ROUTER_TOKEN")
+        .map(|value| {
+            value.into_string().map_err(|_| {
+                DaemonError::InvalidConfiguration(
+                    "SWITCHYARD_ROUTER_TOKEN must be valid UTF-8".into(),
+                )
+            })
+        })
+        .transpose()?;
+    load_or_create_router_token_with(project_root, configured.as_deref())
+}
+
+fn load_or_create_router_token_with(
+    project_root: &Path,
+    configured: Option<&str>,
+) -> Result<String, DaemonError> {
+    let state_dir = project_root.join(".switchyard");
+    fs::create_dir_all(&state_dir)?;
+    let path = state_dir.join("router-token");
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_file() || metadata.permissions().mode() & 0o077 != 0 {
+                return Err(DaemonError::InvalidConfiguration(format!(
+                    "router credential {} must be an owner-only regular file",
+                    path.display()
+                )));
+            }
+            let token = fs::read_to_string(&path)?;
+            validate_router_token(&token)?;
+            if configured.is_some_and(|value| !constant_time_eq(value.as_bytes(), token.as_bytes()))
+            {
+                return Err(DaemonError::InvalidConfiguration(
+                    "SWITCHYARD_ROUTER_TOKEN does not match the project router credential; stop existing routers and remove .switchyard/router-token before rotating it".into(),
+                ));
+            }
+            Ok(token)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let token = match configured {
+                Some(value) => value.to_owned(),
+                None => random_hex(32)?,
+            };
+            validate_router_token(&token)?;
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(0o600)
+                .open(&path)?;
+            file.write_all(token.as_bytes())?;
+            file.sync_all()?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+            Ok(token)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn validate_router_token(token: &str) -> Result<(), DaemonError> {
+    if token.is_empty() || token.chars().any(char::is_control) {
+        return Err(DaemonError::InvalidConfiguration(
+            "router credential must be non-empty and contain no control characters".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn discovery_listener_is_active(path: &Path) -> bool {
     let Ok(encoded) = fs::read(path) else {
         return false;
@@ -3310,6 +3388,58 @@ mod tests {
                 .unwrap_or_else(|error| error.into_inner()),
             vec!["first.socket"]
         );
+    }
+
+    #[tokio::test]
+    async fn cli_backend_supplies_the_managed_router_token() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let backend = CliBackend::new(
+            "/bin/sh".into(),
+            temp.path().into(),
+            "managed-router-token".into(),
+        );
+        let (_cancellation, cancellation) = watch::channel(false);
+        let log = Arc::new(EventLog::new());
+        let outcome = backend
+            .run(
+                CommandKind::Validate,
+                vec![
+                    "-c".into(),
+                    "test \"$SWITCHYARD_ROUTER_TOKEN\" = managed-router-token && test \"$SWITCHYARD_BYPASS_DAEMON\" = 1".into(),
+                ],
+                cancellation,
+                EventSink {
+                    operation_id: "test-operation".into(),
+                    log,
+                },
+            )
+            .await
+            .unwrap();
+        let BackendOutcome::Completed(result) = outcome else {
+            panic!("command should complete");
+        };
+        assert_eq!(result.exit_code, 0);
+    }
+
+    #[test]
+    fn router_credential_is_private_stable_and_rejects_mismatched_override() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let token = load_or_create_router_token_with(temp.path(), Some("managed-token")).unwrap();
+        assert_eq!(token, "managed-token");
+        assert_eq!(
+            load_or_create_router_token_with(temp.path(), Some("managed-token")).unwrap(),
+            token
+        );
+        let path = temp.path().join(".switchyard/router-token");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(matches!(
+            load_or_create_router_token_with(temp.path(), Some("different-token")),
+            Err(DaemonError::InvalidConfiguration(_))
+        ));
+        assert_eq!(fs::read_to_string(path).unwrap(), "managed-token");
     }
 
     #[test]

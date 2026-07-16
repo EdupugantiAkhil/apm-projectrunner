@@ -870,3 +870,21 @@ implemented shape and the evidence used to close a phase.
 - Verification: all 8 `App.test.tsx` GUI tests pass, including the new cleaned-up-state
   regression; the production TypeScript/Vite build passes; oxlint completes with only
   the four pre-existing React hook dependency warnings.
+
+## 2026-07-16 — GUI Up router credential propagation
+
+- Fixed daemon-backed `Up` operations failing with
+  `SWITCHYARD_ROUTER_TOKEN must be set when starting routers`: the real CLI backend now
+  receives a persistent project router credential and injects it into daemon-spawned
+  commands alongside the recursion guard.
+- The daemon loads or creates `.switchyard/router-token` as an owner-only regular file.
+  It reuses the value across daemon restarts, accepts an environment value only when
+  seeding a missing file or matching the existing value, and does not expose the token
+  through its API, GUI, or debug output.
+- Native live binding now receives the same managed credential explicitly instead of
+  reading ambient process environment, keeping Up and later route changes consistent.
+- Verification: all 6 daemon unit tests and 14 daemon API tests pass (the opt-in
+  reliability test remains ignored), daemon doc tests pass, and the CLI daemon-parity
+  integration test passes. Workspace/all-target/all-feature clippy passes with warnings
+  denied, and the rebuilt CLI succeeds. New tests cover child credential injection,
+  persistence, owner-only permissions, and mismatched-override refusal.

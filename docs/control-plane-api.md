@@ -32,6 +32,15 @@ requires `Authorization: Bearer <token>`. Missing and invalid credentials both r
 HTTP 401 and error code `unauthorized`; token comparison has no content-dependent early
 exit. Credentials and secret-bearing output lines are never written to daemon events.
 
+The API bearer credential is distinct from the router-administration credential. For
+GUI and daemon-proxied commands, the daemon loads or creates the owner-only
+`.switchyard/router-token`, passes it to `switchyard up` through the child environment,
+and uses the same value for native binding changes. The value is not included in the
+discovery document or any API response. Persisting it allows a restarted daemon to
+continue administering routers that outlive the control-plane process. If
+`SWITCHYARD_ROUTER_TOKEN` is explicitly set, it seeds a missing file and must match an
+existing project credential.
+
 ## Version 1 endpoints
 
 All supported routes are below `/api/v1`. JSON errors have stable `code`, `message`, and
