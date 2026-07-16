@@ -1,0 +1,9 @@
+apiVersion: switchyard.dev/v1alpha1
+kind: Overlay
+metadata:
+  name: development
+spec:
+  selectors:
+    instances: { names: [web] }
+  environment:
+    set: { NGINX_ENTRYPOINT_QUIET_LOGS: "1" }

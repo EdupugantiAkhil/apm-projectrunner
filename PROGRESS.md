@@ -888,3 +888,21 @@ implemented shape and the evidence used to close a phase.
   integration test passes. Workspace/all-target/all-feature clippy passes with warnings
   denied, and the rebuilt CLI succeeds. New tests cover child credential injection,
   persistence, owner-only permissions, and mismatched-override refusal.
+
+## 2026-07-16 — `switchyard init` reference-template scaffolding
+
+- New `switchyard init <directory> [--name <project-name>] [--force]` command scaffolds
+  a base project from templates embedded in the binary: a minimal but real
+  `deployment.yaml` (one nginx container service with provides/probe/publish plus
+  commented sources/consumer examples), `overlays/dev.yaml`, `README.md` with the
+  standard command sequence, and a `.gitignore` covering `.switchyard/`.
+- Project names default to the sanitized directory basename (DNS-label rules) and can
+  be overridden with `--name`; existing scaffold files are enumerated and refused
+  without `--force`. After writing, the command validates the generated deployment
+  through the same `load_and_plan` path as `switchyard validate`, so the template
+  cannot silently rot.
+- Verification: all 47 `switchyard-cli` unit tests plus the daemon-parity integration
+  test pass locally; workspace clippy with `-D warnings` passes. End-to-end proof on
+  this machine: `init` → `validate` → `plan` (dev overlay origin attributed) →
+  `up` (container reaches healthy under Docker) → `down` (zero leftover resources),
+  plus conflict refusal on re-run and `--force` overwrite.

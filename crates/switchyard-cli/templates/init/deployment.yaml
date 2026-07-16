@@ -1,0 +1,37 @@
+apiVersion: switchyard.dev/v1alpha1
+kind: Deployment
+metadata:
+  name: {{project_name}}
+spec:
+  overlays:
+    - overlays/dev.yaml
+  sources:
+    project: { path: . }
+    # Register another local checkout or managed worktree, then add it here:
+    # feature: { type: worktree, path: .switchyard/worktrees/feature }
+  blocks:
+    web:
+      services:
+        server:
+          execution:
+            type: container
+            image: nginx:alpine
+          provides:
+            http: { protocol: http, port: 80 }
+          probe: { type: http, path: /, port: 80 }
+          publish: [80]
+
+    # A consumer block can use a provided capability and wait for a local service:
+    # client:
+    #   services:
+    #     helper:
+    #       execution: { type: container, image: busybox:latest, command: ["sleep", "infinity"] }
+    #       probe: { type: command, command: ["true"] }
+    #     app:
+    #       execution: { type: container, image: busybox:latest, command: ["sleep", "infinity"] }
+    #       consumes:
+    #         http: { protocol: http, address: { host: 127.0.0.1, port: 8080 } }
+    #       dependsOn:
+    #         helper: healthy
+  instances:
+    - { name: web, block: web, source: project }

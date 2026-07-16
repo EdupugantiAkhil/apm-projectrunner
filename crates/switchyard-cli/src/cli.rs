@@ -2,6 +2,11 @@ use std::{ffi::OsString, fmt, path::PathBuf};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CliCommand {
+    Init {
+        directory: PathBuf,
+        name: Option<String>,
+        force: bool,
+    },
     BundleExport {
         deployment: PathBuf,
         overlays: Vec<PathBuf>,
@@ -121,6 +126,7 @@ impl std::error::Error for UsageError {}
 
 pub const USAGE: &str = "\
 Usage:
+  switchyard init <directory> [--name <project-name>] [--force]
   switchyard validate <deployment.yaml>
   switchyard plan <deployment.yaml> [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
   switchyard up <deployment.yaml> [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
@@ -170,6 +176,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
             .ok_or_else(|| UsageError(format!("{command} requires a deployment YAML path")))
     };
     match command {
+        "init" if !rest.is_empty() => parse_init(rest),
         "bundle" if rest.len() >= 2 && rest[0] == "export" => parse_bundle_export(rest),
         "bundle" if rest.len() >= 3 && rest[0] == "import" => parse_bundle_import(rest),
         "diagnostics" if !rest.is_empty() => parse_diagnostics(rest),
@@ -257,6 +264,33 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
             "invalid {command} arguments\n\n{USAGE}"
         ))),
     }
+}
+
+fn parse_init(rest: &[String]) -> Result<CliCommand, UsageError> {
+    let directory = PathBuf::from(&rest[0]);
+    let mut name = None;
+    let mut force = false;
+    let mut index = 1;
+    while index < rest.len() {
+        match rest[index].as_str() {
+            "--name" if index + 1 < rest.len() && name.is_none() => {
+                name = Some(rest[index + 1].clone());
+                index += 2;
+            }
+            "--force" if !force => {
+                force = true;
+                index += 1;
+            }
+            _ => {
+                return Err(UsageError(format!("invalid init arguments\n\n{USAGE}")));
+            }
+        }
+    }
+    Ok(CliCommand::Init {
+        directory,
+        name,
+        force,
+    })
 }
 
 fn parse_diagnostics(rest: &[String]) -> Result<CliCommand, UsageError> {
@@ -608,6 +642,44 @@ mod tests {
                 allow_dirty: true
             }
         );
+    }
+
+    #[test]
+    fn parses_init_command() {
+        assert_eq!(
+            parse(args(&["init", "demo"])).unwrap(),
+            CliCommand::Init {
+                directory: "demo".into(),
+                name: None,
+                force: false,
+            }
+        );
+        assert_eq!(
+            parse(args(&["init", ".", "--name", "custom-project", "--force"])).unwrap(),
+            CliCommand::Init {
+                directory: ".".into(),
+                name: Some("custom-project".into()),
+                force: true,
+            }
+        );
+        assert_eq!(
+            parse(args(&["init", "demo", "--name", "custom-project"])).unwrap(),
+            CliCommand::Init {
+                directory: "demo".into(),
+                name: Some("custom-project".into()),
+                force: false,
+            }
+        );
+        assert_eq!(
+            parse(args(&["init", "demo", "--force"])).unwrap(),
+            CliCommand::Init {
+                directory: "demo".into(),
+                name: None,
+                force: true,
+            }
+        );
+        assert!(parse(args(&["init", "demo", "--name"])).is_err());
+        assert!(parse(args(&["init", "demo", "--force", "--force"])).is_err());
     }
 
     #[test]

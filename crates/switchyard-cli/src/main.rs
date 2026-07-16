@@ -4,6 +4,7 @@ mod browser;
 mod cli;
 mod diagnostics;
 mod host_runtime;
+mod init;
 mod lan_preflight;
 mod runtime;
 mod tailscale_publication;
@@ -38,6 +39,22 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         return Ok(ExitCode::SUCCESS);
     }
     let workspace_root = env::current_dir()?;
+    if let CliCommand::Init {
+        directory,
+        name,
+        force,
+    } = &command
+    {
+        let scaffold = init::scaffold(directory, name.as_deref(), *force)?;
+        let (_, plan) = load_and_plan(&scaffold.deployment)?;
+        println!(
+            "initialized deployment `{}` in {}",
+            scaffold.project_name,
+            scaffold.directory.display()
+        );
+        println!("deployment is valid (definition {})", plan.definition_hash);
+        return Ok(ExitCode::SUCCESS);
+    }
     if let CliCommand::Diagnostics { deployment, output } = &command {
         let path = diagnostics::write_bundle(&workspace_root, deployment, output.as_deref())?;
         println!(
@@ -301,6 +318,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             );
         }
         CliCommand::Help
+        | CliCommand::Init { .. }
         | CliCommand::DaemonRun
         | CliCommand::DaemonStatus
         | CliCommand::DaemonStop
@@ -773,6 +791,7 @@ fn daemon_request(
             (CommandKind::Cleanup, request)
         }
         CliCommand::Help
+        | CliCommand::Init { .. }
         | CliCommand::DaemonRun
         | CliCommand::DaemonStatus
         | CliCommand::DaemonStop
@@ -1493,5 +1512,46 @@ mod tests {
             gui_url(temp.path()).unwrap_err().to_string(),
             "daemon not running; start it with `switchyard daemon run`"
         );
+    }
+
+    #[test]
+    fn init_scaffolds_valid_project_and_enforces_force() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("My Demo_Project");
+        let scaffold = init::scaffold(&project, None, false).unwrap();
+
+        assert_eq!(scaffold.project_name, "my-demo-project");
+        for relative in [
+            "deployment.yaml",
+            "overlays/dev.yaml",
+            "README.md",
+            ".gitignore",
+        ] {
+            let contents = fs::read_to_string(project.join(relative)).unwrap();
+            assert!(
+                !contents.contains("{{"),
+                "placeholder remained in {relative}"
+            );
+        }
+        load_and_plan(&scaffold.deployment).unwrap();
+
+        let error = init::scaffold(&project, None, false).unwrap_err();
+        let message = error.to_string();
+        for relative in [
+            "deployment.yaml",
+            "overlays/dev.yaml",
+            "README.md",
+            ".gitignore",
+        ] {
+            assert!(message.contains(relative));
+        }
+        fs::write(project.join("README.md"), "user content {{").unwrap();
+        init::scaffold(&project, None, true).unwrap();
+        assert!(
+            !fs::read_to_string(project.join("README.md"))
+                .unwrap()
+                .contains("{{")
+        );
+        load_and_plan(&scaffold.deployment).unwrap();
     }
 }

@@ -35,6 +35,17 @@ pinned Rust compiler, CMake (required to build Pingora), Docker daemon access, D
 Compose v2, Linux-container mode, and, on native Linux, network namespace availability.
 Follow any reported remediation and rerun it until all checks pass.
 
+Create a minimal project from the embedded reference template with:
+
+```sh
+switchyard init my-project
+cd my-project
+switchyard validate deployment.yaml
+```
+
+Use `--name <project-name>` to override the directory-derived deployment name. Existing
+scaffold files are preserved unless `--force` is explicitly supplied.
+
 ## Routing-proof platforms
 
 The Phase 4 release gate supports native Linux `x86_64` and `aarch64`, both using Linux
