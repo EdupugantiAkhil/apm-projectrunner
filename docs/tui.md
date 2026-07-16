@@ -25,19 +25,16 @@ changes the selected row.
 
 - `a` opens a two-mode dialog. Choose **Local path** or **Git clone**, then enter exactly
   one directory or clone address. Switchyard derives the registry name from its final
-  path component and adds a numeric suffix if that name is already used. Clone work runs
-  in the background and its errors remain in the form.
+  path component and adds a numeric suffix if that name is already used.
 - In Git mode, Enter always opens a separate options and authentication review before
-  cloning (`F2` opens the same popup directly). A clone may select a branch/tag ref and
-  use either existing SSH agent/config state or an existing identity-file path. SSH
-  clones also expose a masked optional password/key-passphrase field. Its value is held
-  only for that clone attempt, passed to OpenSSH through an ephemeral askpass helper,
-  redacted from debug output, and never written to project state. Enter in the popup
-  starts the clone.
-- The SSH credential answers a password or private-key-passphrase prompt from the remote
-  transport. GitHub SSH does not accept GitHub account passwords, so use a registered
-  key and enter only that key's passphrase when required. HTTPS continues to use the
-  configured Git credential helper.
+  cloning (`F2` opens the same popup directly). A clone may select a branch/tag ref.
+  Enter in that popup temporarily leaves the alternate-screen TUI and runs the real
+  `git clone` attached to the controlling terminal.
+- Native Git/OpenSSH authentication is preserved without an intermediate Switchyard
+  credential form: credential helpers, `ssh-agent`, `~/.ssh/config`, automatic identity
+  selection, host confirmation, and password/key-passphrase prompts behave exactly as
+  they do for `git clone` in the shell. On failure or Ctrl-C, the terminal shows Git's
+  output and waits for Enter before restoring the TUI.
 - Bracketed paste is enabled, so pasting a path or URL updates only the focused field and
   trailing terminal newlines are discarded.
 - `d` confirms removal. Unmanaged sources are only deregistered; managed sources are

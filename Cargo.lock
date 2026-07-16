@@ -3047,7 +3047,6 @@ dependencies = [
  "switchyard-adapters",
  "switchyard-state",
  "tempfile",
- "zeroize",
 ]
 
 [[package]]
@@ -3067,12 +3066,12 @@ dependencies = [
  "crossterm",
  "ratatui",
  "serde",
+ "signal-hook",
  "switchyard-daemon",
  "switchyard-planner",
  "switchyard-sources",
  "switchyard-state",
  "yaml_serde",
- "zeroize",
 ]
 
 [[package]]

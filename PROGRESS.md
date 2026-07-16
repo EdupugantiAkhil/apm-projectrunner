@@ -1,6 +1,6 @@
 # Switchyard implementation progress
 
-Updated: 2026-07-16
+Updated: 2026-07-17
 
 ## Release status
 
@@ -8,40 +8,45 @@ Updated: 2026-07-16
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
 
+## 2026-07-17 native Git authentication handoff
+
+- Replaced the intermediate SSH credential/askpass layer with a native terminal handoff.
+  The TUI leaves raw and alternate-screen modes, invokes `git clone` with inherited
+  stdin/stdout/stderr and no authentication overrides, then restores the full-screen UI.
+  Git credential helpers and OpenSSH agent/config/key selection and prompts therefore
+  work identically to a shell clone.
+- SIGINT is handled while Git owns the terminal so Ctrl-C interrupts Git without leaving
+  the parent TUI in a corrupted terminal state. Failed/interrupted clones retain Git's
+  visible output until Enter is pressed, clean partial clone targets, and return an
+  actionable error to the source dialog.
+- Live pseudo-terminal verification cloned and registered a local repository across the
+  suspend/resume boundary. A second run against the reported GitHub URL displayed the
+  native OpenSSH `Enter passphrase for key ...` prompt, accepted Ctrl-C, waited for Enter,
+  and restored the TUI with an interrupted-clone retry message.
+
 ## 2026-07-16 TUI source-dialog UX and Git SSH authentication
 
-- Follow-up: the Git authentication review now includes a masked optional SSH password/
-  key-passphrase input matching normal terminal prompt behavior. The value is used for
-  one clone through an auto-deleting askpass helper, redacted from debug output, zeroed
-  from owned secret buffers on drop, cleared from the form on submission, and never
-  persisted. Multiline Git errors render as bounded popup lines instead of escaping the
-  modal boundary.
-- Follow-up: Git clone submission now always passes through the authentication review
-  popup instead of silently accepting the default from the location screen. Enter opens
-  the review, Enter there clones, and authentication failures remain in that popup with
-  retry guidance.
+- Follow-up: Git clone submission now always passes through the options review popup
+  instead of cloning immediately from the location screen. Enter opens the review,
+  Enter there yields to native Git, and authentication failures return to that popup
+  with retry guidance.
 - Replaced the four-field source form with a mode selector and exactly one location
   input. Local directories and Git clone addresses derive stable source names from the
   final path/repository segment; collisions receive the first available numeric suffix.
 - Git ref and authentication settings moved into a dedicated `F2` popup with contextual
-  descriptions for every field. Authentication uses existing SSH agent/config state by
-  default or an existing identity-file path; private-key contents and HTTPS tokens remain
-  outside the TUI, and field descriptions explain GitHub, `ssh-add`, and Git credential-
-  helper behavior.
+  descriptions. Authentication is delegated to native Git/OpenSSH behavior.
 - Terminal bracketed-paste mode now delivers a pasted location atomically to its focused
   field and strips trailing CR/LF, preventing URLs from spilling into adjacent inputs.
-- Source cloning keeps Git's HTTPS prompts delegated to credential helpers. SSH runs in
-  batch mode without a supplied credential and enables one askpass response when the
-  user supplies one. Optional identity paths are resolved, checked, shell-quoted for
-  Git's SSH transport, and passed with identities-only mode.
+- Background/non-interactive source APIs remain prompt-free. Interactive TUI clones use
+  the dedicated native terminal handoff.
 - Clone validation rejects embedded HTTP credentials and option-like/control-character
   refs before invoking Git. Failed clone directories are removed so an authentication
   correction can be retried immediately.
 - Verification: all 11 source-manager and 24 TUI tests pass, including one-location
   input, inferred naming, isolated bracketed paste, required authentication review and
-  retry rendering, identity-path quoting, credential rejection, and failed-clone
-  cleanup. The complete workspace test suite passes with only its five declared
-  reliability ignores;
+  terminal-handoff queueing, native interactive clone registration, credential
+  rejection, and failed-clone cleanup. The complete workspace test suite passes with
+  only its five declared reliability ignores;
   workspace Clippy passes for all targets and features with `-D warnings`; workspace
   formatting and diff checks are clean.
 

@@ -46,6 +46,17 @@ impl TerminalSession {
     pub(crate) fn draw(&mut self, render: impl FnOnce(&mut ratatui::Frame<'_>)) -> io::Result<()> {
         self.terminal.draw(render).map(|_| ())
     }
+
+    pub(crate) fn suspend<T>(&mut self, operation: impl FnOnce() -> T) -> io::Result<T> {
+        self.terminal.show_cursor()?;
+        disable_raw_mode()?;
+        execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen)?;
+        let result = operation();
+        enable_raw_mode()?;
+        execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
+        self.terminal.clear()?;
+        Ok(result)
+    }
 }
 
 impl Drop for TerminalSession {

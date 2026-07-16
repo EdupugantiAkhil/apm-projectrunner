@@ -2,6 +2,12 @@
 
 ## 2026-07-16 — TUI source dialog follow-up
 
+- A custom masked credential and SSH askpass bridge still diverged from normal terminal
+  behavior and prevented Git/OpenSSH from owning key selection and prompts. Correction:
+  yield the controlling terminal and execute native `git clone` with inherited standard
+  streams and no authentication overrides. Lesson: when a mature CLI already specifies
+  an interactive protocol, a TUI should suspend and delegate instead of reimplementing
+  that protocol.
 - The first SSH askpass helper retained its writable temporary-file descriptor while
   executing the helper, which Unix rejected with `ETXTBSY`. Correction: close the file
   descriptor by retaining only the auto-deleting temporary path before execution.
@@ -22,9 +28,9 @@
   should be separate interaction states, not parallel empty inputs.
 - A full-screen Git clone must not fall through to an invisible password or key-
   passphrase prompt. The first correction forced batch mode, but that also removed normal
-  terminal prompt behavior. Final correction: use batch mode by default and provide a
-  masked, ephemeral askpass response when the user enters one. Lesson: terminal UIs must
-  preserve expected credential prompting while making storage and lifetime explicit.
+  terminal prompt behavior. A later askpass form still intercepted native selection.
+  Final correction: suspend the TUI and hand the terminal directly to Git/OpenSSH.
+  Lesson: terminal UIs must preserve expected subprocess prompting end to end.
 
 ## 2026-07-16 — Standalone TUI workflow
 

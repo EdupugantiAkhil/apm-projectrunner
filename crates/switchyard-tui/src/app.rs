@@ -15,7 +15,6 @@ use switchyard_state::{
     DeviceCheckStatus, OwnedResourceObservation, RegisteredDevice, RegisteredSourceKind,
     StateStore, StoredDeployment,
 };
-use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     execution::{self, OperationEvent, OperationSpec},
@@ -170,69 +169,10 @@ impl AddSourceMode {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum GitAuthentication {
-    #[default]
-    AgentOrConfig,
-    IdentityFile,
-}
-
-impl GitAuthentication {
-    fn toggled(self) -> Self {
-        match self {
-            Self::AgentOrConfig => Self::IdentityFile,
-            Self::IdentityFile => Self::AgentOrConfig,
-        }
-    }
-
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::AgentOrConfig => "SSH agent / config",
-            Self::IdentityFile => "Identity file",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum AddSourcePanel {
     #[default]
     Location,
     GitOptions,
-}
-
-#[derive(Clone, Default, Eq, PartialEq)]
-pub(crate) struct SecretInput(Zeroizing<String>);
-
-impl std::fmt::Debug for SecretInput {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("SecretInput([REDACTED])")
-    }
-}
-
-impl SecretInput {
-    fn push_str(&mut self, value: &str) {
-        self.0.push_str(value);
-    }
-
-    fn pop(&mut self) {
-        self.0.pop();
-    }
-
-    fn expose(&self) -> &str {
-        self.0.as_str()
-    }
-
-    pub(crate) fn masked(&self) -> String {
-        let length = self.0.chars().count();
-        format!(
-            "{}{}",
-            "•".repeat(length.min(32)),
-            if length > 32 { "…" } else { "" }
-        )
-    }
-
-    fn clear(&mut self) {
-        self.0.zeroize();
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -240,9 +180,6 @@ pub(crate) struct AddForm {
     pub(crate) mode: AddSourceMode,
     pub(crate) location: String,
     pub(crate) git_ref: String,
-    pub(crate) authentication: GitAuthentication,
-    pub(crate) identity_file: String,
-    pub(crate) ssh_credential: SecretInput,
     pub(crate) panel: AddSourcePanel,
     pub(crate) active_field: usize,
     pub(crate) error: Option<String>,
@@ -254,9 +191,6 @@ impl Default for AddForm {
             mode: AddSourceMode::Local,
             location: String::new(),
             git_ref: String::new(),
-            authentication: GitAuthentication::AgentOrConfig,
-            identity_file: String::new(),
-            ssh_credential: SecretInput::default(),
             panel: AddSourcePanel::Location,
             active_field: 1,
             error: None,
@@ -265,38 +199,14 @@ impl Default for AddForm {
 }
 
 impl AddForm {
-    fn credential_field(&self) -> Option<usize> {
-        if self.uses_http_transport() {
-            None
-        } else if self.authentication == GitAuthentication::IdentityFile {
-            Some(3)
-        } else {
-            Some(2)
-        }
-    }
-
     fn advanced_field_count(&self) -> usize {
-        if self.uses_http_transport() {
-            2
-        } else if self.authentication == GitAuthentication::IdentityFile {
-            4
-        } else {
-            3
-        }
+        1
     }
 
     fn append_active(&mut self, value: &str) -> bool {
         match (self.panel, self.active_field) {
             (AddSourcePanel::Location, 1) => self.location.push_str(value),
             (AddSourcePanel::GitOptions, 0) => self.git_ref.push_str(value),
-            (AddSourcePanel::GitOptions, 2)
-                if self.authentication == GitAuthentication::IdentityFile =>
-            {
-                self.identity_file.push_str(value)
-            }
-            (AddSourcePanel::GitOptions, field) if Some(field) == self.credential_field() => {
-                self.ssh_credential.push_str(value)
-            }
             _ => return false,
         }
         true
@@ -310,22 +220,9 @@ impl AddForm {
             (AddSourcePanel::GitOptions, 0) => {
                 self.git_ref.pop();
             }
-            (AddSourcePanel::GitOptions, 2)
-                if self.authentication == GitAuthentication::IdentityFile =>
-            {
-                self.identity_file.pop();
-            }
-            (AddSourcePanel::GitOptions, field) if Some(field) == self.credential_field() => {
-                self.ssh_credential.pop();
-            }
             _ => return false,
         }
         true
-    }
-
-    pub(crate) fn uses_http_transport(&self) -> bool {
-        let location = self.location.trim().to_ascii_lowercase();
-        location.starts_with("https://") || location.starts_with("http://")
     }
 
     pub(crate) fn inferred_name(&self) -> String {
@@ -363,45 +260,12 @@ impl AddForm {
                 name,
                 path: PathBuf::from(location),
             }),
-            AddSourceMode::Git
-                if self.authentication == GitAuthentication::IdentityFile
-                    && self.uses_http_transport() =>
-            {
-                Err(
-                    "SSH identity files cannot authenticate an HTTP(S) clone; use your Git credential helper"
-                        .into(),
-                )
-            }
-            AddSourceMode::Git
-                if self.authentication == GitAuthentication::IdentityFile
-                    && self.identity_file.trim().is_empty() =>
-            {
-                Err("choose an SSH identity file in F2 Git options".into())
-            }
-            AddSourceMode::Git
-                if self.ssh_credential.expose().contains('\0')
-                    || self.ssh_credential.expose().len() > 4096 =>
-            {
-                Err(
-                    "SSH password/passphrase must contain at most 4096 bytes and no NUL character"
-                        .into(),
-                )
-            }
             AddSourceMode::Git => Ok(AddRequest::Clone {
                 name,
                 url: location.into(),
                 git_ref: nonempty(self.git_ref.trim()),
-                identity_file: (self.authentication == GitAuthentication::IdentityFile)
-                    .then(|| PathBuf::from(self.identity_file.trim())),
-                ssh_credential: (!self.ssh_credential.expose().is_empty()).then(|| {
-                    switchyard_sources::SshCredential::new(self.ssh_credential.expose())
-                }),
             }),
         }
-    }
-
-    fn clear_credential(&mut self) {
-        self.ssh_credential.clear();
     }
 }
 
@@ -458,8 +322,6 @@ pub(crate) enum AddRequest {
         name: String,
         url: String,
         git_ref: Option<String>,
-        identity_file: Option<PathBuf>,
-        ssh_credential: Option<switchyard_sources::SshCredential>,
     },
 }
 
@@ -709,6 +571,7 @@ pub(crate) struct App {
     shell_notice_shown: bool,
     quit: bool,
     task: Option<Receiver<TaskResult>>,
+    pending_clone: Option<AddRequest>,
 }
 
 impl App {
@@ -774,11 +637,38 @@ impl App {
             shell_notice_shown,
             quit: false,
             task: None,
+            pending_clone: None,
         }
     }
 
     pub(crate) const fn should_quit(&self) -> bool {
         self.quit
+    }
+
+    pub(crate) fn take_pending_clone(&mut self) -> Option<AddRequest> {
+        self.pending_clone.take()
+    }
+
+    pub(crate) fn finish_interactive_clone(
+        &mut self,
+        result: Result<Vec<RegisteredSourceInspection>, String>,
+    ) {
+        match result {
+            Ok(sources) => {
+                self.sources = sources;
+                self.selected = self.selected.min(self.sources.len().saturating_sub(1));
+                self.overlay = Overlay::None;
+                self.status = Some("source added".into());
+                self.refresh_deployments();
+            }
+            Err(error) => {
+                if let Overlay::Add(form) = &mut self.overlay {
+                    form.error = Some(error);
+                } else {
+                    self.status = Some(format!("error: {error}"));
+                }
+            }
+        }
     }
     pub(crate) fn current_deployment(&self) -> Option<&DeploymentEntry> {
         self.deployments.get(self.deployment_selected)
@@ -809,10 +699,10 @@ impl App {
             Overlay::Add(form) => match Self::handle_add_key(form, key) {
                 Some(FormAction::Close) => self.overlay = Overlay::None,
                 Some(FormAction::Submit) if self.busy.is_none() => match form.validate() {
-                    Ok(request) => {
-                        form.clear_credential();
-                        self.start_add(request);
+                    Ok(request @ AddRequest::Clone { .. }) => {
+                        self.pending_clone = Some(request);
                     }
+                    Ok(request) => self.start_add(request),
                     Err(error) => form.error = Some(error),
                 },
                 _ => {}
@@ -1286,9 +1176,6 @@ impl App {
             AddSourcePanel::Location => match key.code {
                 KeyCode::Esc => return Some(FormAction::Close),
                 KeyCode::F(2) if form.mode == AddSourceMode::Git => {
-                    if form.uses_http_transport() {
-                        form.authentication = GitAuthentication::AgentOrConfig;
-                    }
                     form.panel = AddSourcePanel::GitOptions;
                     form.active_field = 0;
                     form.error = None;
@@ -1321,9 +1208,6 @@ impl App {
                     if let Err(error) = form.validate_location() {
                         form.error = Some(error);
                     } else {
-                        if form.uses_http_transport() {
-                            form.authentication = GitAuthentication::AgentOrConfig;
-                        }
                         form.panel = AddSourcePanel::GitOptions;
                         form.active_field = 0;
                         form.error = None;
@@ -1345,15 +1229,6 @@ impl App {
                 KeyCode::BackTab | KeyCode::Up => {
                     form.active_field = (form.active_field + form.advanced_field_count() - 1)
                         % form.advanced_field_count()
-                }
-                KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
-                    if form.active_field == 1 && !form.uses_http_transport() =>
-                {
-                    form.authentication = form.authentication.toggled();
-                    if form.authentication == GitAuthentication::AgentOrConfig {
-                        form.active_field = 1;
-                    }
-                    form.error = None;
                 }
                 KeyCode::Backspace => {
                     if form.pop_active() {
@@ -1753,44 +1628,18 @@ impl App {
         self.spawn_sources(BusyKind::Add, move |root| {
             let store = open_store(&root)?;
             let manager = switchyard_sources::SourceManager::new(&root);
-            match request {
-                AddRequest::Local { name, path } => {
-                    let name = unique_source_name(&store, &name)?;
-                    let path = if path.is_absolute() {
-                        path
-                    } else {
-                        root.join(path)
-                    };
-                    manager
-                        .register_unmanaged(&store, &name, &path)
-                        .map_err(|error| error.to_string())?;
-                }
-                AddRequest::Clone {
-                    name,
-                    url,
-                    git_ref,
-                    identity_file,
-                    ssh_credential,
-                } => {
-                    let name = unique_source_name(&store, &name)?;
-                    let identity_file = identity_file
-                        .as_deref()
-                        .map(|path| resolve_identity_path(&root, path))
-                        .transpose()?;
-                    manager
-                        .create_clone_from_url_with_options(
-                            &store,
-                            &url,
-                            &name,
-                            &switchyard_sources::GitCloneOptions {
-                                requested_ref: git_ref,
-                                ssh_identity_file: identity_file,
-                                ssh_credential,
-                            },
-                        )
-                        .map_err(|error| error.to_string())?;
-                }
-            }
+            let AddRequest::Local { name, path } = request else {
+                return Err("Git clones require the native terminal handoff".into());
+            };
+            let name = unique_source_name(&store, &name)?;
+            let path = if path.is_absolute() {
+                path
+            } else {
+                root.join(path)
+            };
+            manager
+                .register_unmanaged(&store, &name, &path)
+                .map_err(|error| error.to_string())?;
             manager.list(&store).map_err(|error| error.to_string())
         });
     }
@@ -1907,6 +1756,22 @@ fn list_devices(root: &Path) -> Result<Vec<RegisteredDevice>, String> {
         .map_err(|error| error.to_string())
 }
 
+pub(crate) fn execute_interactive_clone(
+    root: &Path,
+    request: AddRequest,
+) -> Result<Vec<RegisteredSourceInspection>, String> {
+    let AddRequest::Clone { name, url, git_ref } = request else {
+        return Err("interactive source request was not a Git clone".into());
+    };
+    let store = open_store(root)?;
+    let manager = switchyard_sources::SourceManager::new(root);
+    let name = unique_source_name(&store, &name)?;
+    manager
+        .create_clone_from_url_interactive(&store, &url, &name, git_ref.as_deref())
+        .map_err(|error| error.to_string())?;
+    manager.list(&store).map_err(|error| error.to_string())
+}
+
 fn unique_source_name(store: &StateStore, base: &str) -> Result<String, String> {
     if store
         .source(base)
@@ -1928,34 +1793,6 @@ fn unique_source_name(store: &StateStore, base: &str) -> Result<String, String> 
     Err(format!(
         "could not find an available source name based on `{base}`"
     ))
-}
-
-fn resolve_identity_path(root: &Path, path: &Path) -> Result<PathBuf, String> {
-    let expanded = path
-        .to_str()
-        .and_then(|text| text.strip_prefix("~/"))
-        .and_then(|relative| {
-            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(relative))
-        })
-        .unwrap_or_else(|| {
-            if path.is_absolute() {
-                path.to_owned()
-            } else {
-                root.join(path)
-            }
-        });
-    if !expanded.is_file() {
-        return Err(format!(
-            "SSH identity file `{}` does not exist",
-            expanded.display()
-        ));
-    }
-    expanded.canonicalize().map_err(|error| {
-        format!(
-            "could not resolve SSH identity file `{}`: {error}",
-            expanded.display()
-        )
-    })
 }
 
 fn append_instance_definition(
@@ -2409,16 +2246,10 @@ mod tests {
                 name: "ai-chatbot".into(),
                 url: "git@github.com:team/ai-chatbot.git".into(),
                 git_ref: Some("feature".into()),
-                identity_file: None,
-                ssh_credential: None,
             }
         );
         form.location = "https://user:token@example.invalid/team/repo.git".into();
         assert!(form.validate().unwrap_err().contains("credential helper"));
-        form.location = "https://example.invalid/team/repo.git".into();
-        form.authentication = GitAuthentication::IdentityFile;
-        form.identity_file = "~/.ssh/id_ed25519".into();
-        assert!(form.validate().unwrap_err().contains("HTTP(S) clone"));
     }
 
     #[test]
@@ -2439,7 +2270,7 @@ mod tests {
     }
 
     #[test]
-    fn git_authentication_options_are_a_separate_keyboard_panel() {
+    fn git_options_are_a_separate_keyboard_panel() {
         let mut app = App::with_sources(PathBuf::from("."), Vec::new());
         app.overlay = Overlay::Add(AddForm {
             mode: AddSourceMode::Git,
@@ -2451,28 +2282,13 @@ mod tests {
             panic!("add source form closed")
         };
         assert_eq!(form.panel, AddSourcePanel::GitOptions);
-        form.active_field = 1;
-        app.handle_key(key(KeyCode::Char(' ')));
-        let Overlay::Add(form) = &mut app.overlay else {
-            panic!("add source form closed")
-        };
-        assert_eq!(form.authentication, GitAuthentication::IdentityFile);
-        form.active_field = 2;
-        app.handle_event(Event::Paste("~/.ssh/id_ed25519".into()));
+        app.handle_event(Event::Paste("feature/native-auth".into()));
         app.handle_key(key(KeyCode::F(2)));
         let Overlay::Add(form) = &mut app.overlay else {
             panic!("add source form closed")
         };
         assert_eq!(form.panel, AddSourcePanel::Location);
-        assert_eq!(form.identity_file, "~/.ssh/id_ed25519");
-
-        form.location = "https://example.invalid/team/repo.git".into();
-        form.authentication = GitAuthentication::IdentityFile;
-        app.handle_key(key(KeyCode::F(2)));
-        let Overlay::Add(form) = app.overlay else {
-            panic!("add source form closed")
-        };
-        assert_eq!(form.authentication, GitAuthentication::AgentOrConfig);
+        assert_eq!(form.git_ref, "feature/native-auth");
     }
 
     #[test]
@@ -2491,28 +2307,20 @@ mod tests {
     }
 
     #[test]
-    fn ssh_credential_input_is_masked_redacted_and_cleared() {
-        let mut form = AddForm {
+    fn submitted_git_clone_is_queued_for_terminal_handoff() {
+        let mut app = App::with_sources(PathBuf::from("."), Vec::new());
+        app.overlay = Overlay::Add(AddForm {
             mode: AddSourceMode::Git,
             location: "git@example.test:team/repo.git".into(),
             panel: AddSourcePanel::GitOptions,
-            active_field: 2,
             ..AddForm::default()
-        };
-        assert!(form.append_active("terminal-password"));
-        assert_eq!(form.ssh_credential.masked(), "•".repeat(17));
-        assert!(!format!("{form:?}").contains("terminal-password"));
-        let request = form.validate().unwrap();
-        assert!(!format!("{request:?}").contains("terminal-password"));
+        });
+        app.handle_key(key(KeyCode::Enter));
+        let request = app.take_pending_clone().expect("clone was not queued");
         assert!(matches!(
             request,
-            AddRequest::Clone {
-                ssh_credential: Some(_),
-                ..
-            }
+            AddRequest::Clone { url, .. } if url == "git@example.test:team/repo.git"
         ));
-        form.clear_credential();
-        assert!(form.ssh_credential.masked().is_empty());
     }
     #[test]
     fn device_form_validates_ssh_fields() {

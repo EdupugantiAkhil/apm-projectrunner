@@ -8,7 +8,7 @@ use ratatui::{
 use switchyard_state::RegisteredSourceKind;
 
 use super::centered;
-use crate::app::{AddForm, AddSourceMode, AddSourcePanel, App, BusyKind, GitAuthentication};
+use crate::app::{AddForm, AddSourceMode, AddSourcePanel, App, BusyKind};
 
 pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let header = Row::new(["Name", "Kind", "Path", "Ref / branch", "Dirty"])
@@ -121,20 +121,9 @@ pub(super) fn render_add(frame: &mut Frame<'_>, form: &AddForm, busy: Option<Bus
         } else {
             &form.git_ref
         };
-        let authentication = if form.uses_http_transport() {
-            "Git credential helper"
-        } else {
-            match form.authentication {
-                GitAuthentication::AgentOrConfig => "SSH agent/config",
-                GitAuthentication::IdentityFile => "identity file",
-            }
-        };
-        lines.push(Line::from(format!(
-            "  Git options: ref {} • authentication {authentication}",
-            git_ref
-        )));
+        lines.push(Line::from(format!("  Git options: ref {git_ref}")));
         lines.push(Line::from(
-            "  Enter opens the required authentication review; F2 opens it directly.",
+            "  Git and SSH choose credentials and display their native terminal prompts.",
         ));
     }
     lines.push(Line::from(""));
@@ -150,7 +139,7 @@ pub(super) fn render_add(frame: &mut Frame<'_>, form: &AddForm, busy: Option<Bus
         )));
     } else {
         lines.push(Line::from(if form.mode == AddSourceMode::Git {
-            "Tab changes focus  Enter review authentication  F2 Git options  Esc cancel"
+            "Tab changes focus  Enter review Git options  F2 Git options  Esc cancel"
         } else {
             "Tab changes focus  Enter register  ←/→ switches type  Esc cancel"
         }));
@@ -159,11 +148,11 @@ pub(super) fn render_add(frame: &mut Frame<'_>, form: &AddForm, busy: Option<Bus
 }
 
 fn render_git_options(frame: &mut Frame<'_>, form: &AddForm, busy: Option<BusyKind>) {
-    let area = centered(frame.area(), 90, 28);
+    let area = centered(frame.area(), 90, 20);
     frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Git clone options & SSH authentication ");
+        .title(" Git clone options ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let mut lines = vec![
@@ -175,75 +164,24 @@ fn render_git_options(frame: &mut Frame<'_>, form: &AddForm, busy: Option<BusyKi
             Style::default().fg(Color::DarkGray),
         )),
         Line::from(""),
-        source_field(
-            form.active_field == 1,
-            if form.uses_http_transport() {
-                "Authentication"
-            } else {
-                "Authentication (Space/←/→)"
-            },
-            if form.uses_http_transport() {
-                "Git credential helper"
-            } else {
-                form.authentication.label()
-            },
-        ),
         Line::from(Span::styled(
-            if form.uses_http_transport() {
-                "  Uses credentials already available through your configured Git credential helper."
-            } else {
-                match form.authentication {
-                    GitAuthentication::AgentOrConfig => {
-                        "  Uses ~/.ssh/config and keys already unlocked in ssh-agent. Recommended."
-                    }
-                    GitAuthentication::IdentityFile => {
-                        "  Passes one existing private-key path to SSH; key contents are never stored."
-                    }
-                }
-            },
+            "Native authentication",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "  Switchyard leaves the full-screen UI and runs git clone on this terminal.",
             Style::default().fg(Color::DarkGray),
         )),
-    ];
-    if form.authentication == GitAuthentication::IdentityFile && !form.uses_http_transport() {
-        lines.extend([
-            Line::from(""),
-            source_field(
-                form.active_field == 2,
-                "Identity file",
-                &form.identity_file,
-            ),
-            Line::from(Span::styled(
-                "  Absolute, ~/..., or project-relative path. Unlock encrypted keys with ssh-add first.",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ]);
-    }
-    if !form.uses_http_transport() {
-        let credential_field = if form.authentication == GitAuthentication::IdentityFile {
-            3
-        } else {
-            2
-        };
-        lines.extend([
-            Line::from(""),
-            source_field(
-                form.active_field == credential_field,
-                "SSH password / key passphrase (optional)",
-                &form.ssh_credential.masked(),
-            ),
-            Line::from(Span::styled(
-                "  Masked and used once if SSH prompts. GitHub accepts key passphrases, not account passwords.",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ]);
-    }
-    lines.extend([
+        Line::from(Span::styled(
+            "  Git credential helpers, ssh-agent, ~/.ssh/config, automatic key selection, and prompts work unchanged.",
+            Style::default().fg(Color::DarkGray),
+        )),
         Line::from(""),
         Line::from(Span::styled(
-            "The SSH credential is used once and never stored. HTTPS uses your configured Git credential helper.",
+            "You may be prompted by Git or SSH after pressing Enter.",
             Style::default().fg(Color::Yellow),
         )),
-    ]);
+    ];
     if busy == Some(BusyKind::Add) {
         lines.extend([
             Line::from(""),
@@ -268,13 +206,13 @@ fn render_git_options(frame: &mut Frame<'_>, form: &AddForm, busy: Option<BusyKi
             )));
         }
         lines.push(Line::from(Span::styled(
-            "Change the authentication selection or credential, then press Enter to retry.",
+            "Press Enter to retry with native Git/OpenSSH authentication.",
             Style::default().fg(Color::DarkGray),
         )));
     }
     lines.extend([
         Line::from(""),
-        Line::from("Tab changes focus  Enter clone  F2/Esc back"),
+        Line::from("Enter run native git clone  F2/Esc back"),
     ]);
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }

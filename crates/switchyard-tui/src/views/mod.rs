@@ -127,7 +127,7 @@ fn render_help(frame: &mut Frame<'_>) {
         )),
         Line::from("  ↑ / ↓, j / k  select source"),
         Line::from("  a             add one local path or Git clone address"),
-        Line::from("  Enter / F2    review Git ref and auth before cloning"),
+        Line::from("  Enter / F2    review ref; Git auth runs in terminal"),
         Line::from("  d             remove/deregister selected source"),
         Line::from("  r             refresh live Git state"),
         Line::from("  Esc           close a dialog"),
@@ -188,7 +188,7 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     use super::*;
-    use crate::app::{AddForm, AddSourceMode, AddSourcePanel, DeviceForm, GitAuthentication};
+    use crate::app::{AddForm, AddSourceMode, AddSourcePanel, DeviceForm};
 
     #[test]
     fn renders_inline_add_error_with_test_backend() {
@@ -212,20 +212,16 @@ mod tests {
     }
 
     #[test]
-    fn renders_descriptive_git_authentication_popup() {
+    fn renders_native_git_authentication_handoff_popup() {
         let backend = TestBackend::new(110, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::with_sources(PathBuf::from("/project"), Vec::new());
         app.overlay = Overlay::Add(AddForm {
             mode: AddSourceMode::Git,
             location: "git@github.com:team/project.git".into(),
-            authentication: GitAuthentication::IdentityFile,
-            identity_file: "~/.ssh/id_ed25519".into(),
             panel: AddSourcePanel::GitOptions,
-            active_field: 3,
             ..AddForm::default()
         });
-        app.handle_event(crossterm::event::Event::Paste("not-rendered".into()));
         let Overlay::Add(form) = &mut app.overlay else {
             panic!("add source form closed")
         };
@@ -238,15 +234,11 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(contents.contains("Git clone options & SSH authentication"));
-        assert!(contents.contains("Identity file"));
-        assert!(contents.contains("Unlock encrypted keys with ssh-add"));
-        assert!(contents.contains("SSH credential is used once and never stored"));
-        assert!(contents.contains("Change the authentication selection"));
+        assert!(contents.contains("Git clone options"));
+        assert!(contents.contains("Native authentication"));
+        assert!(contents.contains("automatic key selection"));
+        assert!(contents.contains("You may be prompted by Git or SSH"));
         assert!(contents.contains("Check the selected key"));
-        assert!(contents.contains("SSH password / key passphrase"));
-        assert!(contents.contains("••••••••••••"));
-        assert!(!contents.contains("not-rendered"));
     }
 
     #[test]
