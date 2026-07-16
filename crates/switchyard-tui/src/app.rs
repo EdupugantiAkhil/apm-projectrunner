@@ -252,7 +252,7 @@ impl AddForm {
         infer_source_name(&self.location)
     }
 
-    pub(crate) fn validate(&self) -> Result<AddRequest, String> {
+    fn validate_location(&self) -> Result<(), String> {
         let location = self.location.trim();
         if location.is_empty() {
             return Err(match self.mode {
@@ -261,12 +261,8 @@ impl AddForm {
             }
             .into());
         }
-        let name = self.inferred_name();
         match self.mode {
-            AddSourceMode::Local => Ok(AddRequest::Local {
-                name,
-                path: PathBuf::from(location),
-            }),
+            AddSourceMode::Local => Ok(()),
             AddSourceMode::Git if location.starts_with('-') => {
                 Err("Git clone address may not start with '-'".into())
             }
@@ -274,6 +270,19 @@ impl AddForm {
                 "do not embed HTTPS credentials in the clone address; use your Git credential helper"
                     .into(),
             ),
+            AddSourceMode::Git => Ok(()),
+        }
+    }
+
+    pub(crate) fn validate(&self) -> Result<AddRequest, String> {
+        self.validate_location()?;
+        let location = self.location.trim();
+        let name = self.inferred_name();
+        match self.mode {
+            AddSourceMode::Local => Ok(AddRequest::Local {
+                name,
+                path: PathBuf::from(location),
+            }),
             AddSourceMode::Git
                 if self.authentication == GitAuthentication::IdentityFile
                     && self.uses_http_transport() =>
@@ -1209,15 +1218,28 @@ impl App {
                     form.location.push(character);
                     form.error = None;
                 }
+                KeyCode::Enter if form.mode == AddSourceMode::Git => {
+                    if let Err(error) = form.validate_location() {
+                        form.error = Some(error);
+                    } else {
+                        if form.uses_http_transport() {
+                            form.authentication = GitAuthentication::AgentOrConfig;
+                        }
+                        form.panel = AddSourcePanel::GitOptions;
+                        form.active_field = 0;
+                        form.error = None;
+                    }
+                }
                 KeyCode::Enter => return Some(FormAction::Submit),
                 _ => {}
             },
             AddSourcePanel::GitOptions => match key.code {
-                KeyCode::Esc | KeyCode::F(2) | KeyCode::Enter => {
+                KeyCode::Esc | KeyCode::F(2) => {
                     form.panel = AddSourcePanel::Location;
                     form.active_field = 1;
                     form.error = None;
                 }
+                KeyCode::Enter => return Some(FormAction::Submit),
                 KeyCode::Tab | KeyCode::Down => {
                     form.active_field = (form.active_field + 1) % form.advanced_field_count()
                 }
@@ -2324,7 +2346,7 @@ mod tests {
             location: "git@github.com:team/repo.git".into(),
             ..AddForm::default()
         });
-        app.handle_key(key(KeyCode::F(2)));
+        app.handle_key(key(KeyCode::Enter));
         let Overlay::Add(form) = &mut app.overlay else {
             panic!("add source form closed")
         };
@@ -2337,7 +2359,7 @@ mod tests {
         assert_eq!(form.authentication, GitAuthentication::IdentityFile);
         form.active_field = 2;
         app.handle_event(Event::Paste("~/.ssh/id_ed25519".into()));
-        app.handle_key(key(KeyCode::Enter));
+        app.handle_key(key(KeyCode::F(2)));
         let Overlay::Add(form) = &mut app.overlay else {
             panic!("add source form closed")
         };
@@ -2351,6 +2373,21 @@ mod tests {
             panic!("add source form closed")
         };
         assert_eq!(form.authentication, GitAuthentication::AgentOrConfig);
+    }
+
+    #[test]
+    fn git_clone_requires_authentication_review_before_submit() {
+        let mut form = AddForm {
+            mode: AddSourceMode::Git,
+            location: "git@github.com:team/repo.git".into(),
+            ..AddForm::default()
+        };
+        assert!(App::handle_add_key(&mut form, key(KeyCode::Enter)).is_none());
+        assert_eq!(form.panel, AddSourcePanel::GitOptions);
+        assert!(matches!(
+            App::handle_add_key(&mut form, key(KeyCode::Enter)),
+            Some(FormAction::Submit)
+        ));
     }
     #[test]
     fn device_form_validates_ssh_fields() {

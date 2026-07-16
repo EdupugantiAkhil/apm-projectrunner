@@ -67,7 +67,7 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 pub(super) fn render_add(frame: &mut Frame<'_>, form: &AddForm, busy: Option<BusyKind>) {
     if form.panel == AddSourcePanel::GitOptions {
-        render_git_options(frame, form);
+        render_git_options(frame, form, busy);
         return;
     }
     let area = centered(frame.area(), 86, 19);
@@ -133,7 +133,9 @@ pub(super) fn render_add(frame: &mut Frame<'_>, form: &AddForm, busy: Option<Bus
             "  Git options: ref {} • authentication {authentication}",
             git_ref
         )));
-        lines.push(Line::from("  F2 opens ref and SSH authentication options."));
+        lines.push(Line::from(
+            "  Enter opens the required authentication review; F2 opens it directly.",
+        ));
     }
     lines.push(Line::from(""));
     if busy == Some(BusyKind::Add) {
@@ -148,7 +150,7 @@ pub(super) fn render_add(frame: &mut Frame<'_>, form: &AddForm, busy: Option<Bus
         )));
     } else {
         lines.push(Line::from(if form.mode == AddSourceMode::Git {
-            "Tab changes focus  Enter clone  F2 Git options  Esc cancel"
+            "Tab changes focus  Enter review authentication  F2 Git options  Esc cancel"
         } else {
             "Tab changes focus  Enter register  ←/→ switches type  Esc cancel"
         }));
@@ -156,8 +158,8 @@ pub(super) fn render_add(frame: &mut Frame<'_>, form: &AddForm, busy: Option<Bus
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
-fn render_git_options(frame: &mut Frame<'_>, form: &AddForm) {
-    let area = centered(frame.area(), 90, 22);
+fn render_git_options(frame: &mut Frame<'_>, form: &AddForm, busy: Option<BusyKind>) {
+    let area = centered(frame.area(), 90, 28);
     frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -222,8 +224,28 @@ fn render_git_options(frame: &mut Frame<'_>, form: &AddForm) {
             "Passwords and tokens are never collected here. HTTPS uses your configured Git credential helper.",
             Style::default().fg(Color::Yellow),
         )),
+    ]);
+    if busy == Some(BusyKind::Add) {
+        lines.extend([
+            Line::from(""),
+            Line::from(Span::styled("Cloning…", Style::default().fg(Color::Yellow))),
+        ]);
+    } else if let Some(error) = form.error.as_deref() {
+        lines.extend([
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("Clone failed: {error}"),
+                Style::default().fg(Color::Red),
+            )),
+            Line::from(Span::styled(
+                "Change the authentication selection, then press Enter to retry.",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]);
+    }
+    lines.extend([
         Line::from(""),
-        Line::from("Tab changes focus  Enter/F2 save options  Esc back"),
+        Line::from("Tab changes focus  Enter clone  F2/Esc back"),
     ]);
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }

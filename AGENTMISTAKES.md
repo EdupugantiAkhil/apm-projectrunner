@@ -2,6 +2,15 @@
 
 ## 2026-07-16 — TUI source dialog follow-up
 
+- A follow-up test initially used `assert_eq!` on an internal action enum that does not
+  need comparison/debug traits in production. Correction: assert the returned variant
+  with pattern matching. Lesson: tests should not expand production trait surfaces just
+  for assertion convenience.
+- The redesigned dialog initially left authentication review behind optional `F2`, so
+  Enter could start an SSH clone with the default agent before the user saw any auth
+  choice. Correction: make authentication review a required second step for every Git
+  clone and keep clone failures there for correction and retry. Lesson: a discoverable
+  optional action is not equivalent to a required workflow step.
 - The first source dialog exposed name, local path, Git URL, and Git ref simultaneously,
   making mutually exclusive choices look like required fields and making paste behavior
   hard to understand. Correction: ask for one mode-specific location, infer the name,

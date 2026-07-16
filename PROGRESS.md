@@ -10,6 +10,10 @@ Updated: 2026-07-16
 
 ## 2026-07-16 TUI source-dialog UX and Git SSH authentication
 
+- Follow-up: Git clone submission now always passes through the authentication review
+  popup instead of silently accepting the default from the location screen. Enter opens
+  the review, Enter there clones, and authentication failures remain in that popup with
+  retry guidance.
 - Replaced the four-field source form with a mode selector and exactly one location
   input. Local directories and Git clone addresses derive stable source names from the
   final path/repository segment; collisions receive the first available numeric suffix.
@@ -25,10 +29,11 @@ Updated: 2026-07-16
 - Clone validation rejects embedded HTTP credentials and option-like/control-character
   refs before invoking Git. Failed clone directories are removed so an authentication
   correction can be retried immediately.
-- Verification: all 10 source-manager and 22 TUI tests pass, including one-location
-  input, inferred naming, isolated bracketed paste, the separate authentication popup,
-  identity-path quoting, credential rejection, and failed-clone cleanup. The complete
-  workspace test suite passes with only its five declared reliability ignores;
+- Verification: all 10 source-manager and 23 TUI tests pass, including one-location
+  input, inferred naming, isolated bracketed paste, required authentication review and
+  retry rendering, identity-path quoting, credential rejection, and failed-clone
+  cleanup. The complete workspace test suite passes with only its five declared
+  reliability ignores;
   workspace Clippy passes for all targets and features with `-D warnings`; workspace
   formatting and diff checks are clean.
 

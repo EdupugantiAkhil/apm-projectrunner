@@ -27,9 +27,11 @@ changes the selected row.
   one directory or clone address. Switchyard derives the registry name from its final
   path component and adds a numeric suffix if that name is already used. Clone work runs
   in the background and its errors remain in the form.
-- In Git mode, `F2` opens a separate options and authentication popup. A clone may select
-  a branch/tag ref and use either existing SSH agent/config state or an existing identity-
-  file path. Identity contents, passwords, and tokens are never collected or stored.
+- In Git mode, Enter always opens a separate options and authentication review before
+  cloning (`F2` opens the same popup directly). A clone may select a branch/tag ref and
+  use either existing SSH agent/config state or an existing identity-file path. Enter in
+  that popup starts the clone. Identity contents, passwords, and tokens are never
+  collected or stored.
   HTTPS continues to use the user's configured Git credential helper. Clone transport is
   non-interactive: encrypted SSH keys must already be unlocked with `ssh-add`.
 - Bracketed paste is enabled, so pasting a path or URL updates only the focused field and

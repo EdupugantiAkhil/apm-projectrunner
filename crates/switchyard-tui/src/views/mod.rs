@@ -127,7 +127,7 @@ fn render_help(frame: &mut Frame<'_>) {
         )),
         Line::from("  ↑ / ↓, j / k  select source"),
         Line::from("  a             add one local path or Git clone address"),
-        Line::from("  F2            Git ref and SSH auth (inside add dialog)"),
+        Line::from("  Enter / F2    review Git ref and auth before cloning"),
         Line::from("  d             remove/deregister selected source"),
         Line::from("  r             refresh live Git state"),
         Line::from("  Esc           close a dialog"),
@@ -223,6 +223,7 @@ mod tests {
             identity_file: "~/.ssh/id_ed25519".into(),
             panel: AddSourcePanel::GitOptions,
             active_field: 2,
+            error: Some("Permission denied (publickey).".into()),
             ..AddForm::default()
         });
         terminal.draw(|frame| render(frame, &app)).unwrap();
@@ -237,6 +238,7 @@ mod tests {
         assert!(contents.contains("Identity file"));
         assert!(contents.contains("Unlock encrypted keys with ssh-add"));
         assert!(contents.contains("Passwords and tokens are never collected"));
+        assert!(contents.contains("Change the authentication selection"));
     }
 
     #[test]
