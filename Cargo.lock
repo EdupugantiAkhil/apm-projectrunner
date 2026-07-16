@@ -3065,8 +3065,10 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "ratatui",
+ "serde",
  "switchyard-sources",
  "switchyard-state",
+ "yaml_serde",
 ]
 
 [[package]]

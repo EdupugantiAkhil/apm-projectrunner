@@ -1,1 +1,2 @@
-.switchyard/
+.switchyard/*
+!.switchyard/run-scripts.yaml

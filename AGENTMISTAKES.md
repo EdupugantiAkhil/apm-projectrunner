@@ -1,5 +1,12 @@
 # Agent mistakes and lessons
 
+## 2026-07-16 — TUI Instances view
+
+- The first health-label projection checked for `healthy` before `unhealthy`, even
+  though the latter contains the former as a substring. Correction: test the negative
+  state first. Lesson: ordered substring classifiers must put the more specific token
+  before its suffix or prefix.
+
 ## 2026-07-16 — Device registry migration
 
 - Adding schema v5 initially left two recovery tests with hard-coded v4 migration

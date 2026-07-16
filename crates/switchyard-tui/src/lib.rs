@@ -1,6 +1,8 @@
 //! Full-screen terminal control plane for a Switchyard project.
 
 mod app;
+mod execution;
+mod run_scripts;
 mod terminal;
 mod views;
 

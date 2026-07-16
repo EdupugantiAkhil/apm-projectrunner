@@ -73,6 +73,31 @@ implemented shape and the evidence used to close a phase.
   through the modal cloned a local git URL on a background thread and registered it as
   a managed source visible to `switchyard source list`.
 
+## 2026-07-16 project TUI Instances view
+
+- Replaced the Instances placeholder with durable deployment/resource presentation,
+  including the reconciliation-aware stopped state for applied deployments with no
+  observed resources, service status/health rows, latest operations, and multiple
+  definition selection.
+- Direct up/status/down/plan actions and structured run-script presets share typed CLI
+  argv construction. Work and stdout/stderr consumption run off the event loop, with a
+  scrollable output tail and terminal exit-code reporting. The CLI remains the entry
+  point so daemon-compatible actions retain automatic daemon delegation, while overlay,
+  variation, and set options remain representable.
+- Added lenient project-local `.switchyard/run-scripts.yaml` loading, UI-level
+  create/edit/delete validation, structured and arbitrary-shell forms, and a shell
+  execution notice. Round-trip/malformed-file, argv mapping, modal/confirmation state,
+  and TestBackend rendering coverage were added.
+- Verification: `cargo test -p switchyard-tui` passes (13 tests), workspace Clippy
+  passes for all targets with `-D warnings`, and workspace formatting is clean.
+- Review pass found no defects; local live proof through a pty on a scaffolded
+  project with Docker: `u` brought the deployment up to healthy, `s` refreshed status,
+  `x`/`y` tore it down to the stopped presentation with zero leftover containers; a
+  structured `plan` preset with the dev overlay ran through typed argv; a shell preset
+  triggered the one-time warning, ran after `y` with its output streamed into the
+  pane, persisted the acknowledgement file, and ran without a second warning
+  afterwards. The TUI exited cleanly each time with the terminal restored.
+
 ## 2026-07-16 GUI serving correction
 
 - The bundled GUI is served by the daemon below `/gui/`. Its Vite build now emits

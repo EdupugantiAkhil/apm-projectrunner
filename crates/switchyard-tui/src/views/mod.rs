@@ -39,7 +39,7 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
     frame.render_widget(tabs, areas[0]);
     match app.active_view {
         ActiveView::Sources => sources::render(frame, areas[1], app),
-        ActiveView::Instances => instances::render(frame, areas[1]),
+        ActiveView::Instances => instances::render(frame, areas[1], app),
     }
     let footer = if let Some(kind) = app.busy {
         let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][app.spinner_tick % 10];
@@ -49,6 +49,7 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
                 BusyKind::Add => "adding source",
                 BusyKind::Remove => "removing source",
                 BusyKind::Refresh => "refreshing sources",
+                BusyKind::Operation => "running operation",
             }
         )
     } else {
@@ -56,7 +57,9 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
             ActiveView::Sources => {
                 "a add  d remove  r refresh  ↑/↓ select  Tab view  ? help  q quit"
             }
-            ActiveView::Instances => "Tab view  ? help  q quit",
+            ActiveView::Instances => {
+                "u up  s status  x down  p plan  Enter run  n/e/D scripts  ↑/↓ select  PgUp/PgDn output  Tab view  ? help  q quit"
+            }
         };
         app.status
             .as_ref()
@@ -69,6 +72,25 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
         Overlay::ConfirmRemove { name, error } => {
             sources::render_confirm(frame, name, error.as_deref(), app.busy)
         }
+        Overlay::Script(form) => instances::render_script_form(frame, form),
+        Overlay::ConfirmDown { deployment } => instances::render_confirm(
+            frame,
+            " Confirm down ",
+            &format!("Stop deployment `{deployment}`? Named volumes will be preserved."),
+            None,
+        ),
+        Overlay::ConfirmDeleteScript { name, error, .. } => instances::render_confirm(
+            frame,
+            " Delete run script ",
+            &format!("Delete run script `{name}`?"),
+            error.as_deref(),
+        ),
+        Overlay::ShellNotice { name, .. } => instances::render_confirm(
+            frame,
+            " Shell script warning ",
+            &format!("`{name}` executes an arbitrary command using your shell in this project."),
+            None,
+        ),
         Overlay::Help => render_help(frame),
         Overlay::None => {}
     }
@@ -95,6 +117,15 @@ fn render_help(frame: &mut Frame<'_>) {
         Line::from("  d             remove/deregister selected source"),
         Line::from("  r             refresh live Git state"),
         Line::from("  Esc           close a dialog"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Instances",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  u / s / x / p up, status, confirmed down, plan"),
+        Line::from("  Enter         run selected preset"),
+        Line::from("  n / e / D     new, edit, delete preset"),
+        Line::from("  PgUp / PgDn   scroll operation output"),
     ];
     frame.render_widget(
         Paragraph::new(lines)
@@ -174,5 +205,37 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(contents.contains("source has 1 staged"));
+    }
+
+    #[test]
+    fn renders_new_script_modal_and_down_confirmation() {
+        let backend = TestBackend::new(110, 34);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::with_sources(PathBuf::from("/project"), Vec::new());
+        app.active_view = ActiveView::Instances;
+        app.overlay = Overlay::Script(crate::app::ScriptForm::default());
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let contents = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(contents.contains("New run script"));
+        assert!(contents.contains("Command (Space cycles)"));
+
+        app.overlay = Overlay::ConfirmDown {
+            deployment: "demo".into(),
+        };
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let contents = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(contents.contains("Stop deployment `demo`"));
     }
 }
