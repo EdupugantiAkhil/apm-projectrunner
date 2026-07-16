@@ -333,6 +333,42 @@ impl SourceManager {
                 ));
             }
         }
+        self.clone_repository(
+            store,
+            repository_path.to_string_lossy().as_ref(),
+            name,
+            requested_ref,
+        )
+    }
+
+    /// Creates a managed clone from a Git repository URL under the clone root.
+    ///
+    /// Git transport and registration remain owned by this manager so interactive
+    /// clients do not need a second source-lifecycle implementation.
+    pub fn create_clone_from_url(
+        &self,
+        store: &StateStore,
+        repository_url: &str,
+        name: &str,
+        requested_ref: Option<&str>,
+    ) -> Result<RegisteredSource, SourceError> {
+        validate_source_name(name)?;
+        if repository_url.trim().is_empty() || repository_url.starts_with('-') {
+            return Err(SourceError::new(
+                "invalid_repository_url",
+                "repository URL must be non-empty and may not start with '-'",
+            ));
+        }
+        self.clone_repository(store, repository_url, name, requested_ref)
+    }
+
+    fn clone_repository(
+        &self,
+        store: &StateStore,
+        repository: &str,
+        name: &str,
+        requested_ref: Option<&str>,
+    ) -> Result<RegisteredSource, SourceError> {
         let target = self.clone_root.join(name);
         self.guard_mutation(None, &target, Mutation::Create, false, &self.clone_root)?;
         fs::create_dir_all(&self.clone_root)?;
@@ -340,9 +376,8 @@ impl SourceManager {
         if let Some(reference) = requested_ref {
             args.extend(["--branch", reference]);
         }
-        let repository_text = repository_path.to_string_lossy();
         let target_text = target.to_string_lossy();
-        args.extend([repository_text.as_ref(), target_text.as_ref()]);
+        args.extend(["--", repository, target_text.as_ref()]);
         run_git(&self.workspace_root, &args, "clone_create_failed")?;
         let path = target.canonicalize()?;
         let source = RegisteredSource {
@@ -890,6 +925,30 @@ mod tests {
         manager.remove(&store, "clone", false).unwrap();
         assert!(!clone.path.exists());
         manager.deregister(&store, "clone").unwrap();
+    }
+
+    #[test]
+    fn managed_clone_from_url_uses_the_same_guarded_lifecycle() {
+        let temp = TempDir::new().unwrap();
+        let repository = repository(&temp);
+        let store = store(&temp);
+        let manager = SourceManager::new(temp.path());
+        let clone = manager
+            .create_clone_from_url(
+                &store,
+                repository.to_str().unwrap(),
+                "url-clone",
+                Some("main"),
+            )
+            .unwrap();
+        assert!(
+            clone
+                .path
+                .starts_with(temp.path().join(".switchyard/clones"))
+        );
+        assert_eq!(clone.kind, RegisteredSourceKind::Managed);
+        manager.remove(&store, "url-clone", false).unwrap();
+        manager.deregister(&store, "url-clone").unwrap();
     }
 
     #[test]

@@ -1,0 +1,178 @@
+mod instances;
+mod sources;
+
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph, Tabs, Wrap},
+};
+
+use crate::app::{ActiveView, App, BusyKind, Overlay};
+
+pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
+    let areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(3),
+            Constraint::Length(2),
+        ])
+        .split(frame.area());
+    let selected = match app.active_view {
+        ActiveView::Sources => 0,
+        ActiveView::Instances => 1,
+    };
+    let tabs = Tabs::new(["Sources", "Instances"])
+        .select(selected)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" Switchyard — {} ", app.project_dir.display())),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_widget(tabs, areas[0]);
+    match app.active_view {
+        ActiveView::Sources => sources::render(frame, areas[1], app),
+        ActiveView::Instances => instances::render(frame, areas[1]),
+    }
+    let footer = if let Some(kind) = app.busy {
+        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][app.spinner_tick % 10];
+        format!(
+            "{spinner} {}…  q quit  ? help",
+            match kind {
+                BusyKind::Add => "adding source",
+                BusyKind::Remove => "removing source",
+                BusyKind::Refresh => "refreshing sources",
+            }
+        )
+    } else {
+        let keys = match app.active_view {
+            ActiveView::Sources => {
+                "a add  d remove  r refresh  ↑/↓ select  Tab view  ? help  q quit"
+            }
+            ActiveView::Instances => "Tab view  ? help  q quit",
+        };
+        app.status
+            .as_ref()
+            .map_or_else(|| keys.into(), |status| format!("{status}  |  {keys}"))
+    };
+    frame.render_widget(Paragraph::new(footer), areas[2]);
+
+    match &app.overlay {
+        Overlay::Add(form) => sources::render_add(frame, form, app.busy),
+        Overlay::ConfirmRemove { name, error } => {
+            sources::render_confirm(frame, name, error.as_deref(), app.busy)
+        }
+        Overlay::Help => render_help(frame),
+        Overlay::None => {}
+    }
+}
+
+fn render_help(frame: &mut Frame<'_>) {
+    let area = centered(frame.area(), 58, 18);
+    frame.render_widget(Clear, area);
+    let lines = vec![
+        Line::from(Span::styled(
+            "Global",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  Tab / ← / →   switch view"),
+        Line::from("  ?             toggle help"),
+        Line::from("  q / Ctrl-C    quit"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Sources",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  ↑ / ↓, j / k  select source"),
+        Line::from("  a             add local path or managed clone"),
+        Line::from("  d             remove/deregister selected source"),
+        Line::from("  r             refresh live Git state"),
+        Line::from("  Esc           close a dialog"),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(" Help "))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+pub(crate) fn centered(
+    area: ratatui::layout::Rect,
+    width: u16,
+    height: u16,
+) -> ratatui::layout::Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(50),
+            Constraint::Length(height.min(area.height)),
+            Constraint::Percentage(50),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50),
+            Constraint::Length(width.min(area.width)),
+            Constraint::Percentage(50),
+        ])
+        .split(vertical[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::*;
+    use crate::app::AddForm;
+
+    #[test]
+    fn renders_inline_add_error_with_test_backend() {
+        let backend = TestBackend::new(90, 28);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::with_sources(PathBuf::from("/project"), Vec::new());
+        app.overlay = Overlay::Add(AddForm {
+            error: Some("enter either a local path or a git URL".into()),
+            ..AddForm::default()
+        });
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let contents = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(contents.contains("enter either a local path or a git URL"));
+    }
+
+    #[test]
+    fn renders_removal_guard_error_in_confirmation() {
+        let backend = TestBackend::new(90, 28);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::with_sources(PathBuf::from("/project"), Vec::new());
+        app.overlay = Overlay::ConfirmRemove {
+            name: "feature".into(),
+            error: Some("source has 1 staged, 0 unstaged, and 0 untracked path(s)".into()),
+        };
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let contents = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(contents.contains("source has 1 staged"));
+    }
+}

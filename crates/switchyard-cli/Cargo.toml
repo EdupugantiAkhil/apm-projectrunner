@@ -22,6 +22,7 @@ switchyard-adapters = { path = "../switchyard-adapters" }
 switchyard-router-admin = { path = "../switchyard-router-admin" }
 switchyard-sources = { path = "../switchyard-sources" }
 switchyard-state = { path = "../switchyard-state" }
+switchyard-tui = { path = "../switchyard-tui" }
 
 [dev-dependencies]
 axum = "0.8.8"

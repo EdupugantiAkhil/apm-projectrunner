@@ -1,0 +1,16 @@
+[package]
+name = "switchyard-tui"
+description = "Terminal control plane for Switchyard projects"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+crossterm = "=0.28.1"
+ratatui = "=0.29.0"
+switchyard-sources = { path = "../switchyard-sources" }
+switchyard-state = { path = "../switchyard-state" }
+
+[lints]
+workspace = true

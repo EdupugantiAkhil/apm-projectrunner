@@ -13,6 +13,7 @@ members = [
     "crates/switchyard-router-admin",
     "crates/switchyard-sources",
     "crates/switchyard-state",
+    "crates/switchyard-tui",
 ]
 resolver = "3"
 

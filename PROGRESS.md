@@ -43,6 +43,36 @@ Updated: 2026-07-16
 `IMPLEMENTATION_PLAN.md` remains the task-level checklist. This file records the
 implemented shape and the evidence used to close a phase.
 
+## 2026-07-16 project TUI Sources view
+
+- Added `switchyard tui [<project-dir>]` and a Ratatui/Crossterm terminal shell with
+  panic-safe terminal restoration, responsive resize/event handling, Sources and
+  placeholder Instances tabs, a footer/spinner, and an in-app help overlay.
+- The Sources view lists live registry/Git inspection, registers local paths, creates
+  managed URL clones on a background thread, and confirms safe removal. Every mutation
+  remains in `SourceManager`/`StateStore`; managed deletion retains ownership and dirty
+  guards.
+- The view dispatcher isolates Sources and Instances modules for the follow-on
+  Instances implementation. State-machine and `TestBackend` rendering tests cover form
+  validation, confirmation cancellation, and inline errors.
+- Verification: the TUI suite passed with the cached Ratatui stack on Rust 1.94. The
+  combined CLI/TUI test reached 49 passing CLI tests before the sandbox rejected the
+  pre-existing host-runtime socket test with `EPERM`; the filtered CLI suite and daemon
+  parity test then passed. Focused TUI/source Clippy passed with `-D warnings`. Workspace
+  Clippy on Rust 1.94 stopped on new lints in pre-existing daemon code; Rust 1.85
+  verification awaits a fetch of pinned `instability` 0.3.1, which is not present in
+  the offline cache.
+- Review pass after the Codex run: the add-form's string-sentinel action channel
+  (`__submit__`/`__close__` smuggled through the error field) was replaced with an
+  explicit `FormAction` enum handled directly in the key handler, and the renderer's
+  sentinel filter was removed. Local re-verification with network and the pinned
+  toolchain: full workspace test suite passes (43 suites, including the socket test the
+  Codex sandbox blocked), workspace clippy passes with `-D warnings`, and the lockfile
+  resolves. Live pty proof: the TUI launches in a scaffolded project, renders tabs,
+  toggles help, quits on `q` with the terminal restored, and an end-to-end add flow
+  through the modal cloned a local git URL on a background thread and registered it as
+  a managed source visible to `switchyard source list`.
+
 ## 2026-07-16 GUI serving correction
 
 - The bundled GUI is served by the daemon below `/gui/`. Its Vite build now emits

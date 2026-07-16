@@ -64,6 +64,10 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         );
         return Ok(ExitCode::SUCCESS);
     }
+    if let CliCommand::Tui { project_dir } = &command {
+        switchyard_tui::run(project_dir)?;
+        return Ok(ExitCode::SUCCESS);
+    }
     if let Some(code) = handle_daemon_command(&workspace_root, &command)? {
         return Ok(code);
     }
@@ -325,6 +329,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         | CliCommand::DaemonStop
         | CliCommand::OperationCancel { .. }
         | CliCommand::Gui
+        | CliCommand::Tui { .. }
         | CliCommand::SourceList { .. }
         | CliCommand::SourceRegister { .. }
         | CliCommand::SourceDeregister { .. }
@@ -943,6 +948,7 @@ fn daemon_request(
         | CliCommand::DaemonStop
         | CliCommand::OperationCancel { .. }
         | CliCommand::Gui
+        | CliCommand::Tui { .. }
         | CliCommand::SourceList { .. }
         | CliCommand::SourceRegister { .. }
         | CliCommand::SourceDeregister { .. }

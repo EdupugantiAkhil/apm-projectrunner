@@ -277,3 +277,12 @@
   the real subprocess backend. Lesson: a recovery CTA is not complete until its
   end-to-end command prerequisites are exercised, especially credentials intentionally
   absent from browser state.
+
+## 2026-07-16 — Project TUI Sources view
+
+- Ratatui 0.29 declares `instability` with a compatible lower bound, but an unconstrained
+  offline lock update selected `instability` 0.3.12 and its Rust 1.88 minimum, violating
+  this workspace's Rust 1.85 contract. Correction: pin the lockfile to 0.3.1 and use the
+  newer installed toolchain only for provisional cached compilation. Lesson: a direct
+  dependency's MSRV does not constrain the resolver's choice of newer transitive
+  releases; verify and pin loose proc-macro dependencies against the workspace MSRV.

@@ -76,6 +76,9 @@ pub enum CliCommand {
         id: String,
     },
     Gui,
+    Tui {
+        project_dir: PathBuf,
+    },
     SourceList {
         json: bool,
     },
@@ -161,6 +164,7 @@ Usage:
   switchyard daemon stop
   switchyard operation cancel <operation-id>
   switchyard gui
+  switchyard tui [<project-dir>]
   switchyard source list [--json]
   switchyard source register <name> <path>
   switchyard source deregister <name>
@@ -256,6 +260,12 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
         "daemon" if rest == ["status"] => Ok(CliCommand::DaemonStatus),
         "daemon" if rest == ["stop"] => Ok(CliCommand::DaemonStop),
         "gui" if rest.is_empty() => Ok(CliCommand::Gui),
+        "tui" if rest.is_empty() => Ok(CliCommand::Tui {
+            project_dir: PathBuf::from("."),
+        }),
+        "tui" if rest.len() == 1 => Ok(CliCommand::Tui {
+            project_dir: PathBuf::from(&rest[0]),
+        }),
         "source" if rest == ["list"] => Ok(CliCommand::SourceList { json: false }),
         "source" if rest == ["list", "--json"] => Ok(CliCommand::SourceList { json: true }),
         "source" if rest.len() == 3 && rest[0] == "register" => Ok(CliCommand::SourceRegister {
@@ -770,6 +780,23 @@ mod tests {
     fn parses_gui_without_arguments() {
         assert_eq!(parse(args(&["gui"])).unwrap(), CliCommand::Gui);
         assert!(parse(args(&["gui", "extra"])).is_err());
+    }
+
+    #[test]
+    fn parses_tui_with_optional_project_directory() {
+        assert_eq!(
+            parse(args(&["tui"])).unwrap(),
+            CliCommand::Tui {
+                project_dir: ".".into()
+            }
+        );
+        assert_eq!(
+            parse(args(&["tui", "demo"])).unwrap(),
+            CliCommand::Tui {
+                project_dir: "demo".into()
+            }
+        );
+        assert!(parse(args(&["tui", "one", "two"])).is_err());
     }
 
     #[test]
