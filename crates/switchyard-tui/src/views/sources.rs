@@ -1,3 +1,5 @@
+use super::centered;
+use crate::app::{AddForm, AddSourceMode, AddSourcePanel, App, BusyKind, WorktreeForm};
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
@@ -7,13 +9,17 @@ use ratatui::{
 };
 use switchyard_state::RegisteredSourceKind;
 
-use super::centered;
-use crate::app::{AddForm, AddSourceMode, AddSourcePanel, App, BusyKind};
-
 pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let header = Row::new(["Name", "Kind", "Path", "Ref / branch", "Dirty"])
-        .style(Style::default().add_modifier(Modifier::BOLD))
-        .bottom_margin(1);
+    let header = Row::new([
+        "Name",
+        "Type",
+        "Repository",
+        "Ref / branch",
+        "Dirty",
+        "Path",
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD))
+    .bottom_margin(1);
     let rows = app.sources.iter().map(|entry| {
         let inspection = &entry.inspection;
         let reference = inspection
@@ -33,36 +39,128 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .unwrap_or("unknown")
                 .into(),
         };
+        let ownership = match entry.source.kind {
+            RegisteredSourceKind::Managed => "managed",
+            RegisteredSourceKind::Unmanaged => "external",
+        };
+        let source_type = match entry.inspection.linked_worktree {
+            Some(true) => format!("worktree/{ownership}"),
+            Some(false) => format!("repository/{ownership}"),
+            None => format!("directory/{ownership}"),
+        };
+        let repository = entry
+            .source
+            .repository_path
+            .as_ref()
+            .and_then(|path| {
+                app.sources
+                    .iter()
+                    .find(|candidate| {
+                        candidate.inspection.linked_worktree == Some(false)
+                            && &candidate.source.path == path
+                    })
+                    .map(|candidate| candidate.source.name.as_str())
+            })
+            .unwrap_or("-");
+        let name = if entry.inspection.linked_worktree == Some(true) {
+            format!("  ↳ {}", entry.source.name)
+        } else {
+            entry.source.name.clone()
+        };
         Row::new([
-            Cell::from(entry.source.name.clone()),
-            Cell::from(match entry.source.kind {
-                RegisteredSourceKind::Managed => "managed",
-                RegisteredSourceKind::Unmanaged => "unmanaged",
-            }),
-            Cell::from(entry.source.path.display().to_string()),
+            Cell::from(name),
+            Cell::from(source_type),
+            Cell::from(repository.to_owned()),
             Cell::from(reference.to_owned()),
             Cell::from(dirty),
+            Cell::from(entry.source.path.display().to_string()),
         ])
     });
     let table = Table::new(
         rows,
         [
             Constraint::Length(20),
-            Constraint::Length(11),
-            Constraint::Percentage(45),
+            Constraint::Length(21),
+            Constraint::Length(18),
             Constraint::Length(22),
-            Constraint::Min(14),
+            Constraint::Length(14),
+            Constraint::Min(24),
         ],
     )
     .header(header)
     .row_highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White))
     .highlight_symbol("› ")
-    .block(Block::default().borders(Borders::ALL).title(" Sources "));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Repositories and worktrees "),
+    );
     let mut state = TableState::default();
     if !app.sources.is_empty() {
         state.select(Some(app.selected));
     }
     frame.render_stateful_widget(table, area, &mut state);
+}
+
+pub(super) fn render_worktree(
+    frame: &mut Frame<'_>,
+    app: &App,
+    form: &WorktreeForm,
+    busy: Option<BusyKind>,
+) {
+    let area = centered(frame.area(), 84, 12);
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Create managed worktree ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let base = app
+        .sources
+        .iter()
+        .find(|source| source.source.name == form.source);
+    let base_path = base
+        .map(|source| source.source.path.display().to_string())
+        .unwrap_or_else(|| "missing".into());
+    let base_label = base
+        .and_then(|source| source.inspection.branch.as_deref())
+        .unwrap_or("detached HEAD");
+    let short_commit = form.base_ref.chars().take(10).collect::<String>();
+    let mut lines = vec![
+        Line::from(format!(
+            "Based on: {} ({base_label}@{short_commit})",
+            form.source
+        )),
+        Line::from(Span::styled(
+            format!("  {base_path}"),
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        source_field(true, "Worktree and new branch name", &form.name),
+        Line::from(Span::styled(
+            "  Created under .switchyard/worktrees/<name> and registered automatically.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(Span::styled(
+            "  The new branch starts at the selected checkout's exact HEAD commit.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+    ];
+    if busy == Some(BusyKind::WorktreeAdd) {
+        lines.push(Line::from(Span::styled(
+            "Creating worktree…",
+            Style::default().fg(Color::Yellow),
+        )));
+    } else if let Some(error) = form.error.as_deref() {
+        lines.push(Line::from(Span::styled(
+            error,
+            Style::default().fg(Color::Red),
+        )));
+    } else {
+        lines.push(Line::from("Enter create  Esc cancel"));
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 pub(super) fn render_add(frame: &mut Frame<'_>, form: &AddForm, busy: Option<BusyKind>) {

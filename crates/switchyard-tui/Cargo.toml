@@ -17,5 +17,8 @@ switchyard-planner = { path = "../switchyard-planner" }
 switchyard-sources = { path = "../switchyard-sources" }
 switchyard-state = { path = "../switchyard-state" }
 
+[dev-dependencies]
+switchyard-adapter-sdk = { path = "../switchyard-adapter-sdk" }
+
 [lints]
 workspace = true

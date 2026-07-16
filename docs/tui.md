@@ -19,9 +19,11 @@ reference, and quit with `q` or Ctrl-C.
 
 ## Sources
 
-The Sources table shows each project-registered source's name, managed/unmanaged kind,
-path, current Git branch or requested ref, and live dirty state. Up/Down or `j`/`k`
-changes the selected row.
+The Sources table separates repositories, linked worktrees, and ordinary directories.
+Linked worktrees are indented beneath the source conceptually and show their registered
+parent repository; each row also distinguishes Switchyard-managed paths from external
+paths. The remaining columns show the path, current Git branch or requested ref, and
+live dirty state. Up/Down or `j`/`k` changes the selected row.
 
 - `a` opens a two-mode dialog. Choose **Local path** or **Git clone**, then enter exactly
   one directory or clone address. Switchyard derives the registry name from its final
@@ -41,6 +43,11 @@ changes the selected row.
   deleted through Switchyard's ownership and dirty-state safety checks, then
   deregistered. Dirty managed sources are refused.
 - `r` refreshes source and Git observations.
+- `w` creates a managed linked worktree from the selected repository or worktree. Enter
+  only a unique checkout name; Switchyard creates a branch with that name at the
+  selected checkout's exact current commit, creates the checkout under
+  `.switchyard/worktrees`, registers it, and makes it immediately available to the
+  instance form. A non-Git row or checkout whose HEAD cannot be resolved is refused.
 - `Esc` closes a form or confirmation without changing state.
 
 All source records use the same project-local `.switchyard/state.sqlite3` registry as
@@ -67,8 +74,10 @@ instance of a distributed deployment.
 The Instances view combines authored deployment definitions with the durable
 `.switchyard/state.sqlite3` deployment and operation records. Its header shows the
 selected deployment, reconciled state, latest operation, and definition path. The
-service table shows persisted container observations and their runtime/health state
-when available. An applied deployment with no observed resources is shown as
+service table merges each persisted container observation with its authored instance,
+block, and source instead of showing duplicate authored/runtime rows. The standalone
+TUI reconciles generated manifests and labeled Docker resources when it loads and after
+lifecycle operations. An applied deployment with no observed resources is shown as
 `stopped`; this includes reconciliation with an `observed_resources_missing`
 diagnostic after a normal down or cleanup, rather than presenting it as unknown.
 
@@ -78,8 +87,11 @@ diagnostic after a normal down or cleanup, rather than presenting it as unknown.
 - The output pane receives stdout and stderr while an operation runs, then displays
   its exit code. `PageUp` and `PageDown` scroll its retained output.
 - If a project contains multiple definitions, `[` and `]` select the deployment.
-- `i` adds another instance to the selected authored definition. The form selects an
-  existing reusable block and either a deployment source or project-registered source.
+- `i` adds another instance to the selected authored definition. The form presents an
+  existing reusable block as a **startup profile**, then selects either a deployment
+  checkout or project-registered repository/worktree. A startup profile owns the
+  instance's long-running service commands; it is separate from the project-level run
+  scripts shown below.
   A registered source is added to `spec.sources` automatically. The complete deployment
   is planned before an atomic save, and the targeted insertion preserves the rest of
   the YAML, including scaffold comments. Press `u` afterwards to apply the change.

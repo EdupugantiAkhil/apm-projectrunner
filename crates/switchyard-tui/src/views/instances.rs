@@ -39,30 +39,12 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         areas[0],
     );
 
-    let services = app
+    let service_rows = app
         .current_deployment()
-        .map(|deployment| deployment.services.as_slice())
-        .unwrap_or_default();
-    let authored_rows = app.current_deployment().into_iter().flat_map(|deployment| {
-        deployment.instances.iter().map(|instance| {
-            Row::new([
-                instance.name.clone(),
-                instance.block.clone(),
-                instance.source.clone(),
-                deployment.state.clone(),
-                "-".into(),
-            ])
-        })
-    });
-    let service_rows = authored_rows.chain(services.iter().map(|service| {
-        Row::new([
-            service.instance.clone(),
-            service.service.clone(),
-            "runtime resource".into(),
-            service.status.clone(),
-            service.health.clone(),
-        ])
-    }));
+        .map(instance_service_rows)
+        .unwrap_or_default()
+        .into_iter()
+        .map(Row::new);
     frame.render_widget(
         Table::new(
             service_rows,
@@ -77,8 +59,8 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .header(
             Row::new([
                 "Instance",
-                "Block / service",
-                "Source / kind",
+                "Startup profile / service",
+                "Checkout / source",
                 "Status",
                 "Health",
             ])
@@ -182,6 +164,44 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
+fn instance_service_rows(deployment: &crate::app::DeploymentEntry) -> Vec<[String; 5]> {
+    if deployment.services.is_empty() {
+        return deployment
+            .instances
+            .iter()
+            .map(|instance| {
+                [
+                    instance.name.clone(),
+                    instance.block.clone(),
+                    instance.source.clone(),
+                    deployment.state.clone(),
+                    "-".into(),
+                ]
+            })
+            .collect();
+    }
+    deployment
+        .services
+        .iter()
+        .map(|service| {
+            let authored = deployment
+                .instances
+                .iter()
+                .find(|instance| instance.name == service.instance);
+            [
+                service.instance.clone(),
+                authored.map_or_else(
+                    || service.service.clone(),
+                    |instance| format!("{} / {}", instance.block, service.service),
+                ),
+                authored.map_or_else(|| "-".into(), |instance| instance.source.clone()),
+                service.status.clone(),
+                service.health.clone(),
+            ]
+        })
+        .collect()
+}
+
 pub(super) fn render_instance_form(frame: &mut Frame<'_>, app: &App, form: &InstanceForm) {
     let area = centered(frame.area(), 82, 16);
     frame.render_widget(Clear, area);
@@ -203,13 +223,21 @@ pub(super) fn render_instance_form(frame: &mut Frame<'_>, app: &App, form: &Inst
         "registered; will be added to deployment"
     };
     let mut lines = vec![
-        Line::from("Create another instance from a deployment block and source."),
+        Line::from("Create an instance from a reusable startup profile and code checkout."),
         Line::from(""),
         field(form.active_field == 0, "Name", &form.name),
-        field(form.active_field == 1, "Block (←/→/Space)", block_name),
-        field(form.active_field == 2, "Source (←/→/Space)", &source.name),
+        field(
+            form.active_field == 1,
+            "Startup profile (←/→/Space)",
+            block_name,
+        ),
+        field(
+            form.active_field == 2,
+            "Checkout/worktree (←/→/Space)",
+            &source.name,
+        ),
         Line::from(format!(
-            "  Source path: {} ({source_kind})",
+            "  Checkout path: {} ({source_kind})",
             source.path.display()
         )),
         Line::from("  Runtime device: local (distributed placement is not yet supported)"),
@@ -368,4 +396,45 @@ pub(super) fn render_confirm(
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{DeploymentEntry, InstanceRow, ServiceRow};
+    use std::path::PathBuf;
+
+    #[test]
+    fn runtime_services_merge_with_authored_instance_context() {
+        let deployment = DeploymentEntry {
+            name: "demo".into(),
+            bundle: PathBuf::from("deployment.yaml"),
+            state: "running".into(),
+            services: vec![ServiceRow {
+                instance: "web".into(),
+                service: "server".into(),
+                status: "running".into(),
+                health: "healthy".into(),
+            }],
+            instances: vec![InstanceRow {
+                name: "web".into(),
+                block: "web".into(),
+                source: "project".into(),
+            }],
+            blocks: Vec::new(),
+            source_choices: Vec::new(),
+            bindings: Vec::new(),
+            last_operation: None,
+        };
+        assert_eq!(
+            instance_service_rows(&deployment),
+            [[
+                String::from("web"),
+                String::from("web / server"),
+                String::from("project"),
+                String::from("running"),
+                String::from("healthy"),
+            ]]
+        );
+    }
 }

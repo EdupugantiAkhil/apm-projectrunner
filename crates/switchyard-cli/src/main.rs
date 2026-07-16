@@ -1707,6 +1707,8 @@ mod tests {
             "overlays/dev.yaml",
             "README.md",
             ".gitignore",
+            ".agents/skills/switchyard-project/SKILL.md",
+            ".agents/skills/switchyard-project/agents/openai.yaml",
         ] {
             let contents = fs::read_to_string(project.join(relative)).unwrap();
             assert!(
@@ -1723,6 +1725,8 @@ mod tests {
             "overlays/dev.yaml",
             "README.md",
             ".gitignore",
+            ".agents/skills/switchyard-project/SKILL.md",
+            ".agents/skills/switchyard-project/agents/openai.yaml",
         ] {
             assert!(message.contains(relative));
         }

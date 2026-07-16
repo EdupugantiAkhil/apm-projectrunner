@@ -137,6 +137,11 @@ worktree creation should be added only after the execution model is stable.
 ### Block
 
 A reusable startup definition. A block may contain one service or a coordinated suite.
+Control-plane UIs should present a block as a **startup profile** when a developer creates
+an instance: the developer chooses an instance name, a repository checkout/worktree, and
+one reusable startup profile. A block is deliberately distinct from an operator run
+script: blocks describe the long-running services inside instances, while run scripts
+invoke project-level plan, lifecycle, or smoke-test actions.
 Each service chooses one of three execution modes:
 
 Phase 1 implements `container` and `script`. The `host` mode below is part of the Phase
@@ -1137,6 +1142,8 @@ Interaction rules:
 #### Sources and worktrees
 
 - Repository, worktree path, branch, commit, dirty state, ahead/behind state.
+- Present repositories as parents and linked worktrees as selectable checkouts, rather
+  than flattening both into an unexplained list of sources.
 - Actions: inspect, refresh, open directory, create worktree, remove managed worktree.
 - Destructive Git actions are excluded. Switchyard never resets or discards changes.
 

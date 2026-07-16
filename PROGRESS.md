@@ -8,6 +8,43 @@ Updated: 2026-07-17
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
 
+## 2026-07-17 repository/worktree instance UX
+
+- The project TUI now distinguishes repositories, linked worktrees, and ordinary
+  directories instead of presenting every checkout as an undifferentiated source.
+  Ownership and parent-repository context remain visible.
+- Pressing `w` on a selected repository or linked worktree opens a one-field managed
+  worktree form. The entered checkout name becomes a new branch based on the selected
+  checkout's exact HEAD commit. The non-destructive `SourceManager` creates and
+  registers it under `.switchyard/worktrees`, making it an instance choice immediately.
+- Instance creation now presents blocks as reusable startup profiles and sources as
+  checkouts/worktrees. Project run scripts remain deployment-level operations rather
+  than becoming a second, conflicting instance execution format.
+- When a newly registered worktree is selected for an instance, targeted YAML insertion
+  preserves `type: worktree`, repository path, and requested ref.
+- Verification: focused TUI and source-manager coverage includes minimal worktree-form
+  selection, automatic branch creation from an exact base commit, and authored
+  worktree relationship preservation. All 12 source-manager and 27 TUI tests pass;
+  focused Clippy is clean with warnings denied, and formatting/diff checks pass.
+
+## 2026-07-17 standalone TUI reconciliation and initialized skill
+
+- The TUI now invokes the daemon's shared synchronous reconciliation path before
+  loading deployment rows. Standalone lifecycle commands therefore refresh generated
+  manifests and labeled Docker observations even when no daemon process is running.
+- The Instances table merges runtime services with authored block/source context and
+  falls back to authored-only rows before first apply, removing the duplicate
+  authored/runtime rows and stale `not applied`/`stopped` display after a healthy `up`.
+- `switchyard init` now scaffolds a concise project-local
+  `.agents/skills/switchyard-project` skill with Codex UI metadata. It guides agents to
+  validate and plan authored YAML, use the TUI or explicit lifecycle commands, preserve
+  volumes by default, and avoid editing generated state or embedding credentials.
+- Verification: the complete workspace suite passes with the five declared reliability
+  ignores, all 25 TUI tests pass, workspace Clippy is clean with `-D warnings`, and the
+  skill validator accepts both the embedded template and a freshly initialized project.
+  A live TUI run against the reported project now displays `state: running` after
+  reconciling its healthy container and excludes unrelated host deployments.
+
 ## 2026-07-17 native Git authentication handoff
 
 - Replaced the intermediate SSH credential/askpass layer with a native terminal handoff.

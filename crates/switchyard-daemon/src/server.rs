@@ -1041,6 +1041,37 @@ impl From<StateError> for DaemonError {
     }
 }
 
+/// Refreshes one project's durable observations from generated manifests and Docker.
+///
+/// This is the synchronous reconciliation path used by control planes that operate
+/// without a long-running daemon.
+pub fn reconcile_project(project_root: &Path) -> Result<ReconciliationReport, DaemonError> {
+    let state_dir = project_root.join(".switchyard");
+    fs::create_dir_all(&state_dir)?;
+    let (mut store, _) = StateStore::open(state_dir.join("state.sqlite3"))?;
+    let manifests = GeneratedManifest::load_generated(&state_dir.join("generated"))?;
+    let deployments = manifests
+        .iter()
+        .map(|manifest| manifest.deployment.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let resources = observe_docker()?
+        .into_iter()
+        .filter(|resource| {
+            resource
+                .labels
+                .get(switchyard_state::DEPLOYMENT_LABEL)
+                .is_some_and(|deployment| deployments.contains(deployment.as_str()))
+        })
+        .collect();
+    Ok(store.reconcile(
+        &ReconciliationInput {
+            manifests,
+            resources,
+        },
+        now_millis(),
+    )?)
+}
+
 /// Starts a daemon using the real CLI backend.
 pub async fn start(config: DaemonConfig) -> Result<RunningDaemon, DaemonError> {
     let router_token = load_or_create_router_token(&config.project_root)?;

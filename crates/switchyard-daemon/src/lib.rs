@@ -7,7 +7,7 @@ pub mod contract;
 pub mod device;
 pub mod server;
 
-pub use server::{DaemonConfig, DaemonError, RunningDaemon};
+pub use server::{DaemonConfig, DaemonError, RunningDaemon, reconcile_project};
 
 /// Runs the real daemon until SIGINT, SIGTERM, or an authenticated stop request.
 pub fn run_blocking(config: DaemonConfig) -> Result<(), DaemonError> {

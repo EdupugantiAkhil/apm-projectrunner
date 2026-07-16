@@ -15,3 +15,6 @@ switchyard down deployment.yaml
 
 Edit `deployment.yaml` to add blocks, services, instances, routes, and sources. Runtime
 and generated state is kept under `.switchyard/`.
+
+Codex-compatible agents can use the project-local `$switchyard-project` skill under
+`.agents/skills/` for the safe edit, validation, lifecycle, and recovery workflow.

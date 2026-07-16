@@ -241,6 +241,45 @@ impl SourceManager {
         name: &str,
         requested_path: Option<&Path>,
     ) -> Result<RegisteredSource, SourceError> {
+        self.create_worktree_inner(
+            store,
+            repository_name,
+            requested_ref,
+            None,
+            name,
+            requested_path,
+        )
+    }
+
+    /// Creates a managed linked worktree on a new branch based at an existing ref.
+    pub fn create_worktree_branch(
+        &self,
+        store: &StateStore,
+        source_name: &str,
+        base_ref: &str,
+        branch: &str,
+        name: &str,
+        requested_path: Option<&Path>,
+    ) -> Result<RegisteredSource, SourceError> {
+        self.create_worktree_inner(
+            store,
+            source_name,
+            base_ref,
+            Some(branch),
+            name,
+            requested_path,
+        )
+    }
+
+    fn create_worktree_inner(
+        &self,
+        store: &StateStore,
+        repository_name: &str,
+        requested_ref: &str,
+        new_branch: Option<&str>,
+        name: &str,
+        requested_path: Option<&Path>,
+    ) -> Result<RegisteredSource, SourceError> {
         validate_source_name(name)?;
         let repository = store.source(repository_name)?.ok_or_else(|| {
             SourceError::new(
@@ -272,17 +311,22 @@ impl SourceManager {
                 format!("Git ref `{requested_ref}` is unknown"),
             ));
         }
+        if let Some(branch) = new_branch {
+            if git(repository_path, &["check-ref-format", "--branch", branch]).is_err() {
+                return Err(SourceError::new(
+                    "source_branch_invalid",
+                    format!("`{branch}` is not a valid Git branch name"),
+                ));
+            }
+        }
         fs::create_dir_all(target.parent().expect("managed target has parent"))?;
-        run_git(
-            repository_path,
-            &[
-                "worktree",
-                "add",
-                target.to_string_lossy().as_ref(),
-                requested_ref,
-            ],
-            "worktree_create_failed",
-        )?;
+        let target_text = target.to_string_lossy();
+        let mut args = vec!["worktree", "add"];
+        if let Some(branch) = new_branch {
+            args.extend(["-b", branch]);
+        }
+        args.extend([target_text.as_ref(), requested_ref]);
+        run_git(repository_path, &args, "worktree_create_failed")?;
         let path = target.canonicalize()?;
         let relative = path
             .strip_prefix(self.worktree_root.canonicalize()?)
@@ -298,7 +342,7 @@ impl SourceManager {
             kind: RegisteredSourceKind::Managed,
             path,
             repository_path: Some(repository_path.canonicalize()?),
-            requested_ref: Some(requested_ref.into()),
+            requested_ref: Some(new_branch.unwrap_or(requested_ref).into()),
             created_at: now_millis()?,
             managed_relative_path: Some(relative),
         };
@@ -1126,6 +1170,33 @@ mod tests {
         assert_eq!(dirty.untracked, 1);
         assert!(!source.path.exists());
         manager.deregister(&store, "feature").unwrap();
+    }
+
+    #[test]
+    fn managed_worktree_new_branch_uses_the_selected_base_commit() {
+        let temp = TempDir::new().unwrap();
+        let repository = repository(&temp);
+        let store = store(&temp);
+        let manager = SourceManager::new(temp.path());
+        manager
+            .register_unmanaged(&store, "repo", &repository)
+            .unwrap();
+        let base = manager
+            .inspect(&repository, Some("main"))
+            .identity
+            .commit
+            .unwrap();
+        fs::write(repository.join("tracked"), "newer main\n").unwrap();
+        command(&repository, &["add", "tracked"]);
+        command(&repository, &["commit", "-m", "newer main"]);
+
+        let source = manager
+            .create_worktree_branch(&store, "repo", &base, "feature-auto", "feature-auto", None)
+            .unwrap();
+        let inspection = manager.inspect(&source.path, source.requested_ref.as_deref());
+        assert_eq!(inspection.branch.as_deref(), Some("feature-auto"));
+        assert_eq!(inspection.identity.commit.as_deref(), Some(base.as_str()));
+        assert_eq!(source.requested_ref.as_deref(), Some("feature-auto"));
     }
 
     #[test]

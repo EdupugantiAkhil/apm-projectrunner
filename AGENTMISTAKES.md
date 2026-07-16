@@ -1,5 +1,39 @@
 # Agent mistakes and lessons
 
+## 2026-07-17 — Worktree UX relationship preservation
+
+- The first worktree UX pass reused the existing instance-source insertion, which would
+  have flattened a managed linked worktree into a generic path in `deployment.yaml`.
+  Correction: carry worktree, repository, and requested-ref metadata through the source
+  choice and author the full worktree source shape. Lesson: a clearer presentation must
+  preserve the same relationship in durable desired state, not merely label it in the
+  UI.
+- The first creation form also asked for an existing Git ref even though pressing `w`
+  on a checkout already supplies the intended base. Correction: capture that checkout's
+  exact HEAD commit and derive both the new branch and worktree from the entered name.
+  Lesson: do not ask users to restate context that the selected UI object provides.
+- The first branch-validation condition used let-chain syntax unsupported by the
+  workspace's pinned Rust toolchain. Correction: use a nested conditional and rerun the
+  package checks. Lesson: code to the repository's declared compiler floor, not newer
+  language syntax accepted elsewhere.
+
+## 2026-07-17 — TUI reconciliation and initialized skill
+
+- The skill-creator initializer existed but did not have its executable bit set, so a
+  direct invocation failed with permission denied. Correction: invoke the provided
+  Python script through `python3`. Lesson: check an optional script's executable mode or
+  use its interpreter explicitly before assuming direct execution is supported.
+- A new table-projection test used unconstrained `.into()` calls in an expected array;
+  the workspace has several valid `From<&str>` targets, so type inference failed.
+  Correction: construct expected `String` values explicitly. Lesson: use concrete
+  constructors in assertions when dependency trait implementations make conversion
+  targets ambiguous.
+- The first standalone reconciliation call admitted every Switchyard-labeled Docker
+  resource returned by the host-wide observer, which inserted an unrelated deployment
+  into the project's state during live verification. Correction: filter observations
+  to deployment IDs in the project's generated manifests before reconciling. Lesson:
+  shared host observers must be scoped at the project boundary before persistence.
+
 ## 2026-07-16 — TUI source dialog follow-up
 
 - A custom masked credential and SSH askpass bridge still diverged from normal terminal

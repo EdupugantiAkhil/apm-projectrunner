@@ -3067,6 +3067,7 @@ dependencies = [
  "ratatui",
  "serde",
  "signal-hook",
+ "switchyard-adapter-sdk",
  "switchyard-daemon",
  "switchyard-planner",
  "switchyard-sources",

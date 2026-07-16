@@ -50,6 +50,7 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
             "{spinner} {}…  q quit  ? help",
             match kind {
                 BusyKind::Add => "adding source",
+                BusyKind::WorktreeAdd => "creating worktree",
                 BusyKind::Remove => "removing source",
                 BusyKind::Refresh => "refreshing sources",
                 BusyKind::DeviceAdd => "adding device",
@@ -61,7 +62,7 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
     } else {
         let keys = match app.active_view {
             ActiveView::Sources => {
-                "a add  d remove  r refresh  ↑/↓ select  Tab view  ? help  q quit"
+                "a add repository/path  w new worktree  d remove  r refresh  ↑/↓ select  Tab view  ? help  q quit"
             }
             ActiveView::Devices => "a add  c check  d remove  ↑/↓ select  Tab view  ? help  q quit",
             ActiveView::Instances => {
@@ -76,6 +77,7 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
 
     match &app.overlay {
         Overlay::Add(form) => sources::render_add(frame, form, app.busy),
+        Overlay::Worktree(form) => sources::render_worktree(frame, app, form, app.busy),
         Overlay::Device(form) => devices::render_add(frame, form, app.busy),
         Overlay::ConfirmRemoveDevice { name, error } => {
             devices::render_confirm(frame, name, error.as_deref(), app.busy)
@@ -127,6 +129,7 @@ fn render_help(frame: &mut Frame<'_>) {
         )),
         Line::from("  ↑ / ↓, j / k  select source"),
         Line::from("  a             add one local path or Git clone address"),
+        Line::from("  w             branch from selected checkout into a worktree"),
         Line::from("  Enter / F2    review ref; Git auth runs in terminal"),
         Line::from("  d             remove/deregister selected source"),
         Line::from("  r             refresh live Git state"),
@@ -144,7 +147,7 @@ fn render_help(frame: &mut Frame<'_>) {
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from("  u / s / x / p up, status, confirmed down, plan"),
-        Line::from("  i             add an instance (block/source selectors)"),
+        Line::from("  i             add instance (startup profile/worktree selectors)"),
         Line::from("  b             select and apply a provider-group pairing"),
         Line::from("  Enter         run selected preset"),
         Line::from("  n / e / D     new, edit, delete preset"),

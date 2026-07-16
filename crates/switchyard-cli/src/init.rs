@@ -16,6 +16,14 @@ const FILES: &[(&str, &str)] = &[
     ),
     ("README.md", include_str!("../templates/init/README.md")),
     (".gitignore", include_str!("../templates/init/gitignore")),
+    (
+        ".agents/skills/switchyard-project/SKILL.md",
+        include_str!("../templates/init/.agents/skills/switchyard-project/SKILL.md"),
+    ),
+    (
+        ".agents/skills/switchyard-project/agents/openai.yaml",
+        include_str!("../templates/init/.agents/skills/switchyard-project/agents/openai.yaml"),
+    ),
 ];
 
 #[derive(Debug)]

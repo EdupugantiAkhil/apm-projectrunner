@@ -185,6 +185,32 @@ pub(crate) struct AddForm {
     pub(crate) error: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WorktreeForm {
+    pub(crate) source: String,
+    pub(crate) base_ref: String,
+    pub(crate) name: String,
+    pub(crate) error: Option<String>,
+}
+
+impl WorktreeForm {
+    fn active_value_mut(&mut self) -> &mut String {
+        &mut self.name
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        let name = self.name.trim();
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        {
+            return Err("name may contain only ASCII letters, digits, '.', '-', and '_'".into());
+        }
+        Ok(())
+    }
+}
+
 impl Default for AddForm {
     fn default() -> Self {
         Self {
@@ -467,6 +493,9 @@ pub(crate) struct SourceChoice {
     pub(crate) name: String,
     pub(crate) path: PathBuf,
     pub(crate) declared: bool,
+    pub(crate) worktree: bool,
+    pub(crate) repository: Option<PathBuf>,
+    pub(crate) requested_ref: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -504,6 +533,7 @@ pub(crate) struct PairForm {
 pub(crate) enum Overlay {
     None,
     Add(AddForm),
+    Worktree(WorktreeForm),
     Device(DeviceForm),
     ConfirmRemoveDevice {
         name: String,
@@ -534,6 +564,7 @@ pub(crate) enum Overlay {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BusyKind {
     Add,
+    WorktreeAdd,
     Remove,
     Refresh,
     DeviceAdd,
@@ -680,10 +711,18 @@ impl App {
                 self.handle_key(key)
             }
             Event::Paste(value) => {
-                if let Overlay::Add(form) = &mut self.overlay {
-                    if form.append_active(value.trim_end_matches(['\r', '\n'])) {
+                let value = value.trim_end_matches(['\r', '\n']);
+                match &mut self.overlay {
+                    Overlay::Add(form) => {
+                        if form.append_active(value) {
+                            form.error = None;
+                        }
+                    }
+                    Overlay::Worktree(form) => {
+                        form.active_value_mut().push_str(value);
                         form.error = None;
                     }
+                    _ => {}
                 }
             }
             _ => {}
@@ -705,6 +744,22 @@ impl App {
                     Ok(request) => self.start_add(request),
                     Err(error) => form.error = Some(error),
                 },
+                _ => {}
+            },
+            Overlay::Worktree(form) => match Self::handle_worktree_key(form, key) {
+                Some(FormAction::Close) => self.overlay = Overlay::None,
+                Some(FormAction::Submit) if self.busy.is_none() => {
+                    if let Err(error) = form.validate() {
+                        form.error = Some(error);
+                    } else {
+                        let request = (
+                            form.source.clone(),
+                            form.base_ref.clone(),
+                            form.name.trim().to_owned(),
+                        );
+                        self.start_worktree_add(request.0, request.1, request.2);
+                    }
+                }
                 _ => {}
             },
             Overlay::Device(form) => match Self::handle_device_key(form, key) {
@@ -757,6 +812,25 @@ impl App {
                 if self.active_view == ActiveView::Sources && self.busy.is_none() =>
             {
                 self.overlay = Overlay::Add(AddForm::default())
+            }
+            KeyCode::Char('w')
+                if self.active_view == ActiveView::Sources && self.busy.is_none() =>
+            {
+                if let Some(source) = self.sources.get(self.selected) {
+                    if let Some(base_ref) = source.inspection.identity.commit.clone() {
+                        self.overlay = Overlay::Worktree(WorktreeForm {
+                            source: source.source.name.clone(),
+                            base_ref,
+                            name: String::new(),
+                            error: None,
+                        });
+                    } else {
+                        self.status = Some(
+                            "select a Git repository or linked worktree with a known HEAD before pressing w"
+                                .into(),
+                        );
+                    }
+                }
             }
             KeyCode::Char('d')
                 if self.active_view == ActiveView::Sources && self.busy.is_none() =>
@@ -1273,6 +1347,28 @@ impl App {
         None
     }
 
+    fn handle_worktree_key(form: &mut WorktreeForm, key: KeyEvent) -> Option<FormAction> {
+        match key.code {
+            KeyCode::Esc => return Some(FormAction::Close),
+            KeyCode::Tab | KeyCode::Down | KeyCode::BackTab | KeyCode::Up => {}
+            KeyCode::Backspace => {
+                form.active_value_mut().pop();
+                form.error = None;
+            }
+            KeyCode::Char(character)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                form.active_value_mut().push(character);
+                form.error = None;
+            }
+            KeyCode::Enter => return Some(FormAction::Submit),
+            _ => {}
+        }
+        None
+    }
+
     fn handle_script_key(form: &mut ScriptForm, key: KeyEvent) -> Option<FormAction> {
         match key.code {
             KeyCode::Esc => return Some(FormAction::Close),
@@ -1535,6 +1631,7 @@ impl App {
                             self.status = Some(
                                 match kind {
                                     BusyKind::Add => "source added",
+                                    BusyKind::WorktreeAdd => "worktree created",
                                     BusyKind::Remove => "source removed",
                                     _ => "sources refreshed",
                                 }
@@ -1544,6 +1641,9 @@ impl App {
                         }
                         Err(error) => match (&mut self.overlay, kind) {
                             (Overlay::Add(form), BusyKind::Add) => form.error = Some(error),
+                            (Overlay::Worktree(form), BusyKind::WorktreeAdd) => {
+                                form.error = Some(error)
+                            }
                             (Overlay::ConfirmRemove { error: slot, .. }, BusyKind::Remove) => {
                                 *slot = Some(error)
                             }
@@ -1639,6 +1739,19 @@ impl App {
             };
             manager
                 .register_unmanaged(&store, &name, &path)
+                .map_err(|error| error.to_string())?;
+            manager.list(&store).map_err(|error| error.to_string())
+        });
+    }
+
+    fn start_worktree_add(&mut self, source: String, base_ref: String, name: String) {
+        self.busy = Some(BusyKind::WorktreeAdd);
+        self.spawn_sources(BusyKind::WorktreeAdd, move |root| {
+            let store = open_store(&root)?;
+            let manager = switchyard_sources::SourceManager::new(&root);
+            let name = unique_source_name(&store, &name)?;
+            manager
+                .create_worktree_branch(&store, &source, &base_ref, &name, &name, None)
                 .map_err(|error| error.to_string())?;
             manager.list(&store).map_err(|error| error.to_string())
         });
@@ -1806,13 +1919,7 @@ fn append_instance_definition(
     let had_trailing_newline = input.ends_with('\n');
     let mut lines = input.lines().map(str::to_owned).collect::<Vec<_>>();
     if !source.declared {
-        let path = serde_yaml::to_string(&source.path.display().to_string())
-            .map_err(|error| format!("could not encode source path: {error}"))?;
-        insert_spec_section(
-            &mut lines,
-            "sources",
-            vec![format!("    {}: {{ path: {} }}", source.name, path.trim())],
-        )?;
+        insert_spec_section(&mut lines, "sources", vec![source_definition_line(source)?])?;
     }
     insert_spec_section(
         &mut lines,
@@ -1828,6 +1935,37 @@ fn append_instance_definition(
         output.push('\n');
     }
     validate_and_replace_definition(definition, &output)
+}
+
+fn source_definition_line(source: &SourceChoice) -> Result<String, String> {
+    let path = serde_yaml::to_string(&source.path.display().to_string())
+        .map_err(|error| format!("could not encode source path: {error}"))?;
+    if !source.worktree {
+        return Ok(format!("    {}: {{ path: {} }}", source.name, path.trim()));
+    }
+    let repository = source
+        .repository
+        .as_ref()
+        .ok_or_else(|| format!("worktree source `{}` has no repository path", source.name))?;
+    let repository = serde_yaml::to_string(&repository.display().to_string())
+        .map_err(|error| format!("could not encode repository path: {error}"))?;
+    let reference = source
+        .requested_ref
+        .as_ref()
+        .map(|reference| {
+            serde_yaml::to_string(reference)
+                .map(|value| format!(", ref: {}", value.trim()))
+                .map_err(|error| format!("could not encode worktree ref: {error}"))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    Ok(format!(
+        "    {}: {{ type: worktree, repository: {}, path: {}{} }}",
+        source.name,
+        repository.trim(),
+        path.trim(),
+        reference
+    ))
 }
 
 fn insert_spec_section(
@@ -1947,6 +2085,9 @@ fn list_deployments(
     root: &Path,
     registered_sources: &[RegisteredSourceInspection],
 ) -> Result<Vec<DeploymentEntry>, String> {
+    // A standalone TUI has no daemon startup cycle to reconcile Docker observations.
+    // Keep the authored view available when Docker itself is unavailable.
+    let _ = switchyard_daemon::reconcile_project(root);
     let store = open_store(root)?;
     let stored = store.deployments().map_err(|error| error.to_string())?;
     let mut definitions = BTreeMap::new();
@@ -2033,9 +2174,10 @@ fn deployment_entry(
     let state = if let Some(operation) = active_operation {
         format!("{} ({})", operation.status, operation.kind)
     } else if resources.is_empty()
-        && stored
+        && (stored
             .and_then(|entry| entry.definition_hash.as_ref())
             .is_some()
+            || !manifest.is_empty())
     {
         "stopped".into()
     } else if resources.is_empty() {
@@ -2093,6 +2235,9 @@ fn load_definition_choices(
             name: name.clone(),
             path: source.path.clone(),
             declared: true,
+            worktree: matches!(source.r#type, switchyard_planner::SourceType::Worktree),
+            repository: source.repository.clone(),
+            requested_ref: source.r#ref.clone(),
         })
         .collect::<Vec<_>>();
     for source in registered_sources {
@@ -2104,6 +2249,9 @@ fn load_definition_choices(
                 name: source.source.name.clone(),
                 path: source.source.path.clone(),
                 declared: false,
+                worktree: source.inspection.linked_worktree == Some(true),
+                repository: source.source.repository_path.clone(),
+                requested_ref: source.source.requested_ref.clone(),
             });
         }
     }
@@ -2221,8 +2369,43 @@ fn health_label(status: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use switchyard_adapter_sdk::SourceIdentity;
+    use switchyard_sources::SourceInspection;
+    use switchyard_state::{RegisteredSource, RegisteredSourceKind};
+
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn repository_source(name: &str) -> RegisteredSourceInspection {
+        let path = PathBuf::from(format!("/repositories/{name}"));
+        RegisteredSourceInspection {
+            source: RegisteredSource {
+                name: name.into(),
+                kind: RegisteredSourceKind::Unmanaged,
+                path: path.clone(),
+                repository_path: Some(path.clone()),
+                requested_ref: None,
+                created_at: 1,
+                managed_relative_path: None,
+            },
+            inspection: SourceInspection {
+                identity: SourceIdentity {
+                    path: path.display().to_string(),
+                    repository: Some(path.display().to_string()),
+                    r#ref: Some("main".into()),
+                    commit: Some("0123456789".into()),
+                    dirty: Some(false),
+                },
+                linked_worktree: Some(false),
+                branch: Some("main".into()),
+                detached: Some(false),
+                changes: None,
+                ahead: Some(0),
+                behind: Some(0),
+                unknown_code: None,
+            },
+        }
     }
 
     #[test]
@@ -2267,6 +2450,36 @@ mod tests {
         };
         assert_eq!(form.location, "git@github.com:team/ai-chatbot.git");
         assert!(form.git_ref.is_empty());
+    }
+
+    #[test]
+    fn selected_checkout_opens_a_minimal_worktree_form() {
+        let mut app = App::with_sources(PathBuf::from("."), vec![repository_source("product")]);
+        app.handle_key(key(KeyCode::Char('w')));
+        let Overlay::Worktree(form) = &mut app.overlay else {
+            panic!("worktree form did not open")
+        };
+        assert_eq!(form.source, "product");
+        assert_eq!(form.base_ref, "0123456789");
+        assert!(form.validate().is_err());
+        form.name = "feature-a".into();
+        assert_eq!(form.validate(), Ok(()));
+    }
+
+    #[test]
+    fn managed_worktree_keeps_its_source_relationship_when_authored() {
+        let line = source_definition_line(&SourceChoice {
+            name: "feature-a".into(),
+            path: "/project/.switchyard/worktrees/feature-a".into(),
+            declared: false,
+            worktree: true,
+            repository: Some("/repositories/product".into()),
+            requested_ref: Some("feature/a".into()),
+        })
+        .unwrap();
+        assert!(line.contains("type: worktree"));
+        assert!(line.contains("repository: /repositories/product"));
+        assert!(line.contains("ref: feature/a"));
     }
 
     #[test]
@@ -2522,6 +2735,9 @@ mod tests {
                 name: "feature".into(),
                 path: feature,
                 declared: false,
+                worktree: false,
+                repository: None,
+                requested_ref: None,
             },
         )
         .unwrap();
