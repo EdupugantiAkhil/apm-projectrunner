@@ -1,5 +1,14 @@
 # Agent mistakes and lessons
 
+## 2026-07-16 — GUI asset base path
+
+- The GUI build used Vite's default root-absolute asset paths even though the daemon
+  serves it below `/gui/`. Asset requests therefore fell through to the authenticated
+  server root and caused a blank page with `unauthorized`. Correction: set Vite's base
+  to `./` and verify the generated index references relative assets through the live
+  daemon. Lesson: deployment-path assumptions must be covered by a served-build smoke
+  check, not only a standalone Vite build.
+
 ## 2026-07-15 — Phase 5 daemon review corrections
 
 - Live-bind rollback returned early when observing one previously activated router

@@ -11,6 +11,15 @@ Updated: 2026-07-16
 `IMPLEMENTATION_PLAN.md` remains the task-level checklist. This file records the
 implemented shape and the evidence used to close a phase.
 
+## 2026-07-16 GUI serving correction
+
+- The bundled GUI is served by the daemon below `/gui/`. Its Vite build now emits
+  relative asset URLs, so JavaScript, CSS, and favicon requests remain under that
+  prefix rather than falling through to the authenticated server root.
+- Verification: `npm run build` passed in `packages/web`; a live daemon returned HTTP
+  200 for `/gui/`, its generated JavaScript asset, and an authenticated
+  `/api/v1/deployments` request.
+
 ## Phase 4 implementation
 
 - The planned routing-matrix contains three independently sourced UIs, two
