@@ -98,10 +98,10 @@ The Devices table is an interactive selector for registered SSH targets. Up/Down
 - `c` checks the selected device in the background and persists its status and detail.
 - `d` confirms removal of the registry entry without touching SSH keys or configuration.
 
-Device registrations currently prove and record SSH connectivity. Switchyard's runtime
-and router are local-development components, so the instance form accurately shows the
-runtime device as `local`; it does not pretend that a registered SSH target can host one
-instance of a distributed deployment.
+Device registrations currently prove and record SSH connectivity. The instance form
+lists `local` and registered devices so placement intent is visible, but only `local`
+runs today. Selecting a registered remote device produces a planner error in the draft
+preview; Switchyard never silently falls back to local execution.
 
 ## Instances
 
@@ -121,14 +121,24 @@ diagnostic after a normal down or cleanup, rather than presenting it as unknown.
 - The output pane receives stdout and stderr while an operation runs, then displays
   its exit code. `PageUp` and `PageDown` scroll its retained output.
 - If a project contains multiple definitions, `[` and `]` select the deployment.
-- `i` adds another instance to the selected authored definition. The form presents an
-  existing reusable block as a **startup profile**, then selects either a deployment
-  checkout or project-registered repository/worktree. A startup profile owns the
-  instance's long-running service commands; it is separate from the project-level run
-  scripts shown below.
-  A registered source is added to `spec.sources` automatically. The complete deployment
-  is planned before an atomic save, and the targeted insertion preserves the rest of
-  the YAML, including scaffold comments. Press `u` afterwards to apply the change.
+- `i` opens guided instance creation. In order, choose a **startup profile**, checkout,
+  instance name, device, and each parameter declared by the profile. Required
+  parameters are labeled, defaults are prefilled, and undeclared parameters cannot be
+  added. Project profiles and unchanged imported profiles are runnable; discovered or
+  changed profiles remain visible but disabled with a prompt to review/import them in
+  the Profiles view first. A startup profile owns the instance's long-running service
+  commands and remains separate from project-level run scripts.
+- On the last field, Enter plans an in-memory draft and shows the expanded service names
+  plus validation diagnostics beside the relevant name, checkout, device, or parameter
+  field. This preview does not change the deployment or runtime. When validation passes,
+  a second Enter writes the definition. Imported source-local profiles are materialized
+  under `spec.blocks` the first time they are used, and a registered checkout is added
+  to `spec.sources` when needed. The targeted edit preserves the surrounding authored
+  YAML and is fully planned before atomic replacement. Press `u` afterwards to plan and
+  start the updated deployment.
+- Instances persist `device: local` today. Registered remote device names may be
+  selected for an honest compatibility preview, but remote placement is not yet
+  supported and cannot be saved as a valid deployment.
 - `b` opens the pairing selector. Up/Down chooses a consumer and Left/Right or Space
   chooses a complete provider group. Incompatible groups are omitted. Enter previews
   the old/new choice in the form and applies it through Switchyard's live, validated

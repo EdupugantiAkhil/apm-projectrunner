@@ -283,6 +283,9 @@ pub struct Instance {
     pub name: String,
     pub block: String,
     pub source: String,
+    /// Execution placement. `local` is the only supported device in this release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
     #[serde(default)]
     pub parameters: BTreeMap<String, String>,
     /// Labels used by instance overlay selectors.

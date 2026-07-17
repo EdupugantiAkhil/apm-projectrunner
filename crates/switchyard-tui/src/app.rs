@@ -1,16 +1,19 @@
 use std::{
     error::Error,
-    fs,
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, TryRecvError},
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(test)]
+use std::fs;
+
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 pub(crate) use switchyard_ops::projections::{BindingRow, DeploymentEntry, SourceChoice};
 use switchyard_ops::{
     execution::{self, OperationEvent, OperationSpec},
+    instances::{CreateInstanceRequest, InstancePreview, create_instance, preview_instance},
     profiles::{
         ProfileListing, ProfileOrigin, ProfileRow, ProfileTrust, SourceManifestError,
         import_source_profile, list_profiles, load_profile_block, load_source_profile_block,
@@ -19,7 +22,7 @@ use switchyard_ops::{
     projections::{list_deployments, list_devices, list_sources},
     run_scripts::{self, RunScript, StructuredCommand},
 };
-use switchyard_planner::{Block, Execution, Probe};
+use switchyard_planner::{Block, Execution, Parameter, Probe};
 use switchyard_sources::RegisteredSourceInspection;
 use switchyard_state::{DeviceCheckStatus, RegisteredDevice, RegisteredSourceKind, StateStore};
 
@@ -466,11 +469,22 @@ impl ScriptForm {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InstanceParameterField {
+    pub(crate) name: String,
+    pub(crate) value: String,
+    pub(crate) required: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct InstanceForm {
     pub(crate) name: String,
-    pub(crate) block_index: usize,
+    pub(crate) profile_index: usize,
     pub(crate) source_index: usize,
+    pub(crate) device_index: usize,
+    pub(crate) parameters: Vec<InstanceParameterField>,
     pub(crate) active_field: usize,
+    pub(crate) field_errors: std::collections::BTreeMap<String, String>,
+    pub(crate) preview: Option<InstancePreview>,
     pub(crate) error: Option<String>,
 }
 
@@ -1030,21 +1044,32 @@ impl App {
             self.status = Some("error: no deployment definition found".into());
             return;
         };
-        if deployment.blocks.is_empty() {
-            self.status = Some("error: the deployment defines no reusable blocks".into());
+        if self.profiles.is_empty() {
+            self.status =
+                Some("error: no startup profiles are available; refresh Profiles first".into());
             return;
         }
         if deployment.source_choices.is_empty() {
             self.status = Some("error: add or declare a source before adding an instance".into());
             return;
         }
+        let profile_index = self
+            .profiles
+            .iter()
+            .position(profile_is_runnable)
+            .unwrap_or_default();
         self.overlay = Overlay::Instance(InstanceForm {
             name: String::new(),
-            block_index: 0,
+            profile_index,
             source_index: 0,
+            device_index: 0,
+            parameters: Vec::new(),
             active_field: 0,
+            field_errors: Default::default(),
+            preview: None,
             error: None,
         });
+        self.reload_instance_parameters();
     }
 
     fn handle_instance_key(&mut self, key: KeyEvent) {
@@ -1056,109 +1081,210 @@ impl App {
             self.overlay = Overlay::None;
             return;
         };
-        let block_count = deployment.blocks.len();
+        let profile_count = self.profiles.len();
         let source_count = deployment.source_choices.len();
+        let device_count = self.devices.len() + 1;
         let Overlay::Instance(form) = &mut self.overlay else {
             return;
         };
+        let field_count = 4 + form.parameters.len();
+        if form.preview.is_some() && key.code == KeyCode::Enter {
+            self.submit_instance();
+            return;
+        }
+        let mut profile_changed = false;
         match key.code {
-            KeyCode::Tab | KeyCode::Down => form.active_field = (form.active_field + 1) % 3,
-            KeyCode::BackTab | KeyCode::Up => form.active_field = (form.active_field + 2) % 3,
-            KeyCode::Backspace if form.active_field == 0 => {
-                form.name.pop();
-                form.error = None;
+            KeyCode::Tab | KeyCode::Down => {
+                form.active_field = (form.active_field + 1) % field_count
             }
-            KeyCode::Left | KeyCode::Char('h') if form.active_field == 1 && block_count > 0 => {
-                form.block_index = (form.block_index + block_count - 1) % block_count;
-                form.error = None;
+            KeyCode::BackTab | KeyCode::Up => {
+                form.active_field = (form.active_field + field_count - 1) % field_count
+            }
+            KeyCode::Left | KeyCode::Char('h') if form.active_field == 0 && profile_count > 0 => {
+                form.profile_index = (form.profile_index + profile_count - 1) % profile_count;
+                profile_changed = true;
             }
             KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ')
-                if form.active_field == 1 && block_count > 0 =>
+                if form.active_field == 0 && profile_count > 0 =>
             {
-                form.block_index = (form.block_index + 1) % block_count;
-                form.error = None;
+                form.profile_index = (form.profile_index + 1) % profile_count;
+                profile_changed = true;
             }
-            KeyCode::Left | KeyCode::Char('h') if form.active_field == 2 && source_count > 0 => {
+            KeyCode::Left | KeyCode::Char('h') if form.active_field == 1 && source_count > 0 => {
                 form.source_index = (form.source_index + source_count - 1) % source_count;
-                form.error = None;
             }
             KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ')
-                if form.active_field == 2 && source_count > 0 =>
+                if form.active_field == 1 && source_count > 0 =>
             {
                 form.source_index = (form.source_index + 1) % source_count;
-                form.error = None;
+            }
+            KeyCode::Backspace if form.active_field == 2 => {
+                form.name.pop();
+            }
+            KeyCode::Left | KeyCode::Char('h') if form.active_field == 3 => {
+                form.device_index = (form.device_index + device_count - 1) % device_count;
+            }
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') if form.active_field == 3 => {
+                form.device_index = (form.device_index + 1) % device_count;
+            }
+            KeyCode::Backspace if form.active_field >= 4 => {
+                form.parameters[form.active_field - 4].value.pop();
             }
             KeyCode::Char(character)
-                if form.active_field == 0
+                if form.active_field == 2
                     && !key
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
                 form.name.push(character);
+            }
+            KeyCode::Char(character)
+                if form.active_field >= 4
+                    && !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                form.parameters[form.active_field - 4].value.push(character);
+            }
+            KeyCode::Enter if form.active_field + 1 < field_count => form.active_field += 1,
+            KeyCode::Enter => self.preview_instance(),
+            _ => {}
+        }
+        if profile_changed {
+            self.reload_instance_parameters();
+        } else if !matches!(
+            key.code,
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down | KeyCode::Enter
+        ) {
+            if let Overlay::Instance(form) = &mut self.overlay {
+                form.preview = None;
+                form.field_errors.clear();
                 form.error = None;
             }
-            KeyCode::Enter => self.submit_instance(),
-            _ => {}
         }
     }
 
-    pub(crate) fn instance_selection(&self) -> Option<(&str, &SourceChoice)> {
+    pub(crate) fn instance_selection(&self) -> Option<(&ProfileRow, &SourceChoice, &str)> {
         let Overlay::Instance(form) = &self.overlay else {
             return None;
         };
         let deployment = self.current_deployment()?;
+        let device = if form.device_index == 0 {
+            "local"
+        } else {
+            self.devices.get(form.device_index - 1)?.name.as_str()
+        };
         Some((
-            deployment.blocks.get(form.block_index)?.as_str(),
+            self.profiles.get(form.profile_index)?,
             deployment.source_choices.get(form.source_index)?,
+            device,
         ))
     }
 
-    fn submit_instance(&mut self) {
-        let Some((block, source)) = self
-            .instance_selection()
-            .map(|(block, source)| (block.to_owned(), source.clone()))
-        else {
+    fn reload_instance_parameters(&mut self) {
+        let Some((profile, definition)) = self.instance_selection().and_then(|(profile, _, _)| {
+            self.current_deployment()
+                .map(|deployment| (profile.clone(), deployment.bundle.clone()))
+        }) else {
             return;
         };
-        let (name, definition, duplicate) = match (&self.overlay, self.current_deployment()) {
-            (Overlay::Instance(form), Some(deployment)) => (
-                form.name.trim().to_owned(),
-                deployment.bundle.clone(),
-                deployment
-                    .instances
+        let loaded = load_profile_block(
+            &self.project_dir,
+            &definition,
+            &profile.name,
+            &profile.origin,
+        );
+        if let Overlay::Instance(form) = &mut self.overlay {
+            match loaded {
+                Ok(block) => {
+                    form.parameters = block
+                        .parameters
+                        .into_iter()
+                        .map(
+                            |(name, Parameter { required, default })| InstanceParameterField {
+                                name,
+                                value: default.unwrap_or_default(),
+                                required,
+                            },
+                        )
+                        .collect();
+                    form.active_field = form.active_field.min(3 + form.parameters.len());
+                    form.error = None;
+                }
+                Err(error) => {
+                    form.parameters.clear();
+                    form.error = Some(error.to_string());
+                }
+            }
+            form.preview = None;
+            form.field_errors.clear();
+        }
+    }
+
+    fn instance_request(&self) -> Option<(PathBuf, CreateInstanceRequest)> {
+        let (profile, source, device) = self.instance_selection()?;
+        let deployment = self.current_deployment()?;
+        let Overlay::Instance(form) = &self.overlay else {
+            return None;
+        };
+        Some((
+            deployment.bundle.clone(),
+            CreateInstanceRequest {
+                name: form.name.trim().into(),
+                profile: profile.name.clone(),
+                profile_origin: profile.origin.clone(),
+                source: source.name.clone(),
+                device: device.into(),
+                parameters: form
+                    .parameters
                     .iter()
-                    .any(|instance| instance.name == form.name.trim()),
-            ),
-            _ => return,
+                    .filter(|parameter| !parameter.value.is_empty())
+                    .map(|parameter| (parameter.name.clone(), parameter.value.clone()))
+                    .collect(),
+            },
+        ))
+    }
+
+    fn preview_instance(&mut self) {
+        let Some((definition, request)) = self.instance_request() else {
+            return;
         };
-        if name.is_empty()
-            || !name
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-        {
-            if let Overlay::Instance(form) = &mut self.overlay {
-                form.error =
-                    Some("name may contain only ASCII letters, digits, '.', '-', and '_'".into());
+        match preview_instance(&self.project_dir, &definition, &request) {
+            Ok(preview) => {
+                if let Overlay::Instance(form) = &mut self.overlay {
+                    form.field_errors = instance_diagnostic_fields(&preview.diagnostics);
+                    form.preview = Some(preview);
+                    form.error = None;
+                }
             }
+            Err(error) => {
+                if let Overlay::Instance(form) = &mut self.overlay {
+                    form.error = Some(error.to_string());
+                }
+            }
+        }
+    }
+
+    fn submit_instance(&mut self) {
+        let Some((definition, request)) = self.instance_request() else {
+            return;
+        };
+        let preview_valid = matches!(&self.overlay, Overlay::Instance(form) if form.preview.as_ref().is_some_and(|preview| preview.diagnostics.is_empty()));
+        if !preview_valid {
             return;
         }
-        if duplicate {
-            if let Overlay::Instance(form) = &mut self.overlay {
-                form.error = Some(format!("instance `{name}` already exists"));
-            }
-            return;
-        }
-        match append_instance_definition(&definition, &name, &block, &source) {
-            Ok(()) => {
+        match create_instance(&self.project_dir, &definition, &request) {
+            Ok(_) => {
                 self.overlay = Overlay::None;
                 self.status = Some(format!(
-                    "instance `{name}` added; press u to plan and start the updated deployment"
+                    "instance `{}` added; press u to plan and start the updated deployment",
+                    request.name
                 ));
                 self.refresh_deployments();
             }
             Err(error) => {
                 if let Overlay::Instance(form) = &mut self.overlay {
-                    form.error = Some(error);
+                    form.error = Some(error.to_string());
                 }
             }
         }
@@ -2255,6 +2381,37 @@ fn map_names<T>(values: &std::collections::BTreeMap<String, T>) -> String {
     }
 }
 
+fn profile_is_runnable(row: &ProfileRow) -> bool {
+    !row.shadowed && matches!(row.trust, ProfileTrust::Trusted | ProfileTrust::Imported)
+}
+
+fn instance_diagnostic_fields(
+    diagnostics: &[switchyard_planner::Diagnostic],
+) -> std::collections::BTreeMap<String, String> {
+    let mut fields = std::collections::BTreeMap::new();
+    for diagnostic in diagnostics {
+        let field = if diagnostic.path.ends_with(".name") {
+            Some("name".to_owned())
+        } else if diagnostic.path.ends_with(".block") {
+            Some("profile".to_owned())
+        } else if diagnostic.path.ends_with(".source") {
+            Some("source".to_owned())
+        } else if diagnostic.path.ends_with(".device") {
+            Some("device".to_owned())
+        } else {
+            diagnostic
+                .path
+                .split(".parameters.")
+                .nth(1)
+                .map(|name| format!("parameter:{name}"))
+        };
+        if let Some(field) = field {
+            fields.insert(field, diagnostic.message.clone());
+        }
+    }
+    fields
+}
+
 #[derive(Clone, Copy)]
 enum FormAction {
     Close,
@@ -2305,143 +2462,6 @@ fn unique_source_name(store: &StateStore, base: &str) -> Result<String, String> 
     Err(format!(
         "could not find an available source name based on `{base}`"
     ))
-}
-
-fn append_instance_definition(
-    definition: &Path,
-    name: &str,
-    block: &str,
-    source: &SourceChoice,
-) -> Result<(), String> {
-    let input = fs::read_to_string(definition)
-        .map_err(|error| format!("could not read {}: {error}", definition.display()))?;
-    let had_trailing_newline = input.ends_with('\n');
-    let mut lines = input.lines().map(str::to_owned).collect::<Vec<_>>();
-    if !source.declared {
-        insert_spec_section(&mut lines, "sources", vec![source_definition_line(source)?])?;
-    }
-    insert_spec_section(
-        &mut lines,
-        "instances",
-        vec![
-            format!("    - name: {name}"),
-            format!("      block: {block}"),
-            format!("      source: {}", source.name),
-        ],
-    )?;
-    let mut output = lines.join("\n");
-    if had_trailing_newline {
-        output.push('\n');
-    }
-    validate_and_replace_definition(definition, &output)
-}
-
-fn source_definition_line(source: &SourceChoice) -> Result<String, String> {
-    let path = serde_yaml::to_string(&source.path.display().to_string())
-        .map_err(|error| format!("could not encode source path: {error}"))?;
-    if !source.worktree {
-        return Ok(format!("    {}: {{ path: {} }}", source.name, path.trim()));
-    }
-    let repository = source
-        .repository
-        .as_ref()
-        .ok_or_else(|| format!("worktree source `{}` has no repository path", source.name))?;
-    let repository = serde_yaml::to_string(&repository.display().to_string())
-        .map_err(|error| format!("could not encode repository path: {error}"))?;
-    let reference = source
-        .requested_ref
-        .as_ref()
-        .map(|reference| {
-            serde_yaml::to_string(reference)
-                .map(|value| format!(", ref: {}", value.trim()))
-                .map_err(|error| format!("could not encode worktree ref: {error}"))
-        })
-        .transpose()?
-        .unwrap_or_default();
-    Ok(format!(
-        "    {}: {{ type: worktree, repository: {}, path: {}{} }}",
-        source.name,
-        repository.trim(),
-        path.trim(),
-        reference
-    ))
-}
-
-fn insert_spec_section(
-    lines: &mut Vec<String>,
-    section: &str,
-    additions: Vec<String>,
-) -> Result<(), String> {
-    let marker = format!("  {section}:");
-    let start = lines
-        .iter()
-        .position(|line| line == &marker)
-        .ok_or_else(|| {
-            format!("cannot add interactively: `spec.{section}` must use an indented YAML block")
-        })?;
-    let mut end = start + 1;
-    while end < lines.len() {
-        let line = &lines[end];
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            end += 1;
-            continue;
-        }
-        let indentation = line.len() - line.trim_start().len();
-        if indentation <= 2 {
-            break;
-        }
-        end += 1;
-    }
-    lines.splice(end..end, additions);
-    Ok(())
-}
-
-fn validate_and_replace_definition(definition: &Path, output: &str) -> Result<(), String> {
-    let parent = definition
-        .parent()
-        .ok_or_else(|| "deployment definition has no parent directory".to_owned())?;
-    let filename = definition
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("deployment.yaml");
-    let temporary = parent.join(format!(
-        ".{filename}.switchyard-tui-{}-{}",
-        std::process::id(),
-        unix_millis()
-    ));
-    let permissions = fs::metadata(definition)
-        .map_err(|error| error.to_string())?
-        .permissions();
-    fs::write(&temporary, output).map_err(|error| {
-        format!(
-            "could not write validation draft {}: {error}",
-            temporary.display()
-        )
-    })?;
-    let validation = (|| {
-        let bundle =
-            switchyard_planner::load_bundle(&temporary).map_err(|error| error.to_string())?;
-        switchyard_planner::plan(&bundle).map_err(|diagnostics| {
-            diagnostics
-                .into_iter()
-                .map(|diagnostic| diagnostic.to_string())
-                .collect::<Vec<_>>()
-                .join("; ")
-        })?;
-        fs::set_permissions(&temporary, permissions).map_err(|error| error.to_string())?;
-        fs::rename(&temporary, definition).map_err(|error| {
-            format!(
-                "could not atomically update {}: {error}",
-                definition.display()
-            )
-        })?;
-        Ok::<(), String>(())
-    })();
-    if validation.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    validation
 }
 
 #[cfg(test)]
@@ -2542,22 +2562,6 @@ mod tests {
         assert!(form.validate().is_err());
         form.name = "feature-a".into();
         assert_eq!(form.validate(), Ok(()));
-    }
-
-    #[test]
-    fn managed_worktree_keeps_its_source_relationship_when_authored() {
-        let line = source_definition_line(&SourceChoice {
-            name: "feature-a".into(),
-            path: "/project/.switchyard/worktrees/feature-a".into(),
-            declared: false,
-            worktree: true,
-            repository: Some("/repositories/product".into()),
-            requested_ref: Some("feature/a".into()),
-        })
-        .unwrap();
-        assert!(line.contains("type: worktree"));
-        assert!(line.contains("repository: /repositories/product"));
-        assert!(line.contains("ref: feature/a"));
     }
 
     #[test]
@@ -2786,80 +2790,110 @@ mod tests {
     }
 
     #[test]
-    fn yaml_section_insertion_preserves_existing_lines() {
-        let mut lines = vec![
-            "spec:".into(),
-            "  sources:".into(),
-            "    project: { path: . }".into(),
-            "    # retained source guidance".into(),
-            "  blocks:".into(),
-        ];
-        insert_spec_section(
-            &mut lines,
-            "sources",
-            vec!["    feature: { path: /work/feature }".into()],
-        )
-        .unwrap();
-        assert_eq!(
-            lines,
-            [
-                "spec:",
-                "  sources:",
-                "    project: { path: . }",
-                "    # retained source guidance",
-                "    feature: { path: /work/feature }",
-                "  blocks:"
-            ]
-        );
-    }
-
-    #[test]
-    fn fresh_init_definition_accepts_registered_source_instance() {
+    fn guided_instance_preview_attaches_errors_and_second_enter_writes() {
         let root = std::env::temp_dir().join(format!(
-            "switchyard-tui-instance-definition-{}",
+            "switchyard-tui-guided-instance-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("overlays")).unwrap();
+        fs::create_dir_all(&root).unwrap();
         let definition = root.join("deployment.yaml");
         fs::write(
             &definition,
-            include_str!("../../switchyard-cli/templates/init/deployment.yaml")
-                .replace("{{project_name}}", "demo"),
+            r#"apiVersion: switchyard.dev/v1alpha1
+kind: Deployment
+metadata: { name: demo }
+spec:
+  sources:
+    checkout: { path: . }
+  blocks:
+    api:
+      parameters:
+        TOKEN: { required: true }
+        PORT: { default: "8080" }
+      services:
+        web:
+          execution: { type: container, image: api:1 }
+  instances:
+  groups:
+  bindings:
+  routes:
+"#,
         )
         .unwrap();
-        fs::write(
-            root.join("overlays/dev.yaml"),
-            include_str!("../../switchyard-cli/templates/init/overlays/dev.yaml"),
-        )
-        .unwrap();
-        let feature = root.join("feature checkout");
-        fs::create_dir_all(&feature).unwrap();
-        append_instance_definition(
-            &definition,
-            "web-feature",
-            "web",
-            &SourceChoice {
-                name: "feature".into(),
-                path: feature,
-                declared: false,
+        StateStore::open(root.join(".switchyard/state.sqlite3")).unwrap();
+        let mut app = App::with_sources(root.clone(), Vec::new());
+        app.active_view = ActiveView::Instances;
+        app.deployments.push(DeploymentEntry {
+            name: "demo".into(),
+            bundle: definition.clone(),
+            state: "not applied".into(),
+            services: Vec::new(),
+            instances: Vec::new(),
+            blocks: vec!["api".into()],
+            source_choices: vec![SourceChoice {
+                name: "checkout".into(),
+                path: ".".into(),
+                declared: true,
                 worktree: false,
                 repository: None,
                 requested_ref: None,
-            },
-        )
-        .unwrap();
-        let updated = fs::read_to_string(&definition).unwrap();
-        assert!(updated.contains("# Register another local checkout"));
-        let bundle = switchyard_planner::load_bundle(&definition).unwrap();
-        assert!(bundle.spec.sources.contains_key("feature"));
+            }],
+            bindings: Vec::new(),
+            last_operation: None,
+        });
+        app.profiles.push(ProfileRow {
+            name: "api".into(),
+            origin: ProfileOrigin::Project,
+            trust: ProfileTrust::Trusted,
+            shadowed: false,
+            services: Vec::new(),
+        });
+        app.devices.push(RegisteredDevice {
+            name: "builder".into(),
+            host: "builder.test".into(),
+            port: 22,
+            user: "dev".into(),
+            identity_file: None,
+            created_at: 1,
+            last_checked_at: None,
+            last_check_status: DeviceCheckStatus::Never,
+            last_check_detail: None,
+        });
+        app.open_instance_form();
+        let before = fs::read_to_string(&definition).unwrap();
+        let Overlay::Instance(form) = &mut app.overlay else {
+            panic!("guided form missing")
+        };
+        assert_eq!(form.parameters[0].value, "8080");
+        form.name = "api-main".into();
+        form.device_index = 1;
+        form.active_field = 5;
+        app.handle_key(key(KeyCode::Enter));
+        let Overlay::Instance(form) = &app.overlay else {
+            panic!("preview missing")
+        };
+        assert!(form.preview.is_some());
+        assert!(form.field_errors.contains_key("device"));
+        assert!(form.field_errors.contains_key("parameter:TOKEN"));
+        assert_eq!(fs::read_to_string(&definition).unwrap(), before);
+
+        let Overlay::Instance(form) = &mut app.overlay else {
+            unreachable!()
+        };
+        form.device_index = 0;
+        form.parameters[1].value = "secret-reference".into();
+        form.preview = None;
+        app.preview_instance();
         assert!(
-            bundle
-                .spec
-                .instances
-                .iter()
-                .any(|instance| instance.name == "web-feature" && instance.source == "feature")
+            matches!(&app.overlay, Overlay::Instance(form) if form.preview.as_ref().is_some_and(|preview| preview.diagnostics.is_empty()))
         );
+        app.handle_key(key(KeyCode::Enter));
+        assert!(matches!(app.overlay, Overlay::None));
+        let updated = fs::read_to_string(&definition).unwrap();
+        assert!(updated.contains("name: api-main"));
+        assert!(updated.contains("device: local"));
+        assert!(updated.contains("TOKEN: secret-reference"));
         fs::remove_dir_all(root).unwrap();
     }
 }

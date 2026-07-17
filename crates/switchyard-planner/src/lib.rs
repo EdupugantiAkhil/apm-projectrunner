@@ -167,7 +167,12 @@ pub struct HostUpstreamPlan {
 /// Loads one self-contained deployment bundle without changing runtime state.
 pub fn load_bundle(path: &Path) -> Result<Bundle, PlannerError> {
     let input = fs::read_to_string(path)?;
-    let mut bundle: Bundle = serde_yaml::from_str(&input)?;
+    load_bundle_from_str(&input, path)
+}
+
+/// Loads one deployment bundle from an in-memory draft using `path` for relative paths.
+pub fn load_bundle_from_str(input: &str, path: &Path) -> Result<Bundle, PlannerError> {
+    let mut bundle: Bundle = serde_yaml::from_str(input)?;
     bundle.definition_dir = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -422,6 +427,18 @@ fn validate(
     for (index, instance) in bundle.spec.instances.iter().enumerate() {
         let path = format!("spec.instances[{index}]");
         validate_name(&instance.name, format!("{path}.name"), &mut errors);
+        if let Some(device) = &instance.device {
+            if device != "local" {
+                errors.push(Diagnostic::new(
+                    DiagnosticCode::UnsupportedSchema,
+                    format!("{path}.device"),
+                    format!(
+                        "instance `{}` requests device `{device}`, but remote placement is not yet supported",
+                        instance.name
+                    ),
+                ));
+            }
+        }
         if instances.insert(instance.name.as_str(), instance).is_some() {
             errors.push(Diagnostic::new(
                 DiagnosticCode::DuplicateName,

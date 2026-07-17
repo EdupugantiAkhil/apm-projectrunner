@@ -10,6 +10,35 @@ fn bundle() -> switchyard_planner::Bundle {
     load_bundle(Path::new("tests/fixtures/deployment.yaml")).expect("fixture should load")
 }
 
+#[test]
+fn instance_device_defaults_to_local_and_rejects_remote_placement() {
+    let mut deployment = bundle();
+    assert!(
+        deployment
+            .spec
+            .instances
+            .iter()
+            .all(|instance| instance.device.is_none())
+    );
+    let omitted = serde_yaml::to_value(&deployment.spec.instances[0]).unwrap();
+    assert!(omitted.get("device").is_none());
+    deployment.spec.instances[0].device = Some("local".into());
+    let explicit = serde_yaml::to_value(&deployment.spec.instances[0]).unwrap();
+    assert_eq!(explicit["device"], "local");
+    plan(&deployment).expect("an explicit local device should plan");
+
+    deployment.spec.instances[0].device = Some("builder".into());
+    let diagnostics = plan(&deployment).expect_err("remote placement is not supported yet");
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.path == "spec.instances[0].device"
+            && diagnostic.message.contains("provider-main")
+            && diagnostic.message.contains("builder")
+            && diagnostic
+                .message
+                .contains("remote placement is not yet supported")
+    }));
+}
+
 fn write_overlay(directory: &Path, name: &str, body: &str) -> std::path::PathBuf {
     let path = directory.join(name);
     fs::write(&path, body).unwrap();

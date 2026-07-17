@@ -1129,3 +1129,23 @@ implemented shape and the evidence used to close a phase.
 - Phase D readiness proven early: the LAN device `poco-f1-nixos` (192.168.1.167,
   aarch64) accepts key-based SSH and `docker -H ssh://akhil@poco-f1-nixos` reaches its
   Docker 28.5.1 daemon.
+
+## 2026-07-18 — TUI control plane Phase B: guided configuration
+
+- `switchyard-ops` crate extracted from the TUI (execution, run scripts, projections)
+  with zero behavior change; TUI now consumes it (commit cc3bc88).
+- Source-local startup-profile domain per DESIGN.md: `switchyard-profiles.yaml`
+  discovery (read-only, planner-validated), state schema v6 `imported_profiles` with
+  canonical content hashes, trust/shadowing projections (commit 016a408).
+- New Profiles TUI tab: origin/trust/services table, per-source manifest diagnostics,
+  inspector, explicit full-definition review before import, changed-hash re-review,
+  import removal (commit 56dbfb1). Pty-verified end to end: discovery → review →
+  import persisted in SQLite → manifest edit flips the row to "changed — review".
+- Guided instance creation: planner `Instance.device` (only `local` validates, absent
+  means local), ops `preview_instance`/`create_instance` (trust gate, one-time block
+  materialization pruned of nulls/empties, source declaration, parameter emission,
+  validate-then-replace), TUI form for profile/checkout/name/device/parameters with
+  plan-backed preview and field-attached diagnostics before the write.
+- Verification: full workspace tests including planner compat goldens, clippy
+  `-D warnings`, fmt, and pty-driven flows creating a real instance from an imported
+  profile (`demo1` with `device: local` and a clean materialized block).

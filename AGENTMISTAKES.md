@@ -379,3 +379,17 @@
   newer installed toolchain only for provisional cached compilation. Lesson: a direct
   dependency's MSRV does not constrain the resolver's choice of newer transitive
   releases; verify and pin loose proc-macro dependencies against the workspace MSRV.
+
+## 2026-07-18 — Model serialization feeds compatibility hashes
+
+Attempted to silence `null`/empty-map noise in materialized profile YAML by adding
+`skip_serializing_if` across planner model structs. The compat golden test failed:
+`definition_hash` is computed from planner serialization, so "cosmetic" serializer
+changes are compatibility breaks that would mark every existing deployment as
+drifted. Fix: revert the model change and prune nulls/empties only in the ops-layer
+YAML emission for newly authored blocks. Lesson: never change serde output of
+planner model types without treating it as a schema-compatibility change; the
+`compat.rs` goldens are the tripwire. A second, self-inflicted lesson: reverting a
+file with `git checkout` during an uncommitted feature also removed the feature's
+own field (`Instance.device`) — prefer targeted edits over whole-file reverts while
+reviewing uncommitted work.

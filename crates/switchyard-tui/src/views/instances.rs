@@ -203,14 +203,16 @@ fn instance_service_rows(deployment: &crate::app::DeploymentEntry) -> Vec<[Strin
 }
 
 pub(super) fn render_instance_form(frame: &mut Frame<'_>, app: &App, form: &InstanceForm) {
-    let area = centered(frame.area(), 82, 16);
+    let height = (18 + form.parameters.len() as u16 + form.preview.as_ref().map_or(0, |_| 6))
+        .min(frame.area().height.saturating_sub(2));
+    let area = centered(frame.area(), 92, height);
     frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Add instance ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let Some((block_name, source)) = app.instance_selection() else {
+    let Some((profile, source, device)) = app.instance_selection() else {
         frame.render_widget(
             Paragraph::new("No block/source selection is available."),
             inner,
@@ -222,17 +224,32 @@ pub(super) fn render_instance_form(frame: &mut Frame<'_>, app: &App, form: &Inst
     } else {
         "registered; will be added to deployment"
     };
+    let profile_state = match profile.trust {
+        switchyard_ops::profiles::ProfileTrust::Trusted => "project profile".to_owned(),
+        switchyard_ops::profiles::ProfileTrust::Imported if !profile.shadowed => {
+            "imported and unchanged".to_owned()
+        }
+        switchyard_ops::profiles::ProfileTrust::Imported => {
+            "disabled: shadowed by a project profile".to_owned()
+        }
+        switchyard_ops::profiles::ProfileTrust::Changed => {
+            "disabled: changed; review/import it in Profiles first".to_owned()
+        }
+        switchyard_ops::profiles::ProfileTrust::NotImported => {
+            "disabled: not imported; review/import it in Profiles first".to_owned()
+        }
+    };
     let mut lines = vec![
         Line::from("Create an instance from a reusable startup profile and code checkout."),
         Line::from(""),
-        field(form.active_field == 0, "Name", &form.name),
+        field(
+            form.active_field == 0,
+            "Startup profile (←/→/Space)",
+            &profile.name,
+        ),
+        Line::from(format!("    {profile_state}")),
         field(
             form.active_field == 1,
-            "Startup profile (←/→/Space)",
-            block_name,
-        ),
-        field(
-            form.active_field == 2,
             "Checkout/worktree (←/→/Space)",
             &source.name,
         ),
@@ -240,9 +257,69 @@ pub(super) fn render_instance_form(frame: &mut Frame<'_>, app: &App, form: &Inst
             "  Checkout path: {} ({source_kind})",
             source.path.display()
         )),
-        Line::from("  Runtime device: local (distributed placement is not yet supported)"),
-        Line::from(""),
+        field(form.active_field == 2, "Instance name", &form.name),
+        field(form.active_field == 3, "Device (←/→/Space)", device),
     ];
+    if let Some(error) = form.field_errors.get("name") {
+        lines.push(error_line("Name", error));
+    }
+    if let Some(error) = form.field_errors.get("profile") {
+        lines.push(error_line("Startup profile", error));
+    }
+    if let Some(error) = form.field_errors.get("source") {
+        lines.push(error_line("Checkout", error));
+    }
+    if let Some(error) = form.field_errors.get("device") {
+        lines.push(error_line("Device", error));
+    }
+    for (index, parameter) in form.parameters.iter().enumerate() {
+        let required = if parameter.required {
+            " (required)"
+        } else {
+            ""
+        };
+        lines.push(field(
+            form.active_field == index + 4,
+            &format!("Parameter {}{required}", parameter.name),
+            &parameter.value,
+        ));
+        if let Some(error) = form
+            .field_errors
+            .get(&format!("parameter:{}", parameter.name))
+        {
+            lines.push(error_line(&parameter.name, error));
+        }
+    }
+    lines.push(Line::from(""));
+    if let Some(preview) = &form.preview {
+        lines.push(Line::from(Span::styled(
+            "Preview — no files have been changed",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(format!(
+            "  Expanded services: {}",
+            if preview.expanded_services.is_empty() {
+                "none".into()
+            } else {
+                preview.expanded_services.join(", ")
+            }
+        )));
+        if preview.diagnostics.is_empty() {
+            lines.push(Line::from(
+                "  Validation passed. Press Enter again to write.",
+            ));
+        } else {
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  {} validation diagnostic(s); fix the fields above.",
+                    preview.diagnostics.len()
+                ),
+                Style::default().fg(Color::Red),
+            )));
+        }
+    }
     if let Some(error) = &form.error {
         lines.push(Line::from(Span::styled(
             error.clone(),
@@ -250,9 +327,16 @@ pub(super) fn render_instance_form(frame: &mut Frame<'_>, app: &App, form: &Inst
         )));
     }
     lines.push(Line::from(
-        "Tab/Shift-Tab fields  Enter validate and add  Esc cancel",
+        "Tab/Shift-Tab or arrows move  Enter advances/previews/confirms  Esc cancel",
     ));
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+fn error_line(label: &str, error: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("    {label}: {error}"),
+        Style::default().fg(Color::Red),
+    ))
 }
 
 pub(super) fn render_pair_form(frame: &mut Frame<'_>, app: &App, form: &PairForm) {

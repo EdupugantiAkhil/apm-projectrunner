@@ -234,13 +234,18 @@ mod tests {
     use std::path::PathBuf;
 
     use ratatui::{Terminal, backend::TestBackend};
+    use switchyard_ops::instances::InstancePreview;
     use switchyard_ops::profiles::{
         ProfileAdapterKind, ProfileOrigin, ProfileRow, ProfileService, ProfileTrust,
         SourceManifestError,
     };
+    use switchyard_planner::{Diagnostic, DiagnosticCode};
 
     use super::*;
-    use crate::app::{AddForm, AddSourceMode, AddSourcePanel, DeviceForm};
+    use crate::app::{
+        AddForm, AddSourceMode, AddSourcePanel, DeploymentEntry, DeviceForm, InstanceForm,
+        InstanceParameterField, SourceChoice,
+    };
 
     #[test]
     fn renders_inline_add_error_with_test_backend() {
@@ -368,6 +373,74 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(contents.contains("Stop deployment `demo`"));
+    }
+
+    #[test]
+    fn renders_guided_instance_fields_disabled_reason_and_attached_preview_error() {
+        let mut app = App::with_sources(PathBuf::from("/project"), Vec::new());
+        app.active_view = ActiveView::Instances;
+        app.deployments.push(DeploymentEntry {
+            name: "demo".into(),
+            bundle: "/project/deployment.yaml".into(),
+            state: "not applied".into(),
+            services: Vec::new(),
+            instances: Vec::new(),
+            blocks: vec!["api".into()],
+            source_choices: vec![SourceChoice {
+                name: "feature-checkout".into(),
+                path: "/work/feature".into(),
+                declared: true,
+                worktree: true,
+                repository: Some("/work/repo".into()),
+                requested_ref: Some("feature".into()),
+            }],
+            bindings: Vec::new(),
+            last_operation: None,
+        });
+        app.profiles.push(profile_row(
+            "source-api",
+            ProfileOrigin::ImportedFromSource {
+                source: "feature-checkout".into(),
+                commit: Some("abc".into()),
+            },
+            ProfileTrust::Changed,
+        ));
+        app.overlay = Overlay::Instance(InstanceForm {
+            name: "api-main".into(),
+            profile_index: 0,
+            source_index: 0,
+            device_index: 0,
+            parameters: vec![InstanceParameterField {
+                name: "TOKEN".into(),
+                value: String::new(),
+                required: true,
+            }],
+            active_field: 4,
+            field_errors: std::collections::BTreeMap::from([(
+                "parameter:TOKEN".into(),
+                "required block parameter has no value".into(),
+            )]),
+            preview: Some(InstancePreview {
+                draft: String::new(),
+                expanded_services: vec!["demo--api-main--web".into()],
+                diagnostics: vec![Diagnostic {
+                    code: DiagnosticCode::MissingVariable,
+                    path: "spec.instances[0].parameters.TOKEN".into(),
+                    message: "required block parameter has no value".into(),
+                }],
+            }),
+            error: None,
+        });
+        let contents = rendered(&app, 120, 38);
+        assert!(contents.contains("Startup profile"));
+        assert!(contents.contains("source-api"));
+        assert!(contents.contains("disabled: changed"));
+        assert!(contents.contains("feature-checkout"));
+        assert!(contents.contains("Instance name"));
+        assert!(contents.contains("Device"));
+        assert!(contents.contains("Parameter TOKEN (required)"));
+        assert!(contents.contains("TOKEN: required block parameter"));
+        assert!(contents.contains("demo--api-main--web"));
     }
 
     fn profile_row(name: &str, origin: ProfileOrigin, trust: ProfileTrust) -> ProfileRow {
