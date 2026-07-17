@@ -1561,11 +1561,12 @@ fn generate(
         for (service_name, service) in &block.services {
             let base_name = service_name_for(deployment, &instance.name, service_name);
             if let Some(device) = remote_device {
+                let remote_network = remote_network_name(deployment, device);
                 let mut app = compose_application(
                     service,
                     instance,
                     &source,
-                    &network,
+                    &remote_network,
                     &instance_labels,
                     bundle,
                     block,
@@ -1573,7 +1574,6 @@ fn generate(
                 add_injected_mounts(&mut app, overlay, &instance.name, &artifact_bind_dir);
                 apply_overlay_environment(&mut app, overlay, instance);
                 let app_object = app.as_object_mut().expect("service is an object");
-                app_object.remove("networks");
                 app_object.insert("ports".into(), compose_remote_ports(&service.publish));
                 add_compose_dependencies(app_object, bundle, instance, service);
                 remote_services
@@ -1736,10 +1736,20 @@ fn generate(
     let mut remote_projects = BTreeMap::new();
     for (device_name, services) in remote_services {
         let remote_project = format!("{project}-{device_name}");
+        let remote_network = remote_network_name(deployment, &device_name);
+        let mut remote_labels = labels.clone();
+        remote_labels.insert("dev.switchyard.device".into(), device_name.clone());
         let compose_file = PathBuf::from(format!("compose.{device_name}.yaml"));
         let remote_compose = json!({
             "name": remote_project,
             "services": services,
+            "networks": {
+                remote_network.clone(): {
+                    "name": remote_network,
+                    "driver": "bridge",
+                    "labels": remote_labels,
+                }
+            },
             "volumes": remote_volumes.remove(&device_name).unwrap_or_default(),
         });
         remote_projects.insert(
@@ -2654,4 +2664,8 @@ fn resource_name(parts: &[&str]) -> String {
     }
     let digest = format!("{:x}", Sha256::digest(joined.as_bytes()));
     format!("{}-{}", &joined[..54], &digest[..8])
+}
+
+fn remote_network_name(deployment: &str, device: &str) -> String {
+    resource_name(&["sy", &format!("{deployment}-{device}"), "private"])
 }

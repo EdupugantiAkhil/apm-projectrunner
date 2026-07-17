@@ -28,6 +28,7 @@ pub enum RuntimeError {
         command: String,
         detail: String,
     },
+    Teardown(Vec<RuntimeError>),
 }
 
 impl fmt::Display for RuntimeError {
@@ -49,6 +50,17 @@ impl fmt::Display for RuntimeError {
                 command,
                 detail,
             } => write!(formatter, "device `{device}`: `{command}` failed: {detail}"),
+            Self::Teardown(errors) => {
+                writeln!(
+                    formatter,
+                    "teardown failed for {} project(s):",
+                    errors.len()
+                )?;
+                for error in errors {
+                    writeln!(formatter, "- {error}")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -347,11 +359,7 @@ impl<E: CommandExecutor> DockerRuntime<E> {
     }
 
     pub fn down(&self, plan: &RuntimePlan) -> Result<(), RuntimeError> {
-        self.down_project(plan, None, false)?;
-        for remote in plan.remote_projects.iter().rev() {
-            self.down_project(plan, Some(remote), false)?;
-        }
-        Ok(())
+        self.teardown_projects(plan, false)
     }
 
     pub fn cleanup(&self, plan: &RuntimePlan, confirmed: bool) -> Result<(), RuntimeError> {
@@ -361,11 +369,7 @@ impl<E: CommandExecutor> DockerRuntime<E> {
                 plan.deployment
             )));
         }
-        self.down_project(plan, None, true)?;
-        for remote in plan.remote_projects.iter().rev() {
-            self.down_project(plan, Some(remote), true)?;
-        }
-        Ok(())
+        self.teardown_projects(plan, true)
     }
 
     pub fn discover(&self, deployment: &str) -> Result<Vec<OwnedResource>, RuntimeError> {
@@ -530,12 +534,14 @@ impl<E: CommandExecutor> DockerRuntime<E> {
         remote: Option<&RemoteRuntimeProject>,
         volumes: bool,
     ) -> Result<(), RuntimeError> {
-        let environment = project_environment(plan, remote)?;
+        let environment = project_environment(plan, remote)
+            .map_err(|error| map_project_error(remote, "prepare Docker environment", error))?;
         let (project, device) = project_identity(plan, remote);
         let resources = self
             .discover_compose_project(&plan.deployment, project, &environment, device)
             .map_err(|error| map_project_error(remote, "docker resource discovery", error))?;
-        verify_ownership(&plan.deployment, &resources)?;
+        verify_ownership(&plan.deployment, &resources)
+            .map_err(|error| map_project_error(remote, "verify resource ownership", error))?;
         let command = if volumes {
             &["down", "--volumes", "--remove-orphans"][..]
         } else {
@@ -547,6 +553,23 @@ impl<E: CommandExecutor> DockerRuntime<E> {
             .map_err(|error| {
                 map_project_error(remote, &render_command("docker", &arguments), error)
             })
+    }
+
+    fn teardown_projects(&self, plan: &RuntimePlan, volumes: bool) -> Result<(), RuntimeError> {
+        let mut errors = Vec::new();
+        if let Err(error) = self.down_project(plan, None, volumes) {
+            errors.push(error);
+        }
+        for remote in plan.remote_projects.iter().rev() {
+            if let Err(error) = self.down_project(plan, Some(remote), volumes) {
+                errors.push(error);
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(RuntimeError::Teardown(errors))
+        }
     }
 
     fn logs_project(
@@ -1010,6 +1033,9 @@ mod tests {
         calls: Mutex<Vec<EnvironmentCall>>,
         fail_remote_version: bool,
         fail_remote_discovery: bool,
+        fail_local_down: bool,
+        fail_remote_down: bool,
+        unowned_remote_network: bool,
     }
 
     impl CommandExecutor for EnvironmentExecutor {
@@ -1037,6 +1063,18 @@ mod tests {
                 streamed: false,
             });
             let remote = environment.contains_key("DOCKER_HOST");
+            let project_discovery = arguments
+                .iter()
+                .any(|argument| argument.starts_with("label=com.docker.compose.project="));
+            let remote_network_list = remote
+                && self.unowned_remote_network
+                && arguments.first().is_some_and(|arg| arg == "network")
+                && arguments.get(1).is_some_and(|arg| arg == "list")
+                && project_discovery;
+            let remote_network_inspect = remote
+                && self.unowned_remote_network
+                && arguments.first().is_some_and(|arg| arg == "network")
+                && arguments.get(1).is_some_and(|arg| arg == "inspect");
             if remote
                 && ((self.fail_remote_version
                     && arguments.first().is_some_and(|arg| arg == "version"))
@@ -1049,7 +1087,12 @@ mod tests {
                 });
             }
             Ok(CommandOutput {
-                stdout: if arguments.first().is_some_and(|arg| arg == "version") {
+                stdout: if remote_network_list {
+                    "remote-network-id\n".into()
+                } else if remote_network_inspect {
+                    r#"[{"Id":"remote-network-id","Name":"sy--demo-builder--private","Labels":{}}]"#
+                        .into()
+                } else if arguments.first().is_some_and(|arg| arg == "version") {
                     "27.0.0\n".into()
                 } else {
                     String::new()
@@ -1069,6 +1112,18 @@ mod tests {
                 environment: environment.clone(),
                 streamed: true,
             });
+            let remote = environment.contains_key("DOCKER_HOST");
+            let down = arguments.iter().any(|argument| argument == "down");
+            if down && ((!remote && self.fail_local_down) || (remote && self.fail_remote_down)) {
+                return Err(RuntimeError::Docker {
+                    command: render_command("docker", arguments),
+                    detail: if remote {
+                        "remote teardown failed".into()
+                    } else {
+                        "local teardown failed".into()
+                    },
+                });
+            }
             Ok(())
         }
     }
@@ -1115,6 +1170,74 @@ mod tests {
         assert_eq!(downs.len(), 2);
         assert!(!downs[0].environment.contains_key("DOCKER_HOST"));
         assert!(downs[1].environment.contains_key("DOCKER_HOST"));
+    }
+
+    #[test]
+    fn down_runs_remote_teardown_after_local_failure() {
+        let runtime = DockerRuntime::new(EnvironmentExecutor {
+            fail_local_down: true,
+            ..Default::default()
+        });
+        let error = runtime.down(&remote_plan()).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("local teardown failed"), "{message}");
+        let calls = runtime.executor.calls.lock().unwrap();
+        assert!(calls.iter().any(|call| {
+            call.streamed
+                && call.environment.contains_key("DOCKER_HOST")
+                && call.arguments.iter().any(|argument| argument == "down")
+        }));
+    }
+
+    #[test]
+    fn cleanup_runs_local_and_all_remote_projects_and_aggregates_failures() {
+        let mut plan = remote_plan();
+        let mut second = plan.remote_projects[0].clone();
+        second.name = "tester".into();
+        second.host = "second-host".into();
+        second.compose_project = "sy--demo-tester".into();
+        second.compose_file = "compose.tester.yaml".into();
+        plan.remote_projects.push(second);
+        let runtime = DockerRuntime::new(EnvironmentExecutor {
+            fail_remote_down: true,
+            ..Default::default()
+        });
+
+        let error = runtime.cleanup(&plan, true).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("teardown failed for 2 project(s)"),
+            "{message}"
+        );
+        assert!(message.contains("device `builder`"), "{message}");
+        assert!(message.contains("device `tester`"), "{message}");
+        let calls = runtime.executor.calls.lock().unwrap();
+        let downs = calls
+            .iter()
+            .filter(|call| call.streamed && call.arguments.iter().any(|arg| arg == "down"))
+            .collect::<Vec<_>>();
+        assert_eq!(downs.len(), 3);
+        assert!(!downs[0].environment.contains_key("DOCKER_HOST"));
+        assert!(downs.iter().all(|call| {
+            call.arguments
+                .iter()
+                .any(|argument| argument == "--volumes")
+        }));
+    }
+
+    #[test]
+    fn remote_ownership_failure_names_device_and_resource() {
+        let runtime = DockerRuntime::new(EnvironmentExecutor {
+            unowned_remote_network: true,
+            ..Default::default()
+        });
+        let error = runtime.down(&remote_plan()).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("device `builder`"), "{message}");
+        assert!(
+            message.contains("network `sy--demo-builder--private`"),
+            "{message}"
+        );
     }
 
     #[test]

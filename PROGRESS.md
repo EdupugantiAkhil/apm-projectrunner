@@ -10,6 +10,18 @@ Updated: 2026-07-18
 
 ## 2026-07-18 Phase D part 1 remote-device runtime
 
+- Real-device teardown follow-up: every remote Compose project now declares its own
+  deterministic named bridge network, attaches every remote service to it, and labels
+  the network with the deployment ownership tuple plus its device. Remote named volumes
+  remain supported and carry the same ownership/device labels. Local Compose output is
+  unchanged. `down` and destructive cleanup now attempt the local project and every
+  remote project even after failures, aggregate all failures, and identify remote
+  ownership failures by device and exact resource.
+- Follow-up verification: the complete planner suite and compatibility check pass, the
+  focused CLI down/cleanup regressions pass, workspace Clippy is clean with warnings
+  denied, and formatting is clean. `cargo test --workspace` again progressed through
+  the transport-independent router suites before the sandbox rejected the existing
+  `router-pingora/tests/grpc_h2c.rs` listener with `EPERM`.
 - Device-aware planning now validates the provider-only remote cut: registered devices,
   container execution, no consumer slots, and explicit publication of every provided
   capability port. Local-only Compose and compatibility hashes remain unchanged.

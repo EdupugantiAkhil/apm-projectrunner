@@ -1,5 +1,21 @@
 # Agent mistakes and lessons
 
+## 2026-07-18 — Remote Compose resources need explicit ownership
+
+- The first remote-runtime cut removed each remote service's explicit network and let
+  Compose create an implicit `<project>_default` network. That network had no
+  Switchyard labels, so correct ownership verification refused teardown and stranded
+  the remote container. Correction: generate a deterministic device-scoped network
+  with ownership and device labels, attach every remote service, and cover remote
+  networks and supported named volumes at the serialized-YAML boundary. Lesson: every
+  Compose-created resource must be explicit and owned when cleanup is ownership-gated;
+  service/container labels do not transfer to implicit networks.
+- Teardown initially returned on the first local or remote project failure, which could
+  strand every later remote project. Correction: attempt all projects, retain every
+  failure, and return one aggregate whose remote entries name the device and resource.
+  Lesson: multi-host cleanup is a best-effort sweep with an aggregated failure result,
+  not a fail-fast transaction.
+
 ## 2026-07-18 — Remote eligibility must precede drift status
 
 - The first runtime wiring left the existing `status` drift preflight ahead of the new

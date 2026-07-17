@@ -99,13 +99,36 @@ fn remote_provider_is_partitioned_and_routed_by_device_host() {
     assert_eq!(remote.compose_project, "sy--comparison-builder");
     assert_eq!(remote.compose_file, Path::new("compose.builder.yaml"));
     assert_eq!(remote.services, ["comparison--provider-main--api"]);
-    assert!(
-        remote
-            .compose_yaml
-            .contains("dev.switchyard.device: builder")
+    let remote_compose: serde_yaml::Value = serde_yaml::from_str(&remote.compose_yaml).unwrap();
+    let network = "sy--comparison-builder--private";
+    assert_eq!(remote_compose["networks"][network]["name"], network);
+    assert_eq!(
+        remote_compose["networks"][network]["labels"]["dev.switchyard.managed"],
+        "true"
     );
-    assert!(remote.compose_yaml.contains("8080:8080"));
-    assert!(!remote.compose_yaml.contains("networks:"));
+    assert_eq!(
+        remote_compose["networks"][network]["labels"]["dev.switchyard.deployment"],
+        "comparison"
+    );
+    assert_eq!(
+        remote_compose["networks"][network]["labels"]["dev.switchyard.device"],
+        "builder"
+    );
+    assert_eq!(
+        remote_compose["networks"][network]["labels"]["dev.switchyard.resource-hash"],
+        generated.resource_hash
+    );
+    let service = "comparison--provider-main--api";
+    assert_eq!(remote_compose["services"][service]["networks"][0], network);
+    assert_eq!(remote_compose["services"][service]["ports"][0], "8080:8080");
+    let volume = &remote_compose["volumes"]["comparison--provider-main--data"];
+    assert_eq!(volume["labels"]["dev.switchyard.managed"], "true");
+    assert_eq!(volume["labels"]["dev.switchyard.deployment"], "comparison");
+    assert_eq!(volume["labels"]["dev.switchyard.device"], "builder");
+    assert_eq!(
+        volume["labels"]["dev.switchyard.resource-hash"],
+        generated.resource_hash
+    );
     assert!(
         !generated
             .compose_yaml
