@@ -28,6 +28,7 @@ use switchyard_state::{DeviceCheckStatus, RegisteredDevice, RegisteredSourceKind
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ActiveView {
+    Home,
     Sources,
     Profiles,
     Devices,
@@ -37,16 +38,18 @@ pub(crate) enum ActiveView {
 impl ActiveView {
     const fn next(self) -> Self {
         match self {
+            Self::Home => Self::Sources,
             Self::Sources => Self::Profiles,
             Self::Profiles => Self::Devices,
             Self::Devices => Self::Instances,
-            Self::Instances => Self::Sources,
+            Self::Instances => Self::Home,
         }
     }
 
     const fn previous(self) -> Self {
         match self {
-            Self::Sources => Self::Instances,
+            Self::Home => Self::Instances,
+            Self::Sources => Self::Home,
             Self::Profiles => Self::Sources,
             Self::Devices => Self::Profiles,
             Self::Instances => Self::Devices,
@@ -578,6 +581,7 @@ struct ProfileDialog {
 pub(crate) struct App {
     pub(crate) project_dir: PathBuf,
     pub(crate) active_view: ActiveView,
+    pub(crate) home_selected: usize,
     pub(crate) sources: Vec<RegisteredSourceInspection>,
     pub(crate) selected: usize,
     pub(crate) devices: Vec<RegisteredDevice>,
@@ -648,7 +652,8 @@ impl App {
         let shell_notice_shown = run_scripts::shell_notice_acknowledged(&project_dir);
         Self {
             project_dir,
-            active_view: ActiveView::Sources,
+            active_view: ActiveView::Home,
+            home_selected: 0,
             sources,
             selected: 0,
             devices,
@@ -816,6 +821,19 @@ impl App {
             KeyCode::Char('?') => self.overlay = Overlay::Help,
             KeyCode::Tab | KeyCode::Right => self.active_view = self.active_view.next(),
             KeyCode::BackTab | KeyCode::Left => self.active_view = self.active_view.previous(),
+            KeyCode::Down | KeyCode::Char('j') if self.active_view == ActiveView::Home => {
+                self.home_selected = (self.home_selected + 1).min(4);
+            }
+            KeyCode::Up | KeyCode::Char('k') if self.active_view == ActiveView::Home => {
+                self.home_selected = self.home_selected.saturating_sub(1);
+            }
+            KeyCode::Enter if self.active_view == ActiveView::Home => {
+                self.active_view = home_destination(self.home_selected);
+            }
+            KeyCode::Char(number @ '1'..='5') if self.active_view == ActiveView::Home => {
+                self.home_selected = (number as usize) - ('1' as usize);
+                self.active_view = home_destination(self.home_selected);
+            }
             KeyCode::Down | KeyCode::Char('j') if self.active_view == ActiveView::Sources => {
                 if !self.sources.is_empty() {
                     self.selected = (self.selected + 1).min(self.sources.len() - 1);
@@ -2239,6 +2257,14 @@ impl App {
     }
 }
 
+const fn home_destination(item: usize) -> ActiveView {
+    match item {
+        0 => ActiveView::Sources,
+        1 => ActiveView::Profiles,
+        _ => ActiveView::Instances,
+    }
+}
+
 fn profile_inspector_lines(row: &ProfileRow, block: &Block) -> Vec<String> {
     let (origin, commit) = match &row.origin {
         ProfileOrigin::Project => ("project".into(), "not applicable".into()),
@@ -2553,6 +2579,7 @@ mod tests {
     #[test]
     fn selected_checkout_opens_a_minimal_worktree_form() {
         let mut app = App::with_sources(PathBuf::from("."), vec![repository_source("product")]);
+        app.active_view = ActiveView::Sources;
         app.handle_key(key(KeyCode::Char('w')));
         let Overlay::Worktree(form) = &mut app.overlay else {
             panic!("worktree form did not open")
@@ -2641,6 +2668,9 @@ mod tests {
     #[test]
     fn tabs_cycle_through_all_control_plane_views() {
         let mut app = App::with_sources(PathBuf::from("."), Vec::new());
+        assert_eq!(app.active_view, ActiveView::Home);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.active_view, ActiveView::Sources);
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.active_view, ActiveView::Profiles);
         app.handle_key(key(KeyCode::Tab));
@@ -2648,9 +2678,29 @@ mod tests {
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.active_view, ActiveView::Instances);
         app.handle_key(key(KeyCode::Tab));
-        assert_eq!(app.active_view, ActiveView::Sources);
+        assert_eq!(app.active_view, ActiveView::Home);
         app.handle_key(key(KeyCode::BackTab));
         assert_eq!(app.active_view, ActiveView::Instances);
+    }
+
+    #[test]
+    fn home_jump_keys_route_to_checklist_tabs() {
+        let mut app = App::with_sources(PathBuf::from("."), Vec::new());
+        app.handle_key(key(KeyCode::Char('2')));
+        assert_eq!(app.active_view, ActiveView::Profiles);
+
+        app.active_view = ActiveView::Home;
+        app.home_selected = 0;
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.active_view, ActiveView::Instances);
+
+        for number in ['3', '4', '5'] {
+            app.active_view = ActiveView::Home;
+            app.handle_key(key(KeyCode::Char(number)));
+            assert_eq!(app.active_view, ActiveView::Instances);
+        }
     }
     #[test]
     fn profile_import_review_and_remove_wait_for_explicit_enter() {
@@ -2841,6 +2891,9 @@ spec:
             }],
             bindings: Vec::new(),
             last_operation: None,
+            applied: false,
+            consumer_slot_count: 0,
+            validation_problems: Vec::new(),
         });
         app.profiles.push(ProfileRow {
             name: "api".into(),

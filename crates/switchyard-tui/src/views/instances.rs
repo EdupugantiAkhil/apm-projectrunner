@@ -509,6 +509,9 @@ mod tests {
             source_choices: Vec::new(),
             bindings: Vec::new(),
             last_operation: None,
+            applied: true,
+            consumer_slot_count: 0,
+            validation_problems: Vec::new(),
         };
         assert_eq!(
             instance_service_rows(&deployment),

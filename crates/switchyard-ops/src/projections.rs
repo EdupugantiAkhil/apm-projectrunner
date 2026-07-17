@@ -28,6 +28,9 @@ pub struct DeploymentEntry {
     pub source_choices: Vec<SourceChoice>,
     pub bindings: Vec<BindingRow>,
     pub last_operation: Option<String>,
+    pub applied: bool,
+    pub consumer_slot_count: usize,
+    pub validation_problems: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,6 +56,12 @@ pub struct DefinitionTopology {
     blocks: Vec<String>,
     source_choices: Vec<SourceChoice>,
     bindings: Vec<BindingRow>,
+}
+
+#[derive(Default)]
+struct DefinitionStatus {
+    consumer_slot_count: usize,
+    validation_problems: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -177,8 +186,15 @@ pub fn list_deployments(
                 source_choices,
                 bindings: load_bindings(root, &name, &bundle),
             };
+            let definition_status = definition_status(&bundle);
             Ok(deployment_entry(
-                name, bundle, record, &resources, &manifest, topology,
+                name,
+                bundle,
+                record,
+                &resources,
+                &manifest,
+                topology,
+                definition_status,
             ))
         })
         .collect()
@@ -202,6 +218,7 @@ fn deployment_entry(
     resources: &[OwnedResourceObservation],
     manifest: &[ManifestService],
     topology: DefinitionTopology,
+    definition_status: DefinitionStatus,
 ) -> DeploymentEntry {
     let operation = stored.and_then(|entry| entry.last_operation.as_ref());
     let active_operation =
@@ -241,6 +258,40 @@ fn deployment_entry(
         source_choices: topology.source_choices,
         bindings: topology.bindings,
         last_operation,
+        applied: stored
+            .and_then(|entry| entry.definition_hash.as_ref())
+            .is_some()
+            || !resources.is_empty(),
+        consumer_slot_count: definition_status.consumer_slot_count,
+        validation_problems: definition_status.validation_problems,
+    }
+}
+
+fn definition_status(definition: &Path) -> DefinitionStatus {
+    let Ok(bundle) = switchyard_planner::load_bundle(definition) else {
+        return DefinitionStatus {
+            consumer_slot_count: 0,
+            validation_problems: vec!["The deployment definition could not be loaded.".into()],
+        };
+    };
+    let consumer_slot_count = bundle
+        .spec
+        .blocks
+        .values()
+        .flat_map(|block| block.services.values())
+        .map(|service| service.consumes.len())
+        .sum();
+    let validation_problems = switchyard_planner::plan(&bundle)
+        .err()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|diagnostic| diagnostic.message)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    DefinitionStatus {
+        consumer_slot_count,
+        validation_problems,
     }
 }
 
@@ -421,6 +472,7 @@ mod tests {
             &[],
             &[],
             DefinitionTopology::default(),
+            DefinitionStatus::default(),
         );
         assert_eq!(entry.state, "stopped");
     }

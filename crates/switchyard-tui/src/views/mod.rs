@@ -1,4 +1,5 @@
 mod devices;
+mod home;
 mod instances;
 mod profiles;
 mod sources;
@@ -23,12 +24,13 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
         ])
         .split(frame.area());
     let selected = match app.active_view {
-        ActiveView::Sources => 0,
-        ActiveView::Profiles => 1,
-        ActiveView::Devices => 2,
-        ActiveView::Instances => 3,
+        ActiveView::Home => 0,
+        ActiveView::Sources => 1,
+        ActiveView::Profiles => 2,
+        ActiveView::Devices => 3,
+        ActiveView::Instances => 4,
     };
-    let tabs = Tabs::new(["Sources", "Profiles", "Devices", "Instances"])
+    let tabs = Tabs::new(["Home", "Sources", "Profiles", "Devices", "Instances"])
         .select(selected)
         .block(
             Block::default()
@@ -42,6 +44,7 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
         );
     frame.render_widget(tabs, areas[0]);
     match app.active_view {
+        ActiveView::Home => home::render(frame, areas[1], app),
         ActiveView::Sources => sources::render(frame, areas[1], app),
         ActiveView::Profiles => profiles::render(frame, areas[1], app),
         ActiveView::Devices => devices::render(frame, areas[1], app),
@@ -69,6 +72,9 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
         )
     } else {
         let keys = match app.active_view {
+            ActiveView::Home => {
+                "↑/↓ select  Enter open  1–5 jump to checklist step  Tab view  ? help  q quit"
+            }
             ActiveView::Sources => {
                 "a add repository/path  w new worktree  d remove  r refresh  ↑/↓ select  Tab view  ? help  q quit"
             }
@@ -158,6 +164,14 @@ fn render_help(frame: &mut Frame<'_>) {
         Line::from("  q / Ctrl-C    quit"),
         Line::from(""),
         Line::from(Span::styled(
+            "Home",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  ↑ / ↓, j / k  select checklist item"),
+        Line::from("  Enter         open the selected item's tab"),
+        Line::from("  1–5           open that checklist item's tab"),
+        Line::from(""),
+        Line::from(Span::styled(
             "Sources",
             Style::default().add_modifier(Modifier::BOLD),
         )),
@@ -234,12 +248,16 @@ mod tests {
     use std::path::PathBuf;
 
     use ratatui::{Terminal, backend::TestBackend};
+    use switchyard_adapter_sdk::SourceIdentity;
     use switchyard_ops::instances::InstancePreview;
     use switchyard_ops::profiles::{
         ProfileAdapterKind, ProfileOrigin, ProfileRow, ProfileService, ProfileTrust,
         SourceManifestError,
     };
+    use switchyard_ops::projections::{InstanceRow, ServiceRow};
     use switchyard_planner::{Diagnostic, DiagnosticCode};
+    use switchyard_sources::{RegisteredSourceInspection, SourceInspection};
+    use switchyard_state::{RegisteredSource, RegisteredSourceKind};
 
     use super::*;
     use crate::app::{
@@ -396,6 +414,9 @@ mod tests {
             }],
             bindings: Vec::new(),
             last_operation: None,
+            applied: false,
+            consumer_slot_count: 0,
+            validation_problems: Vec::new(),
         });
         app.profiles.push(profile_row(
             "source-api",
@@ -467,6 +488,136 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    fn source() -> RegisteredSourceInspection {
+        RegisteredSourceInspection {
+            source: RegisteredSource {
+                name: "code".into(),
+                kind: RegisteredSourceKind::Unmanaged,
+                path: "/work/code".into(),
+                repository_path: None,
+                requested_ref: None,
+                created_at: 1,
+                managed_relative_path: None,
+            },
+            inspection: SourceInspection {
+                identity: SourceIdentity {
+                    path: "/work/code".into(),
+                    repository: None,
+                    r#ref: None,
+                    commit: None,
+                    dirty: None,
+                },
+                linked_worktree: None,
+                branch: None,
+                detached: None,
+                changes: None,
+                ahead: None,
+                behind: None,
+                unknown_code: None,
+            },
+        }
+    }
+
+    fn home_deployment(applied: bool, running: bool, bound: bool) -> DeploymentEntry {
+        DeploymentEntry {
+            name: "demo".into(),
+            bundle: "/project/deployment.yaml".into(),
+            state: if running { "running" } else { "not applied" }.into(),
+            services: if running {
+                vec![ServiceRow {
+                    instance: "api-one".into(),
+                    service: "web".into(),
+                    status: "running".into(),
+                    health: "healthy".into(),
+                }]
+            } else {
+                Vec::new()
+            },
+            instances: vec![InstanceRow {
+                name: "api-one".into(),
+                block: "api".into(),
+                source: "code".into(),
+            }],
+            blocks: vec!["api".into()],
+            source_choices: Vec::new(),
+            bindings: if bound {
+                vec![crate::app::BindingRow {
+                    consumer: "api-one".into(),
+                    group: "providers".into(),
+                    compatible_groups: vec!["providers".into()],
+                }]
+            } else {
+                Vec::new()
+            },
+            last_operation: running.then(|| "up succeeded".into()),
+            applied,
+            consumer_slot_count: 1,
+            validation_problems: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn home_fresh_project_renders_all_pending_and_first_next() {
+        let app = App::with_sources(PathBuf::from("/project"), Vec::new());
+        let contents = rendered(&app, 150, 32);
+        assert!(contents.contains("Next: ○ Pending — Register or clone code"));
+        assert!(contents.contains("○ Pending — Choose or import a startup profile"));
+        assert!(contents.contains("○ Pending — Create an instance"));
+        assert!(contents.contains("○ Pending — Start the deployment"));
+        assert!(contents.contains("Connect consumers to providers (optional)"));
+        assert!(contents.contains("Sources tab → a"));
+    }
+
+    #[test]
+    fn home_partially_configured_project_mixes_done_and_pending() {
+        let mut app = App::with_sources(PathBuf::from("/project"), vec![source()]);
+        app.profiles.push(profile_row(
+            "api",
+            ProfileOrigin::Project,
+            ProfileTrust::Trusted,
+        ));
+        app.deployments.push(home_deployment(false, false, false));
+        let contents = rendered(&app, 150, 32);
+        assert!(contents.contains("✓ Done — Register or clone code"));
+        assert!(contents.contains("✓ Done — Choose or import a startup profile"));
+        assert!(contents.contains("✓ Done — Create an instance"));
+        assert!(contents.contains("Next: ○ Pending — Start the deployment"));
+        assert!(contents.contains("○ Pending — Connect consumers to providers"));
+    }
+
+    #[test]
+    fn home_fully_running_project_renders_status_and_all_done() {
+        let mut app = App::with_sources(PathBuf::from("/project"), vec![source()]);
+        app.profiles.push(profile_row(
+            "api",
+            ProfileOrigin::Project,
+            ProfileTrust::Trusted,
+        ));
+        app.deployments.push(home_deployment(true, true, true));
+        app.profile_source_errors.push(SourceManifestError {
+            source: "broken".into(),
+            message: "manifest needs a profiles map".into(),
+        });
+        let contents = rendered(&app, 150, 32);
+        assert!(contents.contains("✓ Done — Start the deployment"));
+        assert!(contents.contains("✓ Done — Connect consumers to providers"));
+        assert!(contents.contains("Deployment: demo  |  state: running"));
+        assert!(contents.contains("services: 1 running, 0 unhealthy"));
+        assert!(contents.contains("Latest operation: up succeeded"));
+        assert!(contents.contains("Startup profile manifest (broken)"));
+    }
+
+    #[test]
+    fn help_overlay_lists_home_jump_bindings() {
+        let mut app = App::with_sources(PathBuf::from("/project"), Vec::new());
+        app.overlay = Overlay::Help;
+        let contents = rendered(&app, 100, 42);
+        assert!(contents.contains("Home"));
+        assert!(contents.contains("select checklist item"));
+        assert!(contents.contains("1–5"));
+        assert!(contents.contains("open that checklist item's tab"));
     }
 
     #[test]

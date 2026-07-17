@@ -13,9 +13,24 @@ switchyard tui
 switchyard tui path/to/project
 ```
 
-The top bar switches between **Sources**, **Profiles**, **Devices**, and **Instances**. Use `Tab` or
-Right to advance, Shift-Tab or Left to go back, press `?` for the complete in-app key
-reference, and quit with `q` or Ctrl-C.
+The TUI lands on **Home**. The top bar order is **Home**, **Sources**, **Profiles**,
+**Devices**, then **Instances**. Use `Tab` or Right to advance, Shift-Tab or Left to go
+back, press `?` for the complete in-app key reference, and quit with `q` or Ctrl-C.
+
+## Home
+
+Home is a projection-driven first-run guide; it does not save separate checklist state.
+Each item becomes **Done** when the real project state contains the corresponding source,
+startup profile, instance, applied deployment, or binding. The first unfinished item is
+labeled **Next**, and the connection step is labeled optional when the deployment declares
+no consumer slots. Every row explains the concept and names the exact destination key.
+
+Use Up/Down or `j`/`k` to select a checklist item and Enter to open its relevant tab.
+Number keys `1` through `5` jump directly from Home to the matching checklist destination.
+The concepts panel distinguishes code, startup profiles, instances, and connections. The
+status panel stays deliberately compact: deployment and reconciled state, running and
+unhealthy service counts, latest operation, plain-language validation problems, and any
+source startup-profile manifest diagnostics.
 
 ## Sources
 
