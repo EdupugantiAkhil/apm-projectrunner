@@ -14,7 +14,7 @@ switchyard tui path/to/project
 ```
 
 The TUI lands on **Home**. The top bar order is **Home**, **Sources**, **Profiles**,
-**Devices**, then **Instances**. Use `Tab` or Right to advance, Shift-Tab or Left to go
+**Devices**, **Instances**, then **Connections**. Use `Tab` or Right to advance, Shift-Tab or Left to go
 back, press `?` for the complete in-app key reference, and quit with `q` or Ctrl-C.
 
 ## Home
@@ -154,10 +154,6 @@ diagnostic after a normal down or cleanup, rather than presenting it as unknown.
 - Instances persist `device: local` today. Registered remote device names may be
   selected for an honest compatibility preview, but remote placement is not yet
   supported and cannot be saved as a valid deployment.
-- `b` opens the pairing selector. Up/Down chooses a consumer and Left/Right or Space
-  chooses a complete provider group. Incompatible groups are omitted. Enter previews
-  the old/new choice in the form and applies it through Switchyard's live, validated
-  `bind` operation.
 - Up/Down or `j`/`k` selects a run script. Enter runs it; `n`, `e`, and `D` create,
   edit, and confirm deletion respectively.
 
@@ -166,6 +162,38 @@ spawned `switchyard` CLI automatically delegates compatible operations to a runn
 project daemon, while presets with overlays, a variation, or `set` values retain the
 CLI's one-shot behavior because the current daemon command contract cannot carry
 those options.
+
+## Connections
+
+Connections are edited in their own route-matrix view, with one row for each consumer
+instance and consumed service slot. The columns show the consumer, slot, connected
+group, every provider in that group with observed health when available, and route
+state in words such as `active v3`, `applying`, or `failed: router_timeout`. An unbound
+consumer says `not connected`; Switchyard never chooses a group merely because one is
+available.
+
+Applications continue calling their fixed `localhost` or network addresses. Switchyard
+intercepts those addresses through its sidecar or host-gateway routers and sends them
+to the complete provider group selected for that consumer. A backend has one downstream
+group at a time; if two callers need the same backend code connected to different
+groups, run two backend instances.
+
+- Up/Down or `j`/`k` selects a consumer-slot row. Left/Right or `h`/`l` cycles only
+  groups that the planner proves are complete and compatible. The choice is marked
+  `pending change` and remains an in-memory draft.
+- Enter opens a no-mutation preview containing the full old and new provider lists and
+  each service route that changes. The preview states that the complete route table is
+  applied atomically and unrelated instances are not restarted.
+- A second explicit Enter starts the existing validated `switchyard bind` operation.
+  `Esc` cancels the preview and clears that consumer's draft.
+- After the operation, the view reloads desired and observed route versions, transition
+  state, error codes, and recent timestamped activation history. When state records show
+  a prior version or a rolled-back history entry, the selection details explain the
+  rollback.
+
+Groups and bindings are authored in the deployment definition. If no consumers with
+slots are declared, the empty state explains those concepts rather than inventing a
+connection.
 
 ## Project run scripts
 

@@ -10,8 +10,9 @@ use std::{
 use std::fs;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-pub(crate) use switchyard_ops::projections::{BindingRow, DeploymentEntry, SourceChoice};
+pub(crate) use switchyard_ops::projections::{DeploymentEntry, SourceChoice};
 use switchyard_ops::{
+    connections::{ConnectionRow, SwitchPreview, switch_preview},
     execution::{self, OperationEvent, OperationSpec},
     instances::{CreateInstanceRequest, InstancePreview, create_instance, preview_instance},
     profiles::{
@@ -33,6 +34,7 @@ pub(crate) enum ActiveView {
     Profiles,
     Devices,
     Instances,
+    Connections,
 }
 
 impl ActiveView {
@@ -42,17 +44,19 @@ impl ActiveView {
             Self::Sources => Self::Profiles,
             Self::Profiles => Self::Devices,
             Self::Devices => Self::Instances,
-            Self::Instances => Self::Home,
+            Self::Instances => Self::Connections,
+            Self::Connections => Self::Home,
         }
     }
 
     const fn previous(self) -> Self {
         match self {
-            Self::Home => Self::Instances,
+            Self::Home => Self::Connections,
             Self::Sources => Self::Home,
             Self::Profiles => Self::Sources,
             Self::Devices => Self::Profiles,
             Self::Instances => Self::Devices,
+            Self::Connections => Self::Instances,
         }
     }
 }
@@ -492,13 +496,6 @@ pub(crate) struct InstanceForm {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PairForm {
-    pub(crate) consumer_index: usize,
-    pub(crate) group_index: usize,
-    pub(crate) error: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Overlay {
     None,
     Add(AddForm),
@@ -514,7 +511,7 @@ pub(crate) enum Overlay {
     },
     Script(ScriptForm),
     Instance(InstanceForm),
-    Pair(PairForm),
+    ConnectionPreview(SwitchPreview),
     ConfirmDown {
         deployment: String,
     },
@@ -593,7 +590,8 @@ pub(crate) struct App {
     pub(crate) deployment_selected: usize,
     pub(crate) scripts: Vec<RunScript>,
     pub(crate) script_selected: usize,
-    pub(crate) binding_selected: usize,
+    pub(crate) connection_selected: usize,
+    pub(crate) connection_drafts: std::collections::BTreeMap<String, String>,
     pub(crate) scripts_error: Option<String>,
     pub(crate) output: Vec<String>,
     pub(crate) output_scroll: usize,
@@ -665,7 +663,8 @@ impl App {
             deployment_selected: 0,
             scripts,
             script_selected: 0,
-            binding_selected: 0,
+            connection_selected: 0,
+            connection_drafts: std::collections::BTreeMap::new(),
             scripts_error,
             output: Vec::new(),
             output_scroll: 0,
@@ -787,7 +786,7 @@ impl App {
                 _ => {}
             },
             Overlay::Instance(_) => self.handle_instance_key(key),
-            Overlay::Pair(_) => self.handle_pair_key(key),
+            Overlay::ConnectionPreview(_) => self.handle_connection_preview_key(key),
             Overlay::ConfirmDown { .. } => self.handle_down_confirm(key),
             Overlay::ConfirmDeleteScript { .. } => self.handle_delete_confirm(key),
             Overlay::ShellNotice { .. } => self.handle_shell_notice(key),
@@ -819,8 +818,14 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.overlay = Overlay::Help,
-            KeyCode::Tab | KeyCode::Right => self.active_view = self.active_view.next(),
-            KeyCode::BackTab | KeyCode::Left => self.active_view = self.active_view.previous(),
+            KeyCode::Tab => self.active_view = self.active_view.next(),
+            KeyCode::BackTab => self.active_view = self.active_view.previous(),
+            KeyCode::Right if self.active_view != ActiveView::Connections => {
+                self.active_view = self.active_view.next()
+            }
+            KeyCode::Left if self.active_view != ActiveView::Connections => {
+                self.active_view = self.active_view.previous()
+            }
             KeyCode::Down | KeyCode::Char('j') if self.active_view == ActiveView::Home => {
                 self.home_selected = (self.home_selected + 1).min(4);
             }
@@ -1020,41 +1025,28 @@ impl App {
                     };
                 }
             }
-            KeyCode::Char('b')
-                if self.active_view == ActiveView::Instances && self.busy.is_none() =>
+            KeyCode::Down | KeyCode::Char('j') if self.active_view == ActiveView::Connections => {
+                let count = self.current_connection_rows().len();
+                if count > 0 {
+                    self.connection_selected = (self.connection_selected + 1).min(count - 1);
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') if self.active_view == ActiveView::Connections => {
+                self.connection_selected = self.connection_selected.saturating_sub(1);
+            }
+            KeyCode::Left | KeyCode::Char('h') if self.active_view == ActiveView::Connections => {
+                self.cycle_connection_group(false);
+            }
+            KeyCode::Right | KeyCode::Char('l') if self.active_view == ActiveView::Connections => {
+                self.cycle_connection_group(true);
+            }
+            KeyCode::Enter
+                if self.active_view == ActiveView::Connections && self.busy.is_none() =>
             {
-                self.open_pair_form();
+                self.open_connection_preview();
             }
             _ => {}
         }
-    }
-
-    fn open_pair_form(&mut self) {
-        let Some(deployment) = self.current_deployment() else {
-            self.status = Some("error: no deployment definition found".into());
-            return;
-        };
-        if deployment.bindings.is_empty() {
-            self.status = Some(
-                "no group bindings are defined; add consumer bindings to deployment.yaml first"
-                    .into(),
-            );
-            return;
-        }
-        let consumer_index = self
-            .binding_selected
-            .min(deployment.bindings.len().saturating_sub(1));
-        let binding = &deployment.bindings[consumer_index];
-        let group_index = binding
-            .compatible_groups
-            .iter()
-            .position(|group| group == &binding.group)
-            .unwrap_or_default();
-        self.overlay = Overlay::Pair(PairForm {
-            consumer_index,
-            group_index,
-            error: None,
-        });
     }
 
     fn open_instance_form(&mut self) {
@@ -1308,113 +1300,91 @@ impl App {
         }
     }
 
-    fn handle_pair_key(&mut self, key: KeyEvent) {
-        if matches!(key.code, KeyCode::Esc | KeyCode::Char('n')) {
-            self.overlay = Overlay::None;
-            return;
-        }
-        let binding_count = self
-            .current_deployment()
-            .map_or(0, |deployment| deployment.bindings.len());
-        if binding_count == 0 {
-            self.overlay = Overlay::None;
-            return;
-        }
-        let Overlay::Pair(form) = &mut self.overlay else {
-            return;
-        };
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                form.consumer_index = form.consumer_index.saturating_sub(1);
-                self.reset_pair_group();
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                form.consumer_index = (form.consumer_index + 1).min(binding_count - 1);
-                self.reset_pair_group();
-            }
-            KeyCode::Left | KeyCode::Char('h') => self.move_pair_group(false),
-            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => self.move_pair_group(true),
-            KeyCode::Enter | KeyCode::Char('y') if self.busy.is_none() => self.submit_pair(),
-            _ => {}
-        }
+    pub(crate) fn current_connection_rows(&self) -> &[ConnectionRow] {
+        self.current_deployment()
+            .map(|deployment| deployment.connections.rows.as_slice())
+            .unwrap_or_default()
     }
 
-    fn reset_pair_group(&mut self) {
-        let Some((current_group, groups)) = self
-            .pair_binding()
-            .map(|binding| (binding.group.clone(), binding.compatible_groups.clone()))
+    fn cycle_connection_group(&mut self, forward: bool) {
+        let Some(row) = self
+            .current_connection_rows()
+            .get(self.connection_selected)
+            .cloned()
         else {
             return;
         };
-        if let Overlay::Pair(form) = &mut self.overlay {
-            form.group_index = groups
+        if row.compatible_groups.is_empty() {
+            self.status = Some("no complete compatible provider group is available".into());
+            return;
+        }
+        let selected = self
+            .connection_drafts
+            .get(&row.consumer)
+            .cloned()
+            .or(row.current_group);
+        let next = match selected.as_ref().and_then(|group| {
+            row.compatible_groups
                 .iter()
-                .position(|group| group == &current_group)
-                .unwrap_or_default();
-            form.error = None;
-        }
-    }
-
-    fn move_pair_group(&mut self, forward: bool) {
-        let count = self
-            .pair_binding()
-            .map_or(0, |binding| binding.compatible_groups.len());
-        if count == 0 {
-            return;
-        }
-        if let Overlay::Pair(form) = &mut self.overlay {
-            form.group_index = if forward {
-                (form.group_index + 1) % count
-            } else {
-                (form.group_index + count - 1) % count
-            };
-            form.error = None;
-        }
-    }
-
-    fn pair_binding(&self) -> Option<&BindingRow> {
-        let Overlay::Pair(form) = &self.overlay else {
-            return None;
+                .position(|candidate| candidate == group)
+        }) {
+            Some(index) if forward => (index + 1) % row.compatible_groups.len(),
+            Some(index) => (index + row.compatible_groups.len() - 1) % row.compatible_groups.len(),
+            None if forward => 0,
+            None => row.compatible_groups.len() - 1,
         };
-        self.current_deployment()?.bindings.get(form.consumer_index)
+        self.connection_drafts
+            .insert(row.consumer, row.compatible_groups[next].clone());
     }
 
-    pub(crate) fn pair_selection(&self) -> Option<(&BindingRow, &str)> {
-        let Overlay::Pair(form) = &self.overlay else {
-            return None;
-        };
-        let binding = self
-            .current_deployment()?
-            .bindings
-            .get(form.consumer_index)?;
-        let group = binding.compatible_groups.get(form.group_index)?;
-        Some((binding, group))
-    }
-
-    fn submit_pair(&mut self) {
-        let Some((binding, group)) = self
-            .pair_selection()
-            .map(|(binding, group)| (binding.clone(), group.to_owned()))
+    fn open_connection_preview(&mut self) {
+        let Some(row) = self
+            .current_connection_rows()
+            .get(self.connection_selected)
+            .cloned()
         else {
-            if let Overlay::Pair(form) = &mut self.overlay {
-                form.error = Some("no compatible provider group is available".into());
+            return;
+        };
+        let Some(group) = self.connection_drafts.get(&row.consumer).cloned() else {
+            self.status = Some("choose a compatible group with ←/→ before previewing".into());
+            return;
+        };
+        let Some(definition) = self.current_deployment().map(|item| item.bundle.clone()) else {
+            return;
+        };
+        match switch_preview(&self.project_dir, &definition, &row.consumer, &group) {
+            Ok(preview) => self.overlay = Overlay::ConnectionPreview(preview),
+            Err(error) => self.status = Some(format!("connection preview failed: {error}")),
+        }
+    }
+
+    fn handle_connection_preview_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Esc {
+            if let Overlay::ConnectionPreview(preview) = &self.overlay {
+                self.connection_drafts.remove(&preview.consumer);
             }
+            self.overlay = Overlay::None;
+            return;
+        }
+        if key.code != KeyCode::Enter || self.busy.is_some() {
+            return;
+        }
+        let Overlay::ConnectionPreview(preview) = &self.overlay else {
             return;
         };
-        let Some(bundle) = self
-            .current_deployment()
-            .map(|deployment| deployment.bundle.clone())
-        else {
+        if !preview.diagnostics.is_empty() {
+            return;
+        }
+        let consumer = preview.consumer.clone();
+        let group = preview.new_group.clone();
+        let Some(bundle) = self.current_deployment().map(|item| item.bundle.clone()) else {
             return;
         };
-        self.binding_selected = match &self.overlay {
-            Overlay::Pair(form) => form.consumer_index,
-            _ => 0,
-        };
+        self.connection_drafts.remove(&consumer);
         self.overlay = Overlay::None;
         self.start_operation(
-            format!("pair {} → {group}", binding.consumer),
-            OperationSpec::bind(bundle, binding.consumer, group),
+            format!("connect {consumer} → {group}"),
+            OperationSpec::bind(bundle, consumer, group),
         );
     }
 
@@ -2678,9 +2648,94 @@ mod tests {
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.active_view, ActiveView::Instances);
         app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.active_view, ActiveView::Connections);
+        app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.active_view, ActiveView::Home);
         app.handle_key(key(KeyCode::BackTab));
-        assert_eq!(app.active_view, ActiveView::Instances);
+        assert_eq!(app.active_view, ActiveView::Connections);
+    }
+
+    #[test]
+    fn connection_group_cycling_creates_a_draft_without_applying() {
+        let mut app = App::with_sources(PathBuf::from("."), Vec::new());
+        app.active_view = ActiveView::Connections;
+        app.deployments.push(DeploymentEntry {
+            name: "demo".into(),
+            bundle: "deployment.yaml".into(),
+            state: "running".into(),
+            services: Vec::new(),
+            instances: Vec::new(),
+            blocks: Vec::new(),
+            source_choices: Vec::new(),
+            bindings: Vec::new(),
+            connections: switchyard_ops::ConnectionMatrix {
+                rows: vec![switchyard_ops::ConnectionRow {
+                    consumer: "backend".into(),
+                    slot: "catalog".into(),
+                    current_group: None,
+                    compatible_groups: vec!["feature".into(), "main".into()],
+                    providers: Vec::new(),
+                }],
+            },
+            route_statuses: Vec::new(),
+            last_operation: None,
+            applied: true,
+            consumer_slot_count: 1,
+            validation_problems: Vec::new(),
+        });
+        app.handle_key(key(KeyCode::Right));
+        assert_eq!(
+            app.connection_drafts.get("backend").map(String::as_str),
+            Some("feature")
+        );
+        assert_eq!(app.overlay, Overlay::None);
+        assert!(app.busy.is_none());
+        app.handle_key(key(KeyCode::Left));
+        assert_eq!(
+            app.connection_drafts.get("backend").map(String::as_str),
+            Some("main")
+        );
+    }
+
+    #[test]
+    fn connection_apply_requires_preview_then_a_second_enter() {
+        let definition = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../switchyard-planner/tests/compat/routing-matrix-deployment.yaml");
+        let root = definition.parent().unwrap().to_path_buf();
+        let mut app = App::with_sources(root, Vec::new());
+        app.active_view = ActiveView::Connections;
+        app.deployments.push(DeploymentEntry {
+            name: "routing-matrix".into(),
+            bundle: definition,
+            state: "running".into(),
+            services: Vec::new(),
+            instances: Vec::new(),
+            blocks: Vec::new(),
+            source_choices: Vec::new(),
+            bindings: Vec::new(),
+            connections: switchyard_ops::ConnectionMatrix {
+                rows: vec![switchyard_ops::ConnectionRow {
+                    consumer: "backend-1".into(),
+                    slot: "catalog".into(),
+                    current_group: Some("feature-services".into()),
+                    compatible_groups: vec!["feature-services".into(), "main-services".into()],
+                    providers: Vec::new(),
+                }],
+            },
+            route_statuses: Vec::new(),
+            last_operation: None,
+            applied: true,
+            consumer_slot_count: 1,
+            validation_problems: Vec::new(),
+        });
+        app.connection_drafts
+            .insert("backend-1".into(), "main-services".into());
+        app.handle_key(key(KeyCode::Enter));
+        assert!(matches!(app.overlay, Overlay::ConnectionPreview(_)));
+        assert!(app.busy.is_none(), "the first Enter must not apply");
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.overlay, Overlay::None);
+        assert!(!app.connection_drafts.contains_key("backend-1"));
     }
 
     #[test]
@@ -2890,6 +2945,8 @@ spec:
                 requested_ref: None,
             }],
             bindings: Vec::new(),
+            connections: switchyard_ops::ConnectionMatrix::default(),
+            route_statuses: Vec::new(),
             last_operation: None,
             applied: false,
             consumer_slot_count: 0,

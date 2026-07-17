@@ -3,12 +3,17 @@
 //! This crate owns no view or command-line parsing concerns and must never depend on
 //! `ratatui`, `crossterm`, or `clap`.
 
+pub mod connections;
 pub mod execution;
 pub mod instances;
 pub mod profiles;
 pub mod projections;
 pub mod run_scripts;
 
+pub use connections::{
+    ConnectionMatrix, ConnectionRow, ProviderDetail, RouteChange, RouteHistoryEntry, RouteStatus,
+    SwitchPreview, connection_matrix, project_route_status, route_status, switch_preview,
+};
 pub use execution::{OperationEvent, OperationSpec};
 pub use instances::{
     CreateInstanceError, CreateInstanceRequest, CreatedInstance, InstancePreview, create_instance,

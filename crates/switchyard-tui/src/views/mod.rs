@@ -1,3 +1,4 @@
+mod connections;
 mod devices;
 mod home;
 mod instances;
@@ -29,19 +30,27 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
         ActiveView::Profiles => 2,
         ActiveView::Devices => 3,
         ActiveView::Instances => 4,
+        ActiveView::Connections => 5,
     };
-    let tabs = Tabs::new(["Home", "Sources", "Profiles", "Devices", "Instances"])
-        .select(selected)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" Switchyard — {} ", app.project_dir.display())),
-        )
-        .highlight_style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
+    let tabs = Tabs::new([
+        "Home",
+        "Sources",
+        "Profiles",
+        "Devices",
+        "Instances",
+        "Connections",
+    ])
+    .select(selected)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Switchyard — {} ", app.project_dir.display())),
+    )
+    .highlight_style(
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
     frame.render_widget(tabs, areas[0]);
     match app.active_view {
         ActiveView::Home => home::render(frame, areas[1], app),
@@ -49,6 +58,7 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
         ActiveView::Profiles => profiles::render(frame, areas[1], app),
         ActiveView::Devices => devices::render(frame, areas[1], app),
         ActiveView::Instances => instances::render(frame, areas[1], app),
+        ActiveView::Connections => connections::render(frame, areas[1], app),
     }
     let footer = if let Some(kind) = app.busy {
         let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][app.spinner_tick % 10];
@@ -83,7 +93,10 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
             }
             ActiveView::Devices => "a add  c check  d remove  ↑/↓ select  Tab view  ? help  q quit",
             ActiveView::Instances => {
-                "i add instance  b pair  u/s/x/p lifecycle  Enter run  n/e/D scripts  PgUp/PgDn output  Tab view  ? help  q quit"
+                "i add instance  u/s/x/p lifecycle  Enter run  n/e/D scripts  PgUp/PgDn output  Tab view  ? help  q quit"
+            }
+            ActiveView::Connections => {
+                "↑/↓ row  ←/→ group draft  Enter preview  Esc cancel  Tab view  ? help  q quit"
             }
         };
         app.status
@@ -104,7 +117,7 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
         }
         Overlay::Script(form) => instances::render_script_form(frame, form),
         Overlay::Instance(form) => instances::render_instance_form(frame, app, form),
-        Overlay::Pair(form) => instances::render_pair_form(frame, app, form),
+        Overlay::ConnectionPreview(preview) => connections::render_preview(frame, preview),
         Overlay::ConfirmDown { deployment } => instances::render_confirm(
             frame,
             " Confirm down ",
@@ -207,10 +220,18 @@ fn render_help(frame: &mut Frame<'_>) {
         )),
         Line::from("  u / s / x / p up, status, confirmed down, plan"),
         Line::from("  i             add instance (startup profile/worktree selectors)"),
-        Line::from("  b             select and apply a provider-group pairing"),
         Line::from("  Enter         run selected preset"),
         Line::from("  n / e / D     new, edit, delete preset"),
         Line::from("  PgUp / PgDn   scroll operation output"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Connections",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  ↑ / ↓, j / k  select consumer slot"),
+        Line::from("  ← / →, h / l  draft a compatible complete group"),
+        Line::from("  Enter         preview; Enter again applies atomically"),
+        Line::from("  Esc           cancel preview and clear its draft"),
     ];
     frame.render_widget(
         Paragraph::new(lines)
@@ -413,6 +434,8 @@ mod tests {
                 requested_ref: Some("feature".into()),
             }],
             bindings: Vec::new(),
+            connections: switchyard_ops::ConnectionMatrix::default(),
+            route_statuses: Vec::new(),
             last_operation: None,
             applied: false,
             consumer_slot_count: 0,
@@ -490,6 +513,96 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn connections_matrix_renders_unbound_drafts_and_route_states() {
+        use switchyard_ops::{ConnectionMatrix, ConnectionRow, ProviderDetail, RouteStatus};
+
+        let mut app = App::with_sources(PathBuf::from("/project"), Vec::new());
+        app.active_view = ActiveView::Connections;
+        let rows = ["unbound", "draft", "active", "applying", "failed"]
+            .into_iter()
+            .map(|consumer| ConnectionRow {
+                consumer: consumer.into(),
+                slot: "catalog".into(),
+                current_group: (!matches!(consumer, "unbound" | "draft")).then(|| "main".into()),
+                compatible_groups: vec!["feature".into(), "main".into()],
+                providers: (!matches!(consumer, "unbound" | "draft"))
+                    .then(|| ProviderDetail {
+                        instance: "catalog-main".into(),
+                        service: "app".into(),
+                        health: "healthy".into(),
+                    })
+                    .into_iter()
+                    .collect(),
+            })
+            .collect();
+        let status =
+            |binding: &str, apply_status: &str, observed, error: Option<&str>| RouteStatus {
+                router: format!("{binding}-router"),
+                binding_id: binding.into(),
+                desired_version: Some(3),
+                observed_version: observed,
+                previous_version: Some(2),
+                apply_status: apply_status.into(),
+                transition_state: "drain".into(),
+                last_error_code: error.map(str::to_owned),
+                history: Vec::new(),
+            };
+        let mut deployment = home_deployment(true, true, false);
+        deployment.connections = ConnectionMatrix { rows };
+        deployment.route_statuses = vec![
+            status("active", "active", Some(3), None),
+            status("applying", "pending", Some(2), None),
+            status("failed", "failed", Some(2), Some("router_timeout")),
+        ];
+        app.deployments.push(deployment);
+        app.connection_drafts
+            .insert("draft".into(), "feature".into());
+        let contents = rendered(&app, 180, 35);
+        assert!(contents.contains("not connected"));
+        assert!(contents.contains("feature — pending change"));
+        assert!(contents.contains("catalog-main/app healthy"));
+        assert!(contents.contains("active v3"));
+        assert!(contents.contains("applying"));
+        assert!(contents.contains("failed: router_timeout"));
+    }
+
+    #[test]
+    fn connection_preview_lists_old_and_new_providers() {
+        use switchyard_ops::{ProviderDetail, RouteChange, SwitchPreview};
+
+        let mut app = App::with_sources(PathBuf::from("/project"), Vec::new());
+        app.active_view = ActiveView::Connections;
+        app.overlay = Overlay::ConnectionPreview(SwitchPreview {
+            consumer: "backend-1".into(),
+            old_group: Some("main".into()),
+            new_group: "feature".into(),
+            old_providers: vec![ProviderDetail {
+                instance: "catalog-main".into(),
+                service: "app".into(),
+                health: "unknown".into(),
+            }],
+            new_providers: vec![ProviderDetail {
+                instance: "catalog-feature".into(),
+                service: "app".into(),
+                health: "unknown".into(),
+            }],
+            affected_services: vec![RouteChange {
+                service: "catalog".into(),
+                old_provider: Some("catalog-main/app".into()),
+                new_provider: Some("catalog-feature/app".into()),
+            }],
+            diagnostics: Vec::new(),
+        });
+        let contents = rendered(&app, 130, 38);
+        assert!(contents.contains("Old providers"));
+        assert!(contents.contains("catalog-main/app"));
+        assert!(contents.contains("New providers"));
+        assert!(contents.contains("catalog-feature/app"));
+        assert!(contents.contains("unrelated instances are not restarted"));
+        assert!(contents.contains("Enter confirms and applies"));
+    }
+
     fn source() -> RegisteredSourceInspection {
         RegisteredSourceInspection {
             source: RegisteredSource {
@@ -543,7 +656,7 @@ mod tests {
             blocks: vec!["api".into()],
             source_choices: Vec::new(),
             bindings: if bound {
-                vec![crate::app::BindingRow {
+                vec![switchyard_ops::BindingRow {
                     consumer: "api-one".into(),
                     group: "providers".into(),
                     compatible_groups: vec!["providers".into()],
@@ -551,6 +664,8 @@ mod tests {
             } else {
                 Vec::new()
             },
+            connections: switchyard_ops::ConnectionMatrix::default(),
+            route_statuses: Vec::new(),
             last_operation: running.then(|| "up succeeded".into()),
             applied,
             consumer_slot_count: 1,

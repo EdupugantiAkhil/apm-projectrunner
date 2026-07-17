@@ -9,6 +9,8 @@ use serde::Deserialize;
 use switchyard_sources::RegisteredSourceInspection;
 use switchyard_state::{OwnedResourceObservation, RegisteredDevice, StateStore, StoredDeployment};
 
+use crate::connections::{ConnectionMatrix, RouteStatus};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceRow {
     pub instance: String,
@@ -27,6 +29,8 @@ pub struct DeploymentEntry {
     pub blocks: Vec<String>,
     pub source_choices: Vec<SourceChoice>,
     pub bindings: Vec<BindingRow>,
+    pub connections: ConnectionMatrix,
+    pub route_statuses: Vec<RouteStatus>,
     pub last_operation: Option<String>,
     pub applied: bool,
     pub consumer_slot_count: usize,
@@ -187,7 +191,7 @@ pub fn list_deployments(
                 bindings: load_bindings(root, &name, &bundle),
             };
             let definition_status = definition_status(&bundle);
-            Ok(deployment_entry(
+            let mut entry = deployment_entry(
                 name,
                 bundle,
                 record,
@@ -195,7 +199,13 @@ pub fn list_deployments(
                 &manifest,
                 topology,
                 definition_status,
-            ))
+            );
+            entry.connections =
+                crate::connections::connection_matrix(root, &entry.bundle, &entry.services)
+                    .unwrap_or_default();
+            entry.route_statuses =
+                crate::connections::route_status(root, &entry.name).unwrap_or_default();
+            Ok(entry)
         })
         .collect()
 }
@@ -257,6 +267,8 @@ fn deployment_entry(
         blocks: topology.blocks,
         source_choices: topology.source_choices,
         bindings: topology.bindings,
+        connections: ConnectionMatrix::default(),
+        route_statuses: Vec::new(),
         last_operation,
         applied: stored
             .and_then(|entry| entry.definition_hash.as_ref())
