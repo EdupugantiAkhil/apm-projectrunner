@@ -104,19 +104,27 @@ separate from project run actions in `.switchyard/run-scripts.yaml`.
 
 ## Devices
 
-The Devices table is an interactive selector for registered SSH targets. Up/Down or
-`j`/`k` changes the selected device.
+The Devices table is an interactive selector for registered SSH targets. Its eligibility
+column says `eligible for remote container execution (docker <version>)`, `no docker
+over SSH: <reason>`, or `unchecked`. Up/Down or `j`/`k` changes the selected device.
 
 - `a` registers a name, SSH user, host, port, and optional identity-file path. Existing
   SSH agent and configuration behavior is preserved; Switchyard never stores passwords
   or private-key material.
-- `c` checks the selected device in the background and persists its status and detail.
+- `c` checks the selected device in the background. It first probes SSH with batch
+  authentication, then runs `docker version` through Docker's native SSH transport,
+  and persists the outcome and server version or concrete failure. Identity-file paths
+  may be used, but passwords and private-key contents are never stored.
 - `d` confirms removal of the registry entry without touching SSH keys or configuration.
 
-Device registrations currently prove and record SSH connectivity. The instance form
-lists `local` and registered devices so placement intent is visible, but only `local`
-runs today. Selecting a registered remote device produces a planner error in the draft
-preview; Switchyard never silently falls back to local execution.
+Eligibility covers the deliberately limited remote-execution cut: container instances
+that act only as providers and publish every provided capability port. The local
+Switchyard router reaches them through the device host and published address; remote
+routers, remote consumers, process adapters, and cross-device sidecars are unsupported.
+The registered host must therefore resolve and be reachable from containers. Prefer a
+LAN IP; `localhost` names the container itself, and mDNS names are often unavailable in
+container DNS. An eligibility check proves SSH and Docker access, not that a particular
+profile satisfies these planner-enforced workload boundaries.
 
 ## Instances
 
@@ -137,7 +145,10 @@ diagnostic after a normal down or cleanup, rather than presenting it as unknown.
   its exit code. `PageUp` and `PageDown` scroll its retained output.
 - If a project contains multiple definitions, `[` and `]` select the deployment.
 - `i` opens guided instance creation. In order, choose a **startup profile**, checkout,
-  instance name, device, and each parameter declared by the profile. Required
+  instance name, device, and each parameter declared by the profile. The device selector
+  labels remote entries as eligible, ineligible, or unchecked from their persisted
+  check. Any entry may be selected so the plan preview can report the exact placement
+  incompatibility; selection never silently falls back to local. Required
   parameters are labeled, defaults are prefilled, and undeclared parameters cannot be
   added. Project profiles and unchanged imported profiles are runnable; discovered or
   changed profiles remain visible but disabled with a prompt to review/import them in
@@ -151,9 +162,12 @@ diagnostic after a normal down or cleanup, rather than presenting it as unknown.
   to `spec.sources` when needed. The targeted edit preserves the surrounding authored
   YAML and is fully planned before atomic replacement. Press `u` afterwards to plan and
   start the updated deployment.
-- Instances persist `device: local` today. Registered remote device names may be
-  selected for an honest compatibility preview, but remote placement is not yet
-  supported and cannot be saved as a valid deployment.
+- When a remote device is selected, the form reminds you that services must publish
+  their provided ports and the startup profile must contain only container-backed
+  providers. Valid remote instances persist the registered device name. The instances
+  and services table shows `local` or that device name in its Placement column. If a
+  status refresh cannot reach a device, its rows say `device unreachable: <detail>` and
+  retain the prior observations instead of claiming that the resources are missing.
 - Up/Down or `j`/`k` selects a run script. Enter runs it; `n`, `e`, and `D` create,
   edit, and confirm deletion respectively.
 

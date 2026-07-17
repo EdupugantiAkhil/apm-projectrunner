@@ -2958,6 +2958,7 @@ dependencies = [
  "switchyard-adapter-sdk",
  "switchyard-adapters",
  "switchyard-daemon",
+ "switchyard-ops",
  "switchyard-planner",
  "switchyard-router-admin",
  "switchyard-sources",

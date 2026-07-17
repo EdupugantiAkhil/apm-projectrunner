@@ -1203,6 +1203,27 @@ impl App {
         ))
     }
 
+    pub(crate) fn instance_device_label(&self, device: &str) -> String {
+        if device == "local" {
+            return "local (eligible)".into();
+        }
+        self.devices
+            .iter()
+            .find(|candidate| candidate.name == device)
+            .map(|candidate| {
+                let eligibility = switchyard_ops::devices::eligibility_label(candidate);
+                let eligibility = match candidate.last_check_status {
+                    DeviceCheckStatus::Eligible => eligibility,
+                    DeviceCheckStatus::Never | DeviceCheckStatus::Ok => "unchecked".into(),
+                    DeviceCheckStatus::Ineligible
+                    | DeviceCheckStatus::Unreachable
+                    | DeviceCheckStatus::AuthFailed => format!("ineligible — {eligibility}"),
+                };
+                format!("{} — {}", candidate.name, eligibility)
+            })
+            .unwrap_or_else(|| format!("{device} — unchecked"))
+    }
+
     fn reload_instance_parameters(&mut self) {
         let Some((profile, definition)) = self.instance_selection().and_then(|(profile, _, _)| {
             self.current_deployment()
@@ -2012,8 +2033,7 @@ impl App {
                 .device(&name)
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| format!("device `{name}` is not registered"))?;
-            let (status, detail) =
-                switchyard_daemon::device::check(&device).map_err(|error| error.to_string())?;
+            let (status, detail) = switchyard_ops::devices::check_device_eligibility(&device);
             store
                 .record_device_check(&name, unix_millis(), status, Some(&detail))
                 .map_err(|error| error.to_string())?;
@@ -2404,7 +2424,10 @@ fn instance_diagnostic_fields(
             Some("profile".to_owned())
         } else if diagnostic.path.ends_with(".source") {
             Some("source".to_owned())
-        } else if diagnostic.path.ends_with(".device") {
+        } else if diagnostic.path.ends_with(".device")
+            || diagnostic.message.starts_with("remote ")
+            || diagnostic.message.starts_with("Remote ")
+        {
             Some("device".to_owned())
         } else {
             diagnostic
@@ -2933,6 +2956,8 @@ spec:
       services:
         web:
           execution: { type: container, image: api:1 }
+          provides:
+            http: { protocol: http, port: 8080 }
   instances:
   groups:
   bindings:
@@ -2940,7 +2965,9 @@ spec:
 "#,
         )
         .unwrap();
-        StateStore::open(root.join(".switchyard/state.sqlite3")).unwrap();
+        let store = StateStore::open(root.join(".switchyard/state.sqlite3"))
+            .unwrap()
+            .0;
         let mut app = App::with_sources(root.clone(), Vec::new());
         app.active_view = ActiveView::Instances;
         app.deployments.push(DeploymentEntry {
@@ -2974,17 +3001,20 @@ spec:
             shadowed: false,
             services: Vec::new(),
         });
-        app.devices.push(RegisteredDevice {
+        let device = RegisteredDevice {
             name: "builder".into(),
             host: "builder.test".into(),
             port: 22,
             user: "dev".into(),
             identity_file: None,
             created_at: 1,
-            last_checked_at: None,
-            last_check_status: DeviceCheckStatus::Never,
-            last_check_detail: None,
-        });
+            last_checked_at: Some(1),
+            last_check_status: DeviceCheckStatus::Ineligible,
+            last_check_detail: Some("no docker over SSH: permission denied".into()),
+        };
+        let _ = store.deregister_device(&device.name);
+        store.register_device(&device).unwrap();
+        app.devices.push(device);
         app.open_instance_form();
         let before = fs::read_to_string(&definition).unwrap();
         let Overlay::Instance(form) = &mut app.overlay else {
@@ -2998,8 +3028,16 @@ spec:
         let Overlay::Instance(form) = &app.overlay else {
             panic!("preview missing")
         };
-        assert!(form.preview.is_some());
+        assert!(form.preview.is_some(), "preview error: {:?}", form.error);
         assert!(form.field_errors.contains_key("device"));
+        assert!(
+            form.preview
+                .as_ref()
+                .unwrap()
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("must publish capability"))
+        );
         assert!(form.field_errors.contains_key("parameter:TOKEN"));
         assert_eq!(fs::read_to_string(&definition).unwrap(), before);
 

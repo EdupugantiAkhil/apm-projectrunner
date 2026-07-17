@@ -57,7 +57,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The schema version understood by this crate.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 /// Ownership label used by the existing Docker runtime.
 pub const MANAGED_LABEL: &str = "dev.switchyard.managed";
 /// Deployment ownership label used by the existing Docker runtime.
@@ -73,6 +73,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (4, include_str!("migrations/004_sources.sql")),
     (5, include_str!("migrations/005_devices.sql")),
     (6, include_str!("migrations/006_profiles.sql")),
+    (7, include_str!("migrations/007_device_eligibility.sql")),
 ];
 
 /// A source-local startup profile explicitly reviewed and imported into project state.
@@ -87,12 +88,15 @@ pub struct ImportedProfile {
     pub imported_at: i64,
 }
 
-/// Persisted outcome of the most recent SSH connectivity check.
+/// Persisted outcome of the most recent remote-device eligibility check.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DeviceCheckStatus {
     Never,
+    /// Legacy SSH-only success. It does not prove Docker eligibility.
     Ok,
+    Eligible,
+    Ineligible,
     Unreachable,
     AuthFailed,
 }
@@ -102,6 +106,8 @@ impl DeviceCheckStatus {
         match self {
             Self::Never => "never",
             Self::Ok => "ok",
+            Self::Eligible => "eligible",
+            Self::Ineligible => "ineligible",
             Self::Unreachable => "unreachable",
             Self::AuthFailed => "auth-failed",
         }
@@ -111,6 +117,8 @@ impl DeviceCheckStatus {
         match value {
             "never" => Ok(Self::Never),
             "ok" => Ok(Self::Ok),
+            "eligible" => Ok(Self::Eligible),
+            "ineligible" => Ok(Self::Ineligible),
             "unreachable" => Ok(Self::Unreachable),
             "auth-failed" => Ok(Self::AuthFailed),
             _ => Err(invalid(
@@ -2305,15 +2313,16 @@ mod tests {
         );
 
         device.last_checked_at = Some(200);
-        device.last_check_status = DeviceCheckStatus::Ok;
-        device.last_check_detail = Some("SSH connection succeeded".into());
+        device.last_check_status = DeviceCheckStatus::Eligible;
+        device.last_check_detail =
+            Some("eligible for remote container execution (docker 28.5.1)".into());
         assert_eq!(
             store
                 .record_device_check(
                     "build-host",
                     200,
-                    DeviceCheckStatus::Ok,
-                    Some("SSH connection succeeded"),
+                    DeviceCheckStatus::Eligible,
+                    Some("eligible for remote container execution (docker 28.5.1)"),
                 )
                 .unwrap(),
             device
@@ -2407,7 +2416,7 @@ mod tests {
         let path = temp.path().join("state-v4.sqlite3");
         historical_database(&path, 4);
         let (store, report) = StateStore::open(&path).unwrap();
-        assert_eq!(report.applied_migrations, vec![5, 6]);
+        assert_eq!(report.applied_migrations, vec![5, 6, 7]);
         assert!(report.backup_path.unwrap().is_file());
         assert_eq!(
             scalar::<i64>(&store.connection, "SELECT COUNT(*) FROM devices"),
@@ -2430,7 +2439,7 @@ mod tests {
         drop(connection);
 
         let (store, report) = StateStore::open(&path).unwrap();
-        assert_eq!(report.applied_migrations, vec![2, 3, 4, 5, 6]);
+        assert_eq!(report.applied_migrations, vec![2, 3, 4, 5, 6, 7]);
         let backup = report.backup_path.unwrap();
         assert!(backup.is_file());
         let versions = store
@@ -2441,7 +2450,7 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7]);
         let backup_connection = Connection::open(backup).unwrap();
         assert_eq!(current_schema_version(&backup_connection).unwrap(), 1);
     }
@@ -2528,7 +2537,7 @@ mod tests {
         let restored = temp.path().join("restored-from-backup.sqlite3");
         fs::copy(&backup, &restored).unwrap();
         let (store, report) = StateStore::open(&restored).unwrap();
-        assert_eq!(report.applied_migrations, vec![3, 4, 5, 6]);
+        assert_eq!(report.applied_migrations, vec![3, 4, 5, 6, 7]);
         assert_consistent(&store.connection);
         assert_historical_values(&store.connection, 2);
     }

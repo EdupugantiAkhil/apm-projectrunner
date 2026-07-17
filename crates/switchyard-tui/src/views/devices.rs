@@ -15,7 +15,7 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Row::new([
             device.name.clone(),
             format!("{}@{}:{}", device.user, device.host, device.port),
-            device.last_check_status.to_string(),
+            switchyard_ops::devices::eligibility_label(device),
             device
                 .last_checked_at
                 .map_or_else(|| "never".into(), relative_time),
@@ -33,7 +33,7 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .devices
         .get(app.device_selected)
         .and_then(|device| device.last_check_detail.as_deref())
-        .unwrap_or("Registered devices are SSH connectivity targets; runtime placement is local.");
+        .unwrap_or("Eligibility checks SSH and Docker access for the limited remote-container cut. Prefer a LAN IP reachable from containers; localhost and mDNS are usually unsuitable.");
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(6), Constraint::Length(4)])
@@ -44,14 +44,20 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
             [
                 Constraint::Length(18),
                 Constraint::Percentage(35),
-                Constraint::Length(14),
+                Constraint::Percentage(34),
                 Constraint::Length(16),
                 Constraint::Min(18),
             ],
         )
         .header(
-            Row::new(["Name", "SSH target", "Status", "Last checked", "Identity"])
-                .style(Style::default().add_modifier(Modifier::BOLD)),
+            Row::new([
+                "Name",
+                "SSH target",
+                "Eligibility",
+                "Last checked",
+                "Identity",
+            ])
+            .style(Style::default().add_modifier(Modifier::BOLD)),
         )
         .row_highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White))
         .highlight_symbol("› ")

@@ -177,4 +177,17 @@ Registered SSH devices can host provider-only container instances. Set an instan
 Planning emits `compose.<device>.yaml`; lifecycle and log commands use Docker's SSH
 transport with batch authentication. `switchyard status` includes each resource's
 device and reports an unreachable remote explicitly while retaining its last observed
-resources for reconciliation.
+resources for reconciliation. Remote consumers, process adapters, remote routers, and
+cross-device sidecars remain outside this limited cut.
+
+```sh
+switchyard device add builder dev@192.168.1.40 --identity ~/.ssh/id_ed25519
+switchyard device check builder
+switchyard device list
+```
+
+The check first verifies SSH, then asks the remote Docker server for its version through
+`DOCKER_HOST=ssh://...`; it records eligibility or a concrete SSH, Docker availability,
+or permission failure without storing credentials. Use a device host that the local
+router's containers can resolve and reach. A LAN IP is preferable to `localhost` or an
+mDNS name because routes use the registered host with the published service port.

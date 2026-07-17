@@ -48,11 +48,12 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Table::new(
             service_rows,
             [
-                Constraint::Percentage(20),
-                Constraint::Percentage(22),
-                Constraint::Percentage(24),
-                Constraint::Percentage(20),
-                Constraint::Percentage(14),
+                Constraint::Length(18),
+                Constraint::Length(28),
+                Constraint::Length(20),
+                Constraint::Length(14),
+                Constraint::Min(50),
+                Constraint::Length(10),
             ],
         )
         .header(
@@ -60,6 +61,7 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 "Instance",
                 "Startup profile / service",
                 "Checkout / source",
+                "Placement",
                 "Status",
                 "Health",
             ])
@@ -128,7 +130,7 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
-fn instance_service_rows(deployment: &crate::app::DeploymentEntry) -> Vec<[String; 5]> {
+fn instance_service_rows(deployment: &crate::app::DeploymentEntry) -> Vec<[String; 6]> {
     if deployment.services.is_empty() {
         return deployment
             .instances
@@ -138,6 +140,7 @@ fn instance_service_rows(deployment: &crate::app::DeploymentEntry) -> Vec<[Strin
                     instance.name.clone(),
                     instance.block.clone(),
                     instance.source.clone(),
+                    instance.device.clone(),
                     deployment.state.clone(),
                     "-".into(),
                 ]
@@ -159,6 +162,7 @@ fn instance_service_rows(deployment: &crate::app::DeploymentEntry) -> Vec<[Strin
                     |instance| format!("{} / {}", instance.block, service.service),
                 ),
                 authored.map_or_else(|| "-".into(), |instance| instance.source.clone()),
+                service.device.clone(),
                 service.status.clone(),
                 service.health.clone(),
             ]
@@ -167,8 +171,12 @@ fn instance_service_rows(deployment: &crate::app::DeploymentEntry) -> Vec<[Strin
 }
 
 pub(super) fn render_instance_form(frame: &mut Frame<'_>, app: &App, form: &InstanceForm) {
-    let height = (18 + form.parameters.len() as u16 + form.preview.as_ref().map_or(0, |_| 6))
-        .min(frame.area().height.saturating_sub(2));
+    let remote_hint = usize::from(form.device_index > 0);
+    let height = (18
+        + remote_hint as u16
+        + form.parameters.len() as u16
+        + form.preview.as_ref().map_or(0, |_| 6))
+    .min(frame.area().height.saturating_sub(2));
     let area = centered(frame.area(), 92, height);
     frame.render_widget(Clear, area);
     let block = Block::default()
@@ -222,8 +230,17 @@ pub(super) fn render_instance_form(frame: &mut Frame<'_>, app: &App, form: &Inst
             source.path.display()
         )),
         field(form.active_field == 2, "Instance name", &form.name),
-        field(form.active_field == 3, "Device (←/→/Space)", device),
+        field(
+            form.active_field == 3,
+            "Device (←/→/Space)",
+            &app.instance_device_label(device),
+        ),
     ];
+    if form.device_index > 0 {
+        lines.push(Line::from(
+            "  Remote placement requires published service ports and a container-only provider profile.",
+        ));
+    }
     if let Some(error) = form.field_errors.get("name") {
         lines.push(error_line("Name", error));
     }
@@ -415,6 +432,7 @@ mod tests {
             services: vec![ServiceRow {
                 instance: "web".into(),
                 service: "server".into(),
+                device: "builder".into(),
                 status: "running".into(),
                 health: "healthy".into(),
             }],
@@ -422,6 +440,7 @@ mod tests {
                 name: "web".into(),
                 block: "web".into(),
                 source: "project".into(),
+                device: "builder".into(),
             }],
             blocks: Vec::new(),
             source_choices: Vec::new(),
@@ -440,6 +459,7 @@ mod tests {
                 String::from("web"),
                 String::from("web / server"),
                 String::from("project"),
+                String::from("builder"),
                 String::from("running"),
                 String::from("healthy"),
             ]]

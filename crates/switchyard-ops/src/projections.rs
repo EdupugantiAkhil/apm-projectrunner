@@ -7,7 +7,10 @@ use std::{
 
 use serde::Deserialize;
 use switchyard_sources::RegisteredSourceInspection;
-use switchyard_state::{OwnedResourceObservation, RegisteredDevice, StateStore, StoredDeployment};
+use switchyard_state::{
+    DriftCode, DriftDiagnostic, OwnedResourceObservation, RegisteredDevice, StateStore,
+    StoredDeployment,
+};
 
 use crate::connections::{ConnectionMatrix, RouteStatus};
 
@@ -15,6 +18,7 @@ use crate::connections::{ConnectionMatrix, RouteStatus};
 pub struct ServiceRow {
     pub instance: String,
     pub service: String,
+    pub device: String,
     pub status: String,
     pub health: String,
 }
@@ -43,6 +47,7 @@ pub struct InstanceRow {
     pub name: String,
     pub block: String,
     pub source: String,
+    pub device: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,6 +72,12 @@ pub struct DefinitionTopology {
 struct DefinitionStatus {
     consumer_slot_count: usize,
     validation_problems: Vec<String>,
+}
+
+struct ObservationStatus<'a> {
+    resources: &'a [OwnedResourceObservation],
+    manifest: &'a [ManifestService],
+    diagnostics: &'a [DriftDiagnostic],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -98,6 +109,12 @@ pub struct ManifestService {
     instance: String,
     component: String,
     service: String,
+    #[serde(default = "local_device")]
+    device: String,
+}
+
+fn local_device() -> String {
+    "local".into()
 }
 
 fn open_store(root: &Path) -> Result<StateStore, String> {
@@ -149,7 +166,7 @@ pub fn list_deployments(
 ) -> Result<Vec<DeploymentEntry>, String> {
     // A standalone TUI has no daemon startup cycle to reconcile Docker observations.
     // Keep the authored view available when Docker itself is unavailable.
-    let _ = switchyard_daemon::reconcile_project(root);
+    let reconciliation = switchyard_daemon::reconcile_project(root).ok();
     let store = open_store(root)?;
     let stored = store.deployments().map_err(|error| error.to_string())?;
     let mut definitions = BTreeMap::new();
@@ -202,12 +219,24 @@ pub fn list_deployments(
                 bindings: load_bindings(root, &name, &bundle),
             };
             let definition_status = definition_status(root, &bundle);
+            let diagnostics = reconciliation
+                .as_ref()
+                .and_then(|report| {
+                    report
+                        .deployments
+                        .iter()
+                        .find(|report| report.deployment == name)
+                })
+                .map_or(&[][..], |report| report.diagnostics.as_slice());
             let mut entry = deployment_entry(
                 name,
                 bundle,
                 record,
-                &resources,
-                &manifest,
+                ObservationStatus {
+                    resources: &resources,
+                    manifest: &manifest,
+                    diagnostics,
+                },
                 topology,
                 definition_status,
             );
@@ -237,8 +266,7 @@ fn deployment_entry(
     name: String,
     bundle: PathBuf,
     stored: Option<&StoredDeployment>,
-    resources: &[OwnedResourceObservation],
-    manifest: &[ManifestService],
+    observation: ObservationStatus<'_>,
     topology: DefinitionTopology,
     definition_status: DefinitionStatus,
 ) -> DeploymentEntry {
@@ -247,16 +275,16 @@ fn deployment_entry(
         operation.filter(|operation| matches!(operation.status.as_str(), "pending" | "running"));
     let state = if let Some(operation) = active_operation {
         format!("{} ({})", operation.status, operation.kind)
-    } else if resources.is_empty()
+    } else if observation.resources.is_empty()
         && (stored
             .and_then(|entry| entry.definition_hash.as_ref())
             .is_some()
-            || !manifest.is_empty())
+            || !observation.manifest.is_empty())
     {
         "stopped".into()
-    } else if resources.is_empty() {
+    } else if observation.resources.is_empty() {
         "not applied".into()
-    } else if resources.iter().any(|resource| {
+    } else if observation.resources.iter().any(|resource| {
         resource.state.as_deref().is_some_and(|state| {
             ["unhealthy", "exited", "dead", "failed"]
                 .iter()
@@ -267,7 +295,12 @@ fn deployment_entry(
     } else {
         "running".into()
     };
-    let services = resource_rows(&name, resources, manifest);
+    let services = resource_rows(
+        &name,
+        observation.resources,
+        observation.manifest,
+        observation.diagnostics,
+    );
     let last_operation =
         operation.map(|operation| format!("{} {}", operation.kind, operation.status));
     DeploymentEntry {
@@ -286,7 +319,7 @@ fn deployment_entry(
         applied: stored
             .and_then(|entry| entry.definition_hash.as_ref())
             .is_some()
-            || !resources.is_empty(),
+            || !observation.resources.is_empty(),
         consumer_slot_count: definition_status.consumer_slot_count,
         validation_problems: definition_status.validation_problems,
     }
@@ -373,6 +406,7 @@ pub fn load_definition_choices(
             name: instance.name.clone(),
             block: instance.block.clone(),
             source: instance.source.clone(),
+            device: instance.device.clone().unwrap_or_else(local_device),
         })
         .collect();
     let blocks = bundle.spec.blocks.keys().cloned().collect();
@@ -458,6 +492,7 @@ fn resource_rows(
     deployment: &str,
     resources: &[OwnedResourceObservation],
     manifest: &[ManifestService],
+    diagnostics: &[DriftDiagnostic],
 ) -> Vec<ServiceRow> {
     let containers = resources
         .iter()
@@ -474,12 +509,15 @@ fn resource_rows(
             if let Some((index, _)) = resource {
                 matched.insert(index);
             }
-            let status = resource
-                .and_then(|(_, resource)| resource.state.clone())
-                .unwrap_or_else(|| "stopped".into());
+            let status = unreachable_detail(diagnostics, &service.device).unwrap_or_else(|| {
+                resource
+                    .and_then(|(_, resource)| resource.state.clone())
+                    .unwrap_or_else(|| "stopped".into())
+            });
             ServiceRow {
                 instance: service.instance.clone(),
                 service: service.component.clone(),
+                device: service.device.clone(),
                 health: health_label(&status).into(),
                 status,
             }
@@ -501,12 +539,23 @@ fn resource_rows(
                 ServiceRow {
                     instance: instance.into(),
                     service: service.into(),
+                    device: resource.device.clone(),
                     health: health_label(&status).into(),
                     status,
                 }
             }),
     );
     rows
+}
+
+fn unreachable_detail(diagnostics: &[DriftDiagnostic], device: &str) -> Option<String> {
+    diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.code == DriftCode::DeviceUnreachable
+                && diagnostic.path == format!("observed.devices.{device}")
+        })
+        .map(|diagnostic| format!("device unreachable: {}", diagnostic.message))
 }
 
 fn health_label(status: &str) -> &'static str {
@@ -536,11 +585,38 @@ mod tests {
             "demo".into(),
             "deployment.yaml".into(),
             Some(&stored),
-            &[],
-            &[],
+            ObservationStatus {
+                resources: &[],
+                manifest: &[],
+                diagnostics: &[],
+            },
             DefinitionTopology::default(),
             DefinitionStatus::default(),
         );
         assert_eq!(entry.state, "stopped");
+    }
+
+    #[test]
+    fn remote_manifest_row_surfaces_unreachable_device_instead_of_stopped() {
+        let rows = resource_rows(
+            "demo",
+            &[],
+            &[ManifestService {
+                instance: "api".into(),
+                component: "web".into(),
+                service: "demo--api--web".into(),
+                device: "builder".into(),
+            }],
+            &[DriftDiagnostic {
+                code: DriftCode::DeviceUnreachable,
+                path: "observed.devices.builder".into(),
+                message: "Docker SSH transport timed out".into(),
+            }],
+        );
+        assert_eq!(rows[0].device, "builder");
+        assert_eq!(
+            rows[0].status,
+            "device unreachable: Docker SSH transport timed out"
+        );
     }
 }

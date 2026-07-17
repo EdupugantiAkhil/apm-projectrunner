@@ -278,7 +278,9 @@ mod tests {
     use switchyard_ops::projections::{InstanceRow, ServiceRow};
     use switchyard_planner::{Diagnostic, DiagnosticCode};
     use switchyard_sources::{RegisteredSourceInspection, SourceInspection};
-    use switchyard_state::{RegisteredSource, RegisteredSourceKind};
+    use switchyard_state::{
+        DeviceCheckStatus, RegisteredDevice, RegisteredSource, RegisteredSourceKind,
+    };
 
     use super::*;
     use crate::app::{
@@ -383,6 +385,29 @@ mod tests {
     }
 
     #[test]
+    fn renders_device_eligibility_column() {
+        let mut app = App::with_sources(PathBuf::from("/project"), Vec::new());
+        app.active_view = ActiveView::Devices;
+        app.devices.push(RegisteredDevice {
+            name: "builder".into(),
+            host: "192.0.2.10".into(),
+            port: 22,
+            user: "dev".into(),
+            identity_file: None,
+            created_at: 1,
+            last_checked_at: Some(1),
+            last_check_status: DeviceCheckStatus::Eligible,
+            last_check_detail: Some(
+                "eligible for remote container execution (docker 28.5.1)".into(),
+            ),
+        });
+        let contents = rendered(&app, 150, 30);
+        assert!(contents.contains("Eligibility"));
+        assert!(contents.contains("eligible (docker 28.5.1)"));
+        assert!(contents.contains("eligible for remote container execution (docker 28.5.1)"));
+    }
+
+    #[test]
     fn renders_new_script_modal_and_down_confirmation() {
         let backend = TestBackend::new(110, 34);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -450,29 +475,54 @@ mod tests {
             },
             ProfileTrust::Changed,
         ));
+        app.devices.push(RegisteredDevice {
+            name: "builder".into(),
+            host: "192.0.2.10".into(),
+            port: 22,
+            user: "dev".into(),
+            identity_file: None,
+            created_at: 1,
+            last_checked_at: Some(1),
+            last_check_status: DeviceCheckStatus::Ineligible,
+            last_check_detail: Some("no docker over SSH: permission denied".into()),
+        });
         app.overlay = Overlay::Instance(InstanceForm {
             name: "api-main".into(),
             profile_index: 0,
             source_index: 0,
-            device_index: 0,
+            device_index: 1,
             parameters: vec![InstanceParameterField {
                 name: "TOKEN".into(),
                 value: String::new(),
                 required: true,
             }],
             active_field: 4,
-            field_errors: std::collections::BTreeMap::from([(
-                "parameter:TOKEN".into(),
-                "required block parameter has no value".into(),
-            )]),
+            field_errors: std::collections::BTreeMap::from([
+                (
+                    "device".into(),
+                    "remote service `web` must publish capability `http` port 8080".into(),
+                ),
+                (
+                    "parameter:TOKEN".into(),
+                    "required block parameter has no value".into(),
+                ),
+            ]),
             preview: Some(InstancePreview {
                 draft: String::new(),
                 expanded_services: vec!["demo--api-main--web".into()],
-                diagnostics: vec![Diagnostic {
-                    code: DiagnosticCode::MissingVariable,
-                    path: "spec.instances[0].parameters.TOKEN".into(),
-                    message: "required block parameter has no value".into(),
-                }],
+                diagnostics: vec![
+                    Diagnostic {
+                        code: DiagnosticCode::MissingReference,
+                        path: "spec.blocks.api.services.web.publish".into(),
+                        message: "remote service `web` must publish capability `http` port 8080"
+                            .into(),
+                    },
+                    Diagnostic {
+                        code: DiagnosticCode::MissingVariable,
+                        path: "spec.instances[0].parameters.TOKEN".into(),
+                        message: "required block parameter has no value".into(),
+                    },
+                ],
             }),
             error: None,
         });
@@ -483,9 +533,27 @@ mod tests {
         assert!(contents.contains("feature-checkout"));
         assert!(contents.contains("Instance name"));
         assert!(contents.contains("Device"));
+        assert!(contents.contains("builder — ineligible — no docker over SSH: permission denied"));
+        assert!(contents.contains("Remote placement requires published service ports"));
+        assert!(contents.contains("remote service `web` must publish capability"));
         assert!(contents.contains("Parameter TOKEN (required)"));
         assert!(contents.contains("TOKEN: required block parameter"));
         assert!(contents.contains("demo--api-main--web"));
+    }
+
+    #[test]
+    fn renders_remote_placement_and_unreachable_observation() {
+        let mut app = App::with_sources(PathBuf::from("/project"), Vec::new());
+        app.active_view = ActiveView::Instances;
+        let mut deployment = home_deployment(true, true, false);
+        deployment.services[0].device = "builder".into();
+        deployment.services[0].status = "device unreachable: Docker SSH transport timed out".into();
+        deployment.instances[0].device = "builder".into();
+        app.deployments.push(deployment);
+        let contents = rendered(&app, 150, 32);
+        assert!(contents.contains("Placement"));
+        assert!(contents.contains("builder"));
+        assert!(contents.contains("device unreachable: Docker SSH transport timed out"));
     }
 
     fn profile_row(name: &str, origin: ProfileOrigin, trust: ProfileTrust) -> ProfileRow {
@@ -643,6 +711,7 @@ mod tests {
                 vec![ServiceRow {
                     instance: "api-one".into(),
                     service: "web".into(),
+                    device: "local".into(),
                     status: "running".into(),
                     health: "healthy".into(),
                 }]
@@ -653,6 +722,7 @@ mod tests {
                 name: "api-one".into(),
                 block: "api".into(),
                 source: "code".into(),
+                device: "local".into(),
             }],
             blocks: vec!["api".into()],
             source_choices: Vec::new(),

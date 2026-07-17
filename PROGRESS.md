@@ -1224,3 +1224,34 @@ implemented shape and the evidence used to close a phase.
 - Operational note: a registered device's `host` is used verbatim as the router
   upstream host, so it must be an address resolvable and reachable from inside
   containers (LAN IP preferred over `localhost` or mDNS names).
+
+## 2026-07-18 — Phase D part 2: TUI remote placement visibility
+
+- Device checks now persist an explicit remote-container eligibility outcome after an
+  SSH probe and a Docker-server version query over Docker's SSH transport. Legacy
+  SSH-only successful checks remain visibly unchecked until rerun.
+- The Devices view presents eligibility and its concrete failure; the guided instance
+  selector presents local and every registered device with persisted eligibility while
+  leaving workload compatibility to the existing planner preview.
+- Instance/service projections and the TUI now show `local` or the registered placement
+  device. Reconciliation device-unreachable diagnostics replace misleading stopped or
+  missing-resource presentation for affected remote manifest rows.
+- Documentation now states the limited cut: container-only provider instances with
+  published ports, a locally reachable device host, and no remote consumers, process
+  adapters, routers, or cross-device sidecars.
+- Verification: all changed-crate tests pass (CLI 57, ops 24, state 16, TUI 38, plus
+  daemon parity and doc tests); workspace clippy with `-D warnings` and fmt pass. The
+  unrestricted workspace test command is sandbox-blocked by `Operation not permitted`
+  in the known socket-binding router tests and one CLI host-runtime socket test.
+
+## 2026-07-18 — Phase D complete: TUI device eligibility and placement
+
+- Device checks now probe SSH then Docker over the SSH transport, persisting
+  eligible/ineligible with the Docker version (state schema v7; legacy SSH-only
+  results demote to unchecked). Devices tab shows eligibility in words with the
+  concrete failure reason; the instance form labels remote devices and states the
+  cut's requirements; instance/service rows show true placement and unreachable
+  devices are rendered explicitly.
+- Live verification: `switchyard device check poco` reports "eligible for remote
+  container execution (docker 28.5.1)" against the real LAN device and the TUI
+  Devices tab renders the same over a pty.

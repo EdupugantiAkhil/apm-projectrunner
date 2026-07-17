@@ -419,3 +419,13 @@ planner model types without treating it as a schema-compatibility change; the
 file with `git checkout` during an uncommitted feature also removed the feature's
 own field (`Instance.device`) — prefer targeted edits over whole-file reverts while
 reviewing uncommitted work.
+
+## 2026-07-18 — Device status enums are constrained in SQLite too
+
+The first eligibility implementation extended `DeviceCheckStatus` but did not widen
+the `devices.last_check_status` SQL check constraint, so persisting `eligible` failed
+and was misleadingly mapped as a duplicate registration. The first migration patch also
+missed the separate `SCHEMA_VERSION` constant. Correction: add a preserving schema
+migration, advance the declared version, and verify the new status through a state round trip. Lesson: before
+extending a persisted enum, inspect both parser/serializer code and database constraints;
+exercise the new value against a real migrated store, not only an in-memory formatter.

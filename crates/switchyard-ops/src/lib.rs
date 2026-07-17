@@ -4,6 +4,7 @@
 //! `ratatui`, `crossterm`, or `clap`.
 
 pub mod connections;
+pub mod devices;
 pub mod execution;
 pub mod instances;
 pub mod profiles;

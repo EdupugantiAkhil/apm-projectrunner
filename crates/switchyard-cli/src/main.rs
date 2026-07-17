@@ -557,32 +557,13 @@ fn handle_source_command(
             println!("removed device `{name}`");
         }
         CliCommand::DeviceCheck { name } => {
-            let device = if !bypass {
-                switchyard_daemon::client::check_device(workspace_root, name)?
-            } else {
-                None
-            }
-            .map_or_else(
-                || -> Result<_, Box<dyn std::error::Error>> {
-                    let store = state()?;
-                    let device = store.device(name)?.ok_or_else(|| {
-                        MessageError(format!("device `{name}` is not registered"))
-                    })?;
-                    let (status, detail) = switchyard_daemon::device::check(&device)?;
-                    Ok(store.record_device_check(name, unix_millis(), status, Some(&detail))?)
-                },
-                Ok,
-            )?;
-            println!(
-                "{}: {}{}",
-                device.name,
-                device.last_check_status,
-                device
-                    .last_check_detail
-                    .as_deref()
-                    .map(|detail| format!(" — {detail}"))
-                    .unwrap_or_default()
-            );
+            let store = state()?;
+            let device = store
+                .device(name)?
+                .ok_or_else(|| MessageError(format!("device `{name}` is not registered")))?;
+            let (status, detail) = switchyard_ops::devices::check_device_eligibility(&device);
+            store.record_device_check(name, unix_millis(), status, Some(&detail))?;
+            println!("{}: {detail}", device.name);
         }
         CliCommand::WorktreeCreate {
             repository,
