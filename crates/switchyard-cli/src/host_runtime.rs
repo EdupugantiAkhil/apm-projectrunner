@@ -1072,6 +1072,7 @@ mod tests {
             resource_hash: "resource".into(),
             compose_project: "sy--demo".into(),
             artifact_dir: ".switchyard/generated/demo".into(),
+            local_service_count: 0,
             compose_yaml: String::new(),
             remote_projects: Default::default(),
             resolved_deployment_yaml: String::new(),

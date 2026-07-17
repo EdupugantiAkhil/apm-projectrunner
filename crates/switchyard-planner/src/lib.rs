@@ -111,6 +111,11 @@ pub struct Plan {
     pub compose_project: String,
     pub artifact_dir: PathBuf,
     pub compose_yaml: String,
+    /// Number of services in the local Compose project. Zero when every
+    /// instance is placed on a remote device; the runtime must then skip the
+    /// local project entirely instead of running an empty `compose up`.
+    #[serde(default)]
+    pub local_service_count: usize,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub remote_projects: BTreeMap<String, RemoteComposePlan>,
     pub resolved_deployment_yaml: String,
@@ -1815,6 +1820,9 @@ fn generate(
     }
     let manifest_json = serde_json::to_string_pretty(&manifest)?;
 
+    let local_service_count = compose["services"]
+        .as_object()
+        .map_or(0, serde_json::Map::len);
     Ok(Plan {
         deployment: deployment.clone(),
         definition_hash,
@@ -1822,6 +1830,7 @@ fn generate(
         compose_project: project,
         artifact_dir,
         compose_yaml,
+        local_service_count,
         remote_projects,
         resolved_deployment_yaml,
         manifest_json,

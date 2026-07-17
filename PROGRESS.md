@@ -1203,3 +1203,24 @@ implemented shape and the evidence used to close a phase.
   docker container-ID set was identical before and after (no restarts); backend-2
   stayed on its own group. State restored to feature-services afterwards.
 - Verification: full workspace tests, clippy `-D warnings`, fmt.
+
+## 2026-07-18 — Phase D remote execution verified on real devices
+
+- Fixed during verification: a deployment whose instances are all remote produced an
+  empty local Compose project and `up` failed with "no service selected"; the plan
+  now carries `local_service_count` and the runtime skips the empty local project in
+  up/down/cleanup/logs.
+- Real-device proof on `poco-f1-nixos` (aarch64 LAN device over SSH): eligibility
+  gate, remote compose project, healthy device-labeled container, device-aware
+  status, and clean `down` with zero leftover containers/networks. The follow-up
+  network-label fix (9791e8c) was required by this run. Bridged container networking
+  is broken in that device's vendor kernel (host↔container traffic never passes;
+  its resident Home Assistant container runs host-networked), so routed traffic
+  cannot terminate there; this is a device limitation, not a Switchyard defect.
+- Full routed proof over a real SSH device at the local machine's LAN address:
+  local consumer with fixed 127.0.0.1:8080 + sidecar router + remote provider
+  started via `DOCKER_HOST=ssh://` — traffic reached nginx on the provider through
+  `192.168.1.10:80` per the published-address design, and teardown left nothing.
+- Operational note: a registered device's `host` is used verbatim as the router
+  upstream host, so it must be an address resolvable and reachable from inside
+  containers (LAN IP preferred over `localhost` or mDNS names).

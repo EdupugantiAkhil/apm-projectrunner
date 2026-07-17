@@ -252,6 +252,8 @@ pub struct RuntimePlan {
     pub artifact_dir: PathBuf,
     pub requires_router_token: bool,
     pub runtime_secrets: Vec<switchyard_planner::RuntimeSecretPlan>,
+    /// Zero when every instance is remote; the local Compose project is then skipped.
+    pub local_service_count: usize,
     pub remote_projects: Vec<RemoteRuntimeProject>,
 }
 
@@ -306,6 +308,9 @@ impl<E: CommandExecutor> DockerRuntime<E> {
         for remote in &plan.remote_projects {
             self.up_project(plan, Some(remote))?;
         }
+        if plan.local_service_count == 0 {
+            return Ok(());
+        }
         self.up_project(plan, None)
     }
 
@@ -352,7 +357,7 @@ impl<E: CommandExecutor> DockerRuntime<E> {
             .filter(|service| !remote_services.contains(service))
             .cloned()
             .collect::<Vec<_>>();
-        if services.is_empty() || !local.is_empty() {
+        if plan.local_service_count > 0 && (services.is_empty() || !local.is_empty()) {
             self.logs_project(plan, None, &local)?;
         }
         Ok(())
@@ -557,7 +562,11 @@ impl<E: CommandExecutor> DockerRuntime<E> {
 
     fn teardown_projects(&self, plan: &RuntimePlan, volumes: bool) -> Result<(), RuntimeError> {
         let mut errors = Vec::new();
-        if let Err(error) = self.down_project(plan, None, volumes) {
+        if let Err(error) = if plan.local_service_count == 0 {
+            Ok(())
+        } else {
+            self.down_project(plan, None, volumes)
+        } {
             errors.push(error);
         }
         for remote in plan.remote_projects.iter().rev() {
@@ -996,6 +1005,7 @@ mod tests {
 
     fn plan() -> RuntimePlan {
         RuntimePlan {
+            local_service_count: 1,
             deployment: "demo".into(),
             compose_project: "sy--demo".into(),
             project_directory: PathBuf::from("/tmp"),

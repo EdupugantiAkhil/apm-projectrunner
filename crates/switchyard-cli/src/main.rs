@@ -1110,6 +1110,7 @@ fn runtime_plan(workspace_root: &Path, plan: &Plan) -> RuntimePlan {
         project_directory: workspace_root.to_owned(),
         artifact_dir: workspace_root.join(&plan.artifact_dir),
         requires_router_token: !plan.sidecars.is_empty(),
+        local_service_count: plan.local_service_count,
         runtime_secrets: plan.runtime_secrets.clone(),
         remote_projects: plan
             .remote_projects
