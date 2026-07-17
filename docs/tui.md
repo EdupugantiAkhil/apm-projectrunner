@@ -13,7 +13,7 @@ switchyard tui
 switchyard tui path/to/project
 ```
 
-The top bar switches between **Sources**, **Devices**, and **Instances**. Use `Tab` or
+The top bar switches between **Sources**, **Profiles**, **Devices**, and **Instances**. Use `Tab` or
 Right to advance, Shift-Tab or Left to go back, press `?` for the complete in-app key
 reference, and quit with `q` or Ctrl-C.
 
@@ -52,6 +52,40 @@ live dirty state. Up/Down or `j`/`k` changes the selected row.
 
 All source records use the same project-local `.switchyard/state.sqlite3` registry as
 the CLI and daemon source commands.
+
+## Startup profiles
+
+The Profiles view lists reusable startup definitions from the selected project
+deployment and from registered source checkouts. A source advertises profiles only in
+`switchyard-profiles.yaml` at its checkout root; Switchyard does not search for likely
+scripts or execute repository content while discovering or previewing that file.
+
+Each row names its origin, trust state, expanded services and execution adapters. A
+project profile is **trusted**. A discovered source profile is **not imported** until it
+has been reviewed explicitly. Import records the source name, current source commit,
+and a deterministic content hash in project state. If the source definition later
+differs from that hash, the row says **changed — review** and must be reviewed and
+imported again before it can run. A project profile with the same name takes precedence;
+the source row remains visible with **shadowed by project profile** so that precedence is
+not hidden. An invalid manifest is reported against its source in the diagnostics panel
+without hiding valid project or source profiles.
+
+- Up/Down or `j`/`k` selects a profile. `r` refreshes the project definition, imported
+  state, and registered-source manifests in the background.
+- Enter opens a scrollable inspector with origin, trust, commit and content-hash status,
+  followed by each service's adapter, image or command, working directory, provided
+  capabilities, consumed slots and probe, plus profile parameters. `Esc` closes it.
+- `i` opens a review of the fully expanded block body as YAML for a discovered profile,
+  or for an imported profile whose content changed. The review is read-only and causes
+  no state change until Enter explicitly confirms import; `Esc` cancels. Pressing `i`
+  on a project profile or an unchanged import reports that no action is needed.
+- `d` opens an Enter confirmation before removing an imported record. It never edits
+  the source manifest or project deployment. Project profiles cannot be removed from
+  this view, and a discovered-but-unimported row has nothing to remove.
+
+Imported records live in `.switchyard/state.sqlite3`. Import makes a reviewed definition
+eligible for normal planning; it does not start a service. Startup profiles remain
+separate from project run actions in `.switchyard/run-scripts.yaml`.
 
 ## Devices
 

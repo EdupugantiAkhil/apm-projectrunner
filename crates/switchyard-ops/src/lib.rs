@@ -10,9 +10,10 @@ pub mod run_scripts;
 
 pub use execution::{OperationEvent, OperationSpec};
 pub use profiles::{
-    DiscoveredSourceProfiles, ProfileAdapterKind, ProfileContentHash, ProfileError, ProfileOrigin,
-    ProfileRow, ProfileService, ProfileTrust, SourceProfileManifest, discover_source_profiles,
-    import_source_profile, list_profiles, project_profile_rows, remove_imported_profile,
+    DiscoveredSourceProfiles, ProfileAdapterKind, ProfileContentHash, ProfileError, ProfileListing,
+    ProfileOrigin, ProfileRow, ProfileService, ProfileTrust, SourceManifestError,
+    SourceProfileManifest, discover_source_profiles, import_source_profile, list_profiles,
+    load_profile_block, load_source_profile_block, project_profile_rows, remove_imported_profile,
 };
 pub use projections::{
     BindingRow, DefinitionHeader, DefinitionMetadata, DefinitionTopology, DeploymentEntry,

@@ -1,5 +1,6 @@
 mod devices;
 mod instances;
+mod profiles;
 mod sources;
 
 use ratatui::{
@@ -23,10 +24,11 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
         .split(frame.area());
     let selected = match app.active_view {
         ActiveView::Sources => 0,
-        ActiveView::Devices => 1,
-        ActiveView::Instances => 2,
+        ActiveView::Profiles => 1,
+        ActiveView::Devices => 2,
+        ActiveView::Instances => 3,
     };
-    let tabs = Tabs::new(["Sources", "Devices", "Instances"])
+    let tabs = Tabs::new(["Sources", "Profiles", "Devices", "Instances"])
         .select(selected)
         .block(
             Block::default()
@@ -41,6 +43,7 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
     frame.render_widget(tabs, areas[0]);
     match app.active_view {
         ActiveView::Sources => sources::render(frame, areas[1], app),
+        ActiveView::Profiles => profiles::render(frame, areas[1], app),
         ActiveView::Devices => devices::render(frame, areas[1], app),
         ActiveView::Instances => instances::render(frame, areas[1], app),
     }
@@ -56,6 +59,11 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
                 BusyKind::DeviceAdd => "adding device",
                 BusyKind::DeviceRemove => "removing device",
                 BusyKind::DeviceCheck => "checking device",
+                BusyKind::ProfileRefresh => "refreshing startup profiles",
+                BusyKind::ProfileInspect => "loading profile details",
+                BusyKind::ProfileReview => "loading import review",
+                BusyKind::ProfileImport => "importing startup profile",
+                BusyKind::ProfileRemove => "removing profile import",
                 BusyKind::Operation => "running operation",
             }
         )
@@ -63,6 +71,9 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
         let keys = match app.active_view {
             ActiveView::Sources => {
                 "a add repository/path  w new worktree  d remove  r refresh  ↑/↓ select  Tab view  ? help  q quit"
+            }
+            ActiveView::Profiles => {
+                "Enter inspect  i import/re-review  d remove import  r refresh  ↑/↓ select  Tab view  ? help  q quit"
             }
             ActiveView::Devices => "a add  c check  d remove  ↑/↓ select  Tab view  ? help  q quit",
             ActiveView::Instances => {
@@ -106,13 +117,36 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
             &format!("`{name}` executes an arbitrary command using your shell in this project."),
             None,
         ),
+        Overlay::ProfileInspector {
+            name,
+            lines,
+            scroll,
+        } => profiles::render_inspector(frame, name, lines, *scroll),
+        Overlay::ProfileReview {
+            name,
+            source,
+            yaml,
+            scroll,
+            error,
+        } => profiles::render_review(
+            frame,
+            name,
+            source,
+            yaml,
+            *scroll,
+            error.as_deref(),
+            app.busy,
+        ),
+        Overlay::ConfirmRemoveProfile { name, error } => {
+            profiles::render_remove_confirm(frame, name, error.as_deref(), app.busy)
+        }
         Overlay::Help => render_help(frame),
         Overlay::None => {}
     }
 }
 
 fn render_help(frame: &mut Frame<'_>) {
-    let area = centered(frame.area(), 68, 29);
+    let area = centered(frame.area(), 68, 38);
     frame.render_widget(Clear, area);
     let lines = vec![
         Line::from(Span::styled(
@@ -134,6 +168,17 @@ fn render_help(frame: &mut Frame<'_>) {
         Line::from("  d             remove/deregister selected source"),
         Line::from("  r             refresh live Git state"),
         Line::from("  Esc           close a dialog"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Startup profiles",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  ↑ / ↓, j / k  select profile"),
+        Line::from("  Enter         inspect full profile definition"),
+        Line::from("  i             review and explicitly import/re-import"),
+        Line::from("  d             confirm removal of an import"),
+        Line::from("  r             refresh project and source profiles"),
+        Line::from("  Esc           close inspector/review without changes"),
         Line::from(""),
         Line::from(Span::styled(
             "Devices",
@@ -189,6 +234,10 @@ mod tests {
     use std::path::PathBuf;
 
     use ratatui::{Terminal, backend::TestBackend};
+    use switchyard_ops::profiles::{
+        ProfileAdapterKind, ProfileOrigin, ProfileRow, ProfileService, ProfileTrust,
+        SourceManifestError,
+    };
 
     use super::*;
     use crate::app::{AddForm, AddSourceMode, AddSourcePanel, DeviceForm};
@@ -319,5 +368,127 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(contents.contains("Stop deployment `demo`"));
+    }
+
+    fn profile_row(name: &str, origin: ProfileOrigin, trust: ProfileTrust) -> ProfileRow {
+        ProfileRow {
+            name: name.into(),
+            origin,
+            trust,
+            shadowed: false,
+            services: vec![ProfileService {
+                name: "api".into(),
+                adapter_kind: ProfileAdapterKind::Container,
+            }],
+        }
+    }
+
+    fn rendered(app: &App, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn profiles_render_all_trust_words_and_shadow_marker() {
+        let mut app = App::with_sources(PathBuf::from("/project"), Vec::new());
+        app.active_view = ActiveView::Profiles;
+        app.profiles = vec![
+            profile_row("project", ProfileOrigin::Project, ProfileTrust::Trusted),
+            profile_row(
+                "imported",
+                ProfileOrigin::ImportedFromSource {
+                    source: "main".into(),
+                    commit: Some("1234567890abcdef".into()),
+                },
+                ProfileTrust::Imported,
+            ),
+            profile_row(
+                "changed",
+                ProfileOrigin::ImportedFromSource {
+                    source: "feature".into(),
+                    commit: Some("abcdef".into()),
+                },
+                ProfileTrust::Changed,
+            ),
+            profile_row(
+                "found",
+                ProfileOrigin::DiscoveredInSource {
+                    source: "other".into(),
+                    commit: Some("fedcba987654".into()),
+                },
+                ProfileTrust::NotImported,
+            ),
+        ];
+        app.profiles[1].shadowed = true;
+        let contents = rendered(&app, 180, 30);
+        for expected in [
+            "trusted",
+            "imported",
+            "changed — review",
+            "not imported",
+            "shadowed by project profile",
+            "api(container)",
+            "imported from main@1234567890",
+            "found in other",
+        ] {
+            assert!(contents.contains(expected), "missing `{expected}`");
+        }
+    }
+
+    #[test]
+    fn profiles_empty_state_teaches_manifest_and_refresh_key() {
+        let mut app = App::with_sources(PathBuf::from("/project"), Vec::new());
+        app.active_view = ActiveView::Profiles;
+        let contents = rendered(&app, 120, 24);
+        assert!(contents.contains("project deployment definition"));
+        assert!(contents.contains("switchyard-profiles.yaml"));
+        assert!(contents.contains("Press r to refresh"));
+    }
+
+    #[test]
+    fn profiles_render_source_manifest_diagnostics() {
+        let mut app = App::with_sources(PathBuf::from("/project"), Vec::new());
+        app.active_view = ActiveView::Profiles;
+        app.profile_source_errors = vec![SourceManifestError {
+            source: "broken-checkout".into(),
+            message: "invalid profile manifest: expected a map".into(),
+        }];
+        let contents = rendered(&app, 130, 24);
+        assert!(contents.contains("Source diagnostics"));
+        assert!(contents.contains("broken-checkout"));
+        assert!(contents.contains("expected a map"));
+    }
+
+    #[test]
+    fn profile_review_and_remove_popups_name_explicit_confirmation() {
+        let mut app = App::with_sources(PathBuf::from("/project"), Vec::new());
+        app.active_view = ActiveView::Profiles;
+        app.overlay = Overlay::ProfileReview {
+            name: "api".into(),
+            source: "feature".into(),
+            yaml: "services:\n  api:\n    execution:\n      type: container".into(),
+            scroll: 0,
+            error: None,
+        };
+        let review = rendered(&app, 120, 38);
+        assert!(review.contains("Review import"));
+        assert!(review.contains("Enter confirm import"));
+        assert!(review.contains("Esc cancel"));
+
+        app.overlay = Overlay::ConfirmRemoveProfile {
+            name: "api".into(),
+            error: None,
+        };
+        let remove = rendered(&app, 100, 24);
+        assert!(remove.contains("Enter confirm removal"));
+        assert!(remove.contains("source manifest and project profiles are not changed"));
     }
 }

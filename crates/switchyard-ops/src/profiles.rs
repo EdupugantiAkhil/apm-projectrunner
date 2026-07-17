@@ -207,6 +207,7 @@ pub enum ProfileOrigin {
     },
     DiscoveredInSource {
         source: String,
+        commit: Option<String>,
     },
 }
 
@@ -239,6 +240,18 @@ pub struct ProfileRow {
     pub trust: ProfileTrust,
     pub shadowed: bool,
     pub services: Vec<ProfileService>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceManifestError {
+    pub source: String,
+    pub message: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProfileListing {
+    pub rows: Vec<ProfileRow>,
+    pub source_errors: Vec<SourceManifestError>,
 }
 
 /// Builds profile rows in project, imported, then discovered precedence order.
@@ -298,6 +311,7 @@ pub fn project_profile_rows(
                 name,
                 ProfileOrigin::DiscoveredInSource {
                     source: source.source.clone(),
+                    commit: source.commit.clone(),
                 },
                 ProfileTrust::NotImported,
                 project_blocks.contains_key(name),
@@ -340,7 +354,7 @@ fn profile_row(
 pub fn list_profiles(
     project_dir: &Path,
     deployment_definition: &Path,
-) -> Result<Vec<ProfileRow>, ProfileError> {
+) -> Result<ProfileListing, ProfileError> {
     let bundle = switchyard_planner::load_bundle(deployment_definition)
         .map_err(|error| ProfileError::Definition(error.to_string()))?;
     let store = StateStore::open(project_dir.join(".switchyard/state.sqlite3"))?.0;
@@ -348,24 +362,94 @@ pub fn list_profiles(
     let sources = SourceManager::new(project_dir)
         .list(&store)
         .map_err(|error| ProfileError::Definition(error.to_string()))?;
-    let discovered = discover_registered_sources(&sources)?;
-    project_profile_rows(&bundle.spec.blocks, &imported, &discovered)
+    let (discovered, source_errors) = discover_registered_sources(&sources);
+    let rows = project_profile_rows(&bundle.spec.blocks, &imported, &discovered)?;
+    Ok(ProfileListing {
+        rows,
+        source_errors,
+    })
 }
 
 fn discover_registered_sources(
     sources: &[RegisteredSourceInspection],
-) -> Result<Vec<DiscoveredSourceProfiles>, ProfileError> {
+) -> (Vec<DiscoveredSourceProfiles>, Vec<SourceManifestError>) {
     let mut discovered = Vec::new();
+    let mut source_errors = Vec::new();
     for source in sources {
-        if let Some(manifest) = discover_source_profiles(&source.source.path)? {
-            discovered.push(DiscoveredSourceProfiles {
+        match discover_source_profiles(&source.source.path) {
+            Ok(Some(manifest)) => discovered.push(DiscoveredSourceProfiles {
                 source: source.source.name.clone(),
                 commit: source.inspection.identity.commit.clone(),
                 manifest,
-            });
+            }),
+            Ok(None) => {}
+            Err(error) => source_errors.push(SourceManifestError {
+                source: source.source.name.clone(),
+                message: error.to_string(),
+            }),
         }
     }
-    Ok(discovered)
+    (discovered, source_errors)
+}
+
+/// Re-parses the selected profile through the domain layer for inspection.
+pub fn load_profile_block(
+    project_dir: &Path,
+    deployment_definition: &Path,
+    name: &str,
+    origin: &ProfileOrigin,
+) -> Result<Block, ProfileError> {
+    match origin {
+        ProfileOrigin::Project => {
+            let bundle = switchyard_planner::load_bundle(deployment_definition)
+                .map_err(|error| ProfileError::Definition(error.to_string()))?;
+            bundle.spec.blocks.get(name).cloned().ok_or_else(|| {
+                ProfileError::Definition(format!("project profile `{name}` no longer exists"))
+            })
+        }
+        ProfileOrigin::ImportedFromSource { .. } => {
+            let store = StateStore::open(project_dir.join(".switchyard/state.sqlite3"))?.0;
+            let profile = store.imported_profile(name)?.ok_or_else(|| {
+                ProfileError::Definition(format!("imported profile `{name}` no longer exists"))
+            })?;
+            serde_json::from_str(&profile.definition_json).map_err(|error| {
+                ProfileError::InvalidProfile {
+                    profile: name.into(),
+                    message: format!("stored definition is invalid: {error}"),
+                }
+            })
+        }
+        ProfileOrigin::DiscoveredInSource { source, .. } => {
+            load_source_profile_block(project_dir, source, name)
+        }
+    }
+}
+
+/// Re-discovers one source definition for the explicit import review.
+pub fn load_source_profile_block(
+    project_dir: &Path,
+    source_name: &str,
+    profile_name: &str,
+) -> Result<Block, ProfileError> {
+    let store = StateStore::open(project_dir.join(".switchyard/state.sqlite3"))?.0;
+    let source = store
+        .source(source_name)?
+        .ok_or_else(|| ProfileError::SourceNotFound {
+            source: source_name.into(),
+        })?;
+    let manifest =
+        discover_source_profiles(&source.path)?.ok_or_else(|| ProfileError::ProfileNotFound {
+            source: source_name.into(),
+            profile: profile_name.into(),
+        })?;
+    manifest
+        .profiles
+        .get(profile_name)
+        .cloned()
+        .ok_or_else(|| ProfileError::ProfileNotFound {
+            source: source_name.into(),
+            profile: profile_name.into(),
+        })
 }
 
 /// Re-discovers, validates, and records one explicitly selected source-local profile.
@@ -461,13 +545,13 @@ profiles:
         serde_yaml::from_str(contents).unwrap()
     }
 
-    fn register_source(project: &Path, source_root: &Path) {
+    fn register_named_source(project: &Path, name: &str, source_root: &Path) {
         let store = StateStore::open(project.join(".switchyard/state.sqlite3"))
             .unwrap()
             .0;
         store
             .register_source(&RegisteredSource {
-                name: "checkout".into(),
+                name: name.into(),
                 kind: RegisteredSourceKind::Unmanaged,
                 path: source_root.to_path_buf(),
                 repository_path: None,
@@ -476,6 +560,10 @@ profiles:
                 managed_relative_path: None,
             })
             .unwrap();
+    }
+
+    fn register_source(project: &Path, source_root: &Path) {
+        register_named_source(project, "checkout", source_root);
     }
 
     #[test]
@@ -631,5 +719,39 @@ services:
         ));
         remove_imported_profile(project.path(), "api").unwrap();
         assert!(store.imported_profile("api").unwrap().is_none());
+    }
+
+    #[test]
+    fn listing_keeps_good_profiles_when_another_source_manifest_is_broken() {
+        let project = TempDir::new().unwrap();
+        fs::write(
+            project.path().join("deployment.yaml"),
+            "apiVersion: switchyard.dev/v1alpha1\nkind: Deployment\nmetadata:\n  name: demo\nspec: {}\n",
+        )
+        .unwrap();
+        let good = project.path().join("good");
+        let broken = project.path().join("broken");
+        write_manifest(&good, VALID_MANIFEST);
+        write_manifest(&broken, "version: [");
+        register_named_source(project.path(), "good", &good);
+        register_named_source(project.path(), "broken", &broken);
+
+        let listing = list_profiles(project.path(), &project.path().join("deployment.yaml"))
+            .expect("one broken source is a diagnostic, not a listing failure");
+        assert!(listing.rows.iter().any(|row| {
+            row.name == "api"
+                && row.origin
+                    == ProfileOrigin::DiscoveredInSource {
+                        source: "good".into(),
+                        commit: None,
+                    }
+        }));
+        assert_eq!(listing.source_errors.len(), 1);
+        assert_eq!(listing.source_errors[0].source, "broken");
+        assert!(
+            listing.source_errors[0]
+                .message
+                .contains("invalid profile manifest")
+        );
     }
 }

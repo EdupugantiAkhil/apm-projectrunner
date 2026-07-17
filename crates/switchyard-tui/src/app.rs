@@ -11,15 +11,22 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 pub(crate) use switchyard_ops::projections::{BindingRow, DeploymentEntry, SourceChoice};
 use switchyard_ops::{
     execution::{self, OperationEvent, OperationSpec},
+    profiles::{
+        ProfileListing, ProfileOrigin, ProfileRow, ProfileTrust, SourceManifestError,
+        import_source_profile, list_profiles, load_profile_block, load_source_profile_block,
+        remove_imported_profile,
+    },
     projections::{list_deployments, list_devices, list_sources},
     run_scripts::{self, RunScript, StructuredCommand},
 };
+use switchyard_planner::{Block, Execution, Probe};
 use switchyard_sources::RegisteredSourceInspection;
 use switchyard_state::{DeviceCheckStatus, RegisteredDevice, RegisteredSourceKind, StateStore};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ActiveView {
     Sources,
+    Profiles,
     Devices,
     Instances,
 }
@@ -27,7 +34,8 @@ pub(crate) enum ActiveView {
 impl ActiveView {
     const fn next(self) -> Self {
         match self {
-            Self::Sources => Self::Devices,
+            Self::Sources => Self::Profiles,
+            Self::Profiles => Self::Devices,
             Self::Devices => Self::Instances,
             Self::Instances => Self::Sources,
         }
@@ -36,7 +44,8 @@ impl ActiveView {
     const fn previous(self) -> Self {
         match self {
             Self::Sources => Self::Instances,
-            Self::Devices => Self::Sources,
+            Self::Profiles => Self::Sources,
+            Self::Devices => Self::Profiles,
             Self::Instances => Self::Devices,
         }
     }
@@ -501,6 +510,22 @@ pub(crate) enum Overlay {
         name: String,
         spec: OperationSpec,
     },
+    ProfileInspector {
+        name: String,
+        lines: Vec<String>,
+        scroll: usize,
+    },
+    ProfileReview {
+        name: String,
+        source: String,
+        yaml: String,
+        scroll: usize,
+        error: Option<String>,
+    },
+    ConfirmRemoveProfile {
+        name: String,
+        error: Option<String>,
+    },
     Help,
 }
 
@@ -513,13 +538,27 @@ pub(crate) enum BusyKind {
     DeviceAdd,
     DeviceRemove,
     DeviceCheck,
+    ProfileRefresh,
+    ProfileInspect,
+    ProfileReview,
+    ProfileImport,
+    ProfileRemove,
     Operation,
 }
 
 enum TaskResult {
     Sources(Result<Vec<RegisteredSourceInspection>, String>, BusyKind),
     Devices(Result<Vec<RegisteredDevice>, String>, BusyKind),
+    Profiles(Result<ProfileListing, String>, BusyKind),
+    ProfileDialog(Result<ProfileDialog, String>, BusyKind),
     Operation(OperationEvent),
+}
+
+struct ProfileDialog {
+    name: String,
+    source: Option<String>,
+    lines: Vec<String>,
+    yaml: String,
 }
 
 pub(crate) struct App {
@@ -529,6 +568,9 @@ pub(crate) struct App {
     pub(crate) selected: usize,
     pub(crate) devices: Vec<RegisteredDevice>,
     pub(crate) device_selected: usize,
+    pub(crate) profiles: Vec<ProfileRow>,
+    pub(crate) profile_selected: usize,
+    pub(crate) profile_source_errors: Vec<SourceManifestError>,
     pub(crate) deployments: Vec<DeploymentEntry>,
     pub(crate) deployment_selected: usize,
     pub(crate) scripts: Vec<RunScript>,
@@ -554,14 +596,16 @@ impl App {
         let devices = list_devices(&project_dir).map_err(io_error)?;
         let deployments = list_deployments(&project_dir, &sources).map_err(io_error)?;
         let (scripts, scripts_error) = run_scripts::load(&project_dir);
-        Ok(Self::with_data(
+        let mut app = Self::with_data(
             project_dir,
             sources,
             devices,
             deployments,
             scripts,
             scripts_error,
-        ))
+        );
+        app.start_profile_refresh();
+        Ok(app)
     }
 
     #[cfg(test)]
@@ -595,6 +639,9 @@ impl App {
             selected: 0,
             devices,
             device_selected: 0,
+            profiles: Vec::new(),
+            profile_selected: 0,
+            profile_source_errors: Vec::new(),
             deployments,
             deployment_selected: 0,
             scripts,
@@ -725,6 +772,18 @@ impl App {
             Overlay::ConfirmDown { .. } => self.handle_down_confirm(key),
             Overlay::ConfirmDeleteScript { .. } => self.handle_delete_confirm(key),
             Overlay::ShellNotice { .. } => self.handle_shell_notice(key),
+            Overlay::ProfileInspector { scroll, lines, .. } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => self.overlay = Overlay::None,
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::PageDown => {
+                    *scroll = (*scroll + 1).min(lines.len().saturating_sub(1));
+                }
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::PageUp => {
+                    *scroll = scroll.saturating_sub(1);
+                }
+                _ => {}
+            },
+            Overlay::ProfileReview { .. } => self.handle_profile_review(key),
+            Overlay::ConfirmRemoveProfile { .. } => self.handle_profile_remove_confirm(key),
             Overlay::Help => {
                 if matches!(
                     key.code,
@@ -789,6 +848,33 @@ impl App {
                 if self.active_view == ActiveView::Sources && self.busy.is_none() =>
             {
                 self.start_refresh(BusyKind::Refresh)
+            }
+            KeyCode::Down | KeyCode::Char('j') if self.active_view == ActiveView::Profiles => {
+                if !self.profiles.is_empty() {
+                    self.profile_selected =
+                        (self.profile_selected + 1).min(self.profiles.len() - 1);
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') if self.active_view == ActiveView::Profiles => {
+                self.profile_selected = self.profile_selected.saturating_sub(1)
+            }
+            KeyCode::Enter if self.active_view == ActiveView::Profiles && self.busy.is_none() => {
+                self.start_profile_inspect()
+            }
+            KeyCode::Char('i')
+                if self.active_view == ActiveView::Profiles && self.busy.is_none() =>
+            {
+                self.start_profile_review()
+            }
+            KeyCode::Char('d')
+                if self.active_view == ActiveView::Profiles && self.busy.is_none() =>
+            {
+                self.open_profile_remove()
+            }
+            KeyCode::Char('r')
+                if self.active_view == ActiveView::Profiles && self.busy.is_none() =>
+            {
+                self.start_profile_refresh()
             }
             KeyCode::Down | KeyCode::Char('j') if self.active_view == ActiveView::Devices => {
                 if !self.devices.is_empty() {
@@ -1628,6 +1714,79 @@ impl App {
                     }
                     break;
                 }
+                TaskResult::Profiles(result, kind) => {
+                    self.task = None;
+                    self.busy = None;
+                    match result {
+                        Ok(listing) => {
+                            self.profiles = listing.rows;
+                            self.profile_source_errors = listing.source_errors;
+                            self.profile_selected = self
+                                .profile_selected
+                                .min(self.profiles.len().saturating_sub(1));
+                            self.overlay = Overlay::None;
+                            self.status = Some(
+                                match kind {
+                                    BusyKind::ProfileImport => "startup profile imported",
+                                    BusyKind::ProfileRemove => "startup profile import removed",
+                                    _ => "startup profiles refreshed",
+                                }
+                                .into(),
+                            );
+                        }
+                        Err(error) => {
+                            let status = match kind {
+                                BusyKind::ProfileImport | BusyKind::ProfileRemove => error.clone(),
+                                _ => format!("refresh startup profiles failed: {error}"),
+                            };
+                            self.status = Some(status);
+                            match (&mut self.overlay, kind) {
+                                (
+                                    Overlay::ProfileReview { error: slot, .. },
+                                    BusyKind::ProfileImport,
+                                )
+                                | (
+                                    Overlay::ConfirmRemoveProfile { error: slot, .. },
+                                    BusyKind::ProfileRemove,
+                                ) => *slot = Some(error),
+                                _ => {}
+                            }
+                        }
+                    }
+                    break;
+                }
+                TaskResult::ProfileDialog(result, kind) => {
+                    self.task = None;
+                    self.busy = None;
+                    match result {
+                        Ok(dialog) if kind == BusyKind::ProfileInspect => {
+                            self.overlay = Overlay::ProfileInspector {
+                                name: dialog.name,
+                                lines: dialog.lines,
+                                scroll: 0,
+                            };
+                        }
+                        Ok(dialog) if kind == BusyKind::ProfileReview => {
+                            self.overlay = Overlay::ProfileReview {
+                                name: dialog.name,
+                                source: dialog.source.unwrap_or_default(),
+                                yaml: dialog.yaml,
+                                scroll: 0,
+                                error: None,
+                            };
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            let action = if kind == BusyKind::ProfileInspect {
+                                "inspect profile"
+                            } else {
+                                "review profile import"
+                            };
+                            self.status = Some(format!("{action} failed: {error}"));
+                        }
+                    }
+                    break;
+                }
                 TaskResult::Operation(OperationEvent::Output(line)) => {
                     self.output.push(line);
                     if self.output_scroll > 0 {
@@ -1761,6 +1920,171 @@ impl App {
             list_sources(&root).map_err(|error| error.to_string())
         });
     }
+    fn profile_definition_path(&self) -> PathBuf {
+        self.current_deployment()
+            .map(|entry| entry.bundle.clone())
+            .unwrap_or_else(|| self.project_dir.join("deployment.yaml"))
+    }
+    fn start_profile_refresh(&mut self) {
+        self.busy = Some(BusyKind::ProfileRefresh);
+        let definition = self.profile_definition_path();
+        self.spawn_profiles(BusyKind::ProfileRefresh, move |root| {
+            list_profiles(&root, &definition).map_err(|error| error.to_string())
+        });
+    }
+    fn start_profile_inspect(&mut self) {
+        let Some(row) = self.profiles.get(self.profile_selected).cloned() else {
+            self.status = Some("inspect profile failed: no startup profile is selected".into());
+            return;
+        };
+        self.busy = Some(BusyKind::ProfileInspect);
+        let definition = self.profile_definition_path();
+        let root = self.project_dir.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = load_profile_block(&root, &definition, &row.name, &row.origin)
+                .map(|block| ProfileDialog {
+                    name: row.name.clone(),
+                    source: None,
+                    lines: profile_inspector_lines(&row, &block),
+                    yaml: String::new(),
+                })
+                .map_err(|error| error.to_string());
+            let _ = sender.send(TaskResult::ProfileDialog(result, BusyKind::ProfileInspect));
+        });
+        self.task = Some(receiver);
+    }
+    fn start_profile_review(&mut self) {
+        let Some(row) = self.profiles.get(self.profile_selected).cloned() else {
+            self.status = Some("import profile failed: no startup profile is selected".into());
+            return;
+        };
+        let source = match (&row.origin, row.trust) {
+            (ProfileOrigin::Project, _) => {
+                self.status = Some("import profile: project profiles are already trusted".into());
+                return;
+            }
+            (ProfileOrigin::ImportedFromSource { .. }, ProfileTrust::Imported) => {
+                self.status =
+                    Some("import profile: this profile is already imported and unchanged".into());
+                return;
+            }
+            (ProfileOrigin::ImportedFromSource { source, .. }, ProfileTrust::Changed)
+            | (ProfileOrigin::DiscoveredInSource { source, .. }, ProfileTrust::NotImported) => {
+                source.clone()
+            }
+            _ => {
+                self.status = Some("import profile: selected profile cannot be imported".into());
+                return;
+            }
+        };
+        self.busy = Some(BusyKind::ProfileReview);
+        let root = self.project_dir.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = load_source_profile_block(&root, &source, &row.name)
+                .and_then(|block| {
+                    serde_yaml::to_string(&block).map_err(|error| {
+                        switchyard_ops::profiles::ProfileError::Definition(format!(
+                            "could not format profile review: {error}"
+                        ))
+                    })
+                })
+                .map(|yaml| ProfileDialog {
+                    name: row.name,
+                    source: Some(source),
+                    lines: Vec::new(),
+                    yaml,
+                })
+                .map_err(|error| error.to_string());
+            let _ = sender.send(TaskResult::ProfileDialog(result, BusyKind::ProfileReview));
+        });
+        self.task = Some(receiver);
+    }
+    fn handle_profile_review(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.overlay = Overlay::None,
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::PageDown => {
+                if let Overlay::ProfileReview { scroll, yaml, .. } = &mut self.overlay {
+                    *scroll = (*scroll + 1).min(yaml.lines().count().saturating_sub(1));
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::PageUp => {
+                if let Overlay::ProfileReview { scroll, .. } = &mut self.overlay {
+                    *scroll = scroll.saturating_sub(1);
+                }
+            }
+            KeyCode::Enter if self.busy.is_none() => {
+                let (name, source) = match &self.overlay {
+                    Overlay::ProfileReview { name, source, .. } => (name.clone(), source.clone()),
+                    _ => return,
+                };
+                self.busy = Some(BusyKind::ProfileImport);
+                let definition = self.profile_definition_path();
+                self.spawn_profiles(BusyKind::ProfileImport, move |root| {
+                    import_source_profile(&root, &source, &name)
+                        .map_err(|error| format!("import profile `{name}` failed: {error}"))?;
+                    list_profiles(&root, &definition).map_err(|error| {
+                        format!("refresh after importing profile `{name}` failed: {error}")
+                    })
+                });
+            }
+            _ => {}
+        }
+    }
+    fn open_profile_remove(&mut self) {
+        let Some(row) = self.profiles.get(self.profile_selected) else {
+            self.status = Some("remove import failed: no startup profile is selected".into());
+            return;
+        };
+        match row.origin {
+            ProfileOrigin::Project => {
+                self.status = Some("remove import: project profiles cannot be removed here".into())
+            }
+            ProfileOrigin::ImportedFromSource { .. } => {
+                self.overlay = Overlay::ConfirmRemoveProfile {
+                    name: row.name.clone(),
+                    error: None,
+                }
+            }
+            ProfileOrigin::DiscoveredInSource { .. } => {
+                self.status = Some("remove import: selected profile has not been imported".into())
+            }
+        }
+    }
+    fn handle_profile_remove_confirm(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('n') => self.overlay = Overlay::None,
+            KeyCode::Enter if self.busy.is_none() => {
+                let name = match &self.overlay {
+                    Overlay::ConfirmRemoveProfile { name, .. } => name.clone(),
+                    _ => return,
+                };
+                self.busy = Some(BusyKind::ProfileRemove);
+                let definition = self.profile_definition_path();
+                self.spawn_profiles(BusyKind::ProfileRemove, move |root| {
+                    remove_imported_profile(&root, &name)
+                        .map_err(|error| format!("remove import `{name}` failed: {error}"))?;
+                    list_profiles(&root, &definition).map_err(|error| {
+                        format!("refresh after removing import `{name}` failed: {error}")
+                    })
+                });
+            }
+            _ => {}
+        }
+    }
+    fn spawn_profiles(
+        &mut self,
+        kind: BusyKind,
+        operation: impl FnOnce(PathBuf) -> Result<ProfileListing, String> + Send + 'static,
+    ) {
+        let root = self.project_dir.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = sender.send(TaskResult::Profiles(operation(root), kind));
+        });
+        self.task = Some(receiver);
+    }
     fn spawn_sources(
         &mut self,
         kind: BusyKind,
@@ -1786,6 +2110,148 @@ impl App {
             let _ = sender.send(TaskResult::Devices(operation(root), kind));
         });
         self.task = Some(receiver);
+    }
+}
+
+fn profile_inspector_lines(row: &ProfileRow, block: &Block) -> Vec<String> {
+    let (origin, commit) = match &row.origin {
+        ProfileOrigin::Project => ("project".into(), "not applicable".into()),
+        ProfileOrigin::ImportedFromSource { source, commit } => (
+            format!("imported from {source}"),
+            commit.clone().unwrap_or_else(|| "unknown".into()),
+        ),
+        ProfileOrigin::DiscoveredInSource { source, commit } => (
+            format!("found in {source}"),
+            commit.clone().unwrap_or_else(|| "unknown".into()),
+        ),
+    };
+    let trust = match row.trust {
+        ProfileTrust::Trusted => "trusted",
+        ProfileTrust::Imported => "imported",
+        ProfileTrust::Changed => "changed — review",
+        ProfileTrust::NotImported => "not imported",
+    };
+    let hash = match row.trust {
+        ProfileTrust::Trusted => "project definition is trusted",
+        ProfileTrust::Imported => "current content matches the imported hash",
+        ProfileTrust::Changed => "current content differs from the imported hash",
+        ProfileTrust::NotImported => "no imported content hash",
+    };
+    let mut lines = vec![
+        format!("Origin: {origin}"),
+        format!("Trust: {trust}"),
+        format!("Commit: {commit}"),
+        format!("Content hash: {hash}"),
+        format!(
+            "Parameters: {}",
+            if block.parameters.is_empty() {
+                "none".into()
+            } else {
+                block
+                    .parameters
+                    .iter()
+                    .map(|(name, parameter)| {
+                        format!(
+                            "{name} ({}{})",
+                            if parameter.required {
+                                "required"
+                            } else {
+                                "optional"
+                            },
+                            parameter
+                                .default
+                                .as_deref()
+                                .map_or_else(String::new, |value| format!(", default {value}"))
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        ),
+        String::new(),
+    ];
+    for (name, service) in &block.services {
+        lines.push(format!("Service: {name}"));
+        match &service.execution {
+            Execution::Container {
+                image,
+                build,
+                command,
+                working_directory,
+                ..
+            } => {
+                lines.push("  Adapter: container".into());
+                lines.push(format!("  Image: {}", image.as_deref().unwrap_or("-")));
+                if let Some(build) = build {
+                    lines.push(format!("  Build context: {}", build.context.display()));
+                }
+                lines.push(format!("  Command: {}", command.join(" ")));
+                lines.push(format!(
+                    "  Workdir: {}",
+                    working_directory
+                        .as_deref()
+                        .map_or_else(|| "-".into(), |path| path.display().to_string())
+                ));
+            }
+            Execution::Script {
+                image,
+                command,
+                working_directory,
+                lifecycle,
+                ..
+            } => {
+                lines.push("  Adapter: script".into());
+                lines.push(format!("  Image: {image}"));
+                lines.push(format!("  Command: {}", command.join(" ")));
+                lines.push(format!(
+                    "  Workdir: {}",
+                    working_directory
+                        .as_deref()
+                        .map_or_else(|| "-".into(), |path| path.display().to_string())
+                ));
+                lines.push(format!("  Lifecycle: {lifecycle:?}"));
+            }
+            Execution::ProcessCompose {
+                image,
+                file,
+                working_directory,
+                ..
+            } => {
+                lines.push("  Adapter: process-compose".into());
+                lines.push(format!("  Image: {image}"));
+                lines.push(format!("  Command/file: {}", file.display()));
+                lines.push(format!(
+                    "  Workdir: {}",
+                    working_directory
+                        .as_deref()
+                        .map_or_else(|| "-".into(), |path| path.display().to_string())
+                ));
+            }
+        }
+        lines.push(format!("  Provides: {}", map_names(&service.provides)));
+        lines.push(format!("  Consumes: {}", map_names(&service.consumes)));
+        lines.push(format!(
+            "  Probe: {}",
+            service.probe.as_ref().map_or_else(
+                || "none".into(),
+                |probe| match probe {
+                    Probe::Http { path, port, https } =>
+                        format!("http{} {path} on {port}", if *https { "s" } else { "" }),
+                    Probe::Tcp { port } => format!("tcp {port}"),
+                    Probe::Command { command } => format!("command {}", command.join(" ")),
+                }
+            )
+        ));
+        lines.push(String::new());
+    }
+    lines
+}
+
+fn map_names<T>(values: &std::collections::BTreeMap<String, T>) -> String {
+    if values.is_empty() {
+        "none".into()
+    } else {
+        values.keys().cloned().collect::<Vec<_>>().join(", ")
     }
 }
 
@@ -2172,6 +2638,8 @@ mod tests {
     fn tabs_cycle_through_all_control_plane_views() {
         let mut app = App::with_sources(PathBuf::from("."), Vec::new());
         app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.active_view, ActiveView::Profiles);
+        app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.active_view, ActiveView::Devices);
         app.handle_key(key(KeyCode::Tab));
         assert_eq!(app.active_view, ActiveView::Instances);
@@ -2179,6 +2647,54 @@ mod tests {
         assert_eq!(app.active_view, ActiveView::Sources);
         app.handle_key(key(KeyCode::BackTab));
         assert_eq!(app.active_view, ActiveView::Instances);
+    }
+    #[test]
+    fn profile_import_review_and_remove_wait_for_explicit_enter() {
+        let mut app = App::with_sources(PathBuf::from("."), Vec::new());
+        app.active_view = ActiveView::Profiles;
+        app.overlay = Overlay::ProfileReview {
+            name: "api".into(),
+            source: "checkout".into(),
+            yaml: "services: {}".into(),
+            scroll: 0,
+            error: None,
+        };
+        app.handle_key(key(KeyCode::Char('y')));
+        assert!(matches!(app.overlay, Overlay::ProfileReview { .. }));
+        assert!(app.busy.is_none());
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.overlay, Overlay::None);
+
+        app.overlay = Overlay::ConfirmRemoveProfile {
+            name: "api".into(),
+            error: None,
+        };
+        app.handle_key(key(KeyCode::Char('y')));
+        assert!(matches!(app.overlay, Overlay::ConfirmRemoveProfile { .. }));
+        assert!(app.busy.is_none());
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.overlay, Overlay::None);
+    }
+    #[test]
+    fn profile_delete_key_opens_confirmation_for_imported_row() {
+        let mut app = App::with_sources(PathBuf::from("."), Vec::new());
+        app.active_view = ActiveView::Profiles;
+        app.profiles.push(ProfileRow {
+            name: "api".into(),
+            origin: ProfileOrigin::ImportedFromSource {
+                source: "checkout".into(),
+                commit: Some("abc".into()),
+            },
+            trust: ProfileTrust::Imported,
+            shadowed: false,
+            services: Vec::new(),
+        });
+        app.handle_key(key(KeyCode::Char('d')));
+        assert!(matches!(
+            app.overlay,
+            Overlay::ConfirmRemoveProfile { ref name, .. } if name == "api"
+        ));
+        assert!(app.busy.is_none());
     }
     #[test]
     fn confirm_no_closes_without_starting_work() {
