@@ -454,6 +454,93 @@ Entry gate: the product MVP is stable for local single-developer use.
 - [x] Deployment bundles round-trip across supported machines without embedding secrets.
 - [x] Release artifacts pass installation, upgrade, recovery, and uninstall tests.
 
+## TUI control plane
+
+Goal: extend the retained Ratatui TUI into the primary local authoring experience while
+keeping the CLI, daemon, and supported secondary GUI aligned through shared operations.
+
+### Phase A — architecture and contracts
+
+- [x] Update `DESIGN.md`: retained-TUI decision, shared operations layer, and — since
+      devices are currently implemented but undocumented — a retroactive device model
+      section (registration, scope, connectivity checks, placement rules).
+- [x] Specify the source-local startup-profile manifest format, discovery boundaries,
+      precedence, and trust behavior.
+- [x] Write the scoped design for the Phase D limited remote cut (SSH + remote Docker,
+      local router, explicit published addresses; ownership, cleanup, and failure
+      behavior).
+- [x] Decide and document the React GUI's status as a supported secondary client for
+      monitoring and operations, with new authoring workflows TUI-only and no implicit
+      parity schedule.
+- [x] Make the final user-facing terminology pass (including the "project / project
+      instance" question from the handwritten notes).
+- [x] Add this work to `IMPLEMENTATION_PLAN.md` without reopening already verified
+      routing milestones.
+
+Exit gate: the manifest format, device model, remote-cut design, client policy, and
+naming are documented and reviewed.
+
+### Phase B — guided configuration on the existing TUI
+
+- [ ] Implement the Home first-run workflow.
+- [ ] Implement the startup-profile library view and schema-driven inspector/editor.
+- [ ] Implement explicit source-local profile discovery and import.
+- [ ] Implement checkout + startup profile + parameters + device instance creation
+      (device choice limited to `local` until Phase D, with honest labeling).
+- [ ] Continuously validate drafts and preview expanded services and resources.
+- [ ] Keep project run actions discoverable under Operations.
+- [ ] Extract the operations/state-projection layer for each workflow this phase
+      touches.
+- [ ] Add component/state tests and pty-driven smoke coverage for the new views.
+
+Exit gate: a new user can configure and start a supported repository through the TUI
+without manually editing generated files.
+
+### Phase C — routing workflow
+
+- [ ] Implement the Connections route matrix.
+- [ ] Implement compatible-group selection and complete old/new route preview.
+- [ ] Apply route changes through the existing atomic binding operation.
+- [ ] Surface route version, transition state, failures, and rollback information.
+- [ ] Verify the Node.js consumer and interchangeable five-service Python-group
+      scenario end to end from the TUI.
+
+Exit gate: multiple consumer instances can independently select complete compatible
+provider groups from the TUI, and switching one consumer does not restart unrelated
+instances.
+
+### Phase D — limited remote device execution
+
+Entry gate: the Phase A remote-cut design is approved.
+
+- [ ] Implement SSH + remote-Docker execution for container-backed instances, with the
+      router local and remote services reachable via explicit published addresses.
+- [ ] Implement remote ownership labeling, lifecycle, health, logs, and cleanup for the
+      cut.
+- [ ] Validate device eligibility (SSH reachable, Docker reachable, resource claims)
+      before start; ineligible selections fail validation with the concrete reason.
+- [ ] Expose device placement in instance creation and show true placement everywhere.
+- [ ] Verify end to end against a real LAN device.
+
+Exit gate: selecting an eligible remote device causes real, observable, recoverable
+execution on that device; everything outside the cut is clearly labeled unsupported.
+
+### Phase E — AI skill and release integration
+
+- [ ] Expand and validate the initialized AI skill per section 7 of
+      `docs/new_tui_features.md`, including the explicit cannot-safely-configure failure
+      mode.
+- [ ] Apply the approved React GUI decision from Phase A.
+- [ ] Update development, TUI, release, upgrade, and support docs.
+- [ ] Run workspace tests, Clippy `-D warnings`, formatting, documentation checks,
+      pty-driven TUI smoke tests, routing fixtures, and release assembly verification.
+- [ ] Update `PROGRESS.md` and `AGENTMISTAKES.md` with implementation and verification
+      results as each increment lands.
+- [ ] Commit reviewed phase-sized increments throughout.
+
+Exit gate: one clearly documented primary interactive experience ships with full local
+workflow coverage, the limited remote cut, and no ambiguous duplicate product model.
+
 ## Deferred ideas
 
 These items are intentionally outside the current phase gates. Move an item into a phase

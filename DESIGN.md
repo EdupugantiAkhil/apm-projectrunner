@@ -134,6 +134,27 @@ sources:
 Initial releases should consume existing paths and worktrees. Managed clone, fetch, and
 worktree creation should be added only after the execution model is stable.
 
+### Device
+
+A device is a project-scoped execution host. Registered devices are records in the
+project's `.switchyard/state.sqlite3` database. Each record contains a name, SSH user,
+host, port, an optional identity-file path, and the status, detail, and time of the last
+connectivity check. Switchyard stores neither passwords nor private keys; SSH uses the
+credentials and agent available to the Switchyard process.
+
+`local` is an implicit, always-available device and is not stored as a database row.
+Connectivity checks for registered SSH devices are explicit background operations.
+Their results are persisted for inspection and do not by themselves start an instance.
+
+Every instance has a device. The current runtime honors only `local`; selecting a
+non-local device is a validation error until the limited remote execution cut is
+implemented. A client or planner must never accept and then ignore a placement field.
+
+User-level device configuration is deliberately outside the current scope. A future
+design may add `~/.config/switchyard/devices.yaml`, with project records taking
+precedence over same-named global records and every client displaying the effective
+record's origin. No client should imply that such global configuration exists today.
+
 ### Block
 
 A reusable startup definition. A block may contain one service or a coordinated suite.
@@ -333,6 +354,55 @@ name and any number of components. Switchyard does not branch on these values.
 Execution mode is independent of block type: Java, Python, UI, and generic blocks may
 use containers, containerized scripts, or explicitly trusted host commands.
 
+### Source-local startup profiles
+
+A registered source checkout may declare startup profiles in exactly one well-known
+file at its root: `switchyard-profiles.yaml`. Discovery reads only that file. It does
+not search for likely scripts, inspect other filenames, or execute repository content.
+An absent file is not an error.
+
+The manifest has this versioned shape:
+
+```yaml
+version: 1
+profiles:
+  python-suite:
+    parameters:
+      LOG_LEVEL:
+        required: false
+    services:
+      api:
+        execution:
+          type: container
+          build:
+            context: services/api
+            dockerfile: Dockerfile
+        provides:
+          python-api:
+            protocol: http
+            endpoint: "http://${runtime.host}:${runtime.port}"
+        healthcheck: /health
+```
+
+Each value in `profiles` is a block `spec` body using the existing block schema, with
+the profile's map key taking the place of `metadata.name`. It may
+declare the execution adapter, command, working directory, mounts, provided
+capabilities, consumed slots, probes, parameters, and lifecycle. The manifest does not
+introduce another execution format, and a source-local profile has the same validation,
+planning, isolation, ownership, health, and cleanup contracts as a project block.
+Project run actions remain separate operations declared in
+`.switchyard/run-scripts.yaml`; they are not profiles and do not own instance services.
+
+Discovery does not make a profile executable. Import is explicit and records the source
+name, source commit, and a deterministic content hash of the selected profile definition
+in project state. Before import, the client shows the fully expanded definition for
+review. If the discovered definition's content hash later differs from the imported
+hash, the profile is `changed` and cannot run until it is reviewed and imported again.
+
+A project-declared profile shadows a source-local profile with the same name. Clients
+always display whether the effective profile originates in the project or a registered
+source, including the source name and imported commit where applicable.
+
 ### Host resource claims
 
 Host commands do not receive Docker network isolation. Their definitions must declare
@@ -528,19 +598,22 @@ does not mean the block is ready.
 ### Instance
 
 A concrete copy of a block in a deployment. Each instance selects a source and supplies
-parameters.
+parameters. It also selects an execution device; `local` is the default and the only
+placement honored before the limited remote execution cut.
 
 ```yaml
 instances:
   - name: python-main
     block: python-suite
     source: monorepo-main
+    device: local
     parameters:
       LOG_LEVEL: info
 
   - name: python-feature
     block: python-suite
     source: experimental-python
+    device: local
     parameters:
       LOG_LEVEL: debug
 ```
@@ -777,7 +850,7 @@ claims do not collide.
 ## 4. System architecture
 
 ```text
- Browser / CLI / GUI
+ Browser / TUI / CLI / GUI
           │
           ▼
  ┌─────────────────────────────────────────────────────────┐
@@ -800,7 +873,7 @@ claims do not collide.
                             ▼
              selected providers / shared services
 
- CLI / Web GUI ──HTTP+SSE──► Switchyard control plane
+ TUI / CLI / Web GUI ──HTTP+SSE──► Switchyard control plane
                               ├── planner + Compose generator
                               ├── router configuration
                               ├── Git/worktrees
@@ -863,6 +936,48 @@ Recommended implementation:
 - SQLite for runtime metadata, locks, operation history, and GUI preferences.
 - Server-Sent Events for build output, logs, health changes, and operation progress.
 - Docker Compose CLI as the first runtime adapter; Docker Engine API can follow later.
+
+### Interactive clients and shared operations
+
+The Ratatui TUI is the primary local interactive control plane and remains the retained
+interface for new authoring workflows. It works through a plain SSH terminal on
+headless devices, preserves the existing terminal handoff used by Git and ephemeral SSH
+credential prompts, and extends a small working client instead of funding a second
+implementation of the same workflows. A native GUI would require a separate secure
+credential-prompt design and would remove terminal-only access, so it is not part of
+this milestone. `switchyard tui [project]` retains its command name.
+
+Application behavior shared by interactive and command-line clients belongs in a new
+`switchyard-ops` crate. It owns operations that validate, plan, apply, and mutate
+sources, devices, profiles, instances, and bindings. It also owns read-model projections
+such as the rows, summaries, validation diagnostics, and operation states rendered by a
+view. It does not render widgets or parse command-line arguments and must not depend on
+`ratatui` or `clap`.
+
+The TUI, CLI, and daemon converge on this layer incrementally. Each new workflow
+extracts the operations and projections it touches from client code; existing behavior
+is not moved in a big-bang rewrite.
+
+Control-plane clients use these final user-facing labels without renaming persisted
+fields:
+
+| UI label | Architecture term | Meaning |
+| --- | --- | --- |
+| Switchyard project | Workspace/project directory | Authored deployment, overlays, and project state |
+| Code | Sources | Code made available from a local path, repository, or worktree |
+| Repository | Repository | The Git repository and its relationship to linked worktrees |
+| Checkout | Source path/worktree | The exact code tree selected for an instance |
+| Startup profile | Block | A reusable definition that expands into one service or a coordinated suite |
+| Instance | Instance | One checkout run through one startup profile with its own parameters |
+| Service group | Service group | A complete reusable set of compatible providers |
+| Connection | Binding/routes | The selected provider group or routes for a consumer instance |
+| Run action | Project run script | A project-level Up, Down, Plan, Status, or smoke-test operation |
+| Device | Registered device | A known execution host; `local` plus registered SSH hosts |
+
+The handwritten alternative "project / project instance" is rejected because
+"Switchyard project" already means the workspace. Reusing `project` for source code
+would make project state, code checkouts, and running instances ambiguous. Persisted
+`source`, `block`, `instance`, `group`, and `binding` field names remain unchanged.
 
 ### Compose generator
 
@@ -1038,12 +1153,19 @@ The control plane records:
 
 ### Product subject and primary job
 
-The GUI is a developer's deployment switchyard. Its primary job is to answer and change:
+The React GUI is a supported secondary client for deployment monitoring and operations.
+Its primary job is to answer and change:
 **“Which exact source-backed instances are connected right now?”**
 
 It is an operational tool, not a generic admin dashboard. The main view should resemble
 a disciplined physical patch bay: service instances sit in typed lanes and visible
 cables connect consumers to providers.
+
+Startup-profile authoring, the guided instance-creation workflow, the connections
+matrix, and device placement are TUI-only. The GUI is not scheduled to receive these
+new authoring workflows. Authoring parity requires a separate milestone and design
+decision; it is not an implicit requirement for changes to the TUI. Existing GUI route
+visualization and complete binding operations remain supported.
 
 ### Visual direction
 
@@ -1323,6 +1445,35 @@ Optional LAN mode uses `*.local` and mDNS:
 
 Cross-network access is a later adapter using normal DNS, Tailscale, or another private
 network. It must not silently expose deployments to the public internet.
+
+### Limited remote container execution
+
+The first remote execution cut supports only container-adapter instances on a
+registered SSH device. Switchyard invokes the Docker client against
+`ssh://user@host`, using Docker's native SSH transport. Image builds send the selected
+local checkout's build context to that daemon over the same transport, so the cut does
+not require an image registry or a managed remote checkout.
+
+The Switchyard Router remains local. A remotely placed service must declare explicit
+published ports, and routes address it as `device-host:published-port`. Remote routers,
+cross-device sidecar routing, process-adapter instances on remote devices, and
+drift-tracked remote checkouts are unsupported by this cut. Validation reports these
+boundaries rather than attempting a partial placement.
+
+Remote containers receive the same Switchyard ownership labels as local containers.
+Inspection, reconciliation, and cleanup enumerate resources with those labels on the
+selected remote Docker daemon.
+
+Before start, Switchyard verifies SSH reachability, runs `docker version` through the
+SSH transport, and records the reported platform information. A device is eligible only
+when both checks succeed and the requested container workload satisfies the cut.
+Validation fails with the concrete reason when the host is unreachable, Docker is
+absent, access is denied, or another eligibility check fails.
+
+If a device is unreachable during stop or cleanup, the operation fails with the reason
+and guidance to restore access and retry. Switchyard does not report success or silently
+orphan the workload. Its ownership records remain intact, and the labeled remote
+resources remain discoverable for later reconciliation and cleanup.
 
 ## 11. Observability
 

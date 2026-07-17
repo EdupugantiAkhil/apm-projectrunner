@@ -5,6 +5,22 @@ format or API is never changed silently. This policy applies to released builds;
 from an untagged development commit is supported only with artifacts produced by that
 same commit.
 
+## Supported clients
+
+The CLI and Ratatui TUI are the command-line and primary interactive control planes. The
+React GUI remains a supported secondary client for deployment monitoring and operations,
+including status, topology, route operations, logs, and lifecycle controls.
+
+Source-local startup-profile authoring, the guided instance-creation wizard, the
+connections matrix, and device placement are TUI-only. No GUI delivery schedule or
+authoring-parity promise applies to those workflows. Adding that parity requires a new,
+separately approved milestone; absence of those workflows from the GUI is not a client
+deprecation.
+
+The GUI's existing operational route table, topology visualization, and complete
+binding changes remain in scope. They do not imply support for the new Connections
+authoring workflow.
+
 ## What “not silently” means
 
 Every compatibility-affecting change must include all of the following in the same

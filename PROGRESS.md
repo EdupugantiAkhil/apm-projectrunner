@@ -1108,3 +1108,24 @@ implemented shape and the evidence used to close a phase.
   asks for a valid deployment name and an optional destination (defaulting to a new
   folder named after the project), then creates and validates the complete reference
   template. The existing directory-based command remains available for automation.
+
+## 2026-07-17 — TUI control plane Phase A: architecture and contracts
+
+- Documented in `DESIGN.md`: the retained-Ratatui-TUI decision and the shared
+  `switchyard-ops` operations/projection crate boundary; a retroactive device model
+  (project-scoped SSH records, implicit `local`, placement is validated never ignored,
+  global config deferred); the `switchyard-profiles.yaml` source-local startup-profile
+  manifest with explicit import, content-hash trust, and project-over-source
+  precedence; the final user-facing terminology table (the handwritten
+  "project / project instance" naming was rejected); and the scoped limited remote
+  container execution cut (Docker SSH transport, local router, published addresses,
+  labeled remote resources, eligibility validation, no silent orphaning).
+- Declared the React GUI a supported secondary monitoring/operations client in
+  `docs/gui.md` and `docs/support-policy.md`; the new authoring workflows are TUI-only
+  with no implicit parity schedule.
+- Appended the TUI control-plane milestone (Phases A–E) to `IMPLEMENTATION_PLAN.md`.
+- Verification: documentation-only diff (five permitted files), fixed the manifest
+  example's `provides` shape to the canonical capability map during review.
+- Phase D readiness proven early: the LAN device `poco-f1-nixos` (192.168.1.167,
+  aarch64) accepts key-based SSH and `docker -H ssh://akhil@poco-f1-nixos` reaches its
+  Docker 28.5.1 daemon.

@@ -18,6 +18,19 @@ switchyard gui
 best-effort attempt to open it with `xdg-open` on Linux or `open` on macOS. Failure to
 start the desktop opener does not fail the command.
 
+## Supported scope
+
+The React GUI is a supported secondary client for deployment monitoring and operations.
+It retains its deployment status, topology, route operations, logs, source inspection,
+and lifecycle controls.
+
+New control-plane authoring workflows are TUI-only: source-local startup profiles, the
+guided instance-creation wizard, the connections matrix, and device placement. The GUI
+is not scheduled to receive these workflows. Adding GUI authoring parity requires a
+separate milestone and design decision rather than following TUI work automatically.
+The existing operational route table, topology visualization, and complete binding
+changes remain supported; they are not the new Connections authoring workflow.
+
 ## Credential handling
 
 The launch URL is `http://127.0.0.1:<port>/gui/#token=<credential>`. The credential is
@@ -63,6 +76,10 @@ can plan or run Up. This is deliberately the same portable workflow available wi
 the GUI: edit `deployments/<name>.yaml`, run `switchyard validate`, then plan or apply.
 
 ## Builder and schema forms
+
+The existing deployment builder and schema forms remain available for their current
+deployment-definition workflow. They do not constitute parity with the new TUI-only
+authoring workflows described above.
 
 **New deployment** opens the creation flow. Names use planner DNS-label rules. An
 instance selects a source and block, while execution configuration comes entirely from
