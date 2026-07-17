@@ -326,7 +326,9 @@ fn apply_live_binding_with_admin(
     };
     let authored = switchyard_planner::load_bundle(&bundle_path)
         .map_err(|error| ApiErrorV1::new("bundle_load_failed", error.to_string()))?;
-    let authored_plan = switchyard_planner::plan(&authored)
+    let devices = planner_devices(project_root)
+        .map_err(|error| ApiErrorV1::new("device_load_failed", error.to_string()))?;
+    let authored_plan = switchyard_planner::plan_with_devices(&authored, &devices)
         .map_err(|errors| ApiErrorV1::new("plan_failed", format_diagnostics(errors)))?;
     let resolved_path = project_root
         .join(&authored_plan.artifact_dir)
@@ -353,8 +355,9 @@ fn apply_live_binding_with_admin(
     } else {
         authored
     };
-    let mut plan = switchyard_planner::plan_with_binding(&base, consumer, group)
-        .map_err(|errors| ApiErrorV1::new("plan_failed", format_diagnostics(errors)))?;
+    let mut plan =
+        switchyard_planner::plan_with_binding_and_devices(&base, consumer, group, &devices)
+            .map_err(|errors| ApiErrorV1::new("plan_failed", format_diagnostics(errors)))?;
     let transition = request.transition;
     let route_dir = project_root
         .join(&authored_plan.artifact_dir)
@@ -1054,7 +1057,7 @@ pub fn reconcile_project(project_root: &Path) -> Result<ReconciliationReport, Da
         .iter()
         .map(|manifest| manifest.deployment.as_str())
         .collect::<std::collections::BTreeSet<_>>();
-    let resources = observe_docker()?
+    let mut resources = observe_docker()?
         .into_iter()
         .filter(|resource| {
             resource
@@ -1062,11 +1065,26 @@ pub fn reconcile_project(project_root: &Path) -> Result<ReconciliationReport, Da
                 .get(switchyard_state::DEPLOYMENT_LABEL)
                 .is_some_and(|deployment| deployments.contains(deployment.as_str()))
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let mut unreachable_devices = std::collections::BTreeSet::new();
+    for manifest in &manifests {
+        for (name, remote) in &manifest.remote_projects {
+            match observe_docker_on(name, Some(&remote.device), true) {
+                Ok(observed) => resources.extend(observed.into_iter().filter(|resource| {
+                    resource.labels.get(switchyard_state::DEPLOYMENT_LABEL)
+                        == Some(&manifest.deployment)
+                })),
+                Err(_) => {
+                    unreachable_devices.insert(name.clone());
+                }
+            }
+        }
+    }
     Ok(store.reconcile(
         &ReconciliationInput {
             manifests,
             resources,
+            unreachable_devices,
         },
         now_millis(),
     )?)
@@ -1158,7 +1176,7 @@ struct Prepared {
 fn prepare(
     config: DaemonConfig,
     backend: Arc<dyn OperationBackend>,
-    resources: Vec<switchyard_state::OwnedResourceObservation>,
+    mut resources: Vec<switchyard_state::OwnedResourceObservation>,
 ) -> Result<Prepared, DaemonError> {
     if !config.bind.ip().is_loopback() {
         return Err(DaemonError::InvalidConfiguration(
@@ -1176,10 +1194,25 @@ fn prepare(
     let now = now_millis();
     store.recover_abandoned_operations(now)?;
     let manifests = GeneratedManifest::load_generated(&state_dir.join("generated"))?;
+    let mut unreachable_devices = std::collections::BTreeSet::new();
+    for manifest in &manifests {
+        for (name, remote) in &manifest.remote_projects {
+            match observe_docker_on(name, Some(&remote.device), true) {
+                Ok(observed) => resources.extend(observed.into_iter().filter(|resource| {
+                    resource.labels.get(switchyard_state::DEPLOYMENT_LABEL)
+                        == Some(&manifest.deployment)
+                })),
+                Err(_) => {
+                    unreachable_devices.insert(name.clone());
+                }
+            }
+        }
+    }
     let reconciliation = store.reconcile(
         &ReconciliationInput {
             manifests,
             resources,
+            unreachable_devices,
         },
         now,
     )?;
@@ -1584,7 +1617,10 @@ fn validate_definition(
             "deployment definition is invalid",
             json!([{"code":"invalid_yaml","path":"$","message":error.to_string()}]),
         )),
-        Ok(bundle) => match switchyard_planner::plan(&bundle) {
+        Ok(bundle) => match switchyard_planner::plan_with_devices(
+            &bundle,
+            &planner_devices(root).unwrap_or_default(),
+        ) {
             Err(diagnostics) => Err(validation_error(
                 "deployment definition is invalid",
                 serde_json::to_value(diagnostics).unwrap_or_else(|_| json!([])),
@@ -2833,7 +2869,9 @@ fn persist_applied_snapshot(inner: &Inner, request: &CommandRequestV1) -> Result
     };
     let bundle = switchyard_planner::load_bundle(&bundle_path)
         .map_err(|error| ApiErrorV1::new("bundle_load_failed", error.to_string()))?;
-    let authored_plan = switchyard_planner::plan(&bundle)
+    let devices = planner_devices(&inner.config.project_root)
+        .map_err(|error| ApiErrorV1::new("device_load_failed", error.to_string()))?;
+    let authored_plan = switchyard_planner::plan_with_devices(&bundle, &devices)
         .map_err(|errors| ApiErrorV1::new("plan_failed", format_diagnostics(errors)))?;
     let resolved_path = inner
         .config
@@ -2842,7 +2880,7 @@ fn persist_applied_snapshot(inner: &Inner, request: &CommandRequestV1) -> Result
         .join("resolved-deployment.yaml");
     let resolved = switchyard_planner::load_bundle(&resolved_path)
         .map_err(|error| ApiErrorV1::new("resolved_state_invalid", error.to_string()))?;
-    let applied_plan = switchyard_planner::plan(&resolved)
+    let applied_plan = switchyard_planner::plan_with_devices(&resolved, &devices)
         .map_err(|errors| ApiErrorV1::new("plan_failed", format_diagnostics(errors)))?;
     let snapshot = AppliedSnapshot::from_json(
         serde_json::to_value(&resolved)
@@ -3152,14 +3190,34 @@ fn state_kind(kind: CommandKind) -> OperationKind {
 fn deployment_id(bundle_path: &Path) -> String {
     switchyard_planner::load_bundle(bundle_path)
         .ok()
-        .and_then(|bundle| switchyard_planner::plan(&bundle).ok())
         .map_or_else(
             || {
                 let path = fs::canonicalize(bundle_path).unwrap_or_else(|_| bundle_path.into());
                 format!("invalid-bundle:{}", path.display())
             },
-            |plan| plan.deployment,
+            |bundle| bundle.metadata.name,
         )
+}
+
+fn planner_devices(
+    project_root: &Path,
+) -> Result<BTreeMap<String, switchyard_planner::PlanningDevice>, StateError> {
+    let (store, _) = StateStore::open(project_root.join(".switchyard/state.sqlite3"))?;
+    Ok(store
+        .devices()?
+        .into_iter()
+        .map(|device| {
+            (
+                device.name,
+                switchyard_planner::PlanningDevice {
+                    user: device.user,
+                    host: device.host,
+                    port: device.port,
+                    identity_file: device.identity_file,
+                },
+            )
+        })
+        .collect())
 }
 
 fn operation_from_stored(
@@ -3372,6 +3430,14 @@ fn now_millis() -> i64 {
 }
 
 fn observe_docker() -> Result<Vec<switchyard_state::OwnedResourceObservation>, io::Error> {
+    observe_docker_on("local", None, false)
+}
+
+fn observe_docker_on(
+    device_name: &str,
+    device: Option<&switchyard_state::GeneratedDevice>,
+    strict: bool,
+) -> Result<Vec<switchyard_state::OwnedResourceObservation>, io::Error> {
     let mut observations = Vec::new();
     for (kind, noun, supports_all) in [
         (switchyard_state::ResourceKind::Container, "container", true),
@@ -3384,20 +3450,32 @@ fn observe_docker() -> Result<Vec<switchyard_state::OwnedResourceObservation>, i
             arguments.push("--all");
         }
         arguments.extend(["--filter", "label=dev.switchyard.managed=true", "--quiet"]);
-        let output = std::process::Command::new("docker")
-            .args(arguments)
-            .output()?;
+        let mut command = std::process::Command::new("docker");
+        command.args(arguments);
+        configure_docker_device(&mut command, device);
+        let output = command.output()?;
         if !output.status.success() {
+            if strict {
+                return Err(io::Error::other(
+                    String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+                ));
+            }
             continue;
         }
         for id in String::from_utf8_lossy(&output.stdout)
             .lines()
             .filter(|id| !id.is_empty())
         {
-            let inspected = std::process::Command::new("docker")
-                .args([noun, "inspect", id])
-                .output()?;
+            let mut command = std::process::Command::new("docker");
+            command.args([noun, "inspect", id]);
+            configure_docker_device(&mut command, device);
+            let inspected = command.output()?;
             if !inspected.status.success() {
+                if strict {
+                    return Err(io::Error::other(
+                        String::from_utf8_lossy(&inspected.stderr).trim().to_owned(),
+                    ));
+                }
                 continue;
             }
             let values: Vec<Value> = serde_json::from_slice(&inspected.stdout).unwrap_or_default();
@@ -3437,10 +3515,28 @@ fn observe_docker() -> Result<Vec<switchyard_state::OwnedResourceObservation>, i
                     .pointer("/State/Status")
                     .and_then(Value::as_str)
                     .map(Into::into),
+                device: device_name.into(),
             });
         }
     }
     Ok(observations)
+}
+
+fn configure_docker_device(
+    command: &mut std::process::Command,
+    device: Option<&switchyard_state::GeneratedDevice>,
+) {
+    let Some(device) = device else { return };
+    command.env(
+        "DOCKER_HOST",
+        format!("ssh://{}@{}:{}", device.user, device.host, device.port),
+    );
+    let identity = device
+        .identity_file
+        .as_ref()
+        .map(|path| format!("-i {} ", path.display()))
+        .unwrap_or_default();
+    command.env("DOCKER_SSH_OPTS", format!("{identity}-o BatchMode=yes"));
 }
 
 #[cfg(test)]

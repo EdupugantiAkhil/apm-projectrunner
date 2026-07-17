@@ -28,7 +28,25 @@ pub fn write_bundle(
     let authored = switchyard_planner::load_bundle(deployment_path)?;
     let deployment = authored.metadata.name.clone();
     let default_deployment_name = safe_file_component(&deployment);
-    let planned = switchyard_planner::plan(&authored);
+    let devices =
+        switchyard_state::StateStore::open(workspace_root.join(".switchyard/state.sqlite3"))
+            .ok()
+            .and_then(|(store, _)| store.devices().ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|device| {
+                (
+                    device.name,
+                    switchyard_planner::PlanningDevice {
+                        user: device.user,
+                        host: device.host,
+                        port: device.port,
+                        identity_file: device.identity_file,
+                    },
+                )
+            })
+            .collect();
+    let planned = switchyard_planner::plan_with_devices(&authored, &devices);
     let (plan, definition_hash, validation_diagnostics) = match planned {
         Ok(plan) => {
             let hash = Value::String(plan.definition_hash.clone());
@@ -61,7 +79,14 @@ pub fn write_bundle(
         }),
     };
 
-    let resources = match DockerRuntime::default().discover(&deployment) {
+    let runtime = DockerRuntime::default();
+    let discovery = match plan.as_ref() {
+        Some(plan) => runtime
+            .discover_plan(&crate::runtime_plan(workspace_root, plan))
+            .map(|(resources, _)| resources),
+        None => runtime.discover(&deployment),
+    };
+    let resources = match discovery {
         Ok(resources) => Value::Array(
             resources
                 .into_iter()
@@ -72,6 +97,7 @@ pub fn write_bundle(
                         "name": resource.name,
                         "labels": resource.labels,
                         "state": resource.state,
+                        "device": resource.device,
                     })
                 })
                 .collect(),

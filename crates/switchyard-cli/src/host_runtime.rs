@@ -501,8 +501,6 @@ impl<'a> HostRuntime<'a> {
         config: &mut RouterConfig,
     ) -> Result<(), HostRuntimeError> {
         for (provider, upstream) in &self.plan.host_upstreams {
-            let address =
-                self.published_address(&upstream.compose_service, upstream.container_port)?;
             let matches = config
                 .spec
                 .providers
@@ -516,8 +514,24 @@ impl<'a> HostRuntime<'a> {
                 )));
             }
             let target = matches.into_iter().next().expect("length checked");
-            target.endpoint.host = address.ip().to_string();
-            target.endpoint.port = address.port();
+            if let Some(address) = &upstream.remote_address {
+                let (host, port) = address.rsplit_once(':').ok_or_else(|| {
+                    HostRuntimeError::InvalidPlan(format!(
+                        "remote provider `{provider}` has invalid address `{address}`"
+                    ))
+                })?;
+                target.endpoint.host = host.to_owned();
+                target.endpoint.port = port.parse().map_err(|_| {
+                    HostRuntimeError::InvalidPlan(format!(
+                        "remote provider `{provider}` has invalid address `{address}`"
+                    ))
+                })?;
+            } else {
+                let address =
+                    self.published_address(&upstream.compose_service, upstream.container_port)?;
+                target.endpoint.host = address.ip().to_string();
+                target.endpoint.port = address.port();
+            }
         }
         for provider in &config.spec.providers {
             let loopback = provider.endpoint.host.eq_ignore_ascii_case("localhost")
@@ -1059,6 +1073,7 @@ mod tests {
             compose_project: "sy--demo".into(),
             artifact_dir: ".switchyard/generated/demo".into(),
             compose_yaml: String::new(),
+            remote_projects: Default::default(),
             resolved_deployment_yaml: String::new(),
             manifest_json: String::new(),
             route_configs: Default::default(),

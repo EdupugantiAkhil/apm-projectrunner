@@ -201,7 +201,7 @@ pub fn list_deployments(
                 source_choices,
                 bindings: load_bindings(root, &name, &bundle),
             };
-            let definition_status = definition_status(&bundle);
+            let definition_status = definition_status(root, &bundle);
             let mut entry = deployment_entry(
                 name,
                 bundle,
@@ -292,7 +292,7 @@ fn deployment_entry(
     }
 }
 
-fn definition_status(definition: &Path) -> DefinitionStatus {
+fn definition_status(root: &Path, definition: &Path) -> DefinitionStatus {
     let Ok(bundle) = switchyard_planner::load_bundle(definition) else {
         return DefinitionStatus {
             consumer_slot_count: 0,
@@ -306,7 +306,8 @@ fn definition_status(definition: &Path) -> DefinitionStatus {
         .flat_map(|block| block.services.values())
         .map(|service| service.consumes.len())
         .sum();
-    let validation_problems = switchyard_planner::plan(&bundle)
+    let devices = planning_devices_for_bundle(root, &bundle).unwrap_or_default();
+    let validation_problems = switchyard_planner::plan_with_devices(&bundle, &devices)
         .err()
         .unwrap_or_default()
         .into_iter()
@@ -317,6 +318,43 @@ fn definition_status(definition: &Path) -> DefinitionStatus {
     DefinitionStatus {
         consumer_slot_count,
         validation_problems,
+    }
+}
+
+pub(crate) fn planning_devices(
+    root: &Path,
+) -> Result<BTreeMap<String, switchyard_planner::PlanningDevice>, String> {
+    Ok(open_store(root)?
+        .devices()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|device| {
+            (
+                device.name,
+                switchyard_planner::PlanningDevice {
+                    user: device.user,
+                    host: device.host,
+                    port: device.port,
+                    identity_file: device.identity_file,
+                },
+            )
+        })
+        .collect())
+}
+
+pub(crate) fn planning_devices_for_bundle(
+    root: &Path,
+    bundle: &switchyard_planner::Bundle,
+) -> Result<BTreeMap<String, switchyard_planner::PlanningDevice>, String> {
+    if bundle.spec.instances.iter().any(|instance| {
+        instance
+            .device
+            .as_deref()
+            .is_some_and(|device| device != "local")
+    }) {
+        planning_devices(root)
+    } else {
+        Ok(BTreeMap::new())
     }
 }
 
@@ -385,6 +423,7 @@ fn load_bindings(root: &Path, deployment: &str, definition: &Path) -> Vec<Bindin
             authored.spec.ui_routes = resolved.spec.ui_routes;
         }
     }
+    let devices = planning_devices_for_bundle(root, &authored).unwrap_or_default();
     authored
         .spec
         .bindings
@@ -395,7 +434,10 @@ fn load_bindings(root: &Path, deployment: &str, definition: &Path) -> Vec<Bindin
                 .groups
                 .keys()
                 .filter(|candidate| {
-                    switchyard_planner::plan_with_binding(&authored, consumer, candidate).is_ok()
+                    switchyard_planner::plan_with_binding_and_devices(
+                        &authored, consumer, candidate, &devices,
+                    )
+                    .is_ok()
                 })
                 .cloned()
                 .collect::<Vec<_>>();

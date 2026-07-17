@@ -171,3 +171,10 @@ degrade to explicit unknown inspection fields; they do not block use of a plain-
 deployment. Generated manifests and `switchyard status` append the source path,
 repository, requested ref, commit, and dirty flag captured for each instance at plan
 time. Live commit and dirty observations are never persisted as registry truth.
+
+Registered SSH devices can host provider-only container instances. Set an instance's
+`device` to the registered name and publish every provided capability port explicitly.
+Planning emits `compose.<device>.yaml`; lifecycle and log commands use Docker's SSH
+transport with batch authentication. `switchyard status` includes each resource's
+device and reports an unreachable remote explicitly while retaining its last observed
+resources for reconciliation.

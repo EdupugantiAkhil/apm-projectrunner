@@ -10,7 +10,7 @@ use switchyard_state::StateStore;
 
 use crate::{
     profiles::{ProfileOrigin, ProfileTrust, list_profiles, load_profile_block},
-    projections::SourceChoice,
+    projections::{SourceChoice, planning_devices_for_bundle},
 };
 
 #[derive(Clone, Debug)]
@@ -196,7 +196,8 @@ fn build_draft(
                 .collect()
         })
         .unwrap_or_default();
-    let diagnostics = switchyard_planner::plan(&draft_bundle)
+    let devices = planning_devices_for_bundle(project_dir, &draft_bundle).unwrap_or_default();
+    let diagnostics = switchyard_planner::plan_with_devices(&draft_bundle, &devices)
         .err()
         .unwrap_or_default();
     Ok(DraftContext {
@@ -648,7 +649,7 @@ profiles:
         assert!(
             error
                 .to_string()
-                .contains("remote placement is not yet supported")
+                .contains("references unregistered device `builder`")
         );
         assert_eq!(fs::read_to_string(path).unwrap(), before);
     }

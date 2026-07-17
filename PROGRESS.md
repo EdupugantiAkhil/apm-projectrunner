@@ -1,12 +1,35 @@
 # Switchyard implementation progress
 
-Updated: 2026-07-17
+Updated: 2026-07-18
 
 ## Release status
 
 - Routing proof (Phases 0–4): complete.
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
+
+## 2026-07-18 Phase D part 1 remote-device runtime
+
+- Device-aware planning now validates the provider-only remote cut: registered devices,
+  container execution, no consumer slots, and explicit publication of every provided
+  capability port. Local-only Compose and compatibility hashes remain unchanged.
+- Remote provider instances are partitioned into deterministic
+  `compose.<device>.yaml` projects suffixed with the device name and labeled with their
+  placement. Local sidecars and the host router target the registered device host and
+  published capability port.
+- Docker lifecycle, logs, discovery, status, and cleanup carry per-command
+  `DOCKER_HOST`/`DOCKER_SSH_OPTS`, gate every remote with `docker version` before
+  mutation, start remotes before local consumers, and stop/clean in reverse order.
+- Generated manifests persist remote project/device placement. Reconciliation observes
+  each referenced daemon, tags resources by device, and records an explicit
+  `device_unreachable` diagnostic while retaining the last remote observations.
+- Verification: all planner tests (including unchanged compat goldens), all state tests,
+  all ops tests, and the four focused remote-runtime tests pass. Workspace Clippy is
+  clean with warnings denied and formatting is clean. `cargo test --workspace` compiled
+  the workspace and progressed through the router suites, then the sandbox rejected
+  the existing `router-pingora/tests/grpc_h2c.rs` listener with `EPERM`; no network or
+  Docker test was claimed. Real LAN execution remains the Phase D end-to-end follow-up;
+  no TUI implementation or TUI documentation changed here.
 
 ## 2026-07-17 repository/worktree instance UX
 

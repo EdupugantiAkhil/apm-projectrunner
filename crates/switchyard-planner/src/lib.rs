@@ -111,6 +111,8 @@ pub struct Plan {
     pub compose_project: String,
     pub artifact_dir: PathBuf,
     pub compose_yaml: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub remote_projects: BTreeMap<String, RemoteComposePlan>,
     pub resolved_deployment_yaml: String,
     pub manifest_json: String,
     pub route_configs: BTreeMap<String, String>,
@@ -162,6 +164,28 @@ pub struct ManagedProfilePlan {
 pub struct HostUpstreamPlan {
     pub compose_service: String,
     pub container_port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_address: Option<String>,
+}
+
+/// SSH/Docker connection fields supplied by the caller without coupling the planner to state.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanningDevice {
+    pub user: String,
+    pub host: String,
+    pub port: u16,
+    pub identity_file: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteComposePlan {
+    pub device: PlanningDevice,
+    pub compose_project: String,
+    pub compose_file: PathBuf,
+    pub compose_yaml: String,
+    pub services: Vec<String>,
 }
 
 /// Loads one self-contained deployment bundle without changing runtime state.
@@ -189,11 +213,18 @@ pub fn load_bundle_from_str(input: &str, path: &Path) -> Result<Bundle, PlannerE
 
 /// Produces a deterministic Compose document and recovery artifacts without writing them.
 pub fn plan(bundle: &Bundle) -> Result<Plan, Vec<Diagnostic>> {
+    plan_with_devices(bundle, &BTreeMap::new())
+}
+
+pub fn plan_with_devices(
+    bundle: &Bundle,
+    devices: &BTreeMap<String, PlanningDevice>,
+) -> Result<Plan, Vec<Diagnostic>> {
     if !bundle.spec.overlays.is_empty() {
-        return plan_with_overlays(bundle, &OverlayOptions::default());
+        return plan_with_overlays_and_devices(bundle, &OverlayOptions::default(), devices);
     }
-    let resolved_groups = validate(bundle)?;
-    generate(bundle, &resolved_groups, None).map_err(|error| {
+    let resolved_groups = validate(bundle, devices)?;
+    generate(bundle, &resolved_groups, None, devices).map_err(|error| {
         vec![Diagnostic::new(
             DiagnosticCode::InvalidPath,
             "$",
@@ -261,6 +292,15 @@ pub fn plan_with_binding(
     consumer: &str,
     group: &str,
 ) -> Result<Plan, Vec<Diagnostic>> {
+    plan_with_binding_and_devices(bundle, consumer, group, &BTreeMap::new())
+}
+
+pub fn plan_with_binding_and_devices(
+    bundle: &Bundle,
+    consumer: &str,
+    group: &str,
+    devices: &BTreeMap<String, PlanningDevice>,
+) -> Result<Plan, Vec<Diagnostic>> {
     let mut updated = bundle.clone();
     updated
         .spec
@@ -274,7 +314,7 @@ pub fn plan_with_binding(
     {
         route.downstream_group = group.to_owned();
     }
-    plan(&updated)
+    plan_with_devices(&updated, devices)
 }
 
 /// Atomically writes disposable artifacts beneath `.switchyard/generated/<deployment>`.
@@ -290,6 +330,12 @@ pub fn write_plan(workspace_root: &Path, plan: &Plan) -> io::Result<PathBuf> {
         &artifact_dir.join("compose.yaml"),
         plan.compose_yaml.as_bytes(),
     )?;
+    for remote in plan.remote_projects.values() {
+        write_atomic(
+            &artifact_dir.join(&remote.compose_file),
+            remote.compose_yaml.as_bytes(),
+        )?;
+    }
     write_atomic(
         &artifact_dir.join("resolved-deployment.yaml"),
         plan.resolved_deployment_yaml.as_bytes(),
@@ -366,6 +412,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 fn validate(
     bundle: &Bundle,
+    devices: &BTreeMap<String, PlanningDevice>,
 ) -> Result<BTreeMap<String, BTreeMap<String, String>>, Vec<Diagnostic>> {
     let mut errors = Vec::new();
     if bundle.api_version != API_VERSION || bundle.kind != KIND {
@@ -427,18 +474,6 @@ fn validate(
     for (index, instance) in bundle.spec.instances.iter().enumerate() {
         let path = format!("spec.instances[{index}]");
         validate_name(&instance.name, format!("{path}.name"), &mut errors);
-        if let Some(device) = &instance.device {
-            if device != "local" {
-                errors.push(Diagnostic::new(
-                    DiagnosticCode::UnsupportedSchema,
-                    format!("{path}.device"),
-                    format!(
-                        "instance `{}` requests device `{device}`, but remote placement is not yet supported",
-                        instance.name
-                    ),
-                ));
-            }
-        }
         if instances.insert(instance.name.as_str(), instance).is_some() {
             errors.push(Diagnostic::new(
                 DiagnosticCode::DuplicateName,
@@ -454,6 +489,54 @@ fn validate(
             ));
             continue;
         };
+        if let Some(device) = instance
+            .device
+            .as_deref()
+            .filter(|device| *device != "local")
+        {
+            validate_name(device, format!("{path}.device"), &mut errors);
+            if !devices.contains_key(device) {
+                errors.push(Diagnostic::new(
+                    DiagnosticCode::MissingReference,
+                    format!("{path}.device"),
+                    format!(
+                        "instance `{}` references unregistered device `{device}`",
+                        instance.name
+                    ),
+                ));
+            }
+            for (service_name, service) in &block.services {
+                if !matches!(service.execution, Execution::Container { .. }) {
+                    errors.push(Diagnostic::new(
+                        DiagnosticCode::UnsupportedSchema,
+                        format!(
+                            "spec.blocks.{}.services.{service_name}.execution",
+                            instance.block
+                        ),
+                        format!(
+                            "remote instance `{}` only supports container execution",
+                            instance.name
+                        ),
+                    ));
+                }
+                if !service.consumes.is_empty() {
+                    errors.push(Diagnostic::new(
+                        DiagnosticCode::UnsupportedSchema,
+                        format!("spec.blocks.{}.services.{service_name}.consumes", instance.block),
+                        "Remote consumers are out of the cut because consumer-side sidecar interception cannot span hosts",
+                    ));
+                }
+                for (capability_name, capability) in &service.provides {
+                    if !service.publish.contains(&capability.port) {
+                        errors.push(Diagnostic::new(
+                            DiagnosticCode::MissingReference,
+                            format!("spec.blocks.{}.services.{service_name}.publish", instance.block),
+                            format!("remote service `{service_name}` must publish capability `{capability_name}` port {}", capability.port),
+                        ));
+                    }
+                }
+            }
+        }
         if !bundle.spec.sources.contains_key(&instance.source) {
             errors.push(Diagnostic::new(
                 DiagnosticCode::MissingReference,
@@ -1388,6 +1471,7 @@ fn generate(
     bundle: &Bundle,
     groups: &BTreeMap<String, BTreeMap<String, String>>,
     overlay: Option<&OverlayResolution>,
+    devices: &BTreeMap<String, PlanningDevice>,
 ) -> Result<Plan, Box<dyn std::error::Error>> {
     let deployment = &bundle.metadata.name;
     let project = resource_name(&["sy", deployment]);
@@ -1412,6 +1496,17 @@ fn generate(
     resource_definition.spec.host_upstreams.clear();
     let mut resource_digest = Sha256::new();
     resource_digest.update(serde_json::to_vec(&resource_definition)?);
+    let referenced_devices = bundle
+        .spec
+        .instances
+        .iter()
+        .filter_map(|instance| instance.device.as_deref())
+        .filter(|device| *device != "local")
+        .filter_map(|device| devices.get(device).map(|details| (device, details)))
+        .collect::<BTreeMap<_, _>>();
+    if !referenced_devices.is_empty() {
+        resource_digest.update(serde_json::to_vec(&referenced_devices)?);
+    }
     if let Some(overlay) = overlay {
         resource_digest.update(serde_json::to_vec(&overlay.files)?);
     }
@@ -1426,18 +1521,28 @@ fn generate(
 
     let mut services = serde_json::Map::new();
     let mut volumes = serde_json::Map::new();
+    let mut remote_services = BTreeMap::<String, serde_json::Map<String, Value>>::new();
+    let mut remote_volumes = BTreeMap::<String, serde_json::Map<String, Value>>::new();
+    let mut remote_service_names = BTreeMap::<String, Vec<String>>::new();
     let mut manifest_services = Vec::new();
     let mut route_configs = BTreeMap::new();
     let mut sidecars = BTreeMap::new();
     let managed_profiles = managed_profiles(bundle);
-    let host_router_config = generate_host_router_config(bundle, &managed_profiles)?;
-    let host_upstreams = host_upstreams(bundle);
+    let host_router_config = generate_host_router_config(bundle, &managed_profiles, devices)?;
+    let host_upstreams = host_upstreams(bundle, devices);
     let mut source_identities = BTreeMap::new();
     let source_manager = SourceManager::new(&bundle.workspace_root);
 
     for instance in &bundle.spec.instances {
         let mut instance_labels = labels.clone();
         instance_labels.insert("dev.switchyard.instance".into(), instance.name.clone());
+        let remote_device = instance
+            .device
+            .as_deref()
+            .filter(|device| *device != "local");
+        if let Some(device) = remote_device {
+            instance_labels.insert("dev.switchyard.device".into(), device.to_owned());
+        }
         let block = &bundle.spec.blocks[&instance.block];
         let source = resolve_path(
             &bundle.definition_dir,
@@ -1455,6 +1560,46 @@ fn generate(
             .map(|(name, _)| name.as_str());
         for (service_name, service) in &block.services {
             let base_name = service_name_for(deployment, &instance.name, service_name);
+            if let Some(device) = remote_device {
+                let mut app = compose_application(
+                    service,
+                    instance,
+                    &source,
+                    &network,
+                    &instance_labels,
+                    bundle,
+                    block,
+                );
+                add_injected_mounts(&mut app, overlay, &instance.name, &artifact_bind_dir);
+                apply_overlay_environment(&mut app, overlay, instance);
+                let app_object = app.as_object_mut().expect("service is an object");
+                app_object.remove("networks");
+                app_object.insert("ports".into(), compose_remote_ports(&service.publish));
+                add_compose_dependencies(app_object, bundle, instance, service);
+                remote_services
+                    .entry(device.to_owned())
+                    .or_default()
+                    .insert(base_name.clone(), app);
+                remote_service_names
+                    .entry(device.to_owned())
+                    .or_default()
+                    .push(base_name.clone());
+                manifest_services.push(json!({
+                    "instance": instance.name,
+                    "component": service_name,
+                    "service": base_name,
+                    "device": device,
+                    "labels": instance_labels,
+                }));
+                for mount in &service.volumes {
+                    let volume_name = resource_name(&[deployment, &instance.name, &mount.name]);
+                    remote_volumes.entry(device.to_owned()).or_default().insert(
+                        volume_name,
+                        json!({ "labels": instance_labels, "name": resource_name(&["sy", deployment, &instance.name, &mount.name]) }),
+                    );
+                }
+                continue;
+            }
             let is_consumer = consumer_service == Some(service_name.as_str());
             if is_consumer {
                 let mut namespace =
@@ -1499,7 +1644,8 @@ fn generate(
                 services.insert(app_name.clone(), app);
 
                 let selected = selected_routes(bundle, groups, &instance.name);
-                let config = router_config(bundle, &instances, instance, block, &selected)?;
+                let config =
+                    router_config(bundle, &instances, instance, block, &selected, devices)?;
                 let provider_dependencies =
                     provider_dependencies(bundle, &instances, block, &selected)?;
                 let config_path = artifact_dir
@@ -1587,6 +1733,28 @@ fn generate(
         "volumes": volumes,
     });
     let compose_yaml = serde_yaml::to_string(&compose)?;
+    let mut remote_projects = BTreeMap::new();
+    for (device_name, services) in remote_services {
+        let remote_project = format!("{project}-{device_name}");
+        let compose_file = PathBuf::from(format!("compose.{device_name}.yaml"));
+        let remote_compose = json!({
+            "name": remote_project,
+            "services": services,
+            "volumes": remote_volumes.remove(&device_name).unwrap_or_default(),
+        });
+        remote_projects.insert(
+            device_name.clone(),
+            RemoteComposePlan {
+                device: devices[&device_name].clone(),
+                compose_project: remote_project,
+                compose_file,
+                compose_yaml: serde_yaml::to_string(&remote_compose)?,
+                services: remote_service_names
+                    .remove(&device_name)
+                    .unwrap_or_default(),
+            },
+        );
+    }
     let mut resolved = bundle.clone();
     for source in resolved.spec.sources.values_mut() {
         source.path = resolve_path(&bundle.definition_dir, &source.path);
@@ -1607,6 +1775,29 @@ fn generate(
         "ownershipLabels": labels,
         "sourceIdentities": source_identities,
     });
+    if !remote_projects.is_empty() {
+        let manifest_remote_projects = remote_projects
+            .iter()
+            .map(|(name, remote)| {
+                (
+                    name.clone(),
+                    json!({
+                        "device": remote.device,
+                        "composeProject": remote.compose_project,
+                        "composeFile": remote.compose_file,
+                        "services": remote.services,
+                    }),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        manifest
+            .as_object_mut()
+            .expect("manifest is an object")
+            .insert(
+                "remoteProjects".into(),
+                Value::Object(manifest_remote_projects),
+            );
+    }
     if let Some(overlay) = overlay {
         let object = manifest.as_object_mut().expect("manifest is an object");
         object.insert("origins".into(), json!(overlay.origins));
@@ -1621,6 +1812,7 @@ fn generate(
         compose_project: project,
         artifact_dir,
         compose_yaml,
+        remote_projects,
         resolved_deployment_yaml,
         manifest_json,
         route_configs,
@@ -1672,7 +1864,10 @@ fn managed_profiles(bundle: &Bundle) -> BTreeMap<String, ManagedProfilePlan> {
     result
 }
 
-fn host_upstreams(bundle: &Bundle) -> BTreeMap<String, HostUpstreamPlan> {
+fn host_upstreams(
+    bundle: &Bundle,
+    devices: &BTreeMap<String, PlanningDevice>,
+) -> BTreeMap<String, HostUpstreamPlan> {
     bundle
         .spec
         .host_upstreams
@@ -1687,6 +1882,15 @@ fn host_upstreams(bundle: &Bundle) -> BTreeMap<String, HostUpstreamPlan> {
                         &upstream.service,
                     ),
                     container_port: upstream.port,
+                    remote_address: bundle
+                        .spec
+                        .instances
+                        .iter()
+                        .find(|instance| instance.name == upstream.instance)
+                        .and_then(|instance| instance.device.as_deref())
+                        .filter(|device| *device != "local")
+                        .and_then(|device| devices.get(device))
+                        .map(|device| format!("{}:{}", device.host, upstream.port)),
                 },
             )
         })
@@ -1831,10 +2035,34 @@ fn managed_profile_destinations(
 fn generate_host_router_config(
     bundle: &Bundle,
     profiles: &BTreeMap<String, ManagedProfilePlan>,
+    devices: &BTreeMap<String, PlanningDevice>,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let Some(mut config) = bundle.spec.host_router.clone() else {
         return Ok(None);
     };
+    for provider in &mut config.spec.providers {
+        let Some(upstream) = bundle.spec.host_upstreams.get(provider.id.as_str()) else {
+            continue;
+        };
+        let Some(instance) = bundle
+            .spec
+            .instances
+            .iter()
+            .find(|instance| instance.name == upstream.instance)
+        else {
+            continue;
+        };
+        let Some(device) = instance
+            .device
+            .as_deref()
+            .filter(|device| *device != "local")
+            .and_then(|device| devices.get(device))
+        else {
+            continue;
+        };
+        provider.endpoint.host = device.host.clone();
+        provider.endpoint.port = upstream.port;
+    }
     for profile in profiles.values() {
         let destinations =
             managed_profile_destinations(&config, &profile.route, &profile.start_url)?;
@@ -2029,6 +2257,15 @@ fn compose_ports(ports: &[u16]) -> Value {
         ports
             .iter()
             .map(|port| format!("127.0.0.1::{port}"))
+            .collect::<Vec<_>>()
+    )
+}
+
+fn compose_remote_ports(ports: &[u16]) -> Value {
+    json!(
+        ports
+            .iter()
+            .map(|port| format!("{port}:{port}"))
             .collect::<Vec<_>>()
     )
 }
@@ -2257,6 +2494,13 @@ fn provider_dependencies(
         let (provider_service, _) =
             provider_for(bundle, instances, provider_ref, slot).map_err(io::Error::other)?;
         let provider_instance = provider_ref.split('/').next().unwrap_or(provider_ref);
+        if instances[provider_instance]
+            .device
+            .as_deref()
+            .is_some_and(|device| device != "local")
+        {
+            continue;
+        }
         let provider_definition =
             &bundle.spec.blocks[&instances[provider_instance].block].services[provider_service];
         let base = service_name_for(&bundle.metadata.name, provider_instance, provider_service);
@@ -2294,6 +2538,7 @@ fn router_config(
     consumer: &Instance,
     block: &Block,
     selected: &BTreeMap<String, String>,
+    devices: &BTreeMap<String, PlanningDevice>,
 ) -> Result<Value, Box<dyn std::error::Error>> {
     let mut listeners = Vec::new();
     let mut providers = Vec::new();
@@ -2307,7 +2552,15 @@ fn router_config(
         let (provider_service, capability) =
             provider_for(bundle, instances, provider_ref, slot).map_err(io::Error::other)?;
         let provider_instance = provider_ref.split('/').next().unwrap_or(provider_ref);
-        let dns = service_name_for(&bundle.metadata.name, provider_instance, provider_service);
+        let provider_device = instances[provider_instance]
+            .device
+            .as_deref()
+            .filter(|device| *device != "local")
+            .and_then(|device| devices.get(device));
+        let dns = provider_device.map_or_else(
+            || service_name_for(&bundle.metadata.name, provider_instance, provider_service),
+            |device| device.host.clone(),
+        );
         let provider_id = format!("{provider_instance}/{provider_service}--{slot}");
         let provider_definition =
             &bundle.spec.blocks[&instances[provider_instance].block].services[provider_service];

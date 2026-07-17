@@ -20,7 +20,7 @@ use std::{
 
 use cli::{CliCommand, DeploymentOptions, USAGE};
 use router_config::RouterConfig;
-use runtime::{DeploymentStatus, DockerRuntime, DriftState, RuntimePlan};
+use runtime::{DeploymentStatus, DockerRuntime, DriftState, RemoteRuntimeProject, RuntimePlan};
 use switchyard_planner::{Bundle, Plan};
 
 fn main() -> ExitCode {
@@ -206,6 +206,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         CliCommand::Up { bundle, options } => {
             let (_, plan) = load_and_plan_options(&bundle, &options)?;
             let runtime_plan = runtime_plan(&workspace_root, &plan);
+            runtime.check_remote_eligibility(&runtime_plan)?;
             refuse_runtime_drift(&runtime.status(&runtime_plan)?)?;
             let host_runtime = host_runtime::HostRuntime::new(&workspace_root, &plan);
             let host_needs_token = host_runtime.requires_token_for_start()?;
@@ -248,7 +249,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             transition,
         } => {
             let bundle = load_bind_base(&workspace_root, &bundle)?;
-            let mut plan = plan_with_binding(&bundle, &consumer, &group)?;
+            let mut plan = plan_with_binding(&workspace_root, &bundle, &consumer, &group)?;
             apply_binding(&workspace_root, &mut plan, &consumer, transition)?;
             switchyard_planner::write_plan(&workspace_root, &plan)?;
             println!("bound `{consumer}` to `{group}`");
@@ -1007,18 +1008,53 @@ fn load_and_plan_options(
         variation: options.variation.clone(),
         set: options.set.iter().cloned().collect(),
     };
-    let plan = switchyard_planner::plan_with_overlays(&bundle, &options).map_err(diagnostics)?;
+    let devices = if bundle.spec.instances.iter().any(|instance| {
+        instance
+            .device
+            .as_deref()
+            .is_some_and(|device| device != "local")
+    }) {
+        planning_devices(&definition_workspace_root(path))?
+    } else {
+        BTreeMap::new()
+    };
+    let plan = switchyard_planner::plan_with_overlays_and_devices(&bundle, &options, &devices)
+        .map_err(diagnostics)?;
     Ok((bundle, plan))
 }
 
 fn plan_with_binding(
+    workspace_root: &Path,
     bundle: &Bundle,
     consumer: &str,
     group: &str,
 ) -> Result<Plan, Box<dyn std::error::Error>> {
-    switchyard_planner::plan_with_binding(bundle, consumer, group)
+    let devices = planning_devices(workspace_root)?;
+    switchyard_planner::plan_with_binding_and_devices(bundle, consumer, group, &devices)
         .map_err(diagnostics)
         .map_err(Into::into)
+}
+
+fn planning_devices(
+    workspace_root: &Path,
+) -> Result<BTreeMap<String, switchyard_planner::PlanningDevice>, Box<dyn std::error::Error>> {
+    let (store, _) =
+        switchyard_state::StateStore::open(workspace_root.join(".switchyard/state.sqlite3"))?;
+    Ok(store
+        .devices()?
+        .into_iter()
+        .map(|device| {
+            (
+                device.name,
+                switchyard_planner::PlanningDevice {
+                    user: device.user,
+                    host: device.host,
+                    port: device.port,
+                    identity_file: device.identity_file,
+                },
+            )
+        })
+        .collect())
 }
 
 fn load_bind_base(
@@ -1026,7 +1062,9 @@ fn load_bind_base(
     bundle_path: &Path,
 ) -> Result<Bundle, Box<dyn std::error::Error>> {
     let mut authored = switchyard_planner::load_bundle(bundle_path)?;
-    let authored_plan = switchyard_planner::plan(&authored).map_err(diagnostics)?;
+    let devices = planning_devices(workspace_root)?;
+    let authored_plan =
+        switchyard_planner::plan_with_devices(&authored, &devices).map_err(diagnostics)?;
     let artifact_dir = workspace_root.join(&authored_plan.artifact_dir);
     let manifest_path = artifact_dir.join("manifest.json");
     let resolved_path = artifact_dir.join("resolved-deployment.yaml");
@@ -1073,6 +1111,20 @@ fn runtime_plan(workspace_root: &Path, plan: &Plan) -> RuntimePlan {
         artifact_dir: workspace_root.join(&plan.artifact_dir),
         requires_router_token: !plan.sidecars.is_empty(),
         runtime_secrets: plan.runtime_secrets.clone(),
+        remote_projects: plan
+            .remote_projects
+            .iter()
+            .map(|(name, remote)| RemoteRuntimeProject {
+                name: name.clone(),
+                user: remote.device.user.clone(),
+                host: remote.device.host.clone(),
+                port: remote.device.port,
+                identity_file: remote.device.identity_file.clone(),
+                compose_project: remote.compose_project.clone(),
+                compose_file: remote.compose_file.clone(),
+                services: remote.services.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -1413,6 +1465,14 @@ fn print_plan(workspace_root: &Path, plan: &Plan) -> io::Result<()> {
         print_origins(plan);
     }
     println!("\nGenerated Compose:\n{}", plan.compose_yaml.trim_end());
+    for (device, remote) in &plan.remote_projects {
+        println!(
+            "\nRemote Compose [{device}] (project {}, file {}):\n{}",
+            remote.compose_project,
+            remote.compose_file.display(),
+            remote.compose_yaml.trim_end()
+        );
+    }
     if plan.route_configs.is_empty() {
         println!("\nRoutes: none");
     } else {
@@ -1487,6 +1547,12 @@ fn refuse_runtime_drift(status: &DeploymentStatus) -> Result<(), MessageError> {
 fn print_status(status: &DeploymentStatus) {
     println!("Deployment: {}", status.deployment);
     println!("Drift: {:?} ({})", status.drift, status.detail);
+    for observation in &status.device_observations {
+        println!(
+            "Device {}: {:?} ({})",
+            observation.device, observation.state, observation.detail
+        );
+    }
     if status.resources.is_empty() {
         println!("Resources: none");
         return;
@@ -1494,9 +1560,10 @@ fn print_status(status: &DeploymentStatus) {
     println!("Resources:");
     for resource in &status.resources {
         println!(
-            "  {:9} {:32} {}",
+            "  {:9} {:32} {:16} {}",
             resource.kind,
             resource.name,
+            resource.device,
             resource.state.as_deref().unwrap_or("present")
         );
     }
@@ -1675,12 +1742,14 @@ mod tests {
             deployment: "demo".into(),
             drift: DriftState::Drifted,
             detail: "hash mismatch".into(),
+            device_observations: Vec::new(),
             resources: vec![runtime::OwnedResource {
                 kind: runtime::ResourceKind::Container,
                 id: "id".into(),
                 name: "demo".into(),
                 labels: Default::default(),
                 state: None,
+                device: "local".into(),
             }],
         };
         assert!(refuse_runtime_drift(&status).is_err());

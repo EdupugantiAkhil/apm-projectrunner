@@ -1,17 +1,29 @@
 use std::{fs, path::Path};
 
 use switchyard_planner::{
-    ChangeImpact, DiagnosticCode, ManagedProfile, OverlayOptions, PublishedUpstream, UiRoute,
-    classify_changes, load_bundle, parse_dotenv, plan, plan_with_binding, plan_with_overlays,
-    write_plan,
+    ChangeImpact, DiagnosticCode, ManagedProfile, OverlayOptions, PlanningDevice,
+    PublishedUpstream, UiRoute, classify_changes, load_bundle, parse_dotenv, plan,
+    plan_with_binding, plan_with_devices, plan_with_overlays, write_plan,
 };
 
 fn bundle() -> switchyard_planner::Bundle {
     load_bundle(Path::new("tests/fixtures/deployment.yaml")).expect("fixture should load")
 }
 
+fn devices() -> std::collections::BTreeMap<String, PlanningDevice> {
+    std::collections::BTreeMap::from([(
+        "builder".into(),
+        PlanningDevice {
+            user: "akhil".into(),
+            host: "example-host".into(),
+            port: 22,
+            identity_file: Some("/keys/build".into()),
+        },
+    )])
+}
+
 #[test]
-fn instance_device_defaults_to_local_and_rejects_remote_placement() {
+fn instance_device_defaults_to_local_and_requires_registration() {
     let mut deployment = bundle();
     assert!(
         deployment
@@ -28,15 +40,84 @@ fn instance_device_defaults_to_local_and_rejects_remote_placement() {
     plan(&deployment).expect("an explicit local device should plan");
 
     deployment.spec.instances[0].device = Some("builder".into());
-    let diagnostics = plan(&deployment).expect_err("remote placement is not supported yet");
+    let diagnostics = plan(&deployment).expect_err("remote placement requires registration");
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.path == "spec.instances[0].device"
-            && diagnostic.message.contains("provider-main")
-            && diagnostic.message.contains("builder")
+            && diagnostic.message.contains("unregistered device `builder`")
+    }));
+}
+
+#[test]
+fn remote_consumers_are_rejected_with_the_cross_host_reason() {
+    let mut deployment = bundle();
+    deployment.spec.instances[1].device = Some("builder".into());
+    let diagnostics = plan_with_devices(&deployment, &devices()).unwrap_err();
+    assert!(diagnostics.iter().any(|diagnostic| diagnostic.message
+        == "Remote consumers are out of the cut because consumer-side sidecar interception cannot span hosts"));
+}
+
+#[test]
+fn remote_non_container_execution_is_rejected() {
+    let mut deployment = bundle();
+    deployment.spec.instances[3].device = Some("builder".into());
+    let diagnostics = plan_with_devices(&deployment, &devices()).unwrap_err();
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.path.ends_with("services.processes.execution")
             && diagnostic
                 .message
-                .contains("remote placement is not yet supported")
+                .contains("only supports container execution")
     }));
+}
+
+#[test]
+fn remote_provider_must_publish_every_capability() {
+    let mut deployment = bundle();
+    deployment.spec.instances[0].device = Some("builder".into());
+    deployment
+        .spec
+        .blocks
+        .get_mut("provider")
+        .unwrap()
+        .services
+        .get_mut("api")
+        .unwrap()
+        .publish
+        .clear();
+    let diagnostics = plan_with_devices(&deployment, &devices()).unwrap_err();
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.message.contains("remote service `api`")
+            && diagnostic.message.contains("capability `search` port 8080")
+    }));
+}
+
+#[test]
+fn remote_provider_is_partitioned_and_routed_by_device_host() {
+    let mut deployment = bundle();
+    deployment.spec.instances[0].device = Some("builder".into());
+    let generated = plan_with_devices(&deployment, &devices()).unwrap();
+    let remote = &generated.remote_projects["builder"];
+    assert_eq!(remote.compose_project, "sy--comparison-builder");
+    assert_eq!(remote.compose_file, Path::new("compose.builder.yaml"));
+    assert_eq!(remote.services, ["comparison--provider-main--api"]);
+    assert!(
+        remote
+            .compose_yaml
+            .contains("dev.switchyard.device: builder")
+    );
+    assert!(remote.compose_yaml.contains("8080:8080"));
+    assert!(!remote.compose_yaml.contains("networks:"));
+    assert!(
+        !generated
+            .compose_yaml
+            .contains("comparison--provider-main--api:")
+    );
+    let route: serde_json::Value =
+        serde_json::from_str(&generated.route_configs["consumer-a"]).unwrap();
+    assert_eq!(
+        route["spec"]["providers"][0]["endpoint"]["host"],
+        "example-host"
+    );
+    assert_eq!(route["spec"]["providers"][0]["endpoint"]["port"], 8080);
 }
 
 fn write_overlay(directory: &Path, name: &str, body: &str) -> std::path::PathBuf {
@@ -645,6 +726,21 @@ fn writes_deterministic_credential_free_managed_profile_metadata() {
         first.host_upstreams["backend"].compose_service,
         "comparison--provider-main--api"
     );
+
+    let mut remote_bundle = bundle.clone();
+    remote_bundle.spec.instances[0].device = Some("builder".into());
+    let remote = plan_with_devices(&remote_bundle, &devices()).unwrap();
+    assert_eq!(
+        remote.host_upstreams["backend"].remote_address.as_deref(),
+        Some("example-host:8080")
+    );
+    let remote_host_config: router_config::RouterConfig =
+        serde_json::from_str(remote.host_router_config.as_ref().unwrap()).unwrap();
+    assert_eq!(
+        remote_host_config.spec.providers[0].endpoint.host,
+        "example-host"
+    );
+    assert_eq!(remote_host_config.spec.providers[0].endpoint.port, 8080);
 
     let workspace = tempfile::tempdir().unwrap();
     let output = write_plan(workspace.path(), &first).unwrap();

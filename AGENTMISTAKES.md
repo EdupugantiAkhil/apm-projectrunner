@@ -1,5 +1,15 @@
 # Agent mistakes and lessons
 
+## 2026-07-18 — Remote eligibility must precede drift status
+
+- The first runtime wiring left the existing `status` drift preflight ahead of the new
+  remote Docker eligibility check. An unreachable device would therefore have failed as
+  generic unknown drift instead of naming the required `docker version` check and its
+  SSH stderr. Correction: expose the eligibility check and invoke it before status in
+  the up workflow, while retaining the check inside `DockerRuntime::up` for direct
+  callers. Lesson: adding a precondition inside a lower runtime layer is insufficient
+  when an older higher-level preflight can terminate the workflow first.
+
 ## 2026-07-17 — Worktree UX relationship preservation
 
 - The first worktree UX pass reused the existing instance-source insertion, which would

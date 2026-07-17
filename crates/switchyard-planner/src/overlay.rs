@@ -458,6 +458,14 @@ pub fn plan_with_overlays(
     bundle: &Bundle,
     options: &OverlayOptions,
 ) -> Result<crate::Plan, Vec<Diagnostic>> {
+    plan_with_overlays_and_devices(bundle, options, &BTreeMap::new())
+}
+
+pub fn plan_with_overlays_and_devices(
+    bundle: &Bundle,
+    options: &OverlayOptions,
+    devices: &BTreeMap<String, crate::PlanningDevice>,
+) -> Result<crate::Plan, Vec<Diagnostic>> {
     let mut paths = bundle
         .spec
         .overlays
@@ -467,7 +475,7 @@ pub fn plan_with_overlays(
         .collect::<Vec<_>>();
     paths.extend(options.overlays.iter().cloned().map(|path| (path, false)));
     if paths.is_empty() && options.variation.is_none() && options.set.is_empty() {
-        return crate::plan(bundle);
+        return crate::plan_with_devices(bundle, devices);
     }
     let mut overlays = Vec::new();
     let mut load_errors = Vec::new();
@@ -490,7 +498,7 @@ pub fn plan_with_overlays(
         return Err(load_errors);
     }
     let (resolved, mut resolution) = resolve(bundle, &overlays, options)?;
-    let groups = validate(&resolved)?;
+    let groups = validate(&resolved, devices)?;
     for instance in &resolved.spec.instances {
         for (slot, provider) in crate::selected_routes(&resolved, &groups, &instance.name) {
             if !resolution.origins.iter().any(|origin| {
@@ -514,7 +522,7 @@ pub fn plan_with_overlays(
             &right.key,
         ))
     });
-    let plan = generate(&resolved, &groups, Some(&resolution)).map_err(|error| {
+    let plan = generate(&resolved, &groups, Some(&resolution), devices).map_err(|error| {
         vec![Diagnostic::new(
             DiagnosticCode::InvalidPath,
             "$",

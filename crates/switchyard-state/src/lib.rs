@@ -64,6 +64,7 @@ pub const MANAGED_LABEL: &str = "dev.switchyard.managed";
 pub const DEPLOYMENT_LABEL: &str = "dev.switchyard.deployment";
 /// Resource topology hash label used by the existing Docker runtime.
 pub const RESOURCE_HASH_LABEL: &str = "dev.switchyard.resource-hash";
+pub const DEVICE_LABEL: &str = "dev.switchyard.device";
 
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("migrations/001_initial.sql")),
@@ -1130,6 +1131,19 @@ impl StateStore {
                 deployments.insert(row?);
             }
         }
+        let mut preserved_unreachable = BTreeMap::<String, Vec<OwnedResourceObservation>>::new();
+        if !input.unreachable_devices.is_empty() {
+            for deployment in &deployments {
+                let resources = self
+                    .active_resources(deployment)?
+                    .into_iter()
+                    .filter(|resource| input.unreachable_devices.contains(&resource.device))
+                    .collect::<Vec<_>>();
+                if !resources.is_empty() {
+                    preserved_unreachable.insert(deployment.clone(), resources);
+                }
+            }
+        }
         let tx = self.connection.transaction()?;
         let mut reports = Vec::new();
         for deployment in deployments {
@@ -1137,14 +1151,20 @@ impl StateStore {
                 .manifests
                 .iter()
                 .find(|manifest| manifest.deployment == deployment);
-            let resources = input
+            let mut resources = input
                 .resources
                 .iter()
                 .filter(|resource| {
                     resource.labels.get(DEPLOYMENT_LABEL).map(String::as_str)
                         == Some(deployment.as_str())
                 })
+                .cloned()
                 .collect::<Vec<_>>();
+            resources.extend(
+                preserved_unreachable
+                    .remove(&deployment)
+                    .unwrap_or_default(),
+            );
             tx.execute("INSERT INTO deployments(id,last_observed_at) VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET last_observed_at=excluded.last_observed_at", params![deployment, observed_at])?;
             deployment_event(
                 &tx,
@@ -1169,12 +1189,26 @@ impl StateStore {
                 [&deployment],
                 |row| row.get::<_, Option<String>>(0),
             )?;
-            reports.push(reconcile_deployment(
+            let mut report = reconcile_deployment(
                 &deployment,
                 applied.as_deref(),
                 manifest,
-                &resources,
-            ));
+                &resources.iter().collect::<Vec<_>>(),
+            );
+            if let Some(manifest) = manifest {
+                for device in manifest
+                    .remote_projects
+                    .keys()
+                    .filter(|device| input.unreachable_devices.contains(*device))
+                {
+                    report.diagnostics.push(diagnostic(
+                        DriftCode::DeviceUnreachable,
+                        format!("observed.devices.{device}"),
+                        format!("device `{device}` unreachable; previous resource observations were retained"),
+                    ));
+                }
+            }
+            reports.push(report);
         }
         tx.commit()?;
         Ok(ReconciliationReport {
@@ -1202,11 +1236,16 @@ impl StateStore {
         })?;
         rows.map(|row| {
             let (kind, id, name, labels, state) = row?;
+            let labels = serde_json::from_str::<BTreeMap<String, String>>(&labels)?;
             Ok(OwnedResourceObservation {
                 kind: ResourceKind::parse(&kind)?,
                 id,
                 name,
-                labels: serde_json::from_str(&labels)?,
+                device: labels
+                    .get(DEVICE_LABEL)
+                    .cloned()
+                    .unwrap_or_else(local_device),
+                labels,
                 state,
             })
         })
@@ -1323,7 +1362,7 @@ fn ownership_labels_json(labels: &BTreeMap<String, String>) -> Result<String, St
         .filter(|(key, _)| {
             matches!(
                 key.as_str(),
-                MANAGED_LABEL | DEPLOYMENT_LABEL | RESOURCE_HASH_LABEL
+                MANAGED_LABEL | DEPLOYMENT_LABEL | RESOURCE_HASH_LABEL | DEVICE_LABEL
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -1674,6 +1713,13 @@ pub struct OwnedResourceObservation {
     pub labels: BTreeMap<String, String>,
     /// Runtime or health state, if the resource exposes one.
     pub state: Option<String>,
+    /// Docker daemon placement (`local` or a registered device name).
+    #[serde(default = "local_device")]
+    pub device: String,
+}
+
+fn local_device() -> String {
+    "local".into()
 }
 
 /// Relevant, version-stable fields from a generated `manifest.json`.
@@ -1686,6 +1732,28 @@ pub struct GeneratedManifest {
     pub definition_hash: String,
     /// Hash of topology-affecting runtime resources.
     pub resource_hash: String,
+    /// Remote Compose projects persisted for restart-safe discovery and cleanup.
+    #[serde(default)]
+    pub remote_projects: BTreeMap<String, GeneratedRemoteProject>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedRemoteProject {
+    pub device: GeneratedDevice,
+    pub compose_project: String,
+    pub compose_file: PathBuf,
+    #[serde(default)]
+    pub services: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedDevice {
+    pub user: String,
+    pub host: String,
+    pub port: u16,
+    pub identity_file: Option<PathBuf>,
 }
 
 impl GeneratedManifest {
@@ -1715,6 +1783,8 @@ pub struct ReconciliationInput {
     pub manifests: Vec<GeneratedManifest>,
     /// Docker observations supplied by the runtime adapter.
     pub resources: Vec<OwnedResourceObservation>,
+    /// Devices whose previous observations remain authoritative while unreachable.
+    pub unreachable_devices: BTreeSet<String>,
 }
 
 /// Stable desired/applied/observed divergence code.
@@ -1729,6 +1799,7 @@ pub enum DriftCode {
     ObservedResourceHashMissing,
     ObservedResourceHashMismatch,
     MultipleObservedResourceHashes,
+    DeviceUnreachable,
 }
 /// Machine-readable drift plus human context.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1884,6 +1955,7 @@ mod tests {
             deployment: "demo".into(),
             definition_hash: definition_hash.into(),
             resource_hash: resource_hash.into(),
+            remote_projects: BTreeMap::new(),
         }
     }
 
@@ -1901,6 +1973,7 @@ mod tests {
             name: "demo-api".into(),
             labels,
             state: Some("running".into()),
+            device: "local".into(),
         }
     }
 
@@ -2551,6 +2624,7 @@ mod tests {
                 &ReconciliationInput {
                     manifests: vec![manifest("definition-a", "resource-a")],
                     resources: vec![observed],
+                    unreachable_devices: BTreeSet::new(),
                 },
                 1,
             )
@@ -2575,6 +2649,7 @@ mod tests {
                 &ReconciliationInput {
                     manifests: vec![manifest("desired-hash", "resource-a")],
                     resources: vec![resource(Some("resource-b"))],
+                    unreachable_devices: BTreeSet::new(),
                 },
                 2,
             )
@@ -2587,6 +2662,65 @@ mod tests {
         assert!(codes.contains(&DriftCode::DesiredAppliedHashMismatch));
         assert!(codes.contains(&DriftCode::ObservedResourceHashMismatch));
         assert_eq!(store.active_resources("demo").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn unreachable_device_retains_previous_resources_and_reports_explicitly() {
+        let temp = TempDir::new().unwrap();
+        let (mut store, _) = open_temp(&temp);
+        let mut generated = manifest("definition-a", "resource-a");
+        generated.remote_projects.insert(
+            "builder".into(),
+            GeneratedRemoteProject {
+                device: GeneratedDevice {
+                    user: "akhil".into(),
+                    host: "example-host".into(),
+                    port: 22,
+                    identity_file: None,
+                },
+                compose_project: "sy--demo-builder".into(),
+                compose_file: "compose.builder.yaml".into(),
+                services: vec!["demo--provider--api".into()],
+            },
+        );
+        let mut remote = resource(Some("resource-a"));
+        remote.device = "builder".into();
+        remote.labels.insert(DEVICE_LABEL.into(), "builder".into());
+        store
+            .reconcile(
+                &ReconciliationInput {
+                    manifests: vec![generated.clone()],
+                    resources: vec![remote],
+                    unreachable_devices: BTreeSet::new(),
+                },
+                1,
+            )
+            .unwrap();
+        let report = store
+            .reconcile(
+                &ReconciliationInput {
+                    manifests: vec![generated],
+                    resources: Vec::new(),
+                    unreachable_devices: BTreeSet::from(["builder".into()]),
+                },
+                2,
+            )
+            .unwrap();
+        let active = store.active_resources("demo").unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].device, "builder");
+        assert!(
+            report.deployments[0]
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == DriftCode::DeviceUnreachable)
+        );
+        assert!(
+            !report.deployments[0]
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == DriftCode::ObservedResourcesMissing)
+        );
     }
 
     #[test]
@@ -2607,6 +2741,7 @@ mod tests {
                 &ReconciliationInput {
                     manifests: vec![manifest("manifest-only", "resource-a")],
                     resources: vec![resource(Some("resource-a"))],
+                    unreachable_devices: BTreeSet::new(),
                 },
                 2,
             )
@@ -2643,6 +2778,7 @@ mod tests {
                 &ReconciliationInput {
                     manifests: vec![manifest("applied", "resource-a")],
                     resources: vec![invalid],
+                    unreachable_devices: BTreeSet::new(),
                 },
                 3,
             )

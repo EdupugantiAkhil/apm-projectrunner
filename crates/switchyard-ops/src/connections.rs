@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::Path};
 use switchyard_planner::{Bundle, Diagnostic};
 use switchyard_state::{RouterBindingState, StateStore, StoredRouteSnapshot};
 
-use crate::projections::ServiceRow;
+use crate::projections::{ServiceRow, planning_devices_for_bundle};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderDetail {
@@ -70,6 +70,7 @@ pub fn connection_matrix(
     services: &[ServiceRow],
 ) -> Result<ConnectionMatrix, String> {
     let bundle = effective_bundle(project_dir, definition)?;
+    let devices = planning_devices_for_bundle(project_dir, &bundle)?;
     let mut compatible = BTreeMap::<String, Vec<String>>::new();
     let mut rows = Vec::new();
     for instance in &bundle.spec.instances {
@@ -90,7 +91,13 @@ pub fn connection_matrix(
                 .groups
                 .keys()
                 .filter(|group| {
-                    switchyard_planner::plan_with_binding(&bundle, &instance.name, group).is_ok()
+                    switchyard_planner::plan_with_binding_and_devices(
+                        &bundle,
+                        &instance.name,
+                        group,
+                        &devices,
+                    )
+                    .is_ok()
                 })
                 .cloned()
                 .collect()
@@ -119,6 +126,7 @@ pub fn switch_preview(
     new_group: &str,
 ) -> Result<SwitchPreview, String> {
     let bundle = effective_bundle(project_dir, definition)?;
+    let devices = planning_devices_for_bundle(project_dir, &bundle)?;
     let old_group = bundle.spec.bindings.get(consumer).cloned();
     let old_map = old_group
         .as_deref()
@@ -126,12 +134,13 @@ pub fn switch_preview(
         .transpose()?
         .unwrap_or_default();
     let new_map = resolved_group(&bundle, new_group).unwrap_or_default();
-    let diagnostics = switchyard_planner::plan_with_binding(&bundle, consumer, new_group)
-        .err()
-        .unwrap_or_default()
-        .into_iter()
-        .map(diagnostic_text)
-        .collect::<Vec<_>>();
+    let diagnostics =
+        switchyard_planner::plan_with_binding_and_devices(&bundle, consumer, new_group, &devices)
+            .err()
+            .unwrap_or_default()
+            .into_iter()
+            .map(diagnostic_text)
+            .collect::<Vec<_>>();
     let services = old_map
         .keys()
         .chain(new_map.keys())

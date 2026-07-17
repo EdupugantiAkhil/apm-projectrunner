@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
@@ -16,9 +17,17 @@ pub const RESOURCE_HASH_LABEL: &str = "dev.switchyard.resource-hash";
 #[derive(Debug)]
 pub enum RuntimeError {
     Io(io::Error),
-    Docker { command: String, detail: String },
+    Docker {
+        command: String,
+        detail: String,
+    },
     InvalidDockerResponse(String),
     UnsafeCleanup(String),
+    Device {
+        device: String,
+        command: String,
+        detail: String,
+    },
 }
 
 impl fmt::Display for RuntimeError {
@@ -35,6 +44,11 @@ impl fmt::Display for RuntimeError {
                 )
             }
             Self::UnsafeCleanup(message) => write!(formatter, "cleanup refused: {message}"),
+            Self::Device {
+                device,
+                command,
+                detail,
+            } => write!(formatter, "device `{device}`: `{command}` failed: {detail}"),
         }
     }
 }
@@ -56,6 +70,14 @@ pub struct CommandOutput {
 pub trait CommandExecutor {
     fn capture(&self, program: &str, arguments: &[String]) -> Result<CommandOutput, RuntimeError>;
     fn stream(&self, program: &str, arguments: &[String]) -> Result<(), RuntimeError>;
+    fn capture_with_environment(
+        &self,
+        program: &str,
+        arguments: &[String],
+        _environment: &BTreeMap<String, OsString>,
+    ) -> Result<CommandOutput, RuntimeError> {
+        self.capture(program, arguments)
+    }
     fn stream_with_environment(
         &self,
         program: &str,
@@ -96,22 +118,68 @@ impl CommandExecutor for SystemExecutor {
         Ok(())
     }
 
+    fn capture_with_environment(
+        &self,
+        program: &str,
+        arguments: &[String],
+        environment: &BTreeMap<String, OsString>,
+    ) -> Result<CommandOutput, RuntimeError> {
+        let output = prepared_command(program, arguments)
+            .envs(environment)
+            .output()?;
+        if !output.status.success() {
+            return Err(command_error(program, arguments, &output.stderr));
+        }
+        Ok(CommandOutput {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
+
     fn stream_with_environment(
         &self,
         program: &str,
         arguments: &[String],
         environment: &BTreeMap<String, OsString>,
     ) -> Result<(), RuntimeError> {
-        let status = prepared_command(program, arguments)
+        let mut child = prepared_command(program, arguments)
             .envs(environment)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status()?;
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let mut stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| io::Error::other("could not capture command stderr"))?;
+        let stderr_reader = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 8192];
+            loop {
+                match stderr.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        eprint!("{}", String::from_utf8_lossy(&buffer[..count]));
+                        bytes.extend_from_slice(&buffer[..count]);
+                    }
+                    Err(_) => break,
+                }
+            }
+            bytes
+        });
+        let status = child.wait()?;
+        let stderr = stderr_reader
+            .join()
+            .map_err(|_| io::Error::other("stderr reader panicked"))?;
         if !status.success() {
+            let stderr = String::from_utf8_lossy(&stderr).trim().to_owned();
             return Err(RuntimeError::Docker {
                 command: render_command(program, arguments),
-                detail: status.to_string(),
+                detail: if stderr.is_empty() {
+                    status.to_string()
+                } else {
+                    stderr
+                },
             });
         }
         Ok(())
@@ -172,6 +240,19 @@ pub struct RuntimePlan {
     pub artifact_dir: PathBuf,
     pub requires_router_token: bool,
     pub runtime_secrets: Vec<switchyard_planner::RuntimeSecretPlan>,
+    pub remote_projects: Vec<RemoteRuntimeProject>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RemoteRuntimeProject {
+    pub name: String,
+    pub user: String,
+    pub host: String,
+    pub port: u16,
+    pub identity_file: Option<PathBuf>,
+    pub compose_project: String,
+    pub compose_file: PathBuf,
+    pub services: Vec<String>,
 }
 
 impl RuntimePlan {
@@ -209,44 +290,68 @@ impl<E: CommandExecutor> DockerRuntime<E> {
                 detail: "SWITCHYARD_ROUTER_TOKEN must be set".into(),
             });
         }
-        // `--remove-orphans` can delete containers in this Compose project, so apply
-        // demands the same ownership proof as `down` and `cleanup` (SR-2): every
-        // resource already carrying this deployment's or project's labels must be
-        // Switchyard-owned before a destructive flag is passed.
-        verify_ownership(
-            &plan.deployment,
-            &self.discover_compose_project(&plan.deployment, &plan.compose_project)?,
-        )?;
-        let environment = secret_environment(plan)?;
-        self.executor.stream_with_environment(
-            "docker",
-            &compose_arguments(plan, &["--progress", "plain", "build"]),
-            &environment,
-        )?;
-        self.executor.stream_with_environment(
-            "docker",
-            &compose_arguments(plan, &["up", "--detach", "--wait", "--remove-orphans"]),
-            &environment,
-        )
+        self.check_remote_eligibility(plan)?;
+        for remote in &plan.remote_projects {
+            self.up_project(plan, Some(remote))?;
+        }
+        self.up_project(plan, None)
+    }
+
+    /// Verifies every selected remote Docker daemon before any Compose mutation.
+    pub fn check_remote_eligibility(&self, plan: &RuntimePlan) -> Result<(), RuntimeError> {
+        for remote in &plan.remote_projects {
+            let environment = project_environment(plan, Some(remote))?;
+            let arguments = vec![
+                "version".into(),
+                "--format".into(),
+                "{{.Server.Version}}".into(),
+            ];
+            self.executor
+                .capture_with_environment("docker", &arguments, &environment)
+                .map_err(|error| {
+                    device_error(
+                        remote,
+                        "docker version --format '{{.Server.Version}}'",
+                        error,
+                    )
+                })?;
+        }
+        Ok(())
     }
 
     pub fn logs(&self, plan: &RuntimePlan, services: &[String]) -> Result<(), RuntimeError> {
-        let mut arguments = compose_arguments(plan, &["logs", "--follow"]);
-        arguments.extend(services.iter().cloned());
-        self.executor
-            .stream_with_environment("docker", &arguments, &secret_environment(plan)?)
+        for remote in &plan.remote_projects {
+            let selected = services
+                .iter()
+                .filter(|service| remote.services.contains(service))
+                .cloned()
+                .collect::<Vec<_>>();
+            if services.is_empty() || !selected.is_empty() {
+                self.logs_project(plan, Some(remote), &selected)?;
+            }
+        }
+        let remote_services = plan
+            .remote_projects
+            .iter()
+            .flat_map(|remote| &remote.services)
+            .collect::<BTreeSet<_>>();
+        let local = services
+            .iter()
+            .filter(|service| !remote_services.contains(service))
+            .cloned()
+            .collect::<Vec<_>>();
+        if services.is_empty() || !local.is_empty() {
+            self.logs_project(plan, None, &local)?;
+        }
+        Ok(())
     }
 
     pub fn down(&self, plan: &RuntimePlan) -> Result<(), RuntimeError> {
-        verify_ownership(
-            &plan.deployment,
-            &self.discover_compose_project(&plan.deployment, &plan.compose_project)?,
-        )?;
-        self.executor.stream_with_environment(
-            "docker",
-            &compose_arguments(plan, &["down", "--remove-orphans"]),
-            &secret_environment(plan)?,
-        )
+        self.down_project(plan, None, false)?;
+        for remote in plan.remote_projects.iter().rev() {
+            self.down_project(plan, Some(remote), false)?;
+        }
+        Ok(())
     }
 
     pub fn cleanup(&self, plan: &RuntimePlan, confirmed: bool) -> Result<(), RuntimeError> {
@@ -256,28 +361,38 @@ impl<E: CommandExecutor> DockerRuntime<E> {
                 plan.deployment
             )));
         }
-        let resources = self.discover_compose_project(&plan.deployment, &plan.compose_project)?;
-        verify_ownership(&plan.deployment, &resources)?;
-        self.executor.stream_with_environment(
-            "docker",
-            &compose_arguments(plan, &["down", "--volumes", "--remove-orphans"]),
-            &secret_environment(plan)?,
-        )
+        self.down_project(plan, None, true)?;
+        for remote in plan.remote_projects.iter().rev() {
+            self.down_project(plan, Some(remote), true)?;
+        }
+        Ok(())
     }
 
     pub fn discover(&self, deployment: &str) -> Result<Vec<OwnedResource>, RuntimeError> {
-        self.discover_filtered(&format!("{DEPLOYMENT_LABEL}={deployment}"))
+        self.discover_filtered(
+            &format!("{DEPLOYMENT_LABEL}={deployment}"),
+            &BTreeMap::new(),
+            "local",
+        )
     }
 
     fn discover_compose_project(
         &self,
         deployment: &str,
         compose_project: &str,
+        environment: &BTreeMap<String, OsString>,
+        device: &str,
     ) -> Result<Vec<OwnedResource>, RuntimeError> {
-        let mut resources = self.discover(deployment)?;
-        resources.extend(
-            self.discover_filtered(&format!("com.docker.compose.project={}", compose_project))?,
-        );
+        let mut resources = self.discover_filtered(
+            &format!("{DEPLOYMENT_LABEL}={deployment}"),
+            environment,
+            device,
+        )?;
+        resources.extend(self.discover_filtered(
+            &format!("com.docker.compose.project={compose_project}"),
+            environment,
+            device,
+        )?);
         resources.sort_by(|left, right| {
             left.kind
                 .cmp(&right.kind)
@@ -287,7 +402,12 @@ impl<E: CommandExecutor> DockerRuntime<E> {
         Ok(resources)
     }
 
-    fn discover_filtered(&self, label_filter: &str) -> Result<Vec<OwnedResource>, RuntimeError> {
+    fn discover_filtered(
+        &self,
+        label_filter: &str,
+        environment: &BTreeMap<String, OsString>,
+        device: &str,
+    ) -> Result<Vec<OwnedResource>, RuntimeError> {
         let mut resources = Vec::new();
         for kind in ResourceKind::ALL {
             let mut arguments = kind.list_arguments();
@@ -296,17 +416,23 @@ impl<E: CommandExecutor> DockerRuntime<E> {
                 format!("label={label_filter}"),
                 "--quiet".to_owned(),
             ]);
-            let ids = self.executor.capture("docker", &arguments)?.stdout;
+            let ids = self
+                .executor
+                .capture_with_environment("docker", &arguments, environment)?
+                .stdout;
             for id in ids.lines().map(str::trim).filter(|id| !id.is_empty()) {
-                let inspected = self.executor.capture(
+                let inspected = self.executor.capture_with_environment(
                     "docker",
                     &[
                         kind.inspect_noun().to_owned(),
                         "inspect".to_owned(),
                         id.to_owned(),
                     ],
+                    environment,
                 )?;
-                resources.push(parse_inspection(*kind, id, &inspected.stdout)?);
+                let mut resource = parse_inspection(*kind, id, &inspected.stdout)?;
+                resource.device = device.to_owned();
+                resources.push(resource);
             }
         }
         resources.sort_by(|left, right| {
@@ -318,13 +444,124 @@ impl<E: CommandExecutor> DockerRuntime<E> {
     }
 
     pub fn status(&self, plan: &RuntimePlan) -> Result<DeploymentStatus, RuntimeError> {
-        let resources = self.discover_compose_project(&plan.deployment, &plan.compose_project)?;
+        let (resources, device_observations) = self.discover_plan(plan)?;
         let expected_hash = read_resource_hash(&plan.manifest_path())?;
-        Ok(DeploymentStatus::from_observation(
-            plan.deployment.clone(),
-            expected_hash,
-            resources,
-        ))
+        let mut status =
+            DeploymentStatus::from_observation(plan.deployment.clone(), expected_hash, resources);
+        status.device_observations = device_observations;
+        if !status.device_observations.is_empty() {
+            status.drift = DriftState::Unknown;
+            status.detail = status
+                .device_observations
+                .iter()
+                .map(|observation| {
+                    format!(
+                        "device `{}` unreachable: {}",
+                        observation.device, observation.detail
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+        }
+        Ok(status)
+    }
+
+    /// Discovers local and remote labeled resources, retaining unreachable devices as
+    /// explicit observations instead of converting them into missing resources.
+    pub fn discover_plan(
+        &self,
+        plan: &RuntimePlan,
+    ) -> Result<(Vec<OwnedResource>, Vec<DeviceObservation>), RuntimeError> {
+        let local_environment = project_environment(plan, None)?;
+        let mut resources = self.discover_compose_project(
+            &plan.deployment,
+            &plan.compose_project,
+            &local_environment,
+            "local",
+        )?;
+        let mut device_observations = Vec::new();
+        for remote in &plan.remote_projects {
+            let environment = project_environment(plan, Some(remote))?;
+            match self.discover_compose_project(
+                &plan.deployment,
+                &remote.compose_project,
+                &environment,
+                &remote.name,
+            ) {
+                Ok(mut observed) => resources.append(&mut observed),
+                Err(error) => device_observations.push(DeviceObservation {
+                    device: remote.name.clone(),
+                    state: DeviceObservationState::Unreachable,
+                    detail: error.to_string(),
+                }),
+            }
+        }
+        Ok((resources, device_observations))
+    }
+
+    fn up_project(
+        &self,
+        plan: &RuntimePlan,
+        remote: Option<&RemoteRuntimeProject>,
+    ) -> Result<(), RuntimeError> {
+        let environment = project_environment(plan, remote)?;
+        let (project, device) = project_identity(plan, remote);
+        let resources = self
+            .discover_compose_project(&plan.deployment, project, &environment, device)
+            .map_err(|error| map_project_error(remote, "docker resource discovery", error))?;
+        verify_ownership(&plan.deployment, &resources)?;
+        for command in [
+            &["--progress", "plain", "build"][..],
+            &["up", "--detach", "--wait", "--remove-orphans"][..],
+        ] {
+            let arguments = compose_arguments(plan, remote, command);
+            self.executor
+                .stream_with_environment("docker", &arguments, &environment)
+                .map_err(|error| {
+                    map_project_error(remote, &render_command("docker", &arguments), error)
+                })?;
+        }
+        Ok(())
+    }
+
+    fn down_project(
+        &self,
+        plan: &RuntimePlan,
+        remote: Option<&RemoteRuntimeProject>,
+        volumes: bool,
+    ) -> Result<(), RuntimeError> {
+        let environment = project_environment(plan, remote)?;
+        let (project, device) = project_identity(plan, remote);
+        let resources = self
+            .discover_compose_project(&plan.deployment, project, &environment, device)
+            .map_err(|error| map_project_error(remote, "docker resource discovery", error))?;
+        verify_ownership(&plan.deployment, &resources)?;
+        let command = if volumes {
+            &["down", "--volumes", "--remove-orphans"][..]
+        } else {
+            &["down", "--remove-orphans"][..]
+        };
+        let arguments = compose_arguments(plan, remote, command);
+        self.executor
+            .stream_with_environment("docker", &arguments, &environment)
+            .map_err(|error| {
+                map_project_error(remote, &render_command("docker", &arguments), error)
+            })
+    }
+
+    fn logs_project(
+        &self,
+        plan: &RuntimePlan,
+        remote: Option<&RemoteRuntimeProject>,
+        services: &[String],
+    ) -> Result<(), RuntimeError> {
+        let mut arguments = compose_arguments(plan, remote, &["logs", "--follow"]);
+        arguments.extend(services.iter().cloned());
+        self.executor
+            .stream_with_environment("docker", &arguments, &project_environment(plan, remote)?)
+            .map_err(|error| {
+                map_project_error(remote, &render_command("docker", &arguments), error)
+            })
     }
 }
 
@@ -369,15 +606,80 @@ fn secret_environment(plan: &RuntimePlan) -> Result<BTreeMap<String, OsString>, 
     Ok(environment)
 }
 
-fn compose_arguments(plan: &RuntimePlan, command: &[&str]) -> Vec<String> {
+fn project_environment(
+    plan: &RuntimePlan,
+    remote: Option<&RemoteRuntimeProject>,
+) -> Result<BTreeMap<String, OsString>, RuntimeError> {
+    let mut environment = secret_environment(plan)?;
+    if let Some(remote) = remote {
+        environment.insert(
+            "DOCKER_HOST".into(),
+            format!("ssh://{}@{}:{}", remote.user, remote.host, remote.port).into(),
+        );
+        let mut ssh_options = String::new();
+        if let Some(identity) = &remote.identity_file {
+            ssh_options.push_str(&format!("-i {} ", identity.display()));
+        }
+        ssh_options.push_str("-o BatchMode=yes");
+        environment.insert("DOCKER_SSH_OPTS".into(), ssh_options.into());
+    }
+    Ok(environment)
+}
+
+fn project_identity<'a>(
+    plan: &'a RuntimePlan,
+    remote: Option<&'a RemoteRuntimeProject>,
+) -> (&'a str, &'a str) {
+    remote.map_or((&plan.compose_project, "local"), |remote| {
+        (&remote.compose_project, &remote.name)
+    })
+}
+
+fn map_project_error(
+    remote: Option<&RemoteRuntimeProject>,
+    command: &str,
+    error: RuntimeError,
+) -> RuntimeError {
+    match remote {
+        Some(remote) => device_error(remote, command, error),
+        None => error,
+    }
+}
+
+fn device_error(remote: &RemoteRuntimeProject, command: &str, error: RuntimeError) -> RuntimeError {
+    let detail = match error {
+        RuntimeError::Docker { detail, .. } | RuntimeError::Device { detail, .. } => detail,
+        other => other.to_string(),
+    };
+    RuntimeError::Device {
+        device: remote.name.clone(),
+        command: command.into(),
+        detail,
+    }
+}
+
+fn compose_arguments(
+    plan: &RuntimePlan,
+    remote: Option<&RemoteRuntimeProject>,
+    command: &[&str],
+) -> Vec<String> {
+    let (compose_project, compose_path) = remote.map_or_else(
+        || (plan.compose_project.clone(), plan.compose_path()),
+        |remote| {
+            (
+                remote.compose_project.clone(),
+                plan.artifact_dir.join(&remote.compose_file),
+            )
+        },
+    );
     let mut arguments = vec![
         "compose".to_owned(),
         "--project-name".to_owned(),
-        plan.compose_project.clone(),
+        compose_project,
         "--project-directory".to_owned(),
         plan.project_directory.display().to_string(),
         "--file".to_owned(),
-        plan.compose_path().display().to_string(),
+        compose_path.display().to_string(),
     ];
     arguments.extend(command.iter().map(|argument| (*argument).to_owned()));
     arguments
@@ -423,6 +725,7 @@ pub struct OwnedResource {
     pub name: String,
     pub labels: BTreeMap<String, String>,
     pub state: Option<String>,
+    pub device: String,
 }
 
 #[derive(Deserialize)]
@@ -492,6 +795,7 @@ fn parse_inspection(
             .to_owned(),
         labels,
         state,
+        device: "local".into(),
     })
 }
 
@@ -549,6 +853,19 @@ pub struct DeploymentStatus {
     pub drift: DriftState,
     pub detail: String,
     pub resources: Vec<OwnedResource>,
+    pub device_observations: Vec<DeviceObservation>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeviceObservationState {
+    Unreachable,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeviceObservation {
+    pub device: String,
+    pub state: DeviceObservationState,
+    pub detail: String,
 }
 
 impl DeploymentStatus {
@@ -563,6 +880,7 @@ impl DeploymentStatus {
                 drift: DriftState::NotRunning,
                 detail: "no labeled Docker resources found".into(),
                 resources,
+                device_observations: Vec::new(),
             };
         }
         if let Err(error) = verify_ownership(&deployment, &resources) {
@@ -571,6 +889,7 @@ impl DeploymentStatus {
                 drift: DriftState::Drifted,
                 detail: error.to_string(),
                 resources,
+                device_observations: Vec::new(),
             };
         }
         let topology_resources = resources
@@ -612,6 +931,7 @@ impl DeploymentStatus {
             drift,
             detail,
             resources,
+            device_observations: Vec::new(),
         }
     }
 }
@@ -659,7 +979,172 @@ mod tests {
             artifact_dir: PathBuf::from("/tmp/generated/demo"),
             requires_router_token: false,
             runtime_secrets: Vec::new(),
+            remote_projects: Vec::new(),
         }
+    }
+
+    fn remote_plan() -> RuntimePlan {
+        let mut plan = plan();
+        plan.remote_projects.push(RemoteRuntimeProject {
+            name: "builder".into(),
+            user: "akhil".into(),
+            host: "example-host".into(),
+            port: 22,
+            identity_file: Some("/keys/build".into()),
+            compose_project: "sy--demo-builder".into(),
+            compose_file: "compose.builder.yaml".into(),
+            services: vec!["demo--provider--api".into()],
+        });
+        plan
+    }
+
+    #[derive(Clone, Debug)]
+    struct EnvironmentCall {
+        arguments: Vec<String>,
+        environment: BTreeMap<String, OsString>,
+        streamed: bool,
+    }
+
+    #[derive(Default)]
+    struct EnvironmentExecutor {
+        calls: Mutex<Vec<EnvironmentCall>>,
+        fail_remote_version: bool,
+        fail_remote_discovery: bool,
+    }
+
+    impl CommandExecutor for EnvironmentExecutor {
+        fn capture(
+            &self,
+            _program: &str,
+            arguments: &[String],
+        ) -> Result<CommandOutput, RuntimeError> {
+            self.capture_with_environment("docker", arguments, &BTreeMap::new())
+        }
+
+        fn stream(&self, _program: &str, arguments: &[String]) -> Result<(), RuntimeError> {
+            self.stream_with_environment("docker", arguments, &BTreeMap::new())
+        }
+
+        fn capture_with_environment(
+            &self,
+            _program: &str,
+            arguments: &[String],
+            environment: &BTreeMap<String, OsString>,
+        ) -> Result<CommandOutput, RuntimeError> {
+            self.calls.lock().unwrap().push(EnvironmentCall {
+                arguments: arguments.to_vec(),
+                environment: environment.clone(),
+                streamed: false,
+            });
+            let remote = environment.contains_key("DOCKER_HOST");
+            if remote
+                && ((self.fail_remote_version
+                    && arguments.first().is_some_and(|arg| arg == "version"))
+                    || (self.fail_remote_discovery
+                        && arguments.get(1).is_some_and(|arg| arg == "list")))
+            {
+                return Err(RuntimeError::Docker {
+                    command: render_command("docker", arguments),
+                    detail: "ssh connection refused".into(),
+                });
+            }
+            Ok(CommandOutput {
+                stdout: if arguments.first().is_some_and(|arg| arg == "version") {
+                    "27.0.0\n".into()
+                } else {
+                    String::new()
+                },
+                stderr: String::new(),
+            })
+        }
+
+        fn stream_with_environment(
+            &self,
+            _program: &str,
+            arguments: &[String],
+            environment: &BTreeMap<String, OsString>,
+        ) -> Result<(), RuntimeError> {
+            self.calls.lock().unwrap().push(EnvironmentCall {
+                arguments: arguments.to_vec(),
+                environment: environment.clone(),
+                streamed: true,
+            });
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn remote_up_uses_ssh_environment_and_precedes_local_up() {
+        let runtime = DockerRuntime::new(EnvironmentExecutor::default());
+        runtime.up(&remote_plan()).unwrap();
+        let calls = runtime.executor.calls.lock().unwrap();
+        let remote_streams = calls
+            .iter()
+            .filter(|call| call.streamed && call.environment.contains_key("DOCKER_HOST"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            remote_streams[0].environment["DOCKER_HOST"],
+            OsString::from("ssh://akhil@example-host:22")
+        );
+        assert_eq!(
+            remote_streams[0].environment["DOCKER_SSH_OPTS"],
+            OsString::from("-i /keys/build -o BatchMode=yes")
+        );
+        let remote_up = calls.iter().position(|call| {
+            call.streamed
+                && call.environment.contains_key("DOCKER_HOST")
+                && call.arguments.iter().any(|arg| arg == "up")
+        });
+        let local_up = calls.iter().position(|call| {
+            call.streamed
+                && !call.environment.contains_key("DOCKER_HOST")
+                && call.arguments.iter().any(|arg| arg == "up")
+        });
+        assert!(remote_up < local_up);
+    }
+
+    #[test]
+    fn local_down_precedes_remote_down() {
+        let runtime = DockerRuntime::new(EnvironmentExecutor::default());
+        runtime.down(&remote_plan()).unwrap();
+        let calls = runtime.executor.calls.lock().unwrap();
+        let downs = calls
+            .iter()
+            .filter(|call| call.streamed && call.arguments.iter().any(|arg| arg == "down"))
+            .collect::<Vec<_>>();
+        assert_eq!(downs.len(), 2);
+        assert!(!downs[0].environment.contains_key("DOCKER_HOST"));
+        assert!(downs[1].environment.contains_key("DOCKER_HOST"));
+    }
+
+    #[test]
+    fn eligibility_failure_aborts_before_compose_mutation() {
+        let runtime = DockerRuntime::new(EnvironmentExecutor {
+            fail_remote_version: true,
+            ..Default::default()
+        });
+        let error = runtime.up(&remote_plan()).unwrap_err();
+        assert!(error.to_string().contains("device `builder`"));
+        assert!(error.to_string().contains("ssh connection refused"));
+        let calls = runtime.executor.calls.lock().unwrap();
+        assert!(!calls.iter().any(|call| call.streamed));
+    }
+
+    #[test]
+    fn unreachable_remote_status_is_explicit_and_not_missing() {
+        let runtime = DockerRuntime::new(EnvironmentExecutor {
+            fail_remote_discovery: true,
+            ..Default::default()
+        });
+        let status = runtime.status(&remote_plan()).unwrap();
+        assert_eq!(status.drift, DriftState::Unknown);
+        assert_eq!(status.device_observations.len(), 1);
+        assert_eq!(status.device_observations[0].device, "builder");
+        assert_eq!(
+            status.device_observations[0].state,
+            DeviceObservationState::Unreachable
+        );
+        assert!(status.detail.contains("device `builder` unreachable"));
     }
 
     #[test]
@@ -714,6 +1199,7 @@ mod tests {
             name: "data".into(),
             labels: BTreeMap::from([(DEPLOYMENT_LABEL.into(), "demo".into())]),
             state: None,
+            device: "local".into(),
         };
         assert!(verify_ownership("demo", &[resource]).is_err());
     }
@@ -797,6 +1283,7 @@ mod tests {
             name: format!("{kind}-{hash}"),
             labels: labels(hash),
             state: None,
+            device: "local".into(),
         };
         let status = DeploymentStatus::from_observation(
             "demo".into(),
