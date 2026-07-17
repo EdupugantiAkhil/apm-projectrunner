@@ -7,6 +7,11 @@ replacing the database.
 
 ## Upgrade binaries and schema
 
+The current SQLite state schema is v7. Schema v6 added reviewed source-profile import
+state, and schema v7 added remote-device eligibility observations. Existing databases
+migrate forward through both versions in order with the same pre-migration backup
+behavior described below.
+
 1. Stop active control-plane work, then run `switchyard daemon stop`. Confirm
    `switchyard daemon status` reports no reachable daemon. Running application
    containers may remain up.
@@ -46,6 +51,13 @@ There is no reverse migration. Use the backup created immediately before the upg
 The restored database represents state at the migration boundary. Containers and
 generated manifests may be newer, so drift is expected and must be reviewed. Keep the
 post-upgrade database and original backup until recovery is accepted.
+
+Remote-device deployments need the same review on every registered device. Their
+containers carry Switchyard ownership, deployment, resource-hash, and device labels,
+and remain discoverable by querying the corresponding remote Docker daemon. If a
+device is unreachable during upgrade or recovery, retain its ownership records, restore
+access, and rerun status/reconciliation; do not assume its resources are absent or
+recreate them elsewhere.
 
 ## Recovery scenarios
 

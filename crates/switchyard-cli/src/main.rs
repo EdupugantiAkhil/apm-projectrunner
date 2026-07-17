@@ -1769,6 +1769,19 @@ mod tests {
         }
         load_and_plan(&scaffold.deployment).unwrap();
 
+        let skill =
+            fs::read_to_string(project.join(".agents/skills/switchyard-project/SKILL.md")).unwrap();
+        for required in [
+            "switchyard source list",
+            "switchyard device check <name>",
+            "switchyard-profiles.yaml",
+            "Never edit `.switchyard/generated/` or `.switchyard/state.sqlite3`",
+            "best-guess configuration",
+            "switchyard cleanup deployment.yaml --yes",
+        ] {
+            assert!(skill.contains(required), "skill omitted `{required}`");
+        }
+
         let error = init::scaffold(&project, None, false).unwrap_err();
         let message = error.to_string();
         for relative in [

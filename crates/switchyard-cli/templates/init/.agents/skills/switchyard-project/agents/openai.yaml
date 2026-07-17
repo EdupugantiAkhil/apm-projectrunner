@@ -1,4 +1,4 @@
 interface:
   display_name: "Switchyard Project"
-  short_description: "Operate and edit a Switchyard topology"
-  default_prompt: "Use $switchyard-project to inspect and safely modify this Switchyard development topology."
+  short_description: "Safely author and operate Switchyard projects"
+  default_prompt: "Use $switchyard-project to inspect this repository, author only supported desired state, validate and plan every change, and stop with concrete blockers when safe configuration is not possible."

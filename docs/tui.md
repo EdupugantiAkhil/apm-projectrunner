@@ -14,8 +14,11 @@ switchyard tui path/to/project
 ```
 
 The TUI lands on **Home**. The top bar order is **Home**, **Sources**, **Profiles**,
-**Devices**, **Instances**, then **Connections**. Use `Tab` or Right to advance, Shift-Tab or Left to go
-back, press `?` for the complete in-app key reference, and quit with `q` or Ctrl-C.
+**Devices**, **Instances**, then **Connections**. Use `Tab` to advance and Shift-Tab to
+go back. Left/Right also switch views except in Connections, where they select a group.
+Press `?` for the complete in-app key reference, and quit with `q` or Ctrl-C. In a
+project with multiple deployment definitions, `[` and `]` select the deployment from
+the Instances and Connections views.
 
 ## Home
 
@@ -68,7 +71,7 @@ live dirty state. Up/Down or `j`/`k` changes the selected row.
 All source records use the same project-local `.switchyard/state.sqlite3` registry as
 the CLI and daemon source commands.
 
-## Startup profiles
+## Profiles
 
 The Profiles view lists reusable startup definitions from the selected project
 deployment and from registered source checkouts. A source advertises profiles only in
@@ -204,6 +207,8 @@ groups, run two backend instances.
   state, error codes, and recent timestamped activation history. When state records show
   a prior version or a rolled-back history entry, the selection details explain the
   rollback.
+- If a project contains multiple definitions, `[` and `]` select the deployment and
+  reset the selected connection row.
 
 Groups and bindings are authored in the deployment definition. If no consumers with
 slots are declared, the empty state explains those concepts rather than inventing a

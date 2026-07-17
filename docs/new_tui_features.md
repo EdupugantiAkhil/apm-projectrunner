@@ -21,7 +21,7 @@ say we have 1 node js service that interacts with 5 python services(all 5 are in
 
 # TUI control-plane implementation plan
 
-Status: accepted — Phase A in progress
+Status: accepted — implemented through Phase E
 
 The handwritten requirements above are intentionally preserved verbatim. This plan
 translates their intent into Switchyard's existing architecture.

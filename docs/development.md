@@ -50,6 +50,12 @@ For scripts, `switchyard init <directory>` remains available; use `--name <proje
 to override the directory-derived deployment name. Existing scaffold files are preserved
 unless `--force` is explicitly supplied.
 
+The initialized skill follows the same authoring boundaries as the TUI: it inspects
+registered sources and devices, can propose project or reviewed source-local startup
+profiles, validates after authored edits, plans before start, and refuses to guess when
+a repository has no safely identifiable supported configuration. It never executes
+repository scripts during discovery or edits `.switchyard` generated/runtime state.
+
 ## Routing-proof platforms
 
 The Phase 4 release gate supports native Linux `x86_64` and `aarch64`, both using Linux

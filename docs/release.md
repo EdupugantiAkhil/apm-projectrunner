@@ -91,6 +91,11 @@ Before replacing an existing binary set, follow
 shutdown, SQLite migration backups, downgrade recovery, and post-upgrade inspection.
 The release notes link to the same procedure rather than copying it.
 
+The current project-state schema is v7: v6 introduced reviewed source-profile imports,
+and v7 records remote-device eligibility. Upgrades migrate older state forward in order
+and retain the existing pre-migration backup behavior. After an upgrade, inspect both
+local deployments and any per-device remote resources before applying further changes.
+
 Uninstall through the installed helper, using the same prefix:
 
 ```sh

@@ -482,27 +482,27 @@ naming are documented and reviewed.
 
 ### Phase B — guided configuration on the existing TUI
 
-- [ ] Implement the Home first-run workflow.
-- [ ] Implement the startup-profile library view and schema-driven inspector/editor.
-- [ ] Implement explicit source-local profile discovery and import.
-- [ ] Implement checkout + startup profile + parameters + device instance creation
+- [x] Implement the Home first-run workflow.
+- [x] Implement the startup-profile library view and schema-driven inspector/editor.
+- [x] Implement explicit source-local profile discovery and import.
+- [x] Implement checkout + startup profile + parameters + device instance creation
       (device choice limited to `local` until Phase D, with honest labeling).
-- [ ] Continuously validate drafts and preview expanded services and resources.
-- [ ] Keep project run actions discoverable under Operations.
-- [ ] Extract the operations/state-projection layer for each workflow this phase
+- [x] Continuously validate drafts and preview expanded services and resources.
+- [x] Keep project run actions discoverable under Operations.
+- [x] Extract the operations/state-projection layer for each workflow this phase
       touches.
-- [ ] Add component/state tests and pty-driven smoke coverage for the new views.
+- [x] Add component/state tests and pty-driven smoke coverage for the new views.
 
 Exit gate: a new user can configure and start a supported repository through the TUI
 without manually editing generated files.
 
 ### Phase C — routing workflow
 
-- [ ] Implement the Connections route matrix.
-- [ ] Implement compatible-group selection and complete old/new route preview.
-- [ ] Apply route changes through the existing atomic binding operation.
-- [ ] Surface route version, transition state, failures, and rollback information.
-- [ ] Verify the Node.js consumer and interchangeable five-service Python-group
+- [x] Implement the Connections route matrix.
+- [x] Implement compatible-group selection and complete old/new route preview.
+- [x] Apply route changes through the existing atomic binding operation.
+- [x] Surface route version, transition state, failures, and rollback information.
+- [x] Verify the Node.js consumer and interchangeable five-service Python-group
       scenario end to end from the TUI.
 
 Exit gate: multiple consumer instances can independently select complete compatible
@@ -513,30 +513,30 @@ instances.
 
 Entry gate: the Phase A remote-cut design is approved.
 
-- [ ] Implement SSH + remote-Docker execution for container-backed instances, with the
+- [x] Implement SSH + remote-Docker execution for container-backed instances, with the
       router local and remote services reachable via explicit published addresses.
-- [ ] Implement remote ownership labeling, lifecycle, health, logs, and cleanup for the
+- [x] Implement remote ownership labeling, lifecycle, health, logs, and cleanup for the
       cut.
-- [ ] Validate device eligibility (SSH reachable, Docker reachable, resource claims)
+- [x] Validate device eligibility (SSH reachable, Docker reachable, resource claims)
       before start; ineligible selections fail validation with the concrete reason.
-- [ ] Expose device placement in instance creation and show true placement everywhere.
-- [ ] Verify end to end against a real LAN device.
+- [x] Expose device placement in instance creation and show true placement everywhere.
+- [x] Verify end to end against a real LAN device.
 
 Exit gate: selecting an eligible remote device causes real, observable, recoverable
 execution on that device; everything outside the cut is clearly labeled unsupported.
 
 ### Phase E — AI skill and release integration
 
-- [ ] Expand and validate the initialized AI skill per section 7 of
+- [x] Expand and validate the initialized AI skill per section 7 of
       `docs/new_tui_features.md`, including the explicit cannot-safely-configure failure
       mode.
-- [ ] Apply the approved React GUI decision from Phase A.
-- [ ] Update development, TUI, release, upgrade, and support docs.
-- [ ] Run workspace tests, Clippy `-D warnings`, formatting, documentation checks,
+- [x] Apply the approved React GUI decision from Phase A.
+- [x] Update development, TUI, release, upgrade, and support docs.
+- [x] Run workspace tests, Clippy `-D warnings`, formatting, documentation checks,
       pty-driven TUI smoke tests, routing fixtures, and release assembly verification.
-- [ ] Update `PROGRESS.md` and `AGENTMISTAKES.md` with implementation and verification
+- [x] Update `PROGRESS.md` and `AGENTMISTAKES.md` with implementation and verification
       results as each increment lands.
-- [ ] Commit reviewed phase-sized increments throughout.
+- [x] Commit reviewed phase-sized increments throughout.
 
 Exit gate: one clearly documented primary interactive experience ships with full local
 workflow coverage, the limited remote cut, and no ambiguous duplicate product model.

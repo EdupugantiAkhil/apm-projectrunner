@@ -1255,3 +1255,21 @@ implemented shape and the evidence used to close a phase.
 - Live verification: `switchyard device check poco` reports "eligible for remote
   container execution (docker 28.5.1)" against the real LAN device and the TUI
   Devices tab renders the same over a pty.
+
+## 2026-07-18 — TUI control plane Phase E complete: milestone closed
+
+- Expanded the `switchyard init` AI skill to 198 lines implementing every section-7
+  requirement: ordered inspection, read-only repository analysis, project and
+  source-local profile authoring with the import trust boundary, complete
+  groups/bindings, device placement rules for the limited remote cut, the
+  validate/plan loop, and the explicit cannot-safely-configure failure mode. The
+  init test now pins the skill's key content and the scaffold still validates.
+- Documentation pass: docs/tui.md navigation refresh, state schema v7 noted in
+  release/upgrade-recovery docs with remote-device recovery guidance, GUI scope
+  confirmed already documented, IMPLEMENTATION_PLAN.md Phase B–E items checked,
+  new_tui_features.md marked implemented through Phase E.
+- Final verification on the closing tree: scripts/check.sh fully green (fmt,
+  clippy all-features -D warnings, workspace tests, rustdoc -D warnings); pty
+  sweep rendered all six TUI tabs; release assembly produced
+  dist/switchyard-0.1.0+2c6a3df-dirty-linux-aarch64.tar.gz with verified
+  SHA256SUMS.
