@@ -4,10 +4,16 @@
 //! `ratatui`, `crossterm`, or `clap`.
 
 pub mod execution;
+pub mod profiles;
 pub mod projections;
 pub mod run_scripts;
 
 pub use execution::{OperationEvent, OperationSpec};
+pub use profiles::{
+    DiscoveredSourceProfiles, ProfileAdapterKind, ProfileContentHash, ProfileError, ProfileOrigin,
+    ProfileRow, ProfileService, ProfileTrust, SourceProfileManifest, discover_source_profiles,
+    import_source_profile, list_profiles, project_profile_rows, remove_imported_profile,
+};
 pub use projections::{
     BindingRow, DefinitionHeader, DefinitionMetadata, DefinitionTopology, DeploymentEntry,
     InstanceRow, ManifestService, ServiceManifest, ServiceRow, SourceChoice, list_deployments,

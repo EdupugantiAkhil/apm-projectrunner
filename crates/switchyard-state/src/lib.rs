@@ -57,7 +57,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The schema version understood by this crate.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 /// Ownership label used by the existing Docker runtime.
 pub const MANAGED_LABEL: &str = "dev.switchyard.managed";
 /// Deployment ownership label used by the existing Docker runtime.
@@ -71,7 +71,20 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (3, include_str!("migrations/003_live_routes.sql")),
     (4, include_str!("migrations/004_sources.sql")),
     (5, include_str!("migrations/005_devices.sql")),
+    (6, include_str!("migrations/006_profiles.sql")),
 ];
+
+/// A source-local startup profile explicitly reviewed and imported into project state.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedProfile {
+    pub name: String,
+    pub source_name: String,
+    pub source_commit: Option<String>,
+    pub content_hash: String,
+    pub definition_json: String,
+    pub imported_at: i64,
+}
 
 /// Persisted outcome of the most recent SSH connectivity check.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -443,6 +456,17 @@ fn device_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegisteredDevice
     })
 }
 
+fn imported_profile_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ImportedProfile> {
+    Ok(ImportedProfile {
+        name: row.get(0)?,
+        source_name: row.get(1)?,
+        source_commit: row.get(2)?,
+        content_hash: row.get(3)?,
+        definition_json: row.get(4)?,
+        imported_at: row.get(5)?,
+    })
+}
+
 /// Synchronous project state store. A future daemon can serialize access around it.
 pub struct StateStore {
     connection: Connection,
@@ -567,6 +591,54 @@ impl StateStore {
             return Err(invalid(
                 "source_not_found",
                 format!("source `{name}` is not registered"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Records or replaces an explicitly reviewed source-local startup profile.
+    pub fn record_imported_profile(&self, profile: &ImportedProfile) -> Result<(), StateError> {
+        validate_id("profile name", &profile.name)?;
+        validate_id("profile source name", &profile.source_name)?;
+        validate_id("profile content hash", &profile.content_hash)?;
+        serde_json::from_str::<Value>(&profile.definition_json)?;
+        self.connection.execute(
+            "INSERT INTO imported_profiles(name,source_name,source_commit,content_hash,definition_json,imported_at) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(name) DO UPDATE SET source_name=excluded.source_name,source_commit=excluded.source_commit,content_hash=excluded.content_hash,definition_json=excluded.definition_json,imported_at=excluded.imported_at",
+            params![profile.name, profile.source_name, profile.source_commit, profile.content_hash, profile.definition_json, profile.imported_at],
+        )?;
+        Ok(())
+    }
+
+    /// Loads an imported startup profile by name.
+    pub fn imported_profile(&self, name: &str) -> Result<Option<ImportedProfile>, StateError> {
+        self.connection
+            .query_row(
+                "SELECT name,source_name,source_commit,content_hash,definition_json,imported_at FROM imported_profiles WHERE name=?1",
+                [name],
+                imported_profile_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Lists imported startup profiles in stable name order.
+    pub fn imported_profiles(&self) -> Result<Vec<ImportedProfile>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT name,source_name,source_commit,content_hash,definition_json,imported_at FROM imported_profiles ORDER BY name",
+        )?;
+        let rows = statement.query_map([], imported_profile_from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Removes an imported startup profile without touching its source checkout.
+    pub fn remove_imported_profile(&self, name: &str) -> Result<(), StateError> {
+        let changed = self
+            .connection
+            .execute("DELETE FROM imported_profiles WHERE name=?1", [name])?;
+        if changed == 0 {
+            return Err(invalid(
+                "profile_not_imported",
+                format!("profile `{name}` is not imported"),
             ));
         }
         Ok(())
@@ -2225,12 +2297,44 @@ mod tests {
     }
 
     #[test]
-    fn version_four_store_upgrades_to_devices_schema() {
+    fn imported_profile_round_trip_replace_and_remove() {
+        let temp = TempDir::new().unwrap();
+        let (store, _) = open_temp(&temp);
+        let mut profile = ImportedProfile {
+            name: "api".into(),
+            source_name: "checkout".into(),
+            source_commit: Some("abc123".into()),
+            content_hash: "first".into(),
+            definition_json: r#"{"services":{}}"#.into(),
+            imported_at: 10,
+        };
+        store.record_imported_profile(&profile).unwrap();
+        assert_eq!(
+            store.imported_profile("api").unwrap(),
+            Some(profile.clone())
+        );
+        assert_eq!(store.imported_profiles().unwrap(), vec![profile.clone()]);
+
+        profile.content_hash = "second".into();
+        profile.imported_at = 20;
+        store.record_imported_profile(&profile).unwrap();
+        assert_eq!(store.imported_profiles().unwrap(), vec![profile]);
+
+        store.remove_imported_profile("api").unwrap();
+        assert!(store.imported_profile("api").unwrap().is_none());
+        assert_eq!(
+            store.remove_imported_profile("api").unwrap_err().code(),
+            "profile_not_imported"
+        );
+    }
+
+    #[test]
+    fn version_four_store_upgrades_to_current_schema() {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("state-v4.sqlite3");
         historical_database(&path, 4);
         let (store, report) = StateStore::open(&path).unwrap();
-        assert_eq!(report.applied_migrations, vec![5]);
+        assert_eq!(report.applied_migrations, vec![5, 6]);
         assert!(report.backup_path.unwrap().is_file());
         assert_eq!(
             scalar::<i64>(&store.connection, "SELECT COUNT(*) FROM devices"),
@@ -2253,7 +2357,7 @@ mod tests {
         drop(connection);
 
         let (store, report) = StateStore::open(&path).unwrap();
-        assert_eq!(report.applied_migrations, vec![2, 3, 4, 5]);
+        assert_eq!(report.applied_migrations, vec![2, 3, 4, 5, 6]);
         let backup = report.backup_path.unwrap();
         assert!(backup.is_file());
         let versions = store
@@ -2264,7 +2368,7 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6]);
         let backup_connection = Connection::open(backup).unwrap();
         assert_eq!(current_schema_version(&backup_connection).unwrap(), 1);
     }
@@ -2351,7 +2455,7 @@ mod tests {
         let restored = temp.path().join("restored-from-backup.sqlite3");
         fs::copy(&backup, &restored).unwrap();
         let (store, report) = StateStore::open(&restored).unwrap();
-        assert_eq!(report.applied_migrations, vec![3, 4, 5]);
+        assert_eq!(report.applied_migrations, vec![3, 4, 5, 6]);
         assert_consistent(&store.connection);
         assert_historical_values(&store.connection, 2);
     }

@@ -197,6 +197,59 @@ pub fn plan(bundle: &Bundle) -> Result<Plan, Vec<Diagnostic>> {
     })
 }
 
+/// Validates a reusable block with the same contracts used by deployment planning.
+pub fn validate_block(name: &str, block: &Block) -> Result<(), Vec<Diagnostic>> {
+    let mut errors = Vec::new();
+    validate_name(name, format!("spec.blocks.{name}"), &mut errors);
+    if block.services.is_empty() {
+        errors.push(Diagnostic::new(
+            DiagnosticCode::MissingReference,
+            format!("spec.blocks.{name}.services"),
+            "a block must contain at least one service",
+        ));
+    }
+    let adapters = built_in_registry();
+    for (service_name, service) in &block.services {
+        validate_name(
+            service_name,
+            format!("spec.blocks.{name}.services.{service_name}"),
+            &mut errors,
+        );
+        validate_execution(name, service_name, service, &adapters, &mut errors);
+        if let Some(probe) = &service.probe {
+            validate_probe(name, service_name, probe, &adapters, &mut errors);
+        }
+        validate_route_slots(name, service_name, service, &adapters, &mut errors);
+        for slot in service.provides.keys().chain(service.consumes.keys()) {
+            validate_name(
+                slot,
+                format!("spec.blocks.{name}.services.{service_name}.{slot}"),
+                &mut errors,
+            );
+        }
+        for volume in &service.volumes {
+            validate_name(
+                &volume.name,
+                format!("spec.blocks.{name}.services.{service_name}.volumes"),
+                &mut errors,
+            );
+            if !volume.target.is_absolute() {
+                errors.push(Diagnostic::new(
+                    DiagnosticCode::InvalidPath,
+                    format!("spec.blocks.{name}.services.{service_name}.volumes"),
+                    "volume target must be an absolute container path",
+                ));
+            }
+        }
+    }
+    validate_local_dependencies(name, block, &mut errors);
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
 /// Replans with one service-group selection changed atomically.
 pub fn plan_with_binding(
     bundle: &Bundle,
@@ -360,48 +413,9 @@ fn validate(
     }
 
     for (block_name, block) in &bundle.spec.blocks {
-        validate_name(block_name, format!("spec.blocks.{block_name}"), &mut errors);
-        if block.services.is_empty() {
-            errors.push(Diagnostic::new(
-                DiagnosticCode::MissingReference,
-                format!("spec.blocks.{block_name}.services"),
-                "a block must contain at least one service",
-            ));
+        if let Err(block_errors) = validate_block(block_name, block) {
+            errors.extend(block_errors);
         }
-        for (service_name, service) in &block.services {
-            validate_name(
-                service_name,
-                format!("spec.blocks.{block_name}.services.{service_name}"),
-                &mut errors,
-            );
-            validate_execution(block_name, service_name, service, &adapters, &mut errors);
-            if let Some(probe) = &service.probe {
-                validate_probe(block_name, service_name, probe, &adapters, &mut errors);
-            }
-            validate_route_slots(block_name, service_name, service, &adapters, &mut errors);
-            for slot in service.provides.keys().chain(service.consumes.keys()) {
-                validate_name(
-                    slot,
-                    format!("spec.blocks.{block_name}.services.{service_name}.{slot}"),
-                    &mut errors,
-                );
-            }
-            for volume in &service.volumes {
-                validate_name(
-                    &volume.name,
-                    format!("spec.blocks.{block_name}.services.{service_name}.volumes"),
-                    &mut errors,
-                );
-                if !volume.target.is_absolute() {
-                    errors.push(Diagnostic::new(
-                        DiagnosticCode::InvalidPath,
-                        format!("spec.blocks.{block_name}.services.{service_name}.volumes"),
-                        "volume target must be an absolute container path",
-                    ));
-                }
-            }
-        }
-        validate_local_dependencies(block_name, block, &mut errors);
     }
 
     let mut instances = BTreeMap::new();

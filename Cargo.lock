@@ -2995,10 +2995,13 @@ name = "switchyard-ops"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
+ "sha2",
  "switchyard-daemon",
  "switchyard-planner",
  "switchyard-sources",
  "switchyard-state",
+ "tempfile",
  "yaml_serde",
 ]
 
