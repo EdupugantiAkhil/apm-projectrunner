@@ -1149,3 +1149,22 @@ implemented shape and the evidence used to close a phase.
 - Verification: full workspace tests including planner compat goldens, clippy
   `-D warnings`, fmt, and pty-driven flows creating a real instance from an imported
   profile (`demo1` with `device: local` and a clean materialized block).
+
+## 2026-07-18 — TUI control plane Phase C: routing workflow
+
+- Connections tab: consumer×slot route matrix with compatible-group drafting,
+  old/new provider preview via `plan_with_binding`, atomic apply through the
+  existing `switchyard bind` operation, and route version/transition/error status
+  projected from `router_bindings` and `route_history` (commit 6533a16).
+- Review fixes: stored deployments whose authored definition lives outside the
+  project now fall back to `.switchyard/generated/<name>/resolved-deployment.yaml`
+  so the matrix and bind work at the dogfooding repo root; connection-matrix load
+  errors are surfaced in the view instead of being swallowed into an empty state;
+  `[`/`]` deployment switching now also works in the Connections view.
+- Exit gate verified end to end on the live routing-matrix fixture: driving the
+  real TUI over a pty, backend-1 was switched feature-services → main-services;
+  the preview listed exactly the four changing providers (audit shared, unchanged);
+  live identity traffic confirmed all four providers flipped atomically; the
+  docker container-ID set was identical before and after (no restarts); backend-2
+  stayed on its own group. State restored to feature-services afterwards.
+- Verification: full workspace tests, clippy `-D warnings`, fmt.

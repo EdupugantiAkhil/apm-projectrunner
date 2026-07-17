@@ -435,6 +435,7 @@ mod tests {
             }],
             bindings: Vec::new(),
             connections: switchyard_ops::ConnectionMatrix::default(),
+            connections_error: None,
             route_statuses: Vec::new(),
             last_operation: None,
             applied: false,
@@ -665,6 +666,7 @@ mod tests {
                 Vec::new()
             },
             connections: switchyard_ops::ConnectionMatrix::default(),
+            connections_error: None,
             route_statuses: Vec::new(),
             last_operation: running.then(|| "up succeeded".into()),
             applied,

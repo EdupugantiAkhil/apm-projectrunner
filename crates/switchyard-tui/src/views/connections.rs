@@ -96,7 +96,17 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         );
     }
     let details = rows.get(app.connection_selected).map_or_else(
-        || "Compatible groups appear here after consumers, slots, and groups are declared.".into(),
+        || {
+            app.current_deployment()
+                .and_then(|deployment| deployment.connections_error.clone())
+                .map_or_else(
+                    || {
+                        "Compatible groups appear here after consumers, slots, and groups are declared."
+                            .into()
+                    },
+                    |error| format!("connections could not be loaded: {error}"),
+                )
+        },
         |row| {
             let compatible = if row.compatible_groups.is_empty() {
                 "none (definition is incomplete or incompatible)".into()

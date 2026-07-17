@@ -427,6 +427,7 @@ mod tests {
             source_choices: Vec::new(),
             bindings: Vec::new(),
             connections: switchyard_ops::ConnectionMatrix::default(),
+            connections_error: None,
             route_statuses: Vec::new(),
             last_operation: None,
             applied: true,

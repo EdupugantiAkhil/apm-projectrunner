@@ -30,6 +30,7 @@ pub struct DeploymentEntry {
     pub source_choices: Vec<SourceChoice>,
     pub bindings: Vec<BindingRow>,
     pub connections: ConnectionMatrix,
+    pub connections_error: Option<String>,
     pub route_statuses: Vec<RouteStatus>,
     pub last_operation: Option<String>,
     pub applied: bool,
@@ -174,10 +175,20 @@ pub fn list_deployments(
         .into_iter()
         .map(|name| {
             let record = by_name.get(&name);
-            let bundle = definitions
-                .get(&name)
-                .cloned()
-                .unwrap_or_else(|| root.join("deployments").join(format!("{name}.yaml")));
+            let bundle = definitions.get(&name).cloned().unwrap_or_else(|| {
+                // A stored deployment may have been applied from a definition
+                // outside this project directory; the generated resolved bundle
+                // is the only complete definition we still have.
+                let resolved = root
+                    .join(".switchyard/generated")
+                    .join(&name)
+                    .join("resolved-deployment.yaml");
+                if resolved.is_file() {
+                    resolved
+                } else {
+                    root.join("deployments").join(format!("{name}.yaml"))
+                }
+            });
             let resources = store
                 .active_resources(&name)
                 .map_err(|error| error.to_string())?;
@@ -200,9 +211,10 @@ pub fn list_deployments(
                 topology,
                 definition_status,
             );
-            entry.connections =
-                crate::connections::connection_matrix(root, &entry.bundle, &entry.services)
-                    .unwrap_or_default();
+            match crate::connections::connection_matrix(root, &entry.bundle, &entry.services) {
+                Ok(matrix) => entry.connections = matrix,
+                Err(error) => entry.connections_error = Some(error),
+            }
             entry.route_statuses =
                 crate::connections::route_status(root, &entry.name).unwrap_or_default();
             Ok(entry)
@@ -268,6 +280,7 @@ fn deployment_entry(
         source_choices: topology.source_choices,
         bindings: topology.bindings,
         connections: ConnectionMatrix::default(),
+        connections_error: None,
         route_statuses: Vec::new(),
         last_operation,
         applied: stored

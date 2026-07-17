@@ -951,13 +951,25 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') if self.active_view == ActiveView::Instances => {
                 self.script_selected = self.script_selected.saturating_sub(1)
             }
-            KeyCode::Char('[') if self.active_view == ActiveView::Instances => {
-                self.deployment_selected = self.deployment_selected.saturating_sub(1)
+            KeyCode::Char('[')
+                if matches!(
+                    self.active_view,
+                    ActiveView::Instances | ActiveView::Connections
+                ) =>
+            {
+                self.deployment_selected = self.deployment_selected.saturating_sub(1);
+                self.connection_selected = 0;
             }
-            KeyCode::Char(']') if self.active_view == ActiveView::Instances => {
+            KeyCode::Char(']')
+                if matches!(
+                    self.active_view,
+                    ActiveView::Instances | ActiveView::Connections
+                ) =>
+            {
                 if !self.deployments.is_empty() {
                     self.deployment_selected =
                         (self.deployment_selected + 1).min(self.deployments.len() - 1);
+                    self.connection_selected = 0;
                 }
             }
             KeyCode::PageUp if self.active_view == ActiveView::Instances => {
@@ -2668,6 +2680,7 @@ mod tests {
             blocks: Vec::new(),
             source_choices: Vec::new(),
             bindings: Vec::new(),
+            connections_error: None,
             connections: switchyard_ops::ConnectionMatrix {
                 rows: vec![switchyard_ops::ConnectionRow {
                     consumer: "backend".into(),
@@ -2713,6 +2726,7 @@ mod tests {
             blocks: Vec::new(),
             source_choices: Vec::new(),
             bindings: Vec::new(),
+            connections_error: None,
             connections: switchyard_ops::ConnectionMatrix {
                 rows: vec![switchyard_ops::ConnectionRow {
                     consumer: "backend-1".into(),
@@ -2946,6 +2960,7 @@ spec:
             }],
             bindings: Vec::new(),
             connections: switchyard_ops::ConnectionMatrix::default(),
+            connections_error: None,
             route_statuses: Vec::new(),
             last_operation: None,
             applied: false,
