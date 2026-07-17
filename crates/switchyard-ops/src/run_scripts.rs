@@ -2,12 +2,12 @@ use std::{fs, io, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) const FILE_NAME: &str = ".switchyard/run-scripts.yaml";
+pub const FILE_NAME: &str = ".switchyard/run-scripts.yaml";
 const SHELL_NOTICE_FILE: &str = ".switchyard/shell-run-notice-acknowledged";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum StructuredCommand {
+pub enum StructuredCommand {
     Up,
     Down,
     Plan,
@@ -15,7 +15,7 @@ pub(crate) enum StructuredCommand {
 }
 
 impl StructuredCommand {
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Up => "up",
             Self::Down => "down",
@@ -24,7 +24,7 @@ impl StructuredCommand {
         }
     }
 
-    pub(crate) const fn next(self) -> Self {
+    pub const fn next(self) -> Self {
         match self {
             Self::Up => Self::Down,
             Self::Down => Self::Plan,
@@ -36,24 +36,24 @@ impl StructuredCommand {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RunScript {
-    pub(crate) name: String,
+pub struct RunScript {
+    pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) description: Option<String>,
+    pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) command: Option<StructuredCommand>,
+    pub command: Option<StructuredCommand>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) overlays: Vec<String>,
+    pub overlays: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) variation: Option<String>,
+    pub variation: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) set: Vec<String>,
+    pub set: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) shell: Option<String>,
+    pub shell: Option<String>,
 }
 
 impl RunScript {
-    pub(crate) fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         validate_name(&self.name)?;
         match (self.command, self.shell.as_deref()) {
             (Some(_), None) => {}
@@ -78,7 +78,7 @@ impl RunScript {
     }
 }
 
-pub(crate) fn validate_name(name: &str) -> Result<(), String> {
+pub fn validate_name(name: &str) -> Result<(), String> {
     let name = name.trim();
     if name.is_empty() {
         return Err("name is required".into());
@@ -89,7 +89,7 @@ pub(crate) fn validate_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn load(project: &Path) -> (Vec<RunScript>, Option<String>) {
+pub fn load(project: &Path) -> (Vec<RunScript>, Option<String>) {
     let path = project.join(FILE_NAME);
     let contents = match fs::read_to_string(&path) {
         Ok(contents) => contents,
@@ -138,7 +138,7 @@ pub(crate) fn load(project: &Path) -> (Vec<RunScript>, Option<String>) {
     (scripts, None)
 }
 
-pub(crate) fn save(project: &Path, scripts: &[RunScript]) -> Result<(), String> {
+pub fn save(project: &Path, scripts: &[RunScript]) -> Result<(), String> {
     let path = project.join(FILE_NAME);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -147,11 +147,11 @@ pub(crate) fn save(project: &Path, scripts: &[RunScript]) -> Result<(), String> 
     fs::write(path, contents).map_err(|error| error.to_string())
 }
 
-pub(crate) fn shell_notice_acknowledged(project: &Path) -> bool {
+pub fn shell_notice_acknowledged(project: &Path) -> bool {
     project.join(SHELL_NOTICE_FILE).is_file()
 }
 
-pub(crate) fn acknowledge_shell_notice(project: &Path) -> Result<(), String> {
+pub fn acknowledge_shell_notice(project: &Path) -> Result<(), String> {
     let path = project.join(SHELL_NOTICE_FILE);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;

@@ -2991,6 +2991,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchyard-ops"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "switchyard-daemon",
+ "switchyard-planner",
+ "switchyard-sources",
+ "switchyard-state",
+ "yaml_serde",
+]
+
+[[package]]
 name = "switchyard-planner"
 version = "0.1.0"
 dependencies = [
@@ -3065,10 +3077,10 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "ratatui",
- "serde",
  "signal-hook",
  "switchyard-adapter-sdk",
  "switchyard-daemon",
+ "switchyard-ops",
  "switchyard-planner",
  "switchyard-sources",
  "switchyard-state",

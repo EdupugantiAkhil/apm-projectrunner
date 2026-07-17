@@ -401,8 +401,8 @@ pub(super) fn render_confirm(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{DeploymentEntry, InstanceRow, ServiceRow};
     use std::path::PathBuf;
+    use switchyard_ops::projections::{DeploymentEntry, InstanceRow, ServiceRow};
 
     #[test]
     fn runtime_services_merge_with_authored_instance_context() {

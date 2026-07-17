@@ -10,7 +10,7 @@ use std::{
 use crate::run_scripts::{RunScript, StructuredCommand};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum OperationSpec {
+pub enum OperationSpec {
     Structured {
         command: StructuredCommand,
         bundle: PathBuf,
@@ -27,7 +27,7 @@ pub(crate) enum OperationSpec {
 }
 
 impl OperationSpec {
-    pub(crate) fn direct(command: StructuredCommand, bundle: PathBuf) -> Self {
+    pub fn direct(command: StructuredCommand, bundle: PathBuf) -> Self {
         Self::Structured {
             command,
             bundle,
@@ -37,7 +37,7 @@ impl OperationSpec {
         }
     }
 
-    pub(crate) fn from_script(script: &RunScript, bundle: PathBuf) -> Result<Self, String> {
+    pub fn from_script(script: &RunScript, bundle: PathBuf) -> Result<Self, String> {
         script.validate()?;
         if let Some(command) = script.command {
             Ok(Self::Structured {
@@ -54,7 +54,7 @@ impl OperationSpec {
         }
     }
 
-    pub(crate) fn bind(bundle: PathBuf, consumer: String, group: String) -> Self {
+    pub fn bind(bundle: PathBuf, consumer: String, group: String) -> Self {
         Self::Bind {
             bundle,
             consumer,
@@ -62,7 +62,7 @@ impl OperationSpec {
         }
     }
 
-    pub(crate) fn arguments(&self) -> Option<Vec<OsString>> {
+    pub fn arguments(&self) -> Option<Vec<OsString>> {
         match self {
             Self::Structured {
                 command,
@@ -102,13 +102,13 @@ impl OperationSpec {
 }
 
 #[derive(Debug)]
-pub(crate) enum OperationEvent {
+pub enum OperationEvent {
     Output(String),
     Finished { exit_code: i32 },
     Failed(String),
 }
 
-pub(crate) fn run(project: &Path, spec: OperationSpec, sender: &Sender<OperationEvent>) {
+pub fn run(project: &Path, spec: OperationSpec, sender: &Sender<OperationEvent>) {
     let mut command = match &spec {
         OperationSpec::Structured { .. } | OperationSpec::Bind { .. } => {
             let executable = std::env::var_os("SWITCHYARD_BIN")

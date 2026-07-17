@@ -8,6 +8,7 @@ members = [
     "crates/switchyard-adapters",
     "crates/switchyard-cli",
     "crates/switchyard-daemon",
+    "crates/switchyard-ops",
     "crates/switchyard-planner",
     "crates/switchyard-router",
     "crates/switchyard-router-admin",
