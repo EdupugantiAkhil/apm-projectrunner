@@ -820,12 +820,8 @@ impl App {
             KeyCode::Char('?') => self.overlay = Overlay::Help,
             KeyCode::Tab => self.active_view = self.active_view.next(),
             KeyCode::BackTab => self.active_view = self.active_view.previous(),
-            KeyCode::Right if self.active_view != ActiveView::Connections => {
-                self.active_view = self.active_view.next()
-            }
-            KeyCode::Left if self.active_view != ActiveView::Connections => {
-                self.active_view = self.active_view.previous()
-            }
+            KeyCode::Right => self.active_view = self.active_view.next(),
+            KeyCode::Left => self.active_view = self.active_view.previous(),
             KeyCode::Down | KeyCode::Char('j') if self.active_view == ActiveView::Home => {
                 self.home_selected = (self.home_selected + 1).min(4);
             }
@@ -1057,10 +1053,10 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') if self.active_view == ActiveView::Connections => {
                 self.connection_selected = self.connection_selected.saturating_sub(1);
             }
-            KeyCode::Left | KeyCode::Char('h') if self.active_view == ActiveView::Connections => {
+            KeyCode::Char('h') if self.active_view == ActiveView::Connections => {
                 self.cycle_connection_group(false);
             }
-            KeyCode::Right | KeyCode::Char('l') if self.active_view == ActiveView::Connections => {
+            KeyCode::Char('l') if self.active_view == ActiveView::Connections => {
                 self.cycle_connection_group(true);
             }
             KeyCode::Enter
@@ -1390,7 +1386,7 @@ impl App {
             return;
         };
         let Some(group) = self.connection_drafts.get(&row.consumer).cloned() else {
-            self.status = Some("choose a compatible group with ←/→ before previewing".into());
+            self.status = Some("choose a compatible group with h/l before previewing".into());
             return;
         };
         let Some(definition) = self.current_deployment().map(|item| item.bundle.clone()) else {
@@ -2737,6 +2733,11 @@ mod tests {
         assert_eq!(app.active_view, ActiveView::Home);
         app.handle_key(key(KeyCode::BackTab));
         assert_eq!(app.active_view, ActiveView::Connections);
+        app.handle_key(key(KeyCode::Left));
+        assert_eq!(app.active_view, ActiveView::Instances);
+        app.active_view = ActiveView::Connections;
+        app.handle_key(key(KeyCode::Right));
+        assert_eq!(app.active_view, ActiveView::Home);
     }
 
     #[test]
@@ -2768,14 +2769,14 @@ mod tests {
             consumer_slot_count: 1,
             validation_problems: Vec::new(),
         });
-        app.handle_key(key(KeyCode::Right));
+        app.handle_key(key(KeyCode::Char('l')));
         assert_eq!(
             app.connection_drafts.get("backend").map(String::as_str),
             Some("feature")
         );
         assert_eq!(app.overlay, Overlay::None);
         assert!(app.busy.is_none());
-        app.handle_key(key(KeyCode::Left));
+        app.handle_key(key(KeyCode::Char('h')));
         assert_eq!(
             app.connection_drafts.get("backend").map(String::as_str),
             Some("main")

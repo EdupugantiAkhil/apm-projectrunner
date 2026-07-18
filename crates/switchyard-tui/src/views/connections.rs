@@ -121,7 +121,7 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 })
                 .map(route_detail)
                 .unwrap_or_else(|| "No route version has been observed yet.".into());
-            format!("Compatible complete groups: {compatible}\n{route}\n←/→ or h/l chooses a draft; Enter previews. Nothing applies until Enter is pressed again in the preview.")
+            format!("Compatible complete groups: {compatible}\n{route}\nh/l chooses a draft; Enter previews. Nothing applies until Enter is pressed again in the preview.")
         },
     );
     frame.render_widget(

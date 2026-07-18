@@ -1282,3 +1282,12 @@ implemented shape and the evidence used to close a phase.
 - Selection includes both `this device` and registered SSH devices; SSH check and
   removal are guarded for the implicit entry and explain why those actions do not
   apply.
+
+## 2026-07-18 — Connections view navigation consistency
+
+- Left/Right now switch views from Connections just as they do from every other TUI
+  view, preventing an arrow-key user from becoming trapped after entering the tab.
+- Compatible provider-group drafting remains available on `h`/`l`; all inline key
+  hints and TUI documentation now describe the non-conflicting bindings.
+- Verification: all 39 TUI library tests, strict TUI clippy, formatting, and diff
+  checks pass.

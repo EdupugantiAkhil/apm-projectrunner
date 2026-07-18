@@ -96,7 +96,7 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
                 "i add instance  u/s/x/p lifecycle  Enter run  n/e/D scripts  PgUp/PgDn output  Tab view  ? help  q quit"
             }
             ActiveView::Connections => {
-                "↑/↓ row  ←/→ group draft  Enter preview  Esc cancel  Tab view  ? help  q quit"
+                "↑/↓ row  h/l group draft  Enter preview  ←/→ or Tab view  ? help  q quit"
             }
         };
         app.status
@@ -229,7 +229,7 @@ fn render_help(frame: &mut Frame<'_>) {
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from("  ↑ / ↓, j / k  select consumer slot"),
-        Line::from("  ← / →, h / l  draft a compatible complete group"),
+        Line::from("  h / l         draft a compatible complete group"),
         Line::from("  Enter         preview; Enter again applies atomically"),
         Line::from("  Esc           cancel preview and clear its draft"),
     ];

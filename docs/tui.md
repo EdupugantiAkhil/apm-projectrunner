@@ -14,8 +14,9 @@ switchyard tui path/to/project
 ```
 
 The TUI lands on **Home**. The top bar order is **Home**, **Sources**, **Profiles**,
-**Devices**, **Instances**, then **Connections**. Use `Tab` to advance and Shift-Tab to
-go back. Left/Right also switch views except in Connections, where they select a group.
+**Devices**, **Instances**, then **Connections**. Use `Tab` or Right to advance and
+Shift-Tab or Left to go back. Navigation remains consistent in the Connections view;
+use `h`/`l` there to select a provider group.
 Press `?` for the complete in-app key reference, and quit with `q` or Ctrl-C. In a
 project with multiple deployment definitions, `[` and `]` select the deployment from
 the Instances and Connections views.
@@ -201,9 +202,9 @@ to the complete provider group selected for that consumer. A backend has one dow
 group at a time; if two callers need the same backend code connected to different
 groups, run two backend instances.
 
-- Up/Down or `j`/`k` selects a consumer-slot row. Left/Right or `h`/`l` cycles only
-  groups that the planner proves are complete and compatible. The choice is marked
-  `pending change` and remains an in-memory draft.
+- Up/Down or `j`/`k` selects a consumer-slot row. `h`/`l` cycles only groups that the
+  planner proves are complete and compatible. The choice is marked `pending change`
+  and remains an in-memory draft. Left/Right continue to navigate between views.
 - Enter opens a no-mutation preview containing the full old and new provider lists and
   each service route that changes. The preview states that the complete route table is
   applied atomically and unrelated instances are not restarted.
