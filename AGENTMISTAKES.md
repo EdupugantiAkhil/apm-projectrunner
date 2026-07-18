@@ -438,3 +438,47 @@ duplicated feature and acceptance checkbox unchecked. Correction: reconcile both
 against the same completion evidence. Lesson: when a secondary design document mirrors
 an execution checklist, search for remaining unchecked entries before claiming the
 milestone is closed.
+
+## 2026-07-18 — AppCUI: singletons, second Apps, and greedy list controls
+
+Three empirical AppCUI 0.4.13 findings from the TUI rewrite review, all invisible
+in the sandbox and caught only by pty-driving the real binary:
+
+1. Building a second `App` in the same process after `App::run()` returns leaks
+   the previous termios backend input thread, which then randomly steals
+   keystrokes (`ps -T` shows 3 threads). The clone terminal-handoff therefore
+   re-execs the process instead of rebuilding the App in-process.
+2. `Tab::set_current_tab` from a window constructor does not update
+   `focused_child_index`/the command bar; deferred restoration through a one-shot
+   timer works.
+3. List controls consume `Insert`/`Space`/`Shift+arrows` (selection) and — with
+   the `SearchBar` flag — every printable character including the character half
+   of `Ctrl+Q`. Per-tab actions bind only to F-keys/`Delete`/`Enter`, and list
+   controls are created without `SearchBar`.
+
+Lesson: verify interactive-framework assumptions with a pty end-to-end pass per
+part; unit tests and clippy prove nothing about key routing or process lifecycle.
+
+## 2026-07-18 — AppCUI Markdown hangs on language-tagged code fences
+
+The part-3 Profiles inspector froze the whole TUI at startup: the AppCUI 0.4.13
+`Markdown` control busy-loops (100% CPU, never paints) on any fenced code block
+with a language tag (```text, ```yaml, ```rs); bare ``` fences are fine. Fixed by
+rendering all data-driven content (profile expansion, YAML fallbacks, verbatim
+source manifests) through read-only `TextArea` controls and keeping Markdown only
+for static authored text without tagged fences. Also: a pty probe that does not
+set TIOCSWINSZ reports every AppCUI app as hung (0x0 terminal) — set a real
+window size before concluding anything.
+
+## 2026-07-19 — Modal initial focus is nondeterministic; make defaults explicit
+
+The pty smoke suite exposed that the instance-operation preview dialog's initial
+focus differed between a fresh TUI session and a post-handoff re-exec'd one, so
+Enter sometimes pressed Cancel and silently did nothing. Corrections: request
+focus on the non-destructive action button explicitly, implement `on_accept` for
+Enter, and stop letting the read-only automatic refresh hold the mutation gate
+(a confirm racing a background refresh was silently dropped with a notice that
+the next refresh immediately cleared). Lesson: never rely on a UI framework's
+implicit first-focus or on notices as the only evidence an action ran; assert
+observable outcomes end to end, repeatedly, in both fresh and restarted
+sessions.

@@ -4,3 +4,4 @@ npm-debug.log*
 .switchyard/
 target/
 /dist/
+.codex-refs/

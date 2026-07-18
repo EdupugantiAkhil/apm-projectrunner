@@ -6,7 +6,7 @@ in the artifact name and release notes and does not cross-compile.
 
 ## Build a release
 
-Use the pinned Rust 1.85 toolchain and Node.js 24. Building requires the normal Cargo
+Use the pinned Rust 1.88 toolchain and Node.js 24. Building requires the normal Cargo
 dependency cache/network access and a clean GUI dependency install:
 
 ```sh

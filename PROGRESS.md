@@ -1300,3 +1300,36 @@ implemented shape and the evidence used to close a phase.
   hints and TUI documentation now describe the non-conflicting bindings.
 - Verification: all 39 TUI library tests, strict TUI clippy, formatting, and diff
   checks pass.
+
+## 2026-07-18 — AppCUI TUI rewrite (branch tui-appcui-rewrite)
+
+- Design accepted: docs/tui-appcui-design.md (7-tab single-window AppCUI shell,
+  F-key action scheme, re-exec terminal handoff). Toolchain bumped to Rust 1.88
+  for appcui 0.4.13; new clippy lints fixed workspace-wide.
+- Part 1 (shell + Home + handoff loop) and part 2 (Code tab: register, clone with
+  handoff, worktrees, safe remove) implemented by Codex, reviewed, verified by
+  pty-driven smoke runs (register + local clone handoff end to end). Review fixes:
+  re-exec handoff (input-thread leak), timer-based Code-tab restore, F-key
+  bindings, no SearchBar, human-readable inspection age.
+- Parts 3–6 briefs ready in .codex-refs/briefs/ (Profiles, Instances,
+  Connections, Devices+Operations), part 7 hardening to follow.
+
+## 2026-07-19 — AppCUI TUI rewrite complete (parts 3–7)
+
+- Parts 3–6 (Profiles, Instances + wizard + background operations, Connections
+  route matrix, Devices + Operations) implemented by Codex and reviewed with
+  per-part pty smoke passes; notable review fixes: Markdown code-fence hang
+  (data-driven text moved to read-only TextArea), F-key action scheme (list
+  controls consume Insert/Space/letters), re-exec terminal handoff.
+- Part 7: shell.rs refactored 1,897 → 883 lines (per-tab impl blocks moved into
+  tab modules), UX fixes (first-row auto-select, empty-state visibility, add
+  dialog focus), scripts/tui-smoke.py (14 pty assertions), docs/tui.md rewrite.
+- Review fixes on part 7: deterministic preview-dialog focus + Enter accept;
+  refreshes no longer hold the mutation gate.
+- Verification: cargo fmt, workspace clippy -D warnings, workspace tests,
+  rustdoc -D warnings, cargo audit (new scoped quick-xml exception documented),
+  tui-smoke 14/14 in three consecutive runs. time bumped to 0.3.53 and
+  RUSTSEC-2026-0009 exception removed now that the toolchain is Rust 1.88.
+- Not yet re-verified on this branch: the Docker-based routing acceptance
+  fixture and real LAN-device remote execution through the new TUI (ops layer
+  unchanged; CLI-level coverage from the previous milestone still applies).
