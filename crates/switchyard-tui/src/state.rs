@@ -104,6 +104,7 @@ pub(crate) struct DeploymentProjection {
     pub(crate) instances: Vec<InstanceProjection>,
     pub(crate) source_choices: Vec<switchyard_ops::SourceChoice>,
     pub(crate) connections: ConnectionMatrix,
+    pub(crate) route_statuses: Vec<switchyard_ops::RouteStatus>,
     pub(crate) services: Vec<ServiceProjection>,
     pub(crate) binding_count: usize,
     pub(crate) consumer_slot_count: usize,
@@ -281,6 +282,7 @@ impl ProjectState {
                     .collect(),
                 source_choices: deployment.source_choices,
                 connections: deployment.connections,
+                route_statuses: deployment.route_statuses,
                 services: deployment
                     .services
                     .into_iter()

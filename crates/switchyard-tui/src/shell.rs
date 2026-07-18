@@ -11,10 +11,11 @@ use crate::{
     dialogs::{confirm, wizard},
     handoff::{ExitOutcome, OutcomeCell},
     state::{OperationOutcome, ProjectState},
-    tabs::{self, code, home, instances, operations, profiles},
+    tabs::{self, code, connections, home, instances, operations, profiles},
     tasks::{self, OpCommand, OpUpdate, OperationGate, OperationJob},
 };
 use code::TreeRow;
+use connections::ConnectionRowView;
 use instances::InstanceRowView;
 use profiles::ProfileRowView;
 use switchyard_ops::{create_instance, execution::OperationSpec, run_scripts::StructuredCommand};
@@ -39,6 +40,12 @@ struct StateJob {
 struct StateUpdate {
     state: ProjectState,
     notice: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct PendingBind {
+    deployment: String,
+    consumer: String,
 }
 
 #[derive(Clone, Copy)]
@@ -145,6 +152,11 @@ const HELP: &str = r#"# Switchyard help
 - **Ctrl+Delete** — destructive cleanup after a distinct confirmation; owned named volumes are deleted.
 - **Enter** — inspect source identity, true placement, services, connections, and recent operations.
 
+## Connections tab
+
+- **Enter** — choose from compatible complete groups, review every old→new route, then apply one atomic binding operation.
+- Unbound slots remain **not connected** until you explicitly choose and apply a provider group.
+
 ## Concepts
 
 - **Code** — code made available from a local path, repository, or worktree.
@@ -183,8 +195,8 @@ impl ButtonEvents for HelpDialog {
 }
 
 #[Window(
-    events = ButtonEvents + WindowEvents + CommandBarEvents + TreeViewEvents<TreeRow> + ListViewEvents<ProfileRowView> + ListViewEvents<InstanceRowView> + BackgroundTaskEvents<StateUpdate, TaskResponse> + BackgroundTaskEvents<OpUpdate, OpCommand> + TimerEvents,
-    commands = [Help, Refresh, Quit, Next, AddCode, Worktree, RemoveCode, CodeDetails, NewProfile, EditProfile, ValidateProfile, ImportProfile, RemoveProfile, ProfileDetails, NewInstance, InstanceDetails, ValidateInstance, PlanInstance, StartInstance, StopInstance, CleanupInstance]
+    events = ButtonEvents + WindowEvents + CommandBarEvents + TreeViewEvents<TreeRow> + ListViewEvents<ProfileRowView> + ListViewEvents<InstanceRowView> + ListViewEvents<ConnectionRowView> + BackgroundTaskEvents<StateUpdate, TaskResponse> + BackgroundTaskEvents<OpUpdate, OpCommand> + TimerEvents,
+    commands = [Help, Refresh, Quit, Next, AddCode, Worktree, RemoveCode, CodeDetails, NewProfile, EditProfile, ValidateProfile, ImportProfile, RemoveProfile, ProfileDetails, NewInstance, InstanceDetails, ValidateInstance, PlanInstance, StartInstance, StopInstance, CleanupInstance, SwitchConnection]
 )]
 pub(crate) struct SwitchyardShell {
     tabs: Handle<Tab>,
@@ -192,11 +204,13 @@ pub(crate) struct SwitchyardShell {
     code: code::Handles,
     profiles: profiles::Handles,
     instances: instances::Handles,
+    connections: connections::Handles,
     operations: operations::Handles,
     busy_chip: Handle<Label>,
     state: ProjectState,
     outcome: OutcomeCell,
     operation_gate: OperationGate,
+    pending_bind: Option<PendingBind>,
     state_task: Handle<BackgroundTask<StateUpdate, TaskResponse>>,
     reopen_code_pending: bool,
 }
@@ -239,11 +253,17 @@ impl SwitchyardShell {
                 empty: Handle::None,
                 notice: Handle::None,
             },
+            connections: connections::Handles {
+                list: Handle::None,
+                empty: Handle::None,
+                notice: Handle::None,
+            },
             operations: operations::Handles { log: Handle::None },
             busy_chip: Handle::None,
             state,
             outcome,
             operation_gate: OperationGate::default(),
+            pending_bind: None,
             state_task: Handle::None,
             reopen_code_pending: restart.reopen_code,
         };
@@ -267,7 +287,7 @@ impl SwitchyardShell {
         );
         shell.profiles = tabs::profiles::add(&mut tab, profiles_index, &shell.state);
         shell.instances = tabs::instances::add(&mut tab, instances_index, &shell.state);
-        tabs::connections::add(&mut tab, connections_index);
+        shell.connections = tabs::connections::add(&mut tab, connections_index, &shell.state);
         tabs::devices::add(&mut tab, devices_index);
         shell.operations =
             tabs::operations::add(&mut tab, operations_index, &shell.state.operation_log);
@@ -316,6 +336,7 @@ impl SwitchyardShell {
         self.refresh_code_controls();
         self.refresh_profile_controls();
         self.refresh_instance_controls();
+        self.refresh_connection_controls();
     }
 
     fn start_state_job(&mut self, action: StateAction, busy_notice: &str) {
@@ -349,6 +370,10 @@ impl SwitchyardShell {
         self.set_code_notice(text);
         self.set_profile_notice(text);
         let notice = self.instances.notice;
+        if let Some(label) = self.control_mut(notice) {
+            label.set_caption(text);
+        }
+        let notice = self.connections.notice;
         if let Some(label) = self.control_mut(notice) {
             label.set_caption(text);
         }
@@ -642,6 +667,107 @@ impl SwitchyardShell {
         }
     }
 
+    fn selected_connection_row(&self) -> Option<ConnectionRowView> {
+        self.control(self.connections.list)?.current_item().cloned()
+    }
+
+    fn refresh_connection_controls(&mut self) {
+        let preferred = self
+            .selected_connection_row()
+            .map(|row| (row.deployment_index, row.consumer, row.slot));
+        let state = self.state.clone();
+        let handles = self.connections;
+        if let Some(list) = self.control_mut(handles.list) {
+            connections::fill_list(list, &state, preferred);
+        }
+        if let Some(empty) = self.control_mut(handles.empty) {
+            empty.set_visible(connections::project_rows(&state).is_empty());
+        }
+        let diagnostics = connections::diagnostics(&state);
+        if let Some(notice) = self.control_mut(handles.notice) {
+            notice.set_caption(&diagnostics);
+        }
+    }
+
+    fn switch_connection(&mut self) {
+        if self.operation_gate.is_running() {
+            self.set_notices("Another project operation is already running.");
+            return;
+        }
+        let Some(view) = self.selected_connection_row() else {
+            self.set_notices(
+                "Connections need a consumer instance with at least one consumed slot. Create one with F2 on Instances.",
+            );
+            return;
+        };
+        let Some((deployment, row)) = connections::source_row(&self.state, &view) else {
+            self.set_notices(
+                "The selected connection is no longer available. Press F5 to refresh.",
+            );
+            return;
+        };
+        if row.compatible_groups.is_empty() {
+            self.set_notices(
+                "No complete provider group is compatible with this consumer. Fix the deployment definition and press F5.",
+            );
+            return;
+        }
+        let deployment_name = deployment.name.clone();
+        let bundle = deployment.bundle.clone();
+        let consumer = row.consumer.clone();
+        let compatible_groups = row.compatible_groups.clone();
+        let mut previews = Vec::with_capacity(compatible_groups.len());
+        for group in compatible_groups {
+            match switchyard_ops::switch_preview(
+                &self.state.project_dir,
+                &bundle,
+                &consumer,
+                &group,
+            ) {
+                Ok(preview) => previews.push(preview),
+                Err(error) => {
+                    self.set_notices(&format!(
+                        "Could not build the atomic switch preview for `{group}`: {error}"
+                    ));
+                    return;
+                }
+            }
+        }
+        let Some(request) = connections::show_switch(&consumer, previews) else {
+            return;
+        };
+        let spec = OperationSpec::bind(bundle, consumer.clone(), request.group.clone());
+        let started = self.start_operation(
+            format!("bind {consumer} → {}", request.group),
+            Some(deployment_name.clone()),
+            false,
+            spec,
+        );
+        if started {
+            self.pending_bind = Some(PendingBind {
+                deployment: deployment_name,
+                consumer,
+            });
+        }
+    }
+
+    fn finish_bind(&mut self, succeeded: bool, operation_detail: &str) {
+        let Some(bind) = self.pending_bind.take() else {
+            return;
+        };
+        let (statuses, status_error) =
+            match switchyard_ops::route_status(&self.state.project_dir, &bind.deployment) {
+                Ok(statuses) => (statuses, None),
+                Err(error) => (Vec::new(), Some(error)),
+            };
+        let detail = status_error.map_or_else(
+            || operation_detail.to_owned(),
+            |error| format!("{operation_detail}\nRoute status lookup failed: {error}"),
+        );
+        let report = connections::render_result(&bind.consumer, succeeded, &detail, &statuses);
+        connections::show_result(&report);
+    }
+
     fn refresh_operation_log(&mut self) {
         let text = self.state.operation_log.render();
         let log = self.operations.log;
@@ -782,10 +908,10 @@ impl SwitchyardShell {
         deployment: Option<String>,
         destructive: bool,
         spec: OperationSpec,
-    ) {
+    ) -> bool {
         if let Err(error) = self.operation_gate.try_start() {
             self.set_notices(error);
-            return;
+            return false;
         }
         let job = OperationJob {
             project_dir: self.state.project_dir.clone(),
@@ -798,11 +924,13 @@ impl SwitchyardShell {
             Ok(_) => {
                 self.set_busy(true);
                 self.set_notices("Operation started; output is streaming to Operations.");
+                true
             }
             Err(error) => {
                 self.operation_gate.finish();
                 self.set_busy(false);
                 self.set_notices(&format!("Could not start operation: {error}"));
+                false
             }
         }
     }
@@ -992,6 +1120,21 @@ impl ListViewEvents<InstanceRowView> for SwitchyardShell {
     }
 }
 
+impl ListViewEvents<ConnectionRowView> for SwitchyardShell {
+    fn on_item_action(
+        &mut self,
+        handle: Handle<ListView<ConnectionRowView>>,
+        _: usize,
+    ) -> EventProcessStatus {
+        if handle == self.connections.list {
+            self.switch_connection();
+            EventProcessStatus::Processed
+        } else {
+            EventProcessStatus::Ignored
+        }
+    }
+}
+
 impl BackgroundTaskEvents<StateUpdate, TaskResponse> for SwitchyardShell {
     fn on_update(
         &mut self,
@@ -1062,7 +1205,12 @@ impl BackgroundTaskEvents<OpUpdate, OpCommand> for SwitchyardShell {
                 } else {
                     "Operation finished with a non-zero exit code. Review Operations output."
                 });
-                if exit_code == 0 {
+                let was_bind = self.pending_bind.is_some();
+                self.finish_bind(
+                    exit_code == 0,
+                    &format!("Process completed with exit code {exit_code}."),
+                );
+                if exit_code == 0 || was_bind {
                     self.refresh_state();
                 }
             }
@@ -1070,12 +1218,17 @@ impl BackgroundTaskEvents<OpUpdate, OpCommand> for SwitchyardShell {
                 self.state.operation_log.append(format!("ERROR: {error}"));
                 self.state
                     .operation_log
-                    .finish(OperationOutcome::Failed(error));
+                    .finish(OperationOutcome::Failed(error.clone()));
                 self.operation_gate.finish();
                 self.set_busy(false);
                 self.set_notices(
                     "Operation failed. Review Operations output for the verbatim error.",
                 );
+                let was_bind = self.pending_bind.is_some();
+                self.finish_bind(false, &format!("Background execution failed: {error}"));
+                if was_bind {
+                    self.refresh_state();
+                }
             }
         }
         self.refresh_operation_log();
@@ -1090,6 +1243,11 @@ impl BackgroundTaskEvents<OpUpdate, OpCommand> for SwitchyardShell {
             self.operation_gate.finish();
             self.set_busy(false);
             self.set_notices("Background operation stopped unexpectedly.");
+            let was_bind = self.pending_bind.is_some();
+            self.finish_bind(false, "Background operation stopped unexpectedly.");
+            if was_bind {
+                self.refresh_state();
+            }
             self.refresh_operation_log();
         }
         EventProcessStatus::Processed
@@ -1186,6 +1344,16 @@ impl CommandBarEvents for SwitchyardShell {
                 "Cleanup",
                 switchyardshell::Commands::CleanupInstance,
             );
+        } else if self
+            .control(self.tabs)
+            .and_then(Tab::current_tab)
+            .is_some_and(|index| index == 4)
+        {
+            commandbar.set(
+                key!("Enter"),
+                "Switch",
+                switchyardshell::Commands::SwitchConnection,
+            );
         }
     }
 
@@ -1222,6 +1390,7 @@ impl CommandBarEvents for SwitchyardShell {
                 self.run_instance_command(InstanceCommand::Stop)
             }
             switchyardshell::Commands::CleanupInstance => self.cleanup_instance(),
+            switchyardshell::Commands::SwitchConnection => self.switch_connection(),
         }
     }
 }
