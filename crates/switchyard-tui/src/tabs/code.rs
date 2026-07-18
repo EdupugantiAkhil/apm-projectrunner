@@ -7,9 +7,141 @@ use appcui::prelude::*;
 use switchyard_state::RegisteredSourceKind;
 
 use crate::{
+    dialogs::confirm,
     handoff::CloneHandoff,
+    shell::{StateAction, SwitchyardShell},
     state::{ProjectState, SourceProjection},
 };
+
+impl SwitchyardShell {
+    pub(crate) fn selected_source_index(&self) -> Option<usize> {
+        self.control(self.code.tree)?
+            .current_item()
+            .map(|item| item.value().source_index)
+    }
+
+    pub(crate) fn refresh_code_controls(&mut self) {
+        let selected = self.selected_source_index().unwrap_or(0);
+        let sources = self.state.sources.clone();
+        let handles = self.code;
+        if let Some(tree) = self.control_mut(handles.tree) {
+            fill_tree(tree, &sources, Some(selected));
+            tree.set_visible(!sources.is_empty());
+        }
+        if let Some(empty) = self.control_mut(handles.empty) {
+            empty.set_visible(sources.is_empty());
+        }
+        self.update_code_detail();
+    }
+
+    pub(crate) fn update_code_detail(&mut self) {
+        let text = self
+            .selected_source_index()
+            .and_then(|index| self.state.sources.get(index))
+            .map_or_else(
+                || "Select a source to inspect its identity and ownership.".into(),
+                |source| detail_text(&self.state, source),
+            );
+        let detail = self.code.detail;
+        if let Some(label) = self.control_mut(detail) {
+            label.set_caption(&text);
+        }
+    }
+
+    pub(crate) fn set_code_notice(&mut self, text: &str) {
+        let notice = self.code.notice;
+        if let Some(label) = self.control_mut(notice) {
+            label.set_caption(text);
+        }
+    }
+
+    pub(crate) fn add_code(&mut self) {
+        if self.operation_gate.is_running() {
+            self.set_code_notice("Another project operation is already running.");
+            return;
+        }
+        let Some(request) = AddDialog::new(&self.state.project_dir).show() else {
+            return;
+        };
+        match request {
+            AddRequest::Local { name, path } => {
+                self.start_state_job(StateAction::Register { name, path }, "Registering source…");
+            }
+            AddRequest::Clone(request) => {
+                self.outcome.request_clone(request);
+                self.close();
+            }
+        }
+    }
+
+    pub(crate) fn create_worktree(&mut self) {
+        if self.operation_gate.is_running() {
+            self.set_code_notice("Another project operation is already running.");
+            return;
+        }
+        let selected = self
+            .selected_source_index()
+            .and_then(|index| self.state.sources.get(index));
+        let Some(dialog) = WorktreeDialog::new(&self.state.sources, selected) else {
+            self.set_code_notice(
+                "Worktree creation requires a Git source with a known HEAD commit.",
+            );
+            return;
+        };
+        let Some(request) = dialog.show() else {
+            return;
+        };
+        self.start_state_job(StateAction::Worktree(request), "Creating managed worktree…");
+    }
+
+    pub(crate) fn remove_code(&mut self) {
+        if self.operation_gate.is_running() {
+            self.set_code_notice("Another project operation is already running.");
+            return;
+        }
+        let Some(source) = self
+            .selected_source_index()
+            .and_then(|index| self.state.sources.get(index))
+            .cloned()
+        else {
+            self.set_code_notice("Select a source before removing it.");
+            return;
+        };
+        let preview = match source.ownership {
+            switchyard_state::RegisteredSourceKind::Managed => format!(
+                "Remove and deregister `{}`?\n\nManaged path to delete: {}\nSwitchyard will refuse if ownership, containment, or clean-state checks fail.",
+                source.name,
+                source.path.display(),
+            ),
+            switchyard_state::RegisteredSourceKind::Unmanaged => format!(
+                "Deregister `{}`?\n\nThe unmanaged directory will NOT be deleted:\n{}",
+                source.name,
+                source.path.display(),
+            ),
+        };
+        if !confirm::safe_remove(&preview) {
+            return;
+        }
+        self.start_state_job(
+            StateAction::Remove { name: source.name },
+            "Checking and removing source…",
+        );
+    }
+
+    pub(crate) fn show_code_details(&self) {
+        if let Some(source) = self
+            .selected_source_index()
+            .and_then(|index| self.state.sources.get(index))
+        {
+            appcui::dialogs::message("Code details", &detail_text(&self.state, source));
+        } else {
+            appcui::dialogs::message(
+                "Code details",
+                "No source is selected. Press F2 to add code.",
+            );
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TreeRow {
@@ -80,6 +212,7 @@ pub(crate) fn add(
         treeview::Flags::ScrollBars,
     );
     fill_tree(&mut tree, &state.sources, None);
+    tree.set_visible(!state.sources.is_empty());
     let tree_handle = left.add(tree);
     let mut empty = Label::new(
         "Code is a repository, checkout, or worktree that Switchyard can use for an instance.\n\nPress F2 to register an existing directory or clone a repository.",
@@ -136,7 +269,7 @@ pub(crate) fn fill_tree(
             handles.push(handle);
         }
     });
-    if let Some(handle) = preferred_handle {
+    if let Some(handle) = preferred_handle.or_else(|| handles.first().copied()) {
         tree.move_cursor_to(handle);
     }
 }
@@ -396,6 +529,8 @@ impl AddDialog {
         dialog.submit = dialog.add(Button::new("&Add", layout!("x:40%,y:100%,p:b,w:14,h:1")));
         dialog.cancel = dialog.add(Button::new("&Cancel", layout!("x:62%,y:100%,p:b,w:14,h:1")));
         dialog.update_mode();
+        let mode = dialog.mode;
+        dialog.request_focus_for_control(mode);
         dialog
     }
 

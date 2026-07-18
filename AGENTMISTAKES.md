@@ -469,3 +469,16 @@ source manifests) through read-only `TextArea` controls and keeping Markdown onl
 for static authored text without tagged fences. Also: a pty probe that does not
 set TIOCSWINSZ reports every AppCUI app as hung (0x0 terminal) — set a real
 window size before concluding anything.
+
+## 2026-07-19 — Modal initial focus is nondeterministic; make defaults explicit
+
+The pty smoke suite exposed that the instance-operation preview dialog's initial
+focus differed between a fresh TUI session and a post-handoff re-exec'd one, so
+Enter sometimes pressed Cancel and silently did nothing. Corrections: request
+focus on the non-destructive action button explicitly, implement `on_accept` for
+Enter, and stop letting the read-only automatic refresh hold the mutation gate
+(a confirm racing a background refresh was silently dropped with a notice that
+the next refresh immediately cleared). Lesson: never rely on a UI framework's
+implicit first-focus or on notices as the only evidence an action ran; assert
+observable outcomes end to end, repeatedly, in both fresh and restarted
+sessions.

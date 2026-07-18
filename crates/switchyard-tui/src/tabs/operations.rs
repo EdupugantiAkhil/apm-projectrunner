@@ -1,7 +1,272 @@
 use appcui::prelude::*;
 use switchyard_ops::{RunScript, run_scripts::StructuredCommand};
 
-use crate::state::{OperationLog, OperationOutcome, ProjectState};
+use crate::{
+    dialogs::confirm,
+    shell::SwitchyardShell,
+    state::{OperationLog, OperationOutcome, ProjectState},
+    tasks::OpUpdate,
+};
+
+impl SwitchyardShell {
+    pub(crate) fn refresh_operation_log(&mut self) {
+        let filter = self
+            .control(self.operations.filter)
+            .map_or("", TextField::text)
+            .to_owned();
+        let operation_log = self.state.operation_log.clone();
+        let log = self.operations.log;
+        if let Some(list) = self.control_mut(log) {
+            let selected = if list.count() == 0 || list.index().saturating_add(1) >= list.count() {
+                Some(usize::MAX)
+            } else {
+                Some(list.index())
+            };
+            fill_timeline(list, &operation_log, &filter, selected);
+        }
+        self.update_instance_detail();
+    }
+
+    fn selected_script_index(&self) -> Option<usize> {
+        self.control(self.operations.list)?
+            .current_item()
+            .map(|row| row.script_index)
+    }
+
+    pub(crate) fn refresh_script_controls(&mut self) {
+        let selected = self.selected_script_index();
+        let scripts = self.state.run_scripts.clone();
+        let handles = self.operations;
+        if let Some(list) = self.control_mut(handles.list) {
+            fill_list(list, &scripts, selected);
+            list.set_visible(!scripts.is_empty());
+        }
+        if let Some(empty) = self.control_mut(handles.empty) {
+            empty.set_visible(scripts.is_empty());
+        }
+        let error = self.state.run_scripts_error.clone().unwrap_or_default();
+        if let Some(notice) = self.control_mut(handles.notice) {
+            notice.set_caption(&error);
+        }
+    }
+
+    pub(crate) fn edit_script(&mut self, new: bool) {
+        if self.operation_gate.is_running() {
+            self.set_notices("Another project operation is already running.");
+            return;
+        }
+        let edit_index = (!new).then(|| self.selected_script_index()).flatten();
+        if !new && edit_index.is_none() {
+            self.set_notices("Select a project run action to edit.");
+            return;
+        }
+        let existing = edit_index.and_then(|index| self.state.run_scripts.get(index));
+        let reserved_names = self
+            .state
+            .run_scripts
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != edit_index)
+            .map(|(_, script)| script.name.clone())
+            .collect();
+        let Some(script) = ScriptDialog::new(existing, reserved_names).show() else {
+            return;
+        };
+        if self
+            .state
+            .run_scripts
+            .iter()
+            .enumerate()
+            .any(|(index, item)| Some(index) != edit_index && item.name == script.name)
+        {
+            self.set_notices(&format!(
+                "Run action name `{}` already exists.",
+                script.name
+            ));
+            return;
+        }
+        let mut scripts = self.state.run_scripts.clone();
+        if let Some(index) = edit_index {
+            scripts[index] = script;
+        } else {
+            scripts.push(script);
+        }
+        match switchyard_ops::run_scripts::save(&self.state.project_dir, &scripts) {
+            Ok(()) => {
+                self.state.run_scripts = scripts;
+                self.state.run_scripts_error = None;
+                self.refresh_script_controls();
+                self.set_notices("Project run actions saved.");
+            }
+            Err(error) => self.set_notices(&format!("Could not save run actions: {error}")),
+        }
+    }
+
+    pub(crate) fn remove_script(&mut self) {
+        if self.operation_gate.is_running() {
+            self.set_notices("Another project operation is already running.");
+            return;
+        }
+        let Some(index) = self.selected_script_index() else {
+            self.set_notices("Select a project run action to delete.");
+            return;
+        };
+        let name = self.state.run_scripts[index].name.clone();
+        if !confirm::safe_remove(&format!(
+            "Delete project run action `{name}`?\n\nThis edits .switchyard/run-scripts.yaml. It does not remove a startup profile or stop services."
+        )) {
+            return;
+        }
+        let mut scripts = self.state.run_scripts.clone();
+        scripts.remove(index);
+        match switchyard_ops::run_scripts::save(&self.state.project_dir, &scripts) {
+            Ok(()) => {
+                self.state.run_scripts = scripts;
+                self.refresh_script_controls();
+                self.set_notices("Project run action deleted.");
+            }
+            Err(error) => self.set_notices(&format!("Could not delete run action: {error}")),
+        }
+    }
+
+    pub(crate) fn run_script(&mut self) {
+        if self.operation_gate.is_running() {
+            self.set_notices("Another project operation is already running.");
+            return;
+        }
+        let Some(index) = self.selected_script_index() else {
+            self.set_notices("Select a project run action to run.");
+            return;
+        };
+        let script = self.state.run_scripts[index].clone();
+        let deployment = self
+            .selected_instance_deployment()
+            .or_else(|| self.state.deployments.first());
+        if script.command.is_some() && deployment.is_none() {
+            self.set_notices("A structured run action requires a deployment definition.");
+            return;
+        }
+        let bundle = deployment.map_or_else(
+            || self.state.project_dir.join("deployment.yaml"),
+            |item| item.bundle.clone(),
+        );
+        let deployment_name = deployment.map(|item| item.name.clone());
+        let Ok(spec) = switchyard_ops::execution::OperationSpec::from_script(&script, bundle)
+        else {
+            self.set_notices("The selected run action is invalid. Press F3 to edit it.");
+            return;
+        };
+        let preview = format!(
+            "Run project action `{}`?\n\n{}\n\nTarget deployment: {}\nOutput will stream into the ordered Operations timeline.",
+            script.name,
+            script.description.as_deref().unwrap_or("No description."),
+            deployment_name
+                .as_deref()
+                .unwrap_or("project shell context")
+        );
+        if !dialogs::validate("Confirm project run action", &preview) {
+            return;
+        }
+        if matches!(spec, switchyard_ops::execution::OperationSpec::Shell(_))
+            && !switchyard_ops::run_scripts::shell_notice_acknowledged(&self.state.project_dir)
+        {
+            let warning = "This project run action executes a shell command with your user permissions from the project directory. Review .switchyard/run-scripts.yaml before continuing. Acknowledgement is remembered for this project.";
+            if !dialogs::validate("Shell command warning", warning) {
+                return;
+            }
+            if let Err(error) =
+                switchyard_ops::run_scripts::acknowledge_shell_notice(&self.state.project_dir)
+            {
+                self.set_notices(&format!(
+                    "Could not remember shell warning acknowledgement: {error}"
+                ));
+                return;
+            }
+        }
+        self.start_operation(script.name, deployment_name, false, spec);
+    }
+}
+
+impl TextFieldEvents for SwitchyardShell {
+    fn on_text_changed(&mut self, handle: Handle<TextField>) -> EventProcessStatus {
+        if handle == self.operations.filter {
+            self.refresh_operation_log();
+            EventProcessStatus::Processed
+        } else {
+            EventProcessStatus::Ignored
+        }
+    }
+}
+
+/* Operation background events are implemented in shell.rs because AppCUI's
+ * Window macro generates that trait in the window module. */
+pub(crate) fn apply_operation_update(shell: &mut SwitchyardShell, update: OpUpdate) {
+    match update {
+        OpUpdate::Started {
+            label,
+            deployment,
+            destructive,
+        } => shell
+            .state
+            .operation_log
+            .start(label, deployment, destructive),
+        OpUpdate::Output(line) => shell.state.operation_log.append(line),
+        OpUpdate::Finished(exit_code) => {
+            shell
+                .state
+                .operation_log
+                .finish(OperationOutcome::Finished(exit_code));
+            shell.operation_gate.finish();
+            shell.set_busy(false);
+            shell.set_notices(if exit_code == 0 {
+                "Operation completed successfully; refreshing project observations…"
+            } else {
+                "Operation finished with a non-zero exit code. Review Operations output."
+            });
+            let was_bind = shell.pending_bind.is_some();
+            shell.finish_bind(
+                exit_code == 0,
+                &format!("Process completed with exit code {exit_code}."),
+            );
+            if exit_code == 0 || was_bind {
+                shell.refresh_state();
+            }
+        }
+        OpUpdate::Failed(error) => {
+            shell.state.operation_log.append(format!("ERROR: {error}"));
+            shell
+                .state
+                .operation_log
+                .finish(OperationOutcome::Failed(error.clone()));
+            shell.operation_gate.finish();
+            shell.set_busy(false);
+            shell.set_notices("Operation failed. Review Operations output for the verbatim error.");
+            let was_bind = shell.pending_bind.is_some();
+            shell.finish_bind(false, &format!("Background execution failed: {error}"));
+            if was_bind {
+                shell.refresh_state();
+            }
+        }
+    }
+    shell.refresh_operation_log();
+}
+
+pub(crate) fn finish_operation_task(shell: &mut SwitchyardShell) {
+    if shell.state.operation_log.last_is_running() {
+        shell.state.operation_log.finish(OperationOutcome::Failed(
+            "background operation stopped unexpectedly".into(),
+        ));
+        shell.operation_gate.finish();
+        shell.set_busy(false);
+        shell.set_notices("Background operation stopped unexpectedly.");
+        let was_bind = shell.pending_bind.is_some();
+        shell.finish_bind(false, "Background operation stopped unexpectedly.");
+        if was_bind {
+            shell.refresh_state();
+        }
+        shell.refresh_operation_log();
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ScriptRowView {
@@ -59,6 +324,7 @@ pub(crate) fn add(tab: &mut Tab, index: u32, state: &ProjectState) -> Handles {
     );
     let mut list = ListView::new(layout!("l:1,t:1,r:1,b:1"), listview::Flags::ScrollBars);
     fill_list(&mut list, &state.run_scripts, None);
+    list.set_visible(!state.run_scripts.is_empty());
     let list = top.add(list);
     let mut empty = Label::new(
         "Run actions are explicit project operations, not startup profiles.\n\nPress F2 to create the first action. Enter always previews and confirms before running.",
@@ -123,11 +389,18 @@ pub(crate) fn script_rows(scripts: &[RunScript]) -> Vec<ScriptRowView> {
 pub(crate) fn fill_list(
     list: &mut ListView<ScriptRowView>,
     scripts: &[RunScript],
-    _preferred: Option<usize>,
+    preferred: Option<usize>,
 ) {
     list.clear();
-    for row in script_rows(scripts) {
+    let rows = script_rows(scripts);
+    let selected = preferred
+        .and_then(|script_index| rows.iter().position(|row| row.script_index == script_index))
+        .or_else(|| (!rows.is_empty()).then_some(0));
+    for row in rows {
         list.add(row);
+    }
+    for _ in 0..selected.unwrap_or(0) {
+        OnKeyPressed::on_key_pressed(list, Key::new(KeyCode::Down, KeyModifier::None), '\0');
     }
 }
 

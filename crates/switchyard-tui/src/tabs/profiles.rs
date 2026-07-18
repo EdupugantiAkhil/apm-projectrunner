@@ -5,9 +5,140 @@ use switchyard_ops::{
 };
 
 use crate::{
+    dialogs::confirm,
     dialogs::forms::SchemaFormDialog,
+    shell::{StateAction, SwitchyardShell},
     state::{ProfileProjection, ProjectState},
 };
+
+impl SwitchyardShell {
+    pub(crate) fn selected_profile_index(&self) -> Option<usize> {
+        self.control(self.profiles.list)?
+            .current_item()
+            .map(|row| row.profile_index)
+    }
+
+    pub(crate) fn refresh_profile_controls(&mut self) {
+        let selected = self.selected_profile_index().unwrap_or(0);
+        let profiles = self.state.profiles.clone();
+        let handles = self.profiles;
+        if let Some(list) = self.control_mut(handles.list) {
+            fill_list(list, &profiles, Some(selected));
+            list.set_visible(!profiles.is_empty());
+        }
+        if let Some(empty) = self.control_mut(handles.empty) {
+            empty.set_visible(profiles.is_empty());
+        }
+        let diagnostics = profile_diagnostics(&self.state);
+        if let Some(notice) = self.control_mut(handles.notice) {
+            notice.set_caption(&diagnostics);
+        }
+        self.update_profile_detail();
+    }
+
+    pub(crate) fn update_profile_detail(&mut self) {
+        let text = self
+            .selected_profile_index()
+            .and_then(|index| self.state.profiles.get(index))
+            .map(|p| p.detail.clone())
+            .unwrap_or_else(|| "Select a startup profile to inspect its full expansion.".into());
+        let detail = self.profiles.detail;
+        if let Some(area) = self.control_mut(detail) {
+            area.set_text(&text);
+        }
+    }
+
+    pub(crate) fn set_profile_notice(&mut self, text: &str) {
+        let notice = self.profiles.notice;
+        if let Some(label) = self.control_mut(notice) {
+            label.set_caption(text);
+        }
+    }
+
+    fn selected_profile(&self) -> Option<&ProfileProjection> {
+        self.selected_profile_index()
+            .and_then(|index| self.state.profiles.get(index))
+    }
+
+    pub(crate) fn validate_profile(&self) {
+        if let Some(profile) = self.selected_profile() {
+            validate_profile(&self.state, profile);
+        } else {
+            dialogs::message("Profile validation", "Select a startup profile first.");
+        }
+    }
+
+    pub(crate) fn edit_profile(&self, new: bool) {
+        show_editor(if new { None } else { self.selected_profile() });
+    }
+
+    pub(crate) fn import_profile(&mut self) {
+        if self.operation_gate.is_running() {
+            self.set_profile_notice("Another project operation is already running.");
+            return;
+        }
+        let Some(profile) = self.selected_profile().cloned() else {
+            self.set_profile_notice("Select a source-local profile first.");
+            return;
+        };
+        let Some(source) = source_for_import(&profile).map(str::to_owned) else {
+            self.set_profile_notice("F6 applies only to a new or changed source-local profile.");
+            return;
+        };
+        let manifest = match import_manifest_text(&self.state, &source) {
+            Ok(text) => text,
+            Err(error) => {
+                self.set_profile_notice(&error);
+                return;
+            }
+        };
+        if confirm_import(&profile, &source, &manifest) {
+            self.start_state_job(
+                StateAction::ImportProfile {
+                    source,
+                    name: profile.name,
+                },
+                "Importing reviewed startup profile…",
+            );
+        }
+    }
+
+    pub(crate) fn remove_profile(&mut self) {
+        if self.operation_gate.is_running() {
+            self.set_profile_notice("Another project operation is already running.");
+            return;
+        }
+        let Some(profile) = self.selected_profile().cloned() else {
+            self.set_profile_notice("Select an imported profile first.");
+            return;
+        };
+        if !matches!(
+            profile.row.origin,
+            switchyard_ops::ProfileOrigin::ImportedFromSource { .. }
+        ) {
+            self.set_profile_notice("Only imported profiles can be removed here.");
+            return;
+        }
+        let preview = format!(
+            "Remove imported startup profile `{}`?\n\nThe source manifest and project profiles will not be changed.",
+            profile.name
+        );
+        if confirm::safe_remove(&preview) {
+            self.start_state_job(
+                StateAction::RemoveProfile { name: profile.name },
+                "Removing imported profile…",
+            );
+        }
+    }
+
+    pub(crate) fn show_profile_details(&self) {
+        if let Some(profile) = self.selected_profile() {
+            appcui::dialogs::message("Startup profile details", &profile.detail);
+        } else {
+            appcui::dialogs::message("Startup profile details", "No startup profile is selected.");
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProfileRowView {
@@ -65,6 +196,7 @@ pub(crate) fn add(tab: &mut Tab, index: u32, state: &ProjectState) -> Handles {
         listview::Flags::ScrollBars | listview::Flags::ShowGroups,
     );
     fill_list(&mut list, &state.profiles, None);
+    list.set_visible(!state.profiles.is_empty());
     let list_handle = left.add(list);
     let mut empty = Label::new(
         "A startup profile is a reusable definition of one service or a coordinated suite.\n\nPress F2 to start a project profile, or register a source containing switchyard-profiles.yaml and press F5 to discover it.",
@@ -134,7 +266,7 @@ pub(crate) fn project_rows(profiles: &[ProfileProjection]) -> Vec<ProfileRowView
 pub(crate) fn fill_list(
     list: &mut ListView<ProfileRowView>,
     profiles: &[ProfileProjection],
-    _preferred: Option<usize>,
+    preferred: Option<usize>,
 ) {
     list.clear();
     let rows = project_rows(profiles);
@@ -149,15 +281,25 @@ pub(crate) fn fill_list(
         }
     });
     groups.dedup();
+    let mut ordered = Vec::with_capacity(rows.len());
     for name in groups {
         let group = list.add_group(&name);
-        list.add_to_group(
-            rows.iter()
-                .filter(|row| row.group == name)
-                .cloned()
-                .collect(),
-            group,
-        );
+        let grouped = rows
+            .iter()
+            .filter(|row| row.group == name)
+            .cloned()
+            .collect::<Vec<_>>();
+        ordered.extend(grouped.iter().map(|row| row.profile_index));
+        list.add_to_group(grouped, group);
+    }
+    let target = preferred
+        .filter(|profile_index| ordered.contains(profile_index))
+        .or_else(|| ordered.first().copied());
+    for _ in 0..(ordered.len() + 3) {
+        if list.current_item().map(|row| row.profile_index) == target {
+            break;
+        }
+        OnKeyPressed::on_key_pressed(list, Key::new(KeyCode::Down, KeyModifier::None), '\0');
     }
 }
 

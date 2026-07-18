@@ -1,7 +1,115 @@
 use appcui::prelude::*;
-use switchyard_ops::{ConnectionRow, RouteStatus, SwitchPreview};
+use switchyard_ops::{ConnectionRow, RouteStatus, SwitchPreview, execution::OperationSpec};
 
-use crate::state::ProjectState;
+use crate::{
+    shell::{PendingBind, SwitchyardShell},
+    state::ProjectState,
+};
+
+impl SwitchyardShell {
+    pub(crate) fn selected_connection_row(&self) -> Option<ConnectionRowView> {
+        self.control(self.connections.list)?.current_item().cloned()
+    }
+
+    pub(crate) fn refresh_connection_controls(&mut self) {
+        let preferred = self
+            .selected_connection_row()
+            .map(|row| (row.deployment_index, row.consumer, row.slot));
+        let state = self.state.clone();
+        let handles = self.connections;
+        let empty = project_rows(&state).is_empty();
+        if let Some(list) = self.control_mut(handles.list) {
+            fill_list(list, &state, preferred);
+            list.set_visible(!empty);
+        }
+        if let Some(label) = self.control_mut(handles.empty) {
+            label.set_visible(empty);
+        }
+        let diagnostics = diagnostics(&state);
+        if let Some(notice) = self.control_mut(handles.notice) {
+            notice.set_caption(&diagnostics);
+        }
+    }
+
+    pub(crate) fn switch_connection(&mut self) {
+        if self.operation_gate.is_running() {
+            self.set_notices("Another project operation is already running.");
+            return;
+        }
+        let Some(view) = self.selected_connection_row() else {
+            self.set_notices(
+                "Connections need a consumer instance with at least one consumed slot. Create one with F2 on Instances.",
+            );
+            return;
+        };
+        let Some((deployment, row)) = source_row(&self.state, &view) else {
+            self.set_notices(
+                "The selected connection is no longer available. Press F5 to refresh.",
+            );
+            return;
+        };
+        if row.compatible_groups.is_empty() {
+            self.set_notices(
+                "No complete provider group is compatible with this consumer. Fix the deployment definition and press F5.",
+            );
+            return;
+        }
+        let deployment_name = deployment.name.clone();
+        let bundle = deployment.bundle.clone();
+        let consumer = row.consumer.clone();
+        let compatible_groups = row.compatible_groups.clone();
+        let mut previews = Vec::with_capacity(compatible_groups.len());
+        for group in compatible_groups {
+            match switchyard_ops::switch_preview(
+                &self.state.project_dir,
+                &bundle,
+                &consumer,
+                &group,
+            ) {
+                Ok(preview) => previews.push(preview),
+                Err(error) => {
+                    self.set_notices(&format!(
+                        "Could not build the atomic switch preview for `{group}`: {error}"
+                    ));
+                    return;
+                }
+            }
+        }
+        let Some(request) = show_switch(&consumer, previews) else {
+            return;
+        };
+        let spec = OperationSpec::bind(bundle, consumer.clone(), request.group.clone());
+        let started = self.start_operation(
+            format!("bind {consumer} → {}", request.group),
+            Some(deployment_name.clone()),
+            false,
+            spec,
+        );
+        if started {
+            self.pending_bind = Some(PendingBind {
+                deployment: deployment_name,
+                consumer,
+            });
+        }
+    }
+
+    pub(crate) fn finish_bind(&mut self, succeeded: bool, operation_detail: &str) {
+        let Some(bind) = self.pending_bind.take() else {
+            return;
+        };
+        let (statuses, status_error) =
+            match switchyard_ops::route_status(&self.state.project_dir, &bind.deployment) {
+                Ok(statuses) => (statuses, None),
+                Err(error) => (Vec::new(), Some(error)),
+            };
+        let detail = status_error.map_or_else(
+            || operation_detail.to_owned(),
+            |error| format!("{operation_detail}\nRoute status lookup failed: {error}"),
+        );
+        let report = render_result(&bind.consumer, succeeded, &detail, &statuses);
+        show_result(&report);
+    }
+}
 
 pub(crate) const EXPLAINER: &str = "Consumers keep their fixed localhost/network addresses; Switchyard routes them to the selected group.";
 
@@ -59,6 +167,7 @@ pub(crate) fn add(tab: &mut Tab, index: u32, state: &ProjectState) -> Handles {
         listview::Flags::ScrollBars,
     );
     fill_list(&mut list, state, None);
+    list.set_visible(!project_rows(state).is_empty());
     let list_handle = panel.add(list);
     let mut empty = Label::new(
         "Connections appear after a consumer instance has at least one consumed service slot.\n\nCreate a consumer with F2 on Instances, then return here and press Enter on a slot to connect it. Switchyard never chooses a provider group for you.",
@@ -176,11 +285,25 @@ fn distinct<'a>(values: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
 pub(crate) fn fill_list(
     list: &mut ListView<ConnectionRowView>,
     state: &ProjectState,
-    _preferred: Option<(usize, String, String)>,
+    preferred: Option<(usize, String, String)>,
 ) {
     list.clear();
-    for row in project_rows(state) {
+    let rows = project_rows(state);
+    let selected = preferred
+        .as_ref()
+        .and_then(|(deployment, consumer, slot)| {
+            rows.iter().position(|row| {
+                row.deployment_index == *deployment
+                    && row.consumer == *consumer
+                    && row.slot == *slot
+            })
+        })
+        .or_else(|| (!rows.is_empty()).then_some(0));
+    for row in rows {
         list.add(row);
+    }
+    for _ in 0..selected.unwrap_or(0) {
+        OnKeyPressed::on_key_pressed(list, Key::new(KeyCode::Down, KeyModifier::None), '\0');
     }
 }
 

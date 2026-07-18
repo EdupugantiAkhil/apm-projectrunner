@@ -3,7 +3,111 @@ use std::path::PathBuf;
 use appcui::prelude::*;
 use switchyard_state::{DeviceCheckStatus, RegisteredDevice};
 
-use crate::state::ProjectState;
+use crate::{
+    dialogs::confirm,
+    shell::{StateAction, SwitchyardShell},
+    state::ProjectState,
+};
+
+impl SwitchyardShell {
+    fn selected_device_row(&self) -> Option<DeviceRowView> {
+        self.control(self.devices.list)?.current_item().cloned()
+    }
+
+    pub(crate) fn refresh_device_controls(&mut self) {
+        let preferred = self.selected_device_row().and_then(|row| row.device_index);
+        let state = self.state.clone();
+        let list_handle = self.devices.list;
+        if let Some(list) = self.control_mut(list_handle) {
+            fill_list(list, &state, Some(preferred));
+        }
+        self.update_device_detail();
+    }
+
+    pub(crate) fn update_device_detail(&mut self) {
+        let text = self.selected_device_row().map_or_else(
+            || "Select a device to inspect its last check output.".into(),
+            |row| detail_text(&self.state, &row),
+        );
+        let detail = self.devices.detail;
+        if let Some(area) = self.control_mut(detail) {
+            area.set_text(&text);
+        }
+    }
+
+    pub(crate) fn add_device(&mut self) {
+        if self.operation_gate.is_running() {
+            self.set_notices("Another project operation is already running.");
+            return;
+        }
+        if let Some(device) = DeviceDialog::new().show() {
+            self.start_state_job(
+                StateAction::ProbeDevice(device),
+                "Checking SSH connectivity and Docker eligibility before save…",
+            );
+        }
+    }
+
+    pub(crate) fn check_device(&mut self) {
+        let Some(row) = self.selected_device_row() else {
+            return;
+        };
+        let Some(index) = row.device_index else {
+            self.set_notices("The local device is always available and needs no SSH check.");
+            return;
+        };
+        let name = self.state.devices[index].name.clone();
+        self.start_state_job(
+            StateAction::CheckDevice(name),
+            "Re-checking SSH connectivity and Docker eligibility…",
+        );
+    }
+
+    pub(crate) fn remove_device(&mut self) {
+        if self.operation_gate.is_running() {
+            self.set_notices("Another project operation is already running.");
+            return;
+        }
+        let Some(row) = self.selected_device_row() else {
+            return;
+        };
+        let Some(_) = row.device_index else {
+            self.set_notices("The implicit local device cannot be removed.");
+            return;
+        };
+        let placements = self
+            .state
+            .deployments
+            .iter()
+            .flat_map(|deployment| {
+                deployment
+                    .instances
+                    .iter()
+                    .filter(|instance| instance.device == row.name)
+                    .map(move |instance| format!("{} / {}", deployment.name, instance.name))
+            })
+            .collect::<Vec<_>>();
+        if !placements.is_empty() {
+            self.set_notices(&format!("Cannot remove `{}`: instances are placed on it: {}. Move or remove those instances first.", row.name, placements.join(", ")));
+            return;
+        }
+        if confirm::safe_remove(&format!(
+            "Remove SSH device registration `{}`?\n\nSSH keys, agent state, and SSH configuration will not be changed.",
+            row.name
+        )) {
+            self.start_state_job(
+                StateAction::RemoveDevice(row.name),
+                "Removing device registration…",
+            );
+        }
+    }
+
+    pub(crate) fn show_device_details(&self) {
+        if let Some(row) = self.selected_device_row() {
+            appcui::dialogs::message("Device details", &detail_text(&self.state, &row));
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DeviceRowView {
@@ -135,12 +239,18 @@ pub(crate) fn eligibility_text(device: &RegisteredDevice) -> String {
 pub(crate) fn fill_list(
     list: &mut ListView<DeviceRowView>,
     state: &ProjectState,
-    _preferred: Option<Option<usize>>,
+    preferred: Option<Option<usize>>,
 ) {
     let rows = project_rows(state);
+    let selected = preferred
+        .and_then(|preferred| rows.iter().position(|row| row.device_index == preferred))
+        .or_else(|| (!rows.is_empty()).then_some(0));
     list.clear();
     for row in rows {
         list.add(row);
+    }
+    for _ in 0..selected.unwrap_or(0) {
+        OnKeyPressed::on_key_pressed(list, Key::new(KeyCode::Down, KeyModifier::None), '\0');
     }
 }
 

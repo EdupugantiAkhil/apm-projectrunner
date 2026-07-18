@@ -1,6 +1,199 @@
-use appcui::prelude::*;
+use std::path::{Path, PathBuf};
 
-use crate::state::{DeploymentProjection, ProjectState};
+use appcui::prelude::*;
+use switchyard_ops::{execution::OperationSpec, run_scripts::StructuredCommand};
+
+use crate::{
+    dialogs::{confirm, wizard},
+    shell::{StateAction, SwitchyardShell},
+    state::{DeploymentProjection, ProjectState},
+};
+
+impl SwitchyardShell {
+    pub(crate) fn selected_instance_row(&self) -> Option<InstanceRowView> {
+        self.control(self.instances.list)?.current_item().cloned()
+    }
+
+    pub(crate) fn selected_instance_deployment(&self) -> Option<&DeploymentProjection> {
+        let row = self.selected_instance_row()?;
+        deployment_for_row(&self.state, &row)
+    }
+
+    pub(crate) fn refresh_instance_controls(&mut self) {
+        let preferred = self
+            .selected_instance_row()
+            .map(|row| (row.deployment_index, row.instance_index));
+        let state = self.state.clone();
+        let handles = self.instances;
+        let empty = project_rows(&state).is_empty();
+        if let Some(list) = self.control_mut(handles.list) {
+            fill_list(list, &state, preferred);
+            list.set_visible(!empty);
+        }
+        if let Some(label) = self.control_mut(handles.empty) {
+            label.set_visible(empty);
+        }
+        self.update_instance_detail();
+    }
+
+    pub(crate) fn update_instance_detail(&mut self) {
+        let text = self.selected_instance_row().map_or_else(
+            || "Select an instance to inspect its exact source identity, services, connections, and recent operations.".into(),
+            |row| detail_text(&self.state, &row),
+        );
+        let detail = self.instances.detail;
+        if let Some(area) = self.control_mut(detail) {
+            area.set_text(&text);
+        }
+    }
+
+    pub(crate) fn create_instance(&mut self) {
+        if self.operation_gate.is_running() {
+            self.set_notices("Another project operation is already running.");
+            return;
+        }
+        let deployment = self
+            .selected_instance_row()
+            .map_or(0, |row| row.deployment_index);
+        if let Some(result) = wizard::show(&self.state, deployment) {
+            self.start_state_job(
+                StateAction::CreateInstance(result),
+                "Creating the reviewed authored instance…",
+            );
+        }
+    }
+
+    pub(crate) fn show_instance_details(&self) {
+        if let Some(row) = self.selected_instance_row() {
+            appcui::dialogs::message("Instance details", &detail_text(&self.state, &row));
+        } else {
+            appcui::dialogs::message(
+                "Instance details",
+                "No instance is selected. Press F2 to create one.",
+            );
+        }
+    }
+
+    pub(crate) fn run_instance_command(&mut self, command: InstanceCommand) {
+        if self.operation_gate.is_running() {
+            self.set_notices("Another project operation is already running.");
+            return;
+        }
+        let Some(deployment) = self.selected_instance_deployment().cloned() else {
+            self.set_notices("Select an instance first.");
+            return;
+        };
+        let problems = if deployment.validation_problems.is_empty() {
+            "none".into()
+        } else {
+            deployment.validation_problems.join("\n")
+        };
+        let (title, action, explanation, spec, destructive) = match command {
+            InstanceCommand::Validate => (
+                "Validate deployment",
+                "&Validate",
+                format!(
+                    "Validate {} without starting services.\n\nDefinition: {}\nCurrent projected problems:\n{}",
+                    deployment.name,
+                    deployment.bundle.display(),
+                    problems
+                ),
+                cli_shell_spec("validate", &deployment.bundle, false),
+                false,
+            ),
+            InstanceCommand::Plan => (
+                "Plan preview",
+                "&Plan",
+                format!(
+                    "Generate and validate the complete runtime plan for {}. No services will start.\n\nDefinition: {}\nAuthored instances: {}\nProjected services: {}\nCurrent projected problems:\n{}\n\nOutput will stream to Operations.",
+                    deployment.name,
+                    deployment.bundle.display(),
+                    deployment.instances.len(),
+                    deployment.services.len(),
+                    problems
+                ),
+                OperationSpec::direct(StructuredCommand::Plan, deployment.bundle.clone()),
+                false,
+            ),
+            InstanceCommand::Start => (
+                "Start deployment",
+                "&Start",
+                format!(
+                    "Plan and start deployment {} from {}. This affects every authored instance in that deployment.\n\nTrue placements remain those shown in the Instances list. Output will stream to Operations.",
+                    deployment.name,
+                    deployment.bundle.display()
+                ),
+                OperationSpec::direct(StructuredCommand::Up, deployment.bundle.clone()),
+                false,
+            ),
+            InstanceCommand::Stop => (
+                "Stop deployment",
+                "&Stop",
+                format!(
+                    "Stop deployment {} and its services.\n\nNamed volumes WILL BE PRESERVED. Use Ctrl+Delete only when you explicitly want owned volumes deleted.",
+                    deployment.name
+                ),
+                OperationSpec::direct(StructuredCommand::Down, deployment.bundle.clone()),
+                false,
+            ),
+        };
+        if confirm_operation(title, &explanation, action) {
+            self.start_operation(title.to_owned(), Some(deployment.name), destructive, spec);
+        }
+    }
+
+    pub(crate) fn cleanup_instance(&mut self) {
+        if self.operation_gate.is_running() {
+            self.set_notices("Another project operation is already running.");
+            return;
+        }
+        let Some(deployment) = self.selected_instance_deployment().cloned() else {
+            self.set_notices("Select an instance first.");
+            return;
+        };
+        let preview = format!(
+            "CLEAN UP deployment `{}`?\n\nThis stops every service and PERMANENTLY DELETES Switchyard-owned named volumes for this deployment. Volume data cannot be recovered by Switchyard.\n\nDefinition files and unmanaged source directories are not deleted.",
+            deployment.name
+        );
+        if confirm::destructive_cleanup(&preview) {
+            self.start_operation(
+                "cleanup".into(),
+                Some(deployment.name),
+                true,
+                cli_shell_spec("cleanup", &deployment.bundle, true),
+            );
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum InstanceCommand {
+    Validate,
+    Plan,
+    Start,
+    Stop,
+}
+
+fn cli_shell_spec(command: &str, bundle: &Path, confirmed: bool) -> OperationSpec {
+    let executable = std::env::var_os("SWITCHYARD_BIN")
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
+        .unwrap_or_else(|| PathBuf::from("switchyard"));
+    let mut shell = format!(
+        "exec {} {} {}",
+        shell_quote(&executable.to_string_lossy()),
+        shell_quote(command),
+        shell_quote(&bundle.to_string_lossy()),
+    );
+    if confirmed {
+        shell.push_str(" --yes");
+    }
+    OperationSpec::Shell(shell)
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct InstanceRowView {
@@ -68,6 +261,7 @@ pub(crate) fn add(tab: &mut Tab, index: u32, state: &ProjectState) -> Handles {
         listview::Flags::ScrollBars,
     );
     fill_list(&mut list, state, None);
+    list.set_visible(!project_rows(state).is_empty());
     let list_handle = left.add(list);
     let mut empty = Label::new(
         "An instance combines a code checkout, startup profile, true execution device, and parameters.\n\nPress F2 to create your first instance. Nothing starts until you review the preview and press F9.",
@@ -171,12 +365,21 @@ fn aggregate<'a>(values: impl Iterator<Item = &'a str>, fallback: &str) -> Strin
 pub(crate) fn fill_list(
     list: &mut ListView<InstanceRowView>,
     state: &ProjectState,
-    _preferred: Option<(usize, usize)>,
+    preferred: Option<(usize, usize)>,
 ) {
     list.clear();
     let rows = project_rows(state);
+    let selected = preferred
+        .and_then(|preferred| {
+            rows.iter()
+                .position(|row| (row.deployment_index, row.instance_index) == preferred)
+        })
+        .or_else(|| (!rows.is_empty()).then_some(0));
     for row in rows {
         list.add(row);
+    }
+    for _ in 0..selected.unwrap_or(0) {
+        OnKeyPressed::on_key_pressed(list, Key::new(KeyCode::Down, KeyModifier::None), '\0');
     }
 }
 
@@ -307,10 +510,19 @@ pub(crate) fn deployment_for_row<'a>(
     state.deployments.get(row.deployment_index)
 }
 
-#[ModalWindow(events = ButtonEvents, response = bool)]
+#[ModalWindow(events = ButtonEvents + WindowEvents, response = bool)]
 struct OperationPreview {
     run: Handle<Button>,
     cancel: Handle<Button>,
+}
+
+impl WindowEvents for OperationPreview {
+    // Enter deterministically confirms a non-destructive preview regardless of
+    // which control holds focus; destructive dialogs deliberately do NOT get
+    // this and keep Cancel as their focused default.
+    fn on_accept(&mut self) {
+        self.exit_with(true);
+    }
 }
 
 impl OperationPreview {
@@ -327,6 +539,10 @@ impl OperationPreview {
         ));
         dialog.run = dialog.add(Button::new(action, layout!("x:35%,y:100%,p:b,w:16,h:1")));
         dialog.cancel = dialog.add(Button::new("&Cancel", layout!("x:65%,y:100%,p:b,w:16,h:1")));
+        // Initial focus is otherwise nondeterministic (differs after the
+        // handoff re-exec); Enter must always mean the non-destructive action.
+        let run = dialog.run;
+        dialog.request_focus_for_control(run);
         dialog
     }
 }

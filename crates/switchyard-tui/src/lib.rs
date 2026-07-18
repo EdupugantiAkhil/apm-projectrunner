@@ -2,6 +2,7 @@
 
 mod dialogs;
 mod handoff;
+mod help;
 mod shell;
 mod state;
 mod tabs;
