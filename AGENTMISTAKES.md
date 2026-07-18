@@ -438,3 +438,23 @@ duplicated feature and acceptance checkbox unchecked. Correction: reconcile both
 against the same completion evidence. Lesson: when a secondary design document mirrors
 an execution checklist, search for remaining unchecked entries before claiming the
 milestone is closed.
+
+## 2026-07-18 — AppCUI: singletons, second Apps, and greedy list controls
+
+Three empirical AppCUI 0.4.13 findings from the TUI rewrite review, all invisible
+in the sandbox and caught only by pty-driving the real binary:
+
+1. Building a second `App` in the same process after `App::run()` returns leaks
+   the previous termios backend input thread, which then randomly steals
+   keystrokes (`ps -T` shows 3 threads). The clone terminal-handoff therefore
+   re-execs the process instead of rebuilding the App in-process.
+2. `Tab::set_current_tab` from a window constructor does not update
+   `focused_child_index`/the command bar; deferred restoration through a one-shot
+   timer works.
+3. List controls consume `Insert`/`Space`/`Shift+arrows` (selection) and — with
+   the `SearchBar` flag — every printable character including the character half
+   of `Ctrl+Q`. Per-tab actions bind only to F-keys/`Delete`/`Enter`, and list
+   controls are created without `SearchBar`.
+
+Lesson: verify interactive-framework assumptions with a pty end-to-end pass per
+part; unit tests and clippy prove nothing about key routing or process lifecycle.

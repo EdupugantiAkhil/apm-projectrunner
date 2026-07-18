@@ -1300,3 +1300,16 @@ implemented shape and the evidence used to close a phase.
   hints and TUI documentation now describe the non-conflicting bindings.
 - Verification: all 39 TUI library tests, strict TUI clippy, formatting, and diff
   checks pass.
+
+## 2026-07-18 — AppCUI TUI rewrite (branch tui-appcui-rewrite)
+
+- Design accepted: docs/tui-appcui-design.md (7-tab single-window AppCUI shell,
+  F-key action scheme, re-exec terminal handoff). Toolchain bumped to Rust 1.88
+  for appcui 0.4.13; new clippy lints fixed workspace-wide.
+- Part 1 (shell + Home + handoff loop) and part 2 (Code tab: register, clone with
+  handoff, worktrees, safe remove) implemented by Codex, reviewed, verified by
+  pty-driven smoke runs (register + local clone handoff end to end). Review fixes:
+  re-exec handoff (input-thread leak), timer-based Code-tab restore, F-key
+  bindings, no SearchBar, human-readable inspection age.
+- Parts 3–6 briefs ready in .codex-refs/briefs/ (Profiles, Instances,
+  Connections, Devices+Operations), part 7 hardening to follow.

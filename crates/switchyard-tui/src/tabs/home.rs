@@ -258,7 +258,10 @@ mod tests {
         state.sources.push(Default::default());
         state.profiles.push(Default::default());
         state.deployments.push(DeploymentProjection {
-            instances: vec![InstanceProjection { name: "api".into() }],
+            instances: vec![InstanceProjection {
+                name: "api".into(),
+                source: "source".into(),
+            }],
             services: vec![ServiceProjection {
                 status: "running".into(),
                 health: "healthy".into(),

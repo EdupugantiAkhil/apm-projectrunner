@@ -11,6 +11,8 @@ use std::{
 };
 use switchyard_state::StateStore;
 
+use crate::state::unique_source_name;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CloneHandoff {
     pub(crate) name: String,
@@ -19,29 +21,57 @@ pub(crate) struct CloneHandoff {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-#[allow(dead_code)] // TODO(part 2): the Code tab constructs clone handoff outcomes.
 pub(crate) enum ExitOutcome {
     #[default]
     Exit,
     CloneHandoff(CloneHandoff),
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct RestartContext {
+    pub(crate) code_notice: Option<String>,
+    pub(crate) reopen_code: bool,
+}
+
 #[derive(Clone, Default)]
-pub(crate) struct OutcomeCell(Rc<RefCell<ExitOutcome>>);
+pub(crate) struct OutcomeCell {
+    outcome: Rc<RefCell<ExitOutcome>>,
+    restart: Rc<RefCell<RestartContext>>,
+}
 
 impl OutcomeCell {
-    #[allow(dead_code)] // TODO(part 2): called by the Code tab before closing the shell.
     pub(crate) fn request_clone(&self, request: CloneHandoff) {
-        *self.0.borrow_mut() = ExitOutcome::CloneHandoff(request);
+        *self.outcome.borrow_mut() = ExitOutcome::CloneHandoff(request);
+        self.restart.borrow_mut().reopen_code = true;
     }
 
     pub(crate) fn take(&self) -> ExitOutcome {
-        std::mem::take(&mut *self.0.borrow_mut())
+        std::mem::take(&mut *self.outcome.borrow_mut())
+    }
+
+    pub(crate) fn restart_context(&self) -> RestartContext {
+        self.restart.borrow().clone()
+    }
+
+    /// Marks this process as a post-handoff restart (context arrives through
+    /// the environment because the TUI re-execs itself after running Git).
+    pub(crate) fn restore_after_restart(&self, notice: Option<String>) {
+        let mut restart = self.restart.borrow_mut();
+        restart.reopen_code = true;
+        restart.code_notice = notice;
+    }
+}
+
+/// The Code-tab notice shown after the post-clone restart.
+pub(crate) fn clone_result_notice(result: &Result<(), String>) -> String {
+    match result {
+        Ok(()) => "Source cloned and registered successfully.".into(),
+        Err(error) => format!("Clone failed: {error}"),
     }
 }
 
 /// Runs Git only after AppCUI has returned and restored the real terminal.
-pub(crate) fn execute_interactive_clone(root: &Path, request: CloneHandoff) {
+pub(crate) fn execute_interactive_clone(root: &Path, request: CloneHandoff) -> Result<(), String> {
     println!("Switchyard yielded the terminal to Git.\n");
     let interrupted = Arc::new(AtomicBool::new(false));
     let signal_id = flag::register(SIGINT, Arc::clone(&interrupted));
@@ -57,19 +87,21 @@ pub(crate) fn execute_interactive_clone(root: &Path, request: CloneHandoff) {
         }
         Err(error) => Err(format!("could not prepare native Git prompt: {error}")),
     };
-    if let Err(error) = result {
+    if let Err(error) = &result {
         eprintln!("\nSwitchyard: {error}");
         print!("Press Enter to return to the TUI…");
         let _ = io::stdout().flush();
         let mut input = String::new();
         let _ = io::stdin().read_line(&mut input);
     }
+    result
 }
 
 fn clone_source(root: &Path, request: CloneHandoff) -> Result<(), String> {
     // This intentionally preserves the pre-rewrite clone handoff. New UI reads and
     // mutations use switchyard-ops.
-    // TODO(part 2): use an ops-owned clone entry point once one is available.
+    // The terminal-handoff clone remains on the existing sources lifecycle API
+    // because it must run after AppCUI restores the native terminal.
     let store = StateStore::open(root.join(".switchyard/state.sqlite3"))
         .map_err(|error| error.to_string())?
         .0;
@@ -79,29 +111,6 @@ fn clone_source(root: &Path, request: CloneHandoff) -> Result<(), String> {
         .create_clone_from_url_interactive(&store, &request.url, &name, request.git_ref.as_deref())
         .map_err(|error| error.to_string())?;
     Ok(())
-}
-
-fn unique_source_name(store: &StateStore, base: &str) -> Result<String, String> {
-    if store
-        .source(base)
-        .map_err(|error| error.to_string())?
-        .is_none()
-    {
-        return Ok(base.to_owned());
-    }
-    for suffix in 2..=10_000 {
-        let candidate = format!("{base}-{suffix}");
-        if store
-            .source(&candidate)
-            .map_err(|error| error.to_string())?
-            .is_none()
-        {
-            return Ok(candidate);
-        }
-    }
-    Err(format!(
-        "could not find an available source name based on `{base}`"
-    ))
 }
 
 #[cfg(test)]

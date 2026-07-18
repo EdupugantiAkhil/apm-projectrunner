@@ -31,8 +31,21 @@ source is vendored in `~/.cargo/registry/src/*/appcui-0.4.13/`.
 - **Navigation**: `Alt+letter` jumps to a tab; `Ctrl+Tab`/`Ctrl+Shift+Tab` cycle.
   Within a tab, standard focus traversal (`Tab`/arrows) between panes.
 - **Command bar** (bottom line) is the discoverability surface: it always shows the
-  actions valid for the focused pane (e.g. `F5 Refresh | Ins Add | Enter Details |
+  actions valid for the focused pane (e.g. `F5 Refresh | F2 Add | Enter Details |
   F9 Start`). Every action reachable by mouse must have a key shown here.
+- **Reserved keys** (verified empirically): AppCUI list controls (ListView/
+  TreeView) consume `Insert`, `Space`, `Ctrl+Space`, `Shift+arrows` for item
+  selection AND plain letters for their incremental search bar, all before the
+  command bar sees them. Per-tab actions therefore bind to **F-keys, `Delete`,
+  and `Enter` only**. Standard scheme across tabs: `F2` add/new, `F3` secondary
+  create (worktree / edit), `F4` tertiary (validate / import), `Del` remove,
+  `Enter` details/primary, `F7`–`F10` instance lifecycle
+  (validate/plan/start/stop), `F6` free per tab. `F1` help and `F5` refresh are
+  global and never rebound. List controls are created **without** the
+  `SearchBar` flag — its incremental search consumes every printable character
+  (even the character half of `Ctrl+Q`), silently breaking global bindings while
+  a list has focus. Where filtering matters (Operations log), use an explicit
+  focusable filter `TextField` instead.
 - **Help**: `F1` opens a modal window with a scrollable keybinding + concept
   reference (uses the `Markdown` control).
 - **Quit**: `Esc` on the shell (with confirmation if an operation is running),
@@ -59,17 +72,21 @@ source is vendored in `~/.cargo/registry/src/*/appcui-0.4.13/`.
 
 ### Terminal handoff (interactive git auth)
 
-AppCUI clears its global singleton when `App::run()` returns, so a new `App` can
-be built in the same process. The crate keeps its existing public entry:
+Although AppCUI clears its singleton when `App::run()` returns, a second `App`
+in the same process leaks the previous backend input thread, which then steals
+keystrokes nondeterministically (verified empirically). The TUI therefore
+**re-execs itself** after the handoff instead of rebuilding in-process:
 
 ```text
-pub fn run(project_dir) -> loop {
+pub fn run(project_dir) {
+    if SWITCHYARD_TUI_REOPEN_CODE is set { restore restart context from env }
     outcome = run_app(project_dir)   // build App, run to exit
     match outcome {
-        Exit               => break,
-        CloneHandoff(req)  => run git on the real terminal (existing
-                              execute_interactive_clone semantics, SIGINT-safe),
-                              then loop to rebuild the App with fresh state
+        Exit              => return,
+        CloneHandoff(req) => run git on the real terminal (existing
+                             execute_interactive_clone semantics, SIGINT-safe),
+                             then exec(current_exe, same args,
+                                       env: reopen flag + result notice)
     }
 }
 ```
@@ -115,8 +132,8 @@ Vertical stack (single `Panel`):
   dirty` / `clean`), availability.
 - Right: detail panel for the selection — full path, remote, ownership, last
   inspection, linked instances.
-- Actions (command bar): `Ins` add (modal with two modes: register local
-  directory / clone repository), `W` new worktree, `F5` re-inspect, `Del` remove
+- Actions (command bar): `F2` add (modal with two modes: register local
+  directory / clone repository), `F3` new worktree, `F5` re-inspect, `Del` remove
   managed entry (safe-remove preview), `Enter` details.
 - Cloning a private repo triggers the terminal-handoff flow above.
 
@@ -126,12 +143,12 @@ Vertical stack (single `Panel`):
   **Imported**), columns: name, adapter, services, trust status.
 - Right: inspector — expanded services, adapter, command, workdir, mounts,
   capabilities, consumed slots, probes, parameters, lifecycle, trust.
-- Actions: `V` validate against a chosen checkout (checkout picker modal →
-  validation report modal), `I` import a source-local profile (trust prompt shows
-  the manifest verbatim), `E` guided editor (schema-driven form rendered from the
+- Actions: `F4` validate against a chosen checkout (checkout picker modal →
+  validation report modal), `F6` import a source-local profile (trust prompt shows
+  the manifest verbatim), `F3` guided editor (schema-driven form rendered from the
   adapter's JSON Schema — field types map to TextField/NumericSelector/
   CheckBox/DropDownList; unknown schema → read-only YAML view, never a hand-rolled
-  form), `Ins` new profile.
+  form), `F2` new profile.
 
 ### Instances
 
@@ -149,7 +166,7 @@ Vertical stack (single `Panel`):
   5. Preview: expanded services, ports, volumes → `Create`
 - Actions: `F7` validate, `F8` plan (preview modal), `F9` start, `F10` stop
   (preserves volumes), `Ctrl+Del` destructive cleanup (distinct confirm),
-  `Ins` wizard.
+  `F2` new-instance wizard.
 
 ### Connections
 
@@ -169,7 +186,7 @@ Vertical stack (single `Panel`):
 - `ListView`: name, kind (`local`/`ssh`), address, connectivity, eligibility for
   remote execution (`eligible` / `ineligible: <concrete reason>`), origin/scope
   if global config exists.
-- Actions: `Ins` add SSH device (form + connectivity check before save), `C`
+- Actions: `F2` add SSH device (form + connectivity check before save), `F4`
   re-check, `Del` remove (blocked with reason if instances are placed on it),
   `Enter` details (last check output).
 
@@ -177,7 +194,7 @@ Vertical stack (single `Panel`):
 
 - Top: run actions (`.switchyard/run-scripts.yaml`) as a `ListView` — these are
   project operations, deliberately kept out of Profiles. `Enter` runs one
-  (confirm first), `Ins`/`E`/`Del` manage entries (shell-notice flow preserved).
+  (confirm first), `F2`/`F3`/`Del` manage entries (shell-notice flow preserved).
 - Bottom (HSplitter): **timeline + log pane** — one ordered timeline of
   validation, planning, build, start, readiness, route changes, stop, cleanup;
   streaming output appended live from the background task; exit status retained.
