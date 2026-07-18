@@ -43,9 +43,10 @@ impl Default for SourceProjection {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DeviceProjection {
     pub(crate) name: String,
+    pub(crate) device: switchyard_state::RegisteredDevice,
 }
 
 #[derive(Clone, Debug)]
@@ -79,11 +80,16 @@ impl Default for ProfileProjection {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct InstanceProjection {
     pub(crate) name: String,
+    pub(crate) profile: String,
     pub(crate) source: String,
+    pub(crate) device: String,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ServiceProjection {
+    pub(crate) instance: String,
+    pub(crate) service: String,
+    pub(crate) device: String,
     pub(crate) status: String,
     pub(crate) health: String,
 }
@@ -91,12 +97,96 @@ pub(crate) struct ServiceProjection {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DeploymentProjection {
     pub(crate) name: String,
+    pub(crate) bundle: PathBuf,
+    pub(crate) state: String,
+    pub(crate) last_operation: Option<String>,
     pub(crate) applied: bool,
     pub(crate) instances: Vec<InstanceProjection>,
+    pub(crate) source_choices: Vec<switchyard_ops::SourceChoice>,
+    pub(crate) connections: ConnectionMatrix,
     pub(crate) services: Vec<ServiceProjection>,
     pub(crate) binding_count: usize,
     pub(crate) consumer_slot_count: usize,
     pub(crate) validation_problems: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum OperationOutcome {
+    Running,
+    Finished(i32),
+    Failed(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OperationLogEntry {
+    pub(crate) label: String,
+    pub(crate) deployment: Option<String>,
+    pub(crate) destructive: bool,
+    pub(crate) lines: Vec<String>,
+    pub(crate) outcome: OperationOutcome,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct OperationLog {
+    entries: Vec<OperationLogEntry>,
+}
+
+impl OperationLog {
+    pub(crate) fn start(
+        &mut self,
+        label: impl Into<String>,
+        deployment: Option<String>,
+        destructive: bool,
+    ) {
+        self.entries.push(OperationLogEntry {
+            label: label.into(),
+            deployment,
+            destructive,
+            lines: Vec::new(),
+            outcome: OperationOutcome::Running,
+        });
+    }
+
+    pub(crate) fn append(&mut self, line: impl Into<String>) {
+        if let Some(entry) = self.entries.last_mut() {
+            entry.lines.push(line.into());
+        }
+    }
+
+    pub(crate) fn finish(&mut self, outcome: OperationOutcome) {
+        if let Some(entry) = self.entries.last_mut() {
+            entry.outcome = outcome;
+        }
+    }
+
+    pub(crate) fn entries(&self) -> &[OperationLogEntry] {
+        &self.entries
+    }
+
+    pub(crate) fn last_is_running(&self) -> bool {
+        self.entries
+            .last()
+            .is_some_and(|entry| entry.outcome == OperationOutcome::Running)
+    }
+
+    pub(crate) fn render(&self) -> String {
+        let mut output = Vec::new();
+        for entry in &self.entries {
+            let destructive = if entry.destructive {
+                " [DESTRUCTIVE]"
+            } else {
+                ""
+            };
+            let deployment = entry
+                .deployment
+                .as_deref()
+                .map_or_else(String::new, |name| format!(" — {name}"));
+            output.push(format!("{}{}{}", entry.label, destructive, deployment));
+            output.extend(entry.lines.iter().map(|line| format!("  {line}")));
+            output.push(format!("  => {:?}", entry.outcome));
+        }
+        output.join("\n")
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -115,6 +205,7 @@ pub(crate) struct ProjectState {
     pub(crate) run_scripts_error: Option<String>,
     pub(crate) connections_error: Option<String>,
     pub(crate) profile_source_errors: Vec<String>,
+    pub(crate) operation_log: OperationLog,
 }
 
 impl ProjectState {
@@ -151,7 +242,10 @@ impl ProjectState {
             Ok(devices) => {
                 self.devices = devices
                     .into_iter()
-                    .map(|device| DeviceProjection { name: device.name })
+                    .map(|device| DeviceProjection {
+                        name: device.name.clone(),
+                        device,
+                    })
                     .collect();
                 self.devices_error = None;
             }
@@ -171,19 +265,29 @@ impl ProjectState {
             .into_iter()
             .map(|deployment| DeploymentProjection {
                 name: deployment.name,
+                bundle: deployment.bundle,
+                state: deployment.state,
+                last_operation: deployment.last_operation,
                 applied: deployment.applied,
                 instances: deployment
                     .instances
                     .into_iter()
                     .map(|instance| InstanceProjection {
                         name: instance.name,
+                        profile: instance.block,
                         source: instance.source,
+                        device: instance.device,
                     })
                     .collect(),
+                source_choices: deployment.source_choices,
+                connections: deployment.connections,
                 services: deployment
                     .services
                     .into_iter()
                     .map(|service| ServiceProjection {
+                        instance: service.instance,
+                        service: service.service,
+                        device: service.device,
                         status: service.status,
                         health: service.health,
                     })
@@ -488,7 +592,7 @@ fn strip_url_userinfo(remote: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_url_userinfo;
+    use super::{OperationLog, OperationOutcome, strip_url_userinfo};
 
     #[test]
     fn remote_projection_never_keeps_http_credentials() {
@@ -501,6 +605,17 @@ mod tests {
             "git@example.test:team/repo.git"
         );
     }
+
+    #[test]
+    fn operation_log_retains_order_output_labels_and_result() {
+        let mut log = OperationLog::default();
+        log.start("cleanup", Some("demo".into()), true);
+        log.append("removing owned volume demo-data");
+        log.finish(OperationOutcome::Finished(0));
+        assert_eq!(log.entries().len(), 1);
+        assert_eq!(log.entries()[0].lines, ["removing owned volume demo-data"]);
+        let rendered = log.render();
+        assert!(rendered.contains("cleanup [DESTRUCTIVE] — demo"));
+        assert!(rendered.contains("Finished(0)"));
+    }
 }
-
-

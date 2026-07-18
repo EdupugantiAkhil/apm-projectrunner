@@ -350,10 +350,10 @@ impl ReportDialog {
         let mut d = Self {
             base: ModalWindow::new(title, layout!("a:c,w:84,h:28"), window::Flags::None),
         };
-        d.add(Markdown::new(
+        d.add(TextArea::new(
             report,
             layout!("l:1,t:1,r:1,b:3"),
-            markdown::Flags::ScrollBars,
+            textarea::Flags::ReadOnly | textarea::Flags::ScrollBars,
         ));
         d.add(Button::new("Close", layout!("x:50%,y:100%,p:b,w:14,h:1")));
         d
@@ -511,7 +511,9 @@ pub(crate) fn confirm_import(profile: &ProfileProjection, source: &str, manifest
         "Importing `{}` trusts the declarative definition from `{}`.\nNo repository script is inferred or executed. Review the verbatim manifest below.",
         profile.name, source
     );
-    ImportDialog::new(&explanation, manifest).show().unwrap_or(false)
+    ImportDialog::new(&explanation, manifest)
+        .show()
+        .unwrap_or(false)
 }
 
 #[ModalWindow(events = ButtonEvents, response = bool)]

@@ -8,13 +8,16 @@ use std::{
 use appcui::prelude::*;
 
 use crate::{
-    dialogs::confirm,
+    dialogs::{confirm, wizard},
     handoff::{ExitOutcome, OutcomeCell},
-    state::ProjectState,
-    tabs::{self, code, home, profiles},
+    state::{OperationOutcome, ProjectState},
+    tabs::{self, code, home, instances, operations, profiles},
+    tasks::{self, OpCommand, OpUpdate, OperationGate, OperationJob},
 };
 use code::TreeRow;
+use instances::InstanceRowView;
 use profiles::ProfileRowView;
+use switchyard_ops::{create_instance, execution::OperationSpec, run_scripts::StructuredCommand};
 
 static STATE_JOBS: Mutex<VecDeque<StateJob>> = Mutex::new(VecDeque::new());
 
@@ -25,6 +28,7 @@ enum StateAction {
     Remove { name: String },
     ImportProfile { source: String, name: String },
     RemoveProfile { name: String },
+    CreateInstance(wizard::CreateWizardResult),
 }
 
 struct StateJob {
@@ -87,6 +91,17 @@ fn execute_state_job(connector: &BackgroundTaskConector<StateUpdate, TaskRespons
                 .map(|()| format!("Imported startup profile `{name}` removed."))
                 .unwrap_or_else(|error| format!("Profile removal failed: {error}")),
         ),
+        StateAction::CreateInstance(result) => Some(
+            create_instance(&job.project_dir, &result.definition, &result.request)
+                .map(|created| {
+                    format!(
+                        "Instance `{}` created with {} expanded service(s). Press F9 to start it.",
+                        created.name,
+                        created.expanded_services.len()
+                    )
+                })
+                .unwrap_or_else(|error| format!("Instance creation failed: {error}")),
+        ),
     };
     connector.notify(StateUpdate {
         state: ProjectState::load(&job.project_dir),
@@ -121,6 +136,14 @@ const HELP: &str = r#"# Switchyard help
 - **F6** — review the verbatim source manifest, then import/re-check trust.
 - **Delete** — confirm removal of an imported profile.
 - **Enter** — show full expansion details.
+
+## Instances tab
+
+- **F2** — create an authored instance with the five-step checkout/profile/device/parameter/preview wizard.
+- **F7 / F8** — validate or plan without starting services.
+- **F9 / F10** — start or stop the selected instance's deployment; normal stop preserves named volumes.
+- **Ctrl+Delete** — destructive cleanup after a distinct confirmation; owned named volumes are deleted.
+- **Enter** — inspect source identity, true placement, services, connections, and recent operations.
 
 ## Concepts
 
@@ -160,17 +183,20 @@ impl ButtonEvents for HelpDialog {
 }
 
 #[Window(
-    events = ButtonEvents + WindowEvents + CommandBarEvents + TreeViewEvents<TreeRow> + ListViewEvents<ProfileRowView> + BackgroundTaskEvents<StateUpdate, TaskResponse> + TimerEvents,
-    commands = [Help, Refresh, Quit, Next, AddCode, Worktree, RemoveCode, CodeDetails, NewProfile, EditProfile, ValidateProfile, ImportProfile, RemoveProfile, ProfileDetails]
+    events = ButtonEvents + WindowEvents + CommandBarEvents + TreeViewEvents<TreeRow> + ListViewEvents<ProfileRowView> + ListViewEvents<InstanceRowView> + BackgroundTaskEvents<StateUpdate, TaskResponse> + BackgroundTaskEvents<OpUpdate, OpCommand> + TimerEvents,
+    commands = [Help, Refresh, Quit, Next, AddCode, Worktree, RemoveCode, CodeDetails, NewProfile, EditProfile, ValidateProfile, ImportProfile, RemoveProfile, ProfileDetails, NewInstance, InstanceDetails, ValidateInstance, PlanInstance, StartInstance, StopInstance, CleanupInstance]
 )]
 pub(crate) struct SwitchyardShell {
     tabs: Handle<Tab>,
     home: home::Handles,
     code: code::Handles,
     profiles: profiles::Handles,
+    instances: instances::Handles,
+    operations: operations::Handles,
+    busy_chip: Handle<Label>,
     state: ProjectState,
     outcome: OutcomeCell,
-    operation_running: bool,
+    operation_gate: OperationGate,
     state_task: Handle<BackgroundTask<StateUpdate, TaskResponse>>,
     reopen_code_pending: bool,
 }
@@ -207,9 +233,17 @@ impl SwitchyardShell {
                 empty: Handle::None,
                 notice: Handle::None,
             },
+            instances: instances::Handles {
+                list: Handle::None,
+                detail: Handle::None,
+                empty: Handle::None,
+                notice: Handle::None,
+            },
+            operations: operations::Handles { log: Handle::None },
+            busy_chip: Handle::None,
             state,
             outcome,
-            operation_running: false,
+            operation_gate: OperationGate::default(),
             state_task: Handle::None,
             reopen_code_pending: restart.reopen_code,
         };
@@ -232,11 +266,13 @@ impl SwitchyardShell {
             restart.code_notice.as_deref(),
         );
         shell.profiles = tabs::profiles::add(&mut tab, profiles_index, &shell.state);
-        tabs::instances::add(&mut tab, instances_index);
+        shell.instances = tabs::instances::add(&mut tab, instances_index, &shell.state);
         tabs::connections::add(&mut tab, connections_index);
         tabs::devices::add(&mut tab, devices_index);
-        tabs::operations::add(&mut tab, operations_index);
+        shell.operations =
+            tabs::operations::add(&mut tab, operations_index, &shell.state.operation_log);
         shell.tabs = shell.add(tab);
+        shell.busy_chip = shell.add(Label::new("ready", layout!("r:2,t:0,w:8,h:1")));
         if !restart.reopen_code {
             let next = shell.home.next;
             shell.request_focus_for_control(next);
@@ -279,15 +315,17 @@ impl SwitchyardShell {
         }
         self.refresh_code_controls();
         self.refresh_profile_controls();
+        self.refresh_instance_controls();
     }
 
     fn start_state_job(&mut self, action: StateAction, busy_notice: &str) {
-        if self.operation_running {
-            self.set_code_notice("Another project operation is already running.");
+        if let Err(error) = self.operation_gate.try_start() {
+            self.set_notices(error);
             return;
         }
         let Ok(mut jobs) = STATE_JOBS.lock() else {
-            self.set_code_notice("Could not start the project operation: task queue unavailable.");
+            self.operation_gate.finish();
+            self.set_notices("Could not start the project operation: task queue unavailable.");
             return;
         };
         jobs.push_back(StateJob {
@@ -295,9 +333,25 @@ impl SwitchyardShell {
             action,
         });
         drop(jobs);
-        self.operation_running = true;
-        self.set_code_notice(busy_notice);
+        self.set_busy(true);
+        self.set_notices(busy_notice);
         self.state_task = BackgroundTask::run(execute_state_job, self.handle());
+    }
+
+    fn set_busy(&mut self, busy: bool) {
+        let chip = self.busy_chip;
+        if let Some(label) = self.control_mut(chip) {
+            label.set_caption(if busy { "BUSY" } else { "ready" });
+        }
+    }
+
+    fn set_notices(&mut self, text: &str) {
+        self.set_code_notice(text);
+        self.set_profile_notice(text);
+        let notice = self.instances.notice;
+        if let Some(label) = self.control_mut(notice) {
+            label.set_caption(text);
+        }
     }
 
     fn selected_source_index(&self) -> Option<usize> {
@@ -400,7 +454,7 @@ impl SwitchyardShell {
     }
 
     fn import_profile(&mut self) {
-        if self.operation_running {
+        if self.operation_gate.is_running() {
             self.set_profile_notice("Another project operation is already running.");
             return;
         }
@@ -431,7 +485,7 @@ impl SwitchyardShell {
     }
 
     fn remove_profile(&mut self) {
-        if self.operation_running {
+        if self.operation_gate.is_running() {
             self.set_profile_notice("Another project operation is already running.");
             return;
         }
@@ -467,7 +521,7 @@ impl SwitchyardShell {
     }
 
     fn add_code(&mut self) {
-        if self.operation_running {
+        if self.operation_gate.is_running() {
             self.set_code_notice("Another project operation is already running.");
             return;
         }
@@ -486,7 +540,7 @@ impl SwitchyardShell {
     }
 
     fn create_worktree(&mut self) {
-        if self.operation_running {
+        if self.operation_gate.is_running() {
             self.set_code_notice("Another project operation is already running.");
             return;
         }
@@ -506,7 +560,7 @@ impl SwitchyardShell {
     }
 
     fn remove_code(&mut self) {
-        if self.operation_running {
+        if self.operation_gate.is_running() {
             self.set_code_notice("Another project operation is already running.");
             return;
         }
@@ -553,6 +607,206 @@ impl SwitchyardShell {
         }
     }
 
+    fn selected_instance_row(&self) -> Option<InstanceRowView> {
+        self.control(self.instances.list)?.current_item().cloned()
+    }
+
+    fn selected_instance_deployment(&self) -> Option<&crate::state::DeploymentProjection> {
+        let row = self.selected_instance_row()?;
+        instances::deployment_for_row(&self.state, &row)
+    }
+
+    fn refresh_instance_controls(&mut self) {
+        let preferred = self
+            .selected_instance_row()
+            .map(|row| (row.deployment_index, row.instance_index));
+        let state = self.state.clone();
+        let handles = self.instances;
+        if let Some(list) = self.control_mut(handles.list) {
+            instances::fill_list(list, &state, preferred);
+        }
+        if let Some(empty) = self.control_mut(handles.empty) {
+            empty.set_visible(instances::project_rows(&state).is_empty());
+        }
+        self.update_instance_detail();
+    }
+
+    fn update_instance_detail(&mut self) {
+        let text = self.selected_instance_row().map_or_else(
+            || "Select an instance to inspect its exact source identity, services, connections, and recent operations.".into(),
+            |row| instances::detail_text(&self.state, &row),
+        );
+        let detail = self.instances.detail;
+        if let Some(area) = self.control_mut(detail) {
+            area.set_text(&text);
+        }
+    }
+
+    fn refresh_operation_log(&mut self) {
+        let text = self.state.operation_log.render();
+        let log = self.operations.log;
+        if let Some(area) = self.control_mut(log) {
+            area.set_text(if text.is_empty() {
+                "No operations have run in this session. Use F7–F10 from Instances."
+            } else {
+                &text
+            });
+        }
+        self.update_instance_detail();
+    }
+
+    fn create_instance(&mut self) {
+        if self.operation_gate.is_running() {
+            self.set_notices("Another project operation is already running.");
+            return;
+        }
+        let deployment = self
+            .selected_instance_row()
+            .map_or(0, |row| row.deployment_index);
+        if let Some(result) = wizard::show(&self.state, deployment) {
+            self.start_state_job(
+                StateAction::CreateInstance(result),
+                "Creating the reviewed authored instance…",
+            );
+        }
+    }
+
+    fn show_instance_details(&self) {
+        if let Some(row) = self.selected_instance_row() {
+            appcui::dialogs::message(
+                "Instance details",
+                &instances::detail_text(&self.state, &row),
+            );
+        } else {
+            appcui::dialogs::message(
+                "Instance details",
+                "No instance is selected. Press F2 to create one.",
+            );
+        }
+    }
+
+    fn run_instance_command(&mut self, command: InstanceCommand) {
+        if self.operation_gate.is_running() {
+            self.set_notices("Another project operation is already running.");
+            return;
+        }
+        let Some(deployment) = self.selected_instance_deployment().cloned() else {
+            self.set_notices("Select an instance first.");
+            return;
+        };
+        let problems = if deployment.validation_problems.is_empty() {
+            "none".into()
+        } else {
+            deployment.validation_problems.join("\n")
+        };
+        let (title, action, explanation, spec, destructive) = match command {
+            InstanceCommand::Validate => (
+                "Validate deployment",
+                "&Validate",
+                format!(
+                    "Validate {} without starting services.\n\nDefinition: {}\nCurrent projected problems:\n{}",
+                    deployment.name,
+                    deployment.bundle.display(),
+                    problems
+                ),
+                cli_shell_spec("validate", &deployment.bundle, false),
+                false,
+            ),
+            InstanceCommand::Plan => (
+                "Plan preview",
+                "&Plan",
+                format!(
+                    "Generate and validate the complete runtime plan for {}. No services will start.\n\nDefinition: {}\nAuthored instances: {}\nProjected services: {}\nCurrent projected problems:\n{}\n\nOutput will stream to Operations.",
+                    deployment.name,
+                    deployment.bundle.display(),
+                    deployment.instances.len(),
+                    deployment.services.len(),
+                    problems
+                ),
+                OperationSpec::direct(StructuredCommand::Plan, deployment.bundle.clone()),
+                false,
+            ),
+            InstanceCommand::Start => (
+                "Start deployment",
+                "&Start",
+                format!(
+                    "Plan and start deployment {} from {}. This affects every authored instance in that deployment.\n\nTrue placements remain those shown in the Instances list. Output will stream to Operations.",
+                    deployment.name,
+                    deployment.bundle.display()
+                ),
+                OperationSpec::direct(StructuredCommand::Up, deployment.bundle.clone()),
+                false,
+            ),
+            InstanceCommand::Stop => (
+                "Stop deployment",
+                "&Stop",
+                format!(
+                    "Stop deployment {} and its services.\n\nNamed volumes WILL BE PRESERVED. Use Ctrl+Delete only when you explicitly want owned volumes deleted.",
+                    deployment.name
+                ),
+                OperationSpec::direct(StructuredCommand::Down, deployment.bundle.clone()),
+                false,
+            ),
+        };
+        if instances::confirm_operation(title, &explanation, action) {
+            self.start_operation(title.to_owned(), Some(deployment.name), destructive, spec);
+        }
+    }
+
+    fn cleanup_instance(&mut self) {
+        if self.operation_gate.is_running() {
+            self.set_notices("Another project operation is already running.");
+            return;
+        }
+        let Some(deployment) = self.selected_instance_deployment().cloned() else {
+            self.set_notices("Select an instance first.");
+            return;
+        };
+        let preview = format!(
+            "CLEAN UP deployment `{}`?\n\nThis stops every service and PERMANENTLY DELETES Switchyard-owned named volumes for this deployment. Volume data cannot be recovered by Switchyard.\n\nDefinition files and unmanaged source directories are not deleted.",
+            deployment.name
+        );
+        if confirm::destructive_cleanup(&preview) {
+            self.start_operation(
+                "cleanup".into(),
+                Some(deployment.name),
+                true,
+                cli_shell_spec("cleanup", &deployment.bundle, true),
+            );
+        }
+    }
+
+    fn start_operation(
+        &mut self,
+        label: String,
+        deployment: Option<String>,
+        destructive: bool,
+        spec: OperationSpec,
+    ) {
+        if let Err(error) = self.operation_gate.try_start() {
+            self.set_notices(error);
+            return;
+        }
+        let job = OperationJob {
+            project_dir: self.state.project_dir.clone(),
+            label,
+            deployment,
+            destructive,
+            spec,
+        };
+        match tasks::start(job, self.handle()) {
+            Ok(_) => {
+                self.set_busy(true);
+                self.set_notices("Operation started; output is streaming to Operations.");
+            }
+            Err(error) => {
+                self.operation_gate.finish();
+                self.set_busy(false);
+                self.set_notices(&format!("Could not start operation: {error}"));
+            }
+        }
+    }
+
     fn navigate_to_next_action(&mut self) {
         if self
             .control(self.tabs)
@@ -569,7 +823,7 @@ impl SwitchyardShell {
     }
 
     fn try_quit(&mut self) {
-        if !self.operation_running
+        if !self.operation_gate.is_running()
             || dialogs::validate(
                 "Operation in progress",
                 "An operation is still running. Quit Switchyard anyway?",
@@ -578,6 +832,35 @@ impl SwitchyardShell {
             self.close();
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum InstanceCommand {
+    Validate,
+    Plan,
+    Start,
+    Stop,
+}
+
+fn cli_shell_spec(command: &str, bundle: &Path, confirmed: bool) -> OperationSpec {
+    let executable = std::env::var_os("SWITCHYARD_BIN")
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
+        .unwrap_or_else(|| PathBuf::from("switchyard"));
+    let mut shell = format!(
+        "exec {} {} {}",
+        shell_quote(&executable.to_string_lossy()),
+        shell_quote(command),
+        shell_quote(&bundle.to_string_lossy()),
+    );
+    if confirmed {
+        shell.push_str(" --yes");
+    }
+    OperationSpec::Shell(shell)
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 impl ButtonEvents for SwitchyardShell {
@@ -615,7 +898,7 @@ impl WindowEvents for SwitchyardShell {
     }
 
     fn on_cancel(&mut self) -> ActionRequest {
-        if !self.operation_running
+        if !self.operation_gate.is_running()
             || dialogs::validate(
                 "Operation in progress",
                 "An operation is still running. Quit Switchyard anyway?",
@@ -682,14 +965,44 @@ impl ListViewEvents<ProfileRowView> for SwitchyardShell {
     }
 }
 
+impl ListViewEvents<InstanceRowView> for SwitchyardShell {
+    fn on_current_item_changed(
+        &mut self,
+        handle: Handle<ListView<InstanceRowView>>,
+    ) -> EventProcessStatus {
+        if handle == self.instances.list {
+            self.update_instance_detail();
+            EventProcessStatus::Processed
+        } else {
+            EventProcessStatus::Ignored
+        }
+    }
+
+    fn on_item_action(
+        &mut self,
+        handle: Handle<ListView<InstanceRowView>>,
+        _: usize,
+    ) -> EventProcessStatus {
+        if handle == self.instances.list {
+            self.show_instance_details();
+            EventProcessStatus::Processed
+        } else {
+            EventProcessStatus::Ignored
+        }
+    }
+}
+
 impl BackgroundTaskEvents<StateUpdate, TaskResponse> for SwitchyardShell {
     fn on_update(
         &mut self,
         update: StateUpdate,
         _: &BackgroundTask<StateUpdate, TaskResponse>,
     ) -> EventProcessStatus {
+        let log = std::mem::take(&mut self.state.operation_log);
         self.state = update.state;
-        self.operation_running = false;
+        self.state.operation_log = log;
+        self.operation_gate.finish();
+        self.set_busy(false);
         self.apply_state_controls();
         self.set_code_notice(
             update
@@ -704,8 +1017,9 @@ impl BackgroundTaskEvents<StateUpdate, TaskResponse> for SwitchyardShell {
     }
 
     fn on_finish(&mut self, _: &BackgroundTask<StateUpdate, TaskResponse>) -> EventProcessStatus {
-        if self.operation_running {
-            self.operation_running = false;
+        if self.operation_gate.is_running() {
+            self.operation_gate.finish();
+            self.set_busy(false);
             self.set_code_notice("Project operation ended without a result.");
         }
         EventProcessStatus::Processed
@@ -717,6 +1031,72 @@ impl BackgroundTaskEvents<StateUpdate, TaskResponse> for SwitchyardShell {
         _: &BackgroundTask<StateUpdate, TaskResponse>,
     ) -> TaskResponse {
         TaskResponse::Continue
+    }
+}
+
+impl BackgroundTaskEvents<OpUpdate, OpCommand> for SwitchyardShell {
+    fn on_update(
+        &mut self,
+        update: OpUpdate,
+        _: &BackgroundTask<OpUpdate, OpCommand>,
+    ) -> EventProcessStatus {
+        match update {
+            OpUpdate::Started {
+                label,
+                deployment,
+                destructive,
+            } => {
+                self.state
+                    .operation_log
+                    .start(label, deployment, destructive);
+            }
+            OpUpdate::Output(line) => self.state.operation_log.append(line),
+            OpUpdate::Finished(exit_code) => {
+                self.state
+                    .operation_log
+                    .finish(OperationOutcome::Finished(exit_code));
+                self.operation_gate.finish();
+                self.set_busy(false);
+                self.set_notices(if exit_code == 0 {
+                    "Operation completed successfully; refreshing project observations…"
+                } else {
+                    "Operation finished with a non-zero exit code. Review Operations output."
+                });
+                if exit_code == 0 {
+                    self.refresh_state();
+                }
+            }
+            OpUpdate::Failed(error) => {
+                self.state.operation_log.append(format!("ERROR: {error}"));
+                self.state
+                    .operation_log
+                    .finish(OperationOutcome::Failed(error));
+                self.operation_gate.finish();
+                self.set_busy(false);
+                self.set_notices(
+                    "Operation failed. Review Operations output for the verbatim error.",
+                );
+            }
+        }
+        self.refresh_operation_log();
+        EventProcessStatus::Processed
+    }
+
+    fn on_finish(&mut self, _: &BackgroundTask<OpUpdate, OpCommand>) -> EventProcessStatus {
+        if self.state.operation_log.last_is_running() {
+            self.state.operation_log.finish(OperationOutcome::Failed(
+                "background operation stopped unexpectedly".into(),
+            ));
+            self.operation_gate.finish();
+            self.set_busy(false);
+            self.set_notices("Background operation stopped unexpectedly.");
+            self.refresh_operation_log();
+        }
+        EventProcessStatus::Processed
+    }
+
+    fn on_query(&mut self, _: OpUpdate, _: &BackgroundTask<OpUpdate, OpCommand>) -> OpCommand {
+        OpCommand::Continue
     }
 }
 
@@ -778,6 +1158,34 @@ impl CommandBarEvents for SwitchyardShell {
                 "Details",
                 switchyardshell::Commands::ProfileDetails,
             );
+        } else if self
+            .control(self.tabs)
+            .and_then(Tab::current_tab)
+            .is_some_and(|index| index == 3)
+        {
+            commandbar.set(key!("F2"), "New", switchyardshell::Commands::NewInstance);
+            commandbar.set(
+                key!("Enter"),
+                "Details",
+                switchyardshell::Commands::InstanceDetails,
+            );
+            commandbar.set(
+                key!("F7"),
+                "Validate",
+                switchyardshell::Commands::ValidateInstance,
+            );
+            commandbar.set(key!("F8"), "Plan", switchyardshell::Commands::PlanInstance);
+            commandbar.set(
+                key!("F9"),
+                "Start",
+                switchyardshell::Commands::StartInstance,
+            );
+            commandbar.set(key!("F10"), "Stop", switchyardshell::Commands::StopInstance);
+            commandbar.set(
+                key!("Ctrl+Delete"),
+                "Cleanup",
+                switchyardshell::Commands::CleanupInstance,
+            );
         }
     }
 
@@ -799,6 +1207,21 @@ impl CommandBarEvents for SwitchyardShell {
             switchyardshell::Commands::ImportProfile => self.import_profile(),
             switchyardshell::Commands::RemoveProfile => self.remove_profile(),
             switchyardshell::Commands::ProfileDetails => self.show_profile_details(),
+            switchyardshell::Commands::NewInstance => self.create_instance(),
+            switchyardshell::Commands::InstanceDetails => self.show_instance_details(),
+            switchyardshell::Commands::ValidateInstance => {
+                self.run_instance_command(InstanceCommand::Validate)
+            }
+            switchyardshell::Commands::PlanInstance => {
+                self.run_instance_command(InstanceCommand::Plan)
+            }
+            switchyardshell::Commands::StartInstance => {
+                self.run_instance_command(InstanceCommand::Start)
+            }
+            switchyardshell::Commands::StopInstance => {
+                self.run_instance_command(InstanceCommand::Stop)
+            }
+            switchyardshell::Commands::CleanupInstance => self.cleanup_instance(),
         }
     }
 }

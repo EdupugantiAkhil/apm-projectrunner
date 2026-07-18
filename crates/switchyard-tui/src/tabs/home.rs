@@ -261,10 +261,12 @@ mod tests {
             instances: vec![InstanceProjection {
                 name: "api".into(),
                 source: "source".into(),
+                ..InstanceProjection::default()
             }],
             services: vec![ServiceProjection {
                 status: "running".into(),
                 health: "healthy".into(),
+                ..ServiceProjection::default()
             }],
             ..DeploymentProjection::default()
         });
