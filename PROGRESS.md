@@ -1273,3 +1273,12 @@ implemented shape and the evidence used to close a phase.
   sweep rendered all six TUI tabs; release assembly produced
   dist/switchyard-0.1.0+2c6a3df-dirty-linux-aarch64.tar.gz with verified
   SHA256SUMS.
+
+## 2026-07-18 — TUI local device visibility
+
+- The Devices table now includes `this device` as its first, always-available option,
+  with non-applicable SSH metadata rendered as `-`, matching the implicit `local`
+  placement already used by the planner and instance form.
+- Selection includes both `this device` and registered SSH devices; SSH check and
+  removal are guarded for the implicit entry and explain why those actions do not
+  apply.

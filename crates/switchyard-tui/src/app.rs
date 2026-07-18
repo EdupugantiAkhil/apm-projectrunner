@@ -914,9 +914,7 @@ impl App {
                 self.start_profile_refresh()
             }
             KeyCode::Down | KeyCode::Char('j') if self.active_view == ActiveView::Devices => {
-                if !self.devices.is_empty() {
-                    self.device_selected = (self.device_selected + 1).min(self.devices.len() - 1);
-                }
+                self.device_selected = (self.device_selected + 1).min(self.devices.len());
             }
             KeyCode::Up | KeyCode::Char('k') if self.active_view == ActiveView::Devices => {
                 self.device_selected = self.device_selected.saturating_sub(1)
@@ -929,18 +927,31 @@ impl App {
             KeyCode::Char('c')
                 if self.active_view == ActiveView::Devices && self.busy.is_none() =>
             {
-                if let Some(device) = self.devices.get(self.device_selected) {
+                if let Some(device) = self
+                    .device_selected
+                    .checked_sub(1)
+                    .and_then(|index| self.devices.get(index))
+                {
                     self.start_device_check(device.name.clone());
+                } else {
+                    self.status =
+                        Some("this device is always available; no SSH check is required".into());
                 }
             }
             KeyCode::Char('d')
                 if self.active_view == ActiveView::Devices && self.busy.is_none() =>
             {
-                if let Some(device) = self.devices.get(self.device_selected) {
+                if let Some(device) = self
+                    .device_selected
+                    .checked_sub(1)
+                    .and_then(|index| self.devices.get(index))
+                {
                     self.overlay = Overlay::ConfirmRemoveDevice {
                         name: device.name.clone(),
                         error: None,
                     };
+                } else {
+                    self.status = Some("this device is implicit and cannot be removed".into());
                 }
             }
             KeyCode::Down | KeyCode::Char('j') if self.active_view == ActiveView::Instances => {
@@ -1834,9 +1845,7 @@ impl App {
                     match result {
                         Ok(devices) => {
                             self.devices = devices;
-                            self.device_selected = self
-                                .device_selected
-                                .min(self.devices.len().saturating_sub(1));
+                            self.device_selected = self.device_selected.min(self.devices.len());
                             self.overlay = Overlay::None;
                             self.status = Some(
                                 match kind {
@@ -2670,6 +2679,46 @@ mod tests {
             assert!(invalid.device().is_err());
         }
     }
+
+    #[test]
+    fn devices_select_this_device_before_registered_hosts() {
+        let mut app = App::with_sources(PathBuf::from("."), Vec::new());
+        app.active_view = ActiveView::Devices;
+        app.devices.push(RegisteredDevice {
+            name: "builder".into(),
+            host: "builder.test".into(),
+            port: 22,
+            user: "dev".into(),
+            identity_file: None,
+            created_at: 1,
+            last_checked_at: None,
+            last_check_status: DeviceCheckStatus::Never,
+            last_check_detail: None,
+        });
+
+        app.handle_key(key(KeyCode::Char('c')));
+        assert_eq!(
+            app.status.as_deref(),
+            Some("this device is always available; no SSH check is required")
+        );
+        assert!(app.busy.is_none());
+
+        app.handle_key(key(KeyCode::Char('d')));
+        assert_eq!(
+            app.status.as_deref(),
+            Some("this device is implicit and cannot be removed")
+        );
+        assert!(matches!(app.overlay, Overlay::None));
+
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.device_selected, 1);
+        app.handle_key(key(KeyCode::Char('d')));
+        assert!(matches!(
+            app.overlay,
+            Overlay::ConfirmRemoveDevice { ref name, .. } if name == "builder"
+        ));
+    }
+
     #[test]
     fn tabs_cycle_through_all_control_plane_views() {
         let mut app = App::with_sources(PathBuf::from("."), Vec::new());

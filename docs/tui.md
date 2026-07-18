@@ -107,18 +107,24 @@ separate from project run actions in `.switchyard/run-scripts.yaml`.
 
 ## Devices
 
-The Devices table is an interactive selector for registered SSH targets. Its eligibility
-column says `eligible for remote container execution (docker <version>)`, `no docker
-over SSH: <reason>`, or `unchecked`. Up/Down or `j`/`k` changes the selected device.
+The Devices table is an interactive selector for the always-available local machine and
+registered SSH targets. The implicit local device appears first as `this device`, with
+`-` for its non-applicable SSH fields; it maps to the `local` placement used by
+deployment definitions and needs no connectivity check. For registered targets, the
+eligibility column says `eligible for remote container execution (docker <version>)`,
+`no docker over SSH: <reason>`, or `unchecked`. Up/Down or `j`/`k` changes the selected
+device.
 
 - `a` registers a name, SSH user, host, port, and optional identity-file path. Existing
   SSH agent and configuration behavior is preserved; Switchyard never stores passwords
   or private-key material.
-- `c` checks the selected device in the background. It first probes SSH with batch
-  authentication, then runs `docker version` through Docker's native SSH transport,
-  and persists the outcome and server version or concrete failure. Identity-file paths
-  may be used, but passwords and private-key contents are never stored.
-- `d` confirms removal of the registry entry without touching SSH keys or configuration.
+- `c` checks the selected registered device in the background. It first probes SSH with
+  batch authentication, then runs `docker version` through Docker's native SSH
+  transport, and persists the outcome and server version or concrete failure.
+  Identity-file paths may be used, but passwords and private-key contents are never
+  stored.
+- `d` confirms removal of the selected registered device without touching SSH keys or
+  configuration. The implicit `this device` entry cannot be checked or removed.
 
 Eligibility covers the deliberately limited remote-execution cut: container instances
 that act only as providers and publish every provided capability port. The local

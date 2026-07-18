@@ -11,7 +11,8 @@ use super::centered;
 use crate::app::{App, BusyKind, DeviceForm};
 
 pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let rows = app.devices.iter().map(|device| {
+    let local = Row::new(["this device", "-", "-", "-", "-"]);
+    let registered = app.devices.iter().map(|device| {
         Row::new([
             device.name.clone(),
             format!("{}@{}:{}", device.user, device.host, device.port),
@@ -25,15 +26,17 @@ pub(super) fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ),
         ])
     });
+    let rows = std::iter::once(local).chain(registered);
     let mut state = TableState::default();
-    if !app.devices.is_empty() {
-        state.select(Some(app.device_selected));
-    }
-    let detail = app
-        .devices
-        .get(app.device_selected)
-        .and_then(|device| device.last_check_detail.as_deref())
-        .unwrap_or("Eligibility checks SSH and Docker access for the limited remote-container cut. Prefer a LAN IP reachable from containers; localhost and mDNS are usually unsuitable.");
+    state.select(Some(app.device_selected));
+    let detail = if app.device_selected == 0 {
+        "This device is the implicit `local` execution device. It is always available and does not require an SSH eligibility check."
+    } else {
+        app.devices
+            .get(app.device_selected - 1)
+            .and_then(|device| device.last_check_detail.as_deref())
+            .unwrap_or("Eligibility checks SSH and Docker access for the limited remote-container cut. Prefer a LAN IP reachable from containers; localhost and mDNS are usually unsuitable.")
+    };
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(6), Constraint::Length(4)])

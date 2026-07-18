@@ -401,7 +401,9 @@ mod tests {
                 "eligible for remote container execution (docker 28.5.1)".into(),
             ),
         });
+        app.device_selected = 1;
         let contents = rendered(&app, 150, 30);
+        assert!(contents.contains("this device"));
         assert!(contents.contains("Eligibility"));
         assert!(contents.contains("eligible (docker 28.5.1)"));
         assert!(contents.contains("eligible for remote container execution (docker 28.5.1)"));
