@@ -877,9 +877,7 @@ fn inspect_publisher(state: &PublisherState) -> Result<ProcessIdentity, LanError
     }
     let command_line = fs::read(format!("/proc/{}/cmdline", state.pid))?;
     let arguments = command_line.split(|byte| *byte == 0).collect::<Vec<_>>();
-    if !arguments
-        .iter()
-        .any(|argument| *argument == state.name.as_bytes())
+    if !arguments.contains(&state.name.as_bytes())
         || !arguments
             .iter()
             .any(|argument| *argument == state.address.to_string().as_bytes())

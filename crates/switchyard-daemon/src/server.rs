@@ -1580,6 +1580,7 @@ fn validation_error(message: impl Into<String>, diagnostics: Value) -> Response 
     (StatusCode::UNPROCESSABLE_ENTITY, Json(error)).into_response()
 }
 
+#[allow(clippy::result_large_err)]
 fn validate_definition(
     root: &Path,
     name: &str,
@@ -3117,6 +3118,7 @@ fn event_stream(
     })
 }
 
+#[allow(clippy::result_large_err)]
 fn authenticate(
     inner: &Inner,
     headers: &HeaderMap,

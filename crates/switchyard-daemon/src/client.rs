@@ -164,6 +164,7 @@ pub fn remove_worktree(
 
 /// Result of optional daemon discovery used by transparent CLI delegation.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum DaemonExecution {
     NotRunning,
     Completed(OperationV1),
