@@ -1283,6 +1283,15 @@ implemented shape and the evidence used to close a phase.
   removal are guarded for the implicit entry and explain why those actions do not
   apply.
 
+## 2026-07-18 — TUI checklist documentation reconciliation
+
+- Reconciled the duplicated Phase A–E and acceptance checklists in
+  `docs/new_tui_features.md` with the completed authoritative entries in
+  `IMPLEMENTATION_PLAN.md`. The feature document's status already said implemented,
+  but its individual checkboxes had accidentally remained unchecked.
+- Verification: `docs/new_tui_features.md` contains no remaining unchecked checklist
+  entries, and the change is documentation-only.
+
 ## 2026-07-18 — Connections view navigation consistency
 
 - Left/Right now switch views from Connections just as they do from every other TUI

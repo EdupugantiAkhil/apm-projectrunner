@@ -279,19 +279,19 @@ gate because the existing client is retained.
 
 ### Phase A — architecture and contracts
 
-- [ ] Update `DESIGN.md`: retained-TUI decision, shared operations layer, and — since
+- [x] Update `DESIGN.md`: retained-TUI decision, shared operations layer, and — since
       devices are currently implemented but undocumented — a retroactive device model
       section (registration, scope, connectivity checks, placement rules).
-- [ ] Specify the source-local startup-profile manifest format, discovery boundaries,
+- [x] Specify the source-local startup-profile manifest format, discovery boundaries,
       precedence, and trust behavior.
-- [ ] Write the scoped design for the Phase D limited remote cut (SSH + remote Docker,
+- [x] Write the scoped design for the Phase D limited remote cut (SSH + remote Docker,
       local router, explicit published addresses; ownership, cleanup, and failure
       behavior).
-- [ ] Decide and document the React GUI's status: supported secondary client with a
+- [x] Decide and document the React GUI's status: supported secondary client with a
       workflow-parity schedule, or deprecation path.
-- [ ] Make the final user-facing terminology pass (including the "project / project
+- [x] Make the final user-facing terminology pass (including the "project / project
       instance" question from the handwritten notes).
-- [ ] Add this work to `IMPLEMENTATION_PLAN.md` without reopening already verified
+- [x] Add this work to `IMPLEMENTATION_PLAN.md` without reopening already verified
       routing milestones.
 
 Exit gate: the manifest format, device model, remote-cut design, client policy, and
@@ -299,27 +299,27 @@ naming are documented and reviewed.
 
 ### Phase B — guided configuration on the existing TUI
 
-- [ ] Implement the Home first-run workflow.
-- [ ] Implement the startup-profile library view and schema-driven inspector/editor.
-- [ ] Implement explicit source-local profile discovery and import.
-- [ ] Implement checkout + startup profile + parameters + device instance creation
+- [x] Implement the Home first-run workflow.
+- [x] Implement the startup-profile library view and schema-driven inspector/editor.
+- [x] Implement explicit source-local profile discovery and import.
+- [x] Implement checkout + startup profile + parameters + device instance creation
       (device choice limited to `local` until Phase D, with honest labeling).
-- [ ] Continuously validate drafts and preview expanded services and resources.
-- [ ] Keep project run actions discoverable under Operations.
-- [ ] Extract the operations/state-projection layer for each workflow this phase
+- [x] Continuously validate drafts and preview expanded services and resources.
+- [x] Keep project run actions discoverable under Operations.
+- [x] Extract the operations/state-projection layer for each workflow this phase
       touches.
-- [ ] Add component/state tests and pty-driven smoke coverage for the new views.
+- [x] Add component/state tests and pty-driven smoke coverage for the new views.
 
 Exit gate: a new user can configure and start a supported repository through the TUI
 without manually editing generated files.
 
 ### Phase C — routing workflow
 
-- [ ] Implement the Connections route matrix.
-- [ ] Implement compatible-group selection and complete old/new route preview.
-- [ ] Apply route changes through the existing atomic binding operation.
-- [ ] Surface route version, transition state, failures, and rollback information.
-- [ ] Verify the Node.js consumer and interchangeable five-service Python-group
+- [x] Implement the Connections route matrix.
+- [x] Implement compatible-group selection and complete old/new route preview.
+- [x] Apply route changes through the existing atomic binding operation.
+- [x] Surface route version, transition state, failures, and rollback information.
+- [x] Verify the Node.js consumer and interchangeable five-service Python-group
       scenario end to end from the TUI.
 
 Exit gate: multiple consumer instances can independently select complete compatible
@@ -330,57 +330,57 @@ instances.
 
 Entry gate: the Phase A remote-cut design is approved.
 
-- [ ] Implement SSH + remote-Docker execution for container-backed instances, with the
+- [x] Implement SSH + remote-Docker execution for container-backed instances, with the
       router local and remote services reachable via explicit published addresses.
-- [ ] Implement remote ownership labeling, lifecycle, health, logs, and cleanup for
+- [x] Implement remote ownership labeling, lifecycle, health, logs, and cleanup for
       the cut.
-- [ ] Validate device eligibility (SSH reachable, Docker reachable, resource claims)
+- [x] Validate device eligibility (SSH reachable, Docker reachable, resource claims)
       before start; ineligible selections fail validation with the concrete reason.
-- [ ] Expose device placement in instance creation and show true placement everywhere.
-- [ ] Verify end to end against a real LAN device.
+- [x] Expose device placement in instance creation and show true placement everywhere.
+- [x] Verify end to end against a real LAN device.
 
 Exit gate: selecting an eligible remote device causes real, observable, recoverable
 execution on that device; everything outside the cut is clearly labeled unsupported.
 
 ### Phase E — AI skill and release integration
 
-- [ ] Expand and validate the initialized AI skill per section 7, including the
+- [x] Expand and validate the initialized AI skill per section 7, including the
       explicit cannot-safely-configure failure mode.
-- [ ] Apply the approved React GUI decision from Phase A.
-- [ ] Update development, TUI, release, upgrade, and support docs.
-- [ ] Run workspace tests, Clippy `-D warnings`, formatting, documentation checks,
+- [x] Apply the approved React GUI decision from Phase A.
+- [x] Update development, TUI, release, upgrade, and support docs.
+- [x] Run workspace tests, Clippy `-D warnings`, formatting, documentation checks,
       pty-driven TUI smoke tests, routing fixtures, and release assembly verification.
-- [ ] Update `PROGRESS.md` and `AGENTMISTAKES.md` with implementation and verification
+- [x] Update `PROGRESS.md` and `AGENTMISTAKES.md` with implementation and verification
       results as each increment lands.
-- [ ] Commit reviewed phase-sized increments throughout.
+- [x] Commit reviewed phase-sized increments throughout.
 
 Exit gate: one clearly documented primary interactive experience ships with full local
 workflow coverage, the limited remote cut, and no ambiguous duplicate product model.
 
 ## 9. End-to-end acceptance criteria
 
-- [ ] A user can register or clone a repository and select an exact checkout/worktree.
-- [ ] The UI lists eligible startup profiles from approved project and source
+- [x] A user can register or clone a repository and select an exact checkout/worktree.
+- [x] The UI lists eligible startup profiles from approved project and source
       manifests.
-- [ ] A user can create two instances of the same startup profile from different or
+- [x] A user can create two instances of the same startup profile from different or
       identical checkouts without naming, port, network, or volume collisions.
-- [ ] A coordinated five-service profile duplicates as a complete suite.
-- [ ] A profile can expand a subset of a project's services ("parts of it"), and such
+- [x] A coordinated five-service profile duplicates as a complete suite.
+- [x] A profile can expand a subset of a project's services ("parts of it"), and such
       partial instances participate in groups and routing like any other.
-- [ ] A Node.js consumer can continue using its fixed addresses while Switchyard
+- [x] A Node.js consumer can continue using its fixed addresses while Switchyard
       routes them to the selected Python provider group.
-- [ ] Two Node.js consumer instances can independently select different Python groups.
-- [ ] Switching one consumer replaces its complete route table atomically and does not
+- [x] Two Node.js consumer instances can independently select different Python groups.
+- [x] Switching one consumer replaces its complete route table atomically and does not
       restart either consumer or unrelated providers.
-- [ ] Exact checkout commit/dirty state, health, logs, resources, and active
+- [x] Exact checkout commit/dirty state, health, logs, resources, and active
       connections are visible for every instance.
-- [ ] Selecting an eligible remote device runs a container-backed instance on that
+- [x] Selecting an eligible remote device runs a container-backed instance on that
       device with visible ownership, logs, health, and working cleanup; ineligible or
       out-of-cut selections fail validation with a concrete reason.
-- [ ] Normal stop preserves persistent data; destructive cleanup requires explicit
+- [x] Normal stop preserves persistent data; destructive cleanup requires explicit
       confirmation and ownership proof.
-- [ ] The UI and initialized AI skill produce definitions accepted by the same
+- [x] The UI and initialized AI skill produce definitions accepted by the same
       validator and planner used by the CLI and daemon.
-- [ ] The AI skill, when a repository cannot be safely configured, reports the
+- [x] The AI skill, when a repository cannot be safely configured, reports the
       concrete blockers instead of authoring a best-guess configuration.
-- [ ] All TUI workflows, including the new views, remain fully usable over SSH.
+- [x] All TUI workflows, including the new views, remain fully usable over SSH.

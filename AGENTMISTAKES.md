@@ -429,3 +429,12 @@ missed the separate `SCHEMA_VERSION` constant. Correction: add a preserving sche
 migration, advance the declared version, and verify the new status through a state round trip. Lesson: before
 extending a persisted enum, inspect both parser/serializer code and database constraints;
 exercise the new value against a real migrated store, not only an in-memory formatter.
+
+## 2026-07-18 — Duplicated milestone checklists must close together
+
+The TUI milestone closing pass checked the authoritative `IMPLEMENTATION_PLAN.md` and
+changed `docs/new_tui_features.md` to say “implemented through Phase E,” but left every
+duplicated feature and acceptance checkbox unchecked. Correction: reconcile both lists
+against the same completion evidence. Lesson: when a secondary design document mirrors
+an execution checklist, search for remaining unchecked entries before claiming the
+milestone is closed.
