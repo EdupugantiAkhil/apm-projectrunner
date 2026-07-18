@@ -170,6 +170,7 @@ impl OperationLog {
             .is_some_and(|entry| entry.outcome == OperationOutcome::Running)
     }
 
+    #[cfg(test)]
     pub(crate) fn render(&self) -> String {
         let mut output = Vec::new();
         for entry in &self.entries {

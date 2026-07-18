@@ -11,14 +11,17 @@ use crate::{
     dialogs::{confirm, wizard},
     handoff::{ExitOutcome, OutcomeCell},
     state::{OperationOutcome, ProjectState},
-    tabs::{self, code, connections, home, instances, operations, profiles},
+    tabs::{self, code, connections, devices, home, instances, operations, profiles},
     tasks::{self, OpCommand, OpUpdate, OperationGate, OperationJob},
 };
 use code::TreeRow;
 use connections::ConnectionRowView;
+use devices::DeviceRowView;
 use instances::InstanceRowView;
+use operations::ScriptRowView;
 use profiles::ProfileRowView;
 use switchyard_ops::{create_instance, execution::OperationSpec, run_scripts::StructuredCommand};
+use switchyard_state::{DeviceCheckStatus, RegisteredDevice, StateStore};
 
 static STATE_JOBS: Mutex<VecDeque<StateJob>> = Mutex::new(VecDeque::new());
 
@@ -30,6 +33,9 @@ enum StateAction {
     ImportProfile { source: String, name: String },
     RemoveProfile { name: String },
     CreateInstance(wizard::CreateWizardResult),
+    ProbeDevice(RegisteredDevice),
+    CheckDevice(String),
+    RemoveDevice(String),
 }
 
 struct StateJob {
@@ -40,6 +46,7 @@ struct StateJob {
 struct StateUpdate {
     state: ProjectState,
     notice: Option<String>,
+    device_probe: Option<RegisteredDevice>,
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +69,7 @@ fn execute_state_job(connector: &BackgroundTaskConector<StateUpdate, TaskRespons
         project_dir: job.project_dir.clone(),
         ..ProjectState::default()
     };
+    let mut device_probe = None;
     let notice = match job.action {
         StateAction::Refresh => None,
         StateAction::Register { name, path } => Some(
@@ -109,11 +117,61 @@ fn execute_state_job(connector: &BackgroundTaskConector<StateUpdate, TaskRespons
                 })
                 .unwrap_or_else(|error| format!("Instance creation failed: {error}")),
         ),
+        StateAction::ProbeDevice(mut device) => {
+            let (status, detail) = switchyard_ops::devices::check_device_eligibility(&device);
+            let checked_at = current_unix_millis();
+            device.created_at = checked_at;
+            device.last_checked_at = Some(checked_at);
+            device.last_check_status = status;
+            device.last_check_detail = Some(detail.clone());
+            device_probe = Some(device);
+            Some(format!("Device check completed: {detail}"))
+        }
+        StateAction::CheckDevice(name) => Some(
+            (|| {
+                let (store, _) =
+                    StateStore::open(job.project_dir.join(".switchyard/state.sqlite3"))
+                        .map_err(|error| error.to_string())?;
+                let device = store
+                    .device(&name)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("device `{name}` is not registered"))?;
+                let (status, detail) = switchyard_ops::devices::check_device_eligibility(&device);
+                store
+                    .record_device_check(&name, current_unix_millis(), status, Some(&detail))
+                    .map_err(|error| error.to_string())?;
+                Ok::<_, String>(format!("Device check completed: {detail}"))
+            })()
+            .unwrap_or_else(|error| format!("Device check failed: {error}")),
+        ),
+        StateAction::RemoveDevice(name) => Some(
+            StateStore::open(job.project_dir.join(".switchyard/state.sqlite3"))
+                .map_err(|error| error.to_string())
+                .and_then(|(store, _)| {
+                    store
+                        .deregister_device(&name)
+                        .map_err(|error| error.to_string())
+                })
+                .map(|()| {
+                    format!("SSH device `{name}` removed. SSH configuration was not changed.")
+                })
+                .unwrap_or_else(|error| format!("Device removal failed: {error}")),
+        ),
     };
     connector.notify(StateUpdate {
         state: ProjectState::load(&job.project_dir),
         notice,
+        device_probe,
     });
+}
+
+fn current_unix_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(i64::MAX)
 }
 
 const HELP: &str = r#"# Switchyard help
@@ -157,6 +215,18 @@ const HELP: &str = r#"# Switchyard help
 - **Enter** — choose from compatible complete groups, review every old→new route, then apply one atomic binding operation.
 - Unbound slots remain **not connected** until you explicitly choose and apply a provider group.
 
+## Devices tab
+
+- **F2** — enter an SSH device, then run its connectivity and Docker eligibility check before deciding whether to save it.
+- **F6** — re-check the selected SSH device in the background.
+- **Delete / Enter** — safely remove an unused registration or inspect the retained check output. The implicit local device cannot be removed.
+
+## Operations tab
+
+- **F2 / F3 / Delete** — manage project run actions from `.switchyard/run-scripts.yaml`; they are not startup profiles.
+- **Enter** — confirm and run the selected action. Shell actions require a one-time per-project warning acknowledgement.
+- The bottom timeline streams ordered output. Its explicit filter matches deployment, instance, or service text. Moving selection upward pauses follow; return to the last row to resume.
+
 ## Concepts
 
 - **Code** — code made available from a local path, repository, or worktree.
@@ -195,8 +265,8 @@ impl ButtonEvents for HelpDialog {
 }
 
 #[Window(
-    events = ButtonEvents + WindowEvents + CommandBarEvents + TreeViewEvents<TreeRow> + ListViewEvents<ProfileRowView> + ListViewEvents<InstanceRowView> + ListViewEvents<ConnectionRowView> + BackgroundTaskEvents<StateUpdate, TaskResponse> + BackgroundTaskEvents<OpUpdate, OpCommand> + TimerEvents,
-    commands = [Help, Refresh, Quit, Next, AddCode, Worktree, RemoveCode, CodeDetails, NewProfile, EditProfile, ValidateProfile, ImportProfile, RemoveProfile, ProfileDetails, NewInstance, InstanceDetails, ValidateInstance, PlanInstance, StartInstance, StopInstance, CleanupInstance, SwitchConnection]
+    events = ButtonEvents + WindowEvents + CommandBarEvents + TreeViewEvents<TreeRow> + ListViewEvents<ProfileRowView> + ListViewEvents<InstanceRowView> + ListViewEvents<ConnectionRowView> + ListViewEvents<DeviceRowView> + ListViewEvents<ScriptRowView> + TextFieldEvents + BackgroundTaskEvents<StateUpdate, TaskResponse> + BackgroundTaskEvents<OpUpdate, OpCommand> + TimerEvents,
+    commands = [Help, Refresh, Quit, Next, AddCode, Worktree, RemoveCode, CodeDetails, NewProfile, EditProfile, ValidateProfile, ImportProfile, RemoveProfile, ProfileDetails, NewInstance, InstanceDetails, ValidateInstance, PlanInstance, StartInstance, StopInstance, CleanupInstance, SwitchConnection, AddDevice, CheckDevice, RemoveDevice, DeviceDetails, NewScript, EditScript, RemoveScript, RunScript]
 )]
 pub(crate) struct SwitchyardShell {
     tabs: Handle<Tab>,
@@ -205,6 +275,7 @@ pub(crate) struct SwitchyardShell {
     profiles: profiles::Handles,
     instances: instances::Handles,
     connections: connections::Handles,
+    devices: devices::Handles,
     operations: operations::Handles,
     busy_chip: Handle<Label>,
     state: ProjectState,
@@ -258,7 +329,18 @@ impl SwitchyardShell {
                 empty: Handle::None,
                 notice: Handle::None,
             },
-            operations: operations::Handles { log: Handle::None },
+            devices: devices::Handles {
+                list: Handle::None,
+                detail: Handle::None,
+                notice: Handle::None,
+            },
+            operations: operations::Handles {
+                list: Handle::None,
+                empty: Handle::None,
+                filter: Handle::None,
+                log: Handle::None,
+                notice: Handle::None,
+            },
             busy_chip: Handle::None,
             state,
             outcome,
@@ -288,9 +370,8 @@ impl SwitchyardShell {
         shell.profiles = tabs::profiles::add(&mut tab, profiles_index, &shell.state);
         shell.instances = tabs::instances::add(&mut tab, instances_index, &shell.state);
         shell.connections = tabs::connections::add(&mut tab, connections_index, &shell.state);
-        tabs::devices::add(&mut tab, devices_index);
-        shell.operations =
-            tabs::operations::add(&mut tab, operations_index, &shell.state.operation_log);
+        shell.devices = tabs::devices::add(&mut tab, devices_index, &shell.state);
+        shell.operations = tabs::operations::add(&mut tab, operations_index, &shell.state);
         shell.tabs = shell.add(tab);
         shell.busy_chip = shell.add(Label::new("ready", layout!("r:2,t:0,w:8,h:1")));
         if !restart.reopen_code {
@@ -337,6 +418,8 @@ impl SwitchyardShell {
         self.refresh_profile_controls();
         self.refresh_instance_controls();
         self.refresh_connection_controls();
+        self.refresh_device_controls();
+        self.refresh_script_controls();
     }
 
     fn start_state_job(&mut self, action: StateAction, busy_notice: &str) {
@@ -374,6 +457,14 @@ impl SwitchyardShell {
             label.set_caption(text);
         }
         let notice = self.connections.notice;
+        if let Some(label) = self.control_mut(notice) {
+            label.set_caption(text);
+        }
+        let notice = self.devices.notice;
+        if let Some(label) = self.control_mut(notice) {
+            label.set_caption(text);
+        }
+        let notice = self.operations.notice;
         if let Some(label) = self.control_mut(notice) {
             label.set_caption(text);
         }
@@ -769,16 +860,276 @@ impl SwitchyardShell {
     }
 
     fn refresh_operation_log(&mut self) {
-        let text = self.state.operation_log.render();
+        let filter = self
+            .control(self.operations.filter)
+            .map_or("", TextField::text)
+            .to_owned();
+        let operation_log = self.state.operation_log.clone();
         let log = self.operations.log;
-        if let Some(area) = self.control_mut(log) {
-            area.set_text(if text.is_empty() {
-                "No operations have run in this session. Use F7–F10 from Instances."
+        if let Some(list) = self.control_mut(log) {
+            let selected = if list.count() == 0 || list.index().saturating_add(1) >= list.count() {
+                Some(usize::MAX)
             } else {
-                &text
-            });
+                Some(list.index())
+            };
+            operations::fill_timeline(list, &operation_log, &filter, selected);
         }
         self.update_instance_detail();
+    }
+
+    fn selected_device_row(&self) -> Option<devices::DeviceRowView> {
+        self.control(self.devices.list)?.current_item().cloned()
+    }
+
+    fn refresh_device_controls(&mut self) {
+        let preferred = self.selected_device_row().and_then(|row| row.device_index);
+        let state = self.state.clone();
+        let list_handle = self.devices.list;
+        if let Some(list) = self.control_mut(list_handle) {
+            devices::fill_list(list, &state, Some(preferred));
+        }
+        self.update_device_detail();
+    }
+
+    fn update_device_detail(&mut self) {
+        let text = self.selected_device_row().map_or_else(
+            || "Select a device to inspect its last check output.".into(),
+            |row| devices::detail_text(&self.state, &row),
+        );
+        let detail = self.devices.detail;
+        if let Some(area) = self.control_mut(detail) {
+            area.set_text(&text);
+        }
+    }
+
+    fn add_device(&mut self) {
+        if self.operation_gate.is_running() {
+            self.set_notices("Another project operation is already running.");
+            return;
+        }
+        if let Some(device) = devices::DeviceDialog::new().show() {
+            self.start_state_job(
+                StateAction::ProbeDevice(device),
+                "Checking SSH connectivity and Docker eligibility before save…",
+            );
+        }
+    }
+
+    fn check_device(&mut self) {
+        let Some(row) = self.selected_device_row() else {
+            return;
+        };
+        let Some(index) = row.device_index else {
+            self.set_notices("The local device is always available and needs no SSH check.");
+            return;
+        };
+        let name = self.state.devices[index].name.clone();
+        self.start_state_job(
+            StateAction::CheckDevice(name),
+            "Re-checking SSH connectivity and Docker eligibility…",
+        );
+    }
+
+    fn remove_device(&mut self) {
+        if self.operation_gate.is_running() {
+            self.set_notices("Another project operation is already running.");
+            return;
+        }
+        let Some(row) = self.selected_device_row() else {
+            return;
+        };
+        let Some(_) = row.device_index else {
+            self.set_notices("The implicit local device cannot be removed.");
+            return;
+        };
+        let placements = self
+            .state
+            .deployments
+            .iter()
+            .flat_map(|deployment| {
+                deployment
+                    .instances
+                    .iter()
+                    .filter(|instance| instance.device == row.name)
+                    .map(move |instance| format!("{} / {}", deployment.name, instance.name))
+            })
+            .collect::<Vec<_>>();
+        if !placements.is_empty() {
+            self.set_notices(&format!("Cannot remove `{}`: instances are placed on it: {}. Move or remove those instances first.", row.name, placements.join(", ")));
+            return;
+        }
+        if confirm::safe_remove(&format!(
+            "Remove SSH device registration `{}`?\n\nSSH keys, agent state, and SSH configuration will not be changed.",
+            row.name
+        )) {
+            self.start_state_job(
+                StateAction::RemoveDevice(row.name),
+                "Removing device registration…",
+            );
+        }
+    }
+
+    fn show_device_details(&self) {
+        if let Some(row) = self.selected_device_row() {
+            appcui::dialogs::message("Device details", &devices::detail_text(&self.state, &row));
+        }
+    }
+
+    fn selected_script_index(&self) -> Option<usize> {
+        self.control(self.operations.list)?
+            .current_item()
+            .map(|row| row.script_index)
+    }
+
+    fn refresh_script_controls(&mut self) {
+        let selected = self.selected_script_index();
+        let scripts = self.state.run_scripts.clone();
+        let handles = self.operations;
+        if let Some(list) = self.control_mut(handles.list) {
+            operations::fill_list(list, &scripts, selected);
+        }
+        if let Some(empty) = self.control_mut(handles.empty) {
+            empty.set_visible(scripts.is_empty());
+        }
+        let error = self.state.run_scripts_error.clone().unwrap_or_default();
+        if let Some(notice) = self.control_mut(handles.notice) {
+            notice.set_caption(&error);
+        }
+    }
+
+    fn edit_script(&mut self, new: bool) {
+        if self.operation_gate.is_running() {
+            self.set_notices("Another project operation is already running.");
+            return;
+        }
+        let edit_index = (!new).then(|| self.selected_script_index()).flatten();
+        if !new && edit_index.is_none() {
+            self.set_notices("Select a project run action to edit.");
+            return;
+        }
+        let existing = edit_index.and_then(|index| self.state.run_scripts.get(index));
+        let reserved_names = self
+            .state
+            .run_scripts
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != edit_index)
+            .map(|(_, script)| script.name.clone())
+            .collect();
+        let Some(script) = operations::ScriptDialog::new(existing, reserved_names).show() else {
+            return;
+        };
+        if self
+            .state
+            .run_scripts
+            .iter()
+            .enumerate()
+            .any(|(index, item)| Some(index) != edit_index && item.name == script.name)
+        {
+            self.set_notices(&format!(
+                "Run action name `{}` already exists.",
+                script.name
+            ));
+            return;
+        }
+        let mut scripts = self.state.run_scripts.clone();
+        if let Some(index) = edit_index {
+            scripts[index] = script;
+        } else {
+            scripts.push(script);
+        }
+        match switchyard_ops::run_scripts::save(&self.state.project_dir, &scripts) {
+            Ok(()) => {
+                self.state.run_scripts = scripts;
+                self.state.run_scripts_error = None;
+                self.refresh_script_controls();
+                self.set_notices("Project run actions saved.");
+            }
+            Err(error) => self.set_notices(&format!("Could not save run actions: {error}")),
+        }
+    }
+
+    fn remove_script(&mut self) {
+        if self.operation_gate.is_running() {
+            self.set_notices("Another project operation is already running.");
+            return;
+        }
+        let Some(index) = self.selected_script_index() else {
+            self.set_notices("Select a project run action to delete.");
+            return;
+        };
+        let name = self.state.run_scripts[index].name.clone();
+        if !confirm::safe_remove(&format!(
+            "Delete project run action `{name}`?\n\nThis edits .switchyard/run-scripts.yaml. It does not remove a startup profile or stop services."
+        )) {
+            return;
+        }
+        let mut scripts = self.state.run_scripts.clone();
+        scripts.remove(index);
+        match switchyard_ops::run_scripts::save(&self.state.project_dir, &scripts) {
+            Ok(()) => {
+                self.state.run_scripts = scripts;
+                self.refresh_script_controls();
+                self.set_notices("Project run action deleted.");
+            }
+            Err(error) => self.set_notices(&format!("Could not delete run action: {error}")),
+        }
+    }
+
+    fn run_script(&mut self) {
+        if self.operation_gate.is_running() {
+            self.set_notices("Another project operation is already running.");
+            return;
+        }
+        let Some(index) = self.selected_script_index() else {
+            self.set_notices("Select a project run action to run.");
+            return;
+        };
+        let script = self.state.run_scripts[index].clone();
+        let deployment = self
+            .selected_instance_deployment()
+            .or_else(|| self.state.deployments.first());
+        if script.command.is_some() && deployment.is_none() {
+            self.set_notices("A structured run action requires a deployment definition.");
+            return;
+        }
+        let bundle = deployment.map_or_else(
+            || self.state.project_dir.join("deployment.yaml"),
+            |item| item.bundle.clone(),
+        );
+        let deployment_name = deployment.map(|item| item.name.clone());
+        let Ok(spec) = OperationSpec::from_script(&script, bundle) else {
+            self.set_notices("The selected run action is invalid. Press F3 to edit it.");
+            return;
+        };
+        let preview = format!(
+            "Run project action `{}`?\n\n{}\n\nTarget deployment: {}\nOutput will stream into the ordered Operations timeline.",
+            script.name,
+            script.description.as_deref().unwrap_or("No description."),
+            deployment_name
+                .as_deref()
+                .unwrap_or("project shell context")
+        );
+        if !dialogs::validate("Confirm project run action", &preview) {
+            return;
+        }
+        if matches!(spec, OperationSpec::Shell(_))
+            && !switchyard_ops::run_scripts::shell_notice_acknowledged(&self.state.project_dir)
+        {
+            let warning = "This project run action executes a shell command with your user permissions from the project directory. Review .switchyard/run-scripts.yaml before continuing. Acknowledgement is remembered for this project.";
+            if !dialogs::validate("Shell command warning", warning) {
+                return;
+            }
+            if let Err(error) =
+                switchyard_ops::run_scripts::acknowledge_shell_notice(&self.state.project_dir)
+            {
+                self.set_notices(&format!(
+                    "Could not remember shell warning acknowledgement: {error}"
+                ));
+                return;
+            }
+        }
+        self.start_operation(script.name, deployment_name, false, spec);
     }
 
     fn create_instance(&mut self) {
@@ -1135,6 +1486,58 @@ impl ListViewEvents<ConnectionRowView> for SwitchyardShell {
     }
 }
 
+impl ListViewEvents<DeviceRowView> for SwitchyardShell {
+    fn on_current_item_changed(
+        &mut self,
+        handle: Handle<ListView<DeviceRowView>>,
+    ) -> EventProcessStatus {
+        if handle == self.devices.list {
+            self.update_device_detail();
+            EventProcessStatus::Processed
+        } else {
+            EventProcessStatus::Ignored
+        }
+    }
+    fn on_item_action(
+        &mut self,
+        handle: Handle<ListView<DeviceRowView>>,
+        _: usize,
+    ) -> EventProcessStatus {
+        if handle == self.devices.list {
+            self.show_device_details();
+            EventProcessStatus::Processed
+        } else {
+            EventProcessStatus::Ignored
+        }
+    }
+}
+
+impl ListViewEvents<ScriptRowView> for SwitchyardShell {
+    fn on_item_action(
+        &mut self,
+        handle: Handle<ListView<ScriptRowView>>,
+        _: usize,
+    ) -> EventProcessStatus {
+        if handle == self.operations.list {
+            self.run_script();
+            EventProcessStatus::Processed
+        } else {
+            EventProcessStatus::Ignored
+        }
+    }
+}
+
+impl TextFieldEvents for SwitchyardShell {
+    fn on_text_changed(&mut self, handle: Handle<TextField>) -> EventProcessStatus {
+        if handle == self.operations.filter {
+            self.refresh_operation_log();
+            EventProcessStatus::Processed
+        } else {
+            EventProcessStatus::Ignored
+        }
+    }
+}
+
 impl BackgroundTaskEvents<StateUpdate, TaskResponse> for SwitchyardShell {
     fn on_update(
         &mut self,
@@ -1147,14 +1550,60 @@ impl BackgroundTaskEvents<StateUpdate, TaskResponse> for SwitchyardShell {
         self.operation_gate.finish();
         self.set_busy(false);
         self.apply_state_controls();
-        self.set_code_notice(
+        self.set_notices(
             update
                 .notice
                 .as_deref()
                 .unwrap_or("Project state refreshed."),
         );
-        if let Some(notice) = update.notice.as_deref() {
-            self.set_profile_notice(notice);
+        if let Some(device) = update.device_probe {
+            let detail = device
+                .last_check_detail
+                .as_deref()
+                .unwrap_or("check returned no detail");
+            let eligible = device.last_check_status == DeviceCheckStatus::Eligible;
+            let prompt = if eligible {
+                format!(
+                    "Check result for `{}`:\n\n{}\n\nSave this SSH device?",
+                    device.name, detail
+                )
+            } else {
+                format!(
+                    "Check result for `{}`:\n\n{}\n\nThis device is currently ineligible. Save anyway? The failed result will remain visible and F6 can re-check it later.",
+                    device.name, detail
+                )
+            };
+            if dialogs::validate(
+                if eligible {
+                    "Device eligible"
+                } else {
+                    "Save ineligible device?"
+                },
+                &prompt,
+            ) {
+                let saved =
+                    StateStore::open(self.state.project_dir.join(".switchyard/state.sqlite3"))
+                        .map_err(|error| error.to_string())
+                        .and_then(|(store, _)| {
+                            store
+                                .register_device(&device)
+                                .map_err(|error| error.to_string())
+                        });
+                match saved {
+                    Ok(()) => {
+                        let project_dir = self.state.project_dir.clone();
+                        let log = std::mem::take(&mut self.state.operation_log);
+                        self.state = ProjectState::load(&project_dir);
+                        self.state.operation_log = log;
+                        self.apply_state_controls();
+                        self.set_notices(&format!(
+                            "SSH device `{}` saved with its check result.",
+                            device.name
+                        ));
+                    }
+                    Err(error) => self.set_notices(&format!("Device save failed: {error}")),
+                }
+            }
         }
         EventProcessStatus::Processed
     }
@@ -1354,6 +1803,40 @@ impl CommandBarEvents for SwitchyardShell {
                 "Switch",
                 switchyardshell::Commands::SwitchConnection,
             );
+        } else if self
+            .control(self.tabs)
+            .and_then(Tab::current_tab)
+            .is_some_and(|index| index == 5)
+        {
+            commandbar.set(key!("F2"), "Add", switchyardshell::Commands::AddDevice);
+            commandbar.set(
+                key!("F6"),
+                "Re-check",
+                switchyardshell::Commands::CheckDevice,
+            );
+            commandbar.set(
+                key!("Delete"),
+                "Remove",
+                switchyardshell::Commands::RemoveDevice,
+            );
+            commandbar.set(
+                key!("Enter"),
+                "Details",
+                switchyardshell::Commands::DeviceDetails,
+            );
+        } else if self
+            .control(self.tabs)
+            .and_then(Tab::current_tab)
+            .is_some_and(|index| index == 6)
+        {
+            commandbar.set(key!("F2"), "New", switchyardshell::Commands::NewScript);
+            commandbar.set(key!("F3"), "Edit", switchyardshell::Commands::EditScript);
+            commandbar.set(
+                key!("Delete"),
+                "Delete",
+                switchyardshell::Commands::RemoveScript,
+            );
+            commandbar.set(key!("Enter"), "Run", switchyardshell::Commands::RunScript);
         }
     }
 
@@ -1391,6 +1874,14 @@ impl CommandBarEvents for SwitchyardShell {
             }
             switchyardshell::Commands::CleanupInstance => self.cleanup_instance(),
             switchyardshell::Commands::SwitchConnection => self.switch_connection(),
+            switchyardshell::Commands::AddDevice => self.add_device(),
+            switchyardshell::Commands::CheckDevice => self.check_device(),
+            switchyardshell::Commands::RemoveDevice => self.remove_device(),
+            switchyardshell::Commands::DeviceDetails => self.show_device_details(),
+            switchyardshell::Commands::NewScript => self.edit_script(true),
+            switchyardshell::Commands::EditScript => self.edit_script(false),
+            switchyardshell::Commands::RemoveScript => self.remove_script(),
+            switchyardshell::Commands::RunScript => self.run_script(),
         }
     }
 }
