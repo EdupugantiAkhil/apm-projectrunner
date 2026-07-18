@@ -3448,10 +3448,13 @@ name = "switchyard-tui"
 version = "0.1.0"
 dependencies = [
  "appcui",
+ "serde_json",
  "signal-hook",
+ "switchyard-adapters",
  "switchyard-ops",
  "switchyard-sources",
  "switchyard-state",
+ "yaml_serde",
 ]
 
 [[package]]

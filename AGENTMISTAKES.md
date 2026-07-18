@@ -458,3 +458,14 @@ in the sandbox and caught only by pty-driving the real binary:
 
 Lesson: verify interactive-framework assumptions with a pty end-to-end pass per
 part; unit tests and clippy prove nothing about key routing or process lifecycle.
+
+## 2026-07-18 — AppCUI Markdown hangs on language-tagged code fences
+
+The part-3 Profiles inspector froze the whole TUI at startup: the AppCUI 0.4.13
+`Markdown` control busy-loops (100% CPU, never paints) on any fenced code block
+with a language tag (```text, ```yaml, ```rs); bare ``` fences are fine. Fixed by
+rendering all data-driven content (profile expansion, YAML fallbacks, verbatim
+source manifests) through read-only `TextArea` controls and keeping Markdown only
+for static authored text without tagged fences. Also: a pty probe that does not
+set TIOCSWINSZ reports every AppCUI app as hung (0x0 terminal) — set a real
+window size before concluding anything.

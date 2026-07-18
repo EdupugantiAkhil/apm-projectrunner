@@ -4,9 +4,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use switchyard_ops::profiles::{ProfileOrigin, ProfileRow};
 use switchyard_ops::{
     ConnectionMatrix, RunScript, connection_matrix, list_deployments, list_devices, list_profiles,
-    list_sources, run_scripts,
+    list_sources, load_profile_block, run_scripts,
 };
 use switchyard_sources::SourceManager;
 use switchyard_state::{RegisteredSourceKind, StateStore};
@@ -47,9 +48,32 @@ pub(crate) struct DeviceProjection {
     pub(crate) name: String,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct ProfileProjection {
     pub(crate) name: String,
+    pub(crate) row: ProfileRow,
+    pub(crate) definition: PathBuf,
+    pub(crate) json: serde_json::Value,
+    pub(crate) detail: String,
+}
+
+#[cfg(test)]
+impl Default for ProfileProjection {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            row: ProfileRow {
+                name: String::new(),
+                origin: ProfileOrigin::Project,
+                trust: switchyard_ops::ProfileTrust::Trusted,
+                shadowed: false,
+                services: Vec::new(),
+            },
+            definition: PathBuf::new(),
+            json: serde_json::Value::Null,
+            detail: String::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -246,8 +270,29 @@ impl ProjectState {
             match list_profiles(&self.project_dir, &deployment.bundle) {
                 Ok(listing) => {
                     for row in listing.rows {
-                        if !self.profiles.iter().any(|profile| profile.name == row.name) {
-                            self.profiles.push(ProfileProjection { name: row.name });
+                        if self.profiles.iter().any(|profile| {
+                            profile.name == row.name && profile.row.origin == row.origin
+                        }) {
+                            continue;
+                        }
+                        match load_profile_block(
+                            &self.project_dir,
+                            &deployment.bundle,
+                            &row.name,
+                            &row.origin,
+                        ) {
+                            Ok(block) => {
+                                let json = serde_json::to_value(&block).unwrap_or_default();
+                                let detail = profile_detail(&row, &json);
+                                self.profiles.push(ProfileProjection {
+                                    name: row.name.clone(),
+                                    row,
+                                    definition: deployment.bundle.clone(),
+                                    json,
+                                    detail,
+                                });
+                            }
+                            Err(error) => errors.push(format!("{}: {error}", row.name)),
                         }
                     }
                     self.profile_source_errors.extend(
@@ -274,6 +319,106 @@ impl ProjectState {
         }
         self.connections_error = (!errors.is_empty()).then(|| errors.join("; "));
     }
+}
+
+fn profile_detail(row: &ProfileRow, block: &serde_json::Value) -> String {
+    let origin = match &row.origin {
+        ProfileOrigin::Project => "Project".into(),
+        ProfileOrigin::ImportedFromSource { source, commit } => {
+            format!("Imported from {source}@{}", short(commit.as_deref()))
+        }
+        ProfileOrigin::DiscoveredInSource { source, commit } => {
+            format!("Source: {source}@{}", short(commit.as_deref()))
+        }
+    };
+    let trust = format!("{:?}", row.trust);
+    let parameters = block
+        .get("parameters")
+        .and_then(serde_json::Value::as_object)
+        .map_or_else(
+            || "none".into(),
+            |items| {
+                items
+                    .iter()
+                    .map(|(name, value)| {
+                        format!(
+                            "{name} ({})",
+                            if value
+                                .get("required")
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(false)
+                            {
+                                "required"
+                            } else {
+                                "optional"
+                            }
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            },
+        );
+    let mut lines = vec![
+        format!("Origin: {origin}"),
+        format!("Trust: {trust}"),
+        format!("Parameters: {parameters}"),
+        String::new(),
+    ];
+    if let Some(services) = block.get("services").and_then(serde_json::Value::as_object) {
+        for (name, service) in services {
+            let execution = service.get("execution").unwrap_or(&serde_json::Value::Null);
+            lines.push(format!("Service: {name}"));
+            lines.push(format!(
+                "  Adapter: {}",
+                execution
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown")
+            ));
+            lines.push(format!(
+                "  Command: {}",
+                display_value(execution.get("command"))
+            ));
+            lines.push(format!(
+                "  Workdir: {}",
+                display_value(execution.get("workingDirectory"))
+            ));
+            lines.push(format!(
+                "  Mounts: {}",
+                display_value(service.get("volumes"))
+            ));
+            lines.push(format!(
+                "  Capabilities: {}",
+                display_value(service.get("provides"))
+            ));
+            lines.push(format!(
+                "  Consumed slots: {}",
+                display_value(service.get("consumes"))
+            ));
+            lines.push(format!("  Probes: {}", display_value(service.get("probe"))));
+            lines.push(format!(
+                "  Lifecycle: {}",
+                display_value(execution.get("lifecycle"))
+            ));
+            lines.push(String::new());
+        }
+    }
+    lines.join("\n")
+}
+
+fn display_value(value: Option<&serde_json::Value>) -> String {
+    match value {
+        None | Some(serde_json::Value::Null) => "none".into(),
+        Some(serde_json::Value::Array(items)) if items.is_empty() => "none".into(),
+        Some(serde_json::Value::Object(items)) if items.is_empty() => "none".into(),
+        Some(value) => serde_json::to_string(value).unwrap_or_else(|_| "unavailable".into()),
+    }
+}
+
+fn short(value: Option<&str>) -> String {
+    value
+        .map(|text| text.chars().take(10).collect())
+        .unwrap_or_else(|| "unknown".into())
 }
 
 fn open_store(root: &Path) -> Result<StateStore, String> {
@@ -357,3 +502,5 @@ mod tests {
         );
     }
 }
+
+

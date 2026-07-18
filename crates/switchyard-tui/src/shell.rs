@@ -11,9 +11,10 @@ use crate::{
     dialogs::confirm,
     handoff::{ExitOutcome, OutcomeCell},
     state::ProjectState,
-    tabs::{self, code, home},
+    tabs::{self, code, home, profiles},
 };
 use code::TreeRow;
+use profiles::ProfileRowView;
 
 static STATE_JOBS: Mutex<VecDeque<StateJob>> = Mutex::new(VecDeque::new());
 
@@ -22,6 +23,8 @@ enum StateAction {
     Register { name: String, path: PathBuf },
     Worktree(code::WorktreeRequest),
     Remove { name: String },
+    ImportProfile { source: String, name: String },
+    RemoveProfile { name: String },
 }
 
 struct StateJob {
@@ -74,6 +77,16 @@ fn execute_state_job(connector: &BackgroundTaskConector<StateUpdate, TaskRespons
                 .map(|()| "Source removed from Switchyard.".into())
                 .unwrap_or_else(|error| format!("Safe removal refused: {error}")),
         ),
+        StateAction::ImportProfile { source, name } => Some(
+            switchyard_ops::import_source_profile(&job.project_dir, &source, &name)
+                .map(|_| format!("Startup profile `{name}` imported and trusted."))
+                .unwrap_or_else(|error| format!("Profile import failed: {error}")),
+        ),
+        StateAction::RemoveProfile { name } => Some(
+            switchyard_ops::remove_imported_profile(&job.project_dir, &name)
+                .map(|()| format!("Imported startup profile `{name}` removed."))
+                .unwrap_or_else(|error| format!("Profile removal failed: {error}")),
+        ),
     };
     connector.notify(StateUpdate {
         state: ProjectState::load(&job.project_dir),
@@ -91,8 +104,8 @@ const HELP: &str = r#"# Switchyard help
 - **F1** — open this help.
 - **Esc** or **Ctrl+Q** — quit (with confirmation while an operation is running).
 - **Tab / Shift+Tab / arrows** — move focus within the current tab.
-- Tab actions use **F-keys** (shown in the bottom command bar). Typing letters
-  in a list searches it; **Insert/Space** select list items.
+- Tab actions use **F-keys** (shown in the bottom command bar). Lists deliberately
+  have no implicit search bar; **Insert/Space** remain reserved by list selection.
 
 ## Code tab
 
@@ -100,6 +113,14 @@ const HELP: &str = r#"# Switchyard help
 - **F3** — create a managed worktree from the selected repository.
 - **Delete** — safely remove the selected managed entry.
 - **Enter** — show full details for the selection.
+
+## Profiles tab
+
+- **F2 / F3** — open the shared JSON-Schema-driven new/edit form.
+- **F4** — validate against a selected checkout without starting anything.
+- **F6** — review the verbatim source manifest, then import/re-check trust.
+- **Delete** — confirm removal of an imported profile.
+- **Enter** — show full expansion details.
 
 ## Concepts
 
@@ -139,13 +160,14 @@ impl ButtonEvents for HelpDialog {
 }
 
 #[Window(
-    events = ButtonEvents + WindowEvents + CommandBarEvents + TreeViewEvents<TreeRow> + BackgroundTaskEvents<StateUpdate, TaskResponse> + TimerEvents,
-    commands = [Help, Refresh, Quit, Next, AddCode, Worktree, RemoveCode, CodeDetails]
+    events = ButtonEvents + WindowEvents + CommandBarEvents + TreeViewEvents<TreeRow> + ListViewEvents<ProfileRowView> + BackgroundTaskEvents<StateUpdate, TaskResponse> + TimerEvents,
+    commands = [Help, Refresh, Quit, Next, AddCode, Worktree, RemoveCode, CodeDetails, NewProfile, EditProfile, ValidateProfile, ImportProfile, RemoveProfile, ProfileDetails]
 )]
 pub(crate) struct SwitchyardShell {
     tabs: Handle<Tab>,
     home: home::Handles,
     code: code::Handles,
+    profiles: profiles::Handles,
     state: ProjectState,
     outcome: OutcomeCell,
     operation_running: bool,
@@ -179,6 +201,12 @@ impl SwitchyardShell {
                 empty: Handle::None,
                 notice: Handle::None,
             },
+            profiles: profiles::Handles {
+                list: Handle::None,
+                detail: Handle::None,
+                empty: Handle::None,
+                notice: Handle::None,
+            },
             state,
             outcome,
             operation_running: false,
@@ -203,7 +231,7 @@ impl SwitchyardShell {
             &shell.state,
             restart.code_notice.as_deref(),
         );
-        tabs::profiles::add(&mut tab, profiles_index);
+        shell.profiles = tabs::profiles::add(&mut tab, profiles_index, &shell.state);
         tabs::instances::add(&mut tab, instances_index);
         tabs::connections::add(&mut tab, connections_index);
         tabs::devices::add(&mut tab, devices_index);
@@ -250,6 +278,7 @@ impl SwitchyardShell {
             problems.set_caption(&problems_text);
         }
         self.refresh_code_controls();
+        self.refresh_profile_controls();
     }
 
     fn start_state_job(&mut self, action: StateAction, busy_notice: &str) {
@@ -308,6 +337,132 @@ impl SwitchyardShell {
         let notice = self.code.notice;
         if let Some(label) = self.control_mut(notice) {
             label.set_caption(text);
+        }
+    }
+
+    fn selected_profile_index(&self) -> Option<usize> {
+        self.control(self.profiles.list)?
+            .current_item()
+            .map(|row| row.profile_index)
+    }
+
+    fn refresh_profile_controls(&mut self) {
+        let selected = self.selected_profile_index().unwrap_or(0);
+        let profiles = self.state.profiles.clone();
+        let handles = self.profiles;
+        if let Some(list) = self.control_mut(handles.list) {
+            profiles::fill_list(list, &profiles, Some(selected));
+        }
+        if let Some(empty) = self.control_mut(handles.empty) {
+            empty.set_visible(profiles.is_empty());
+        }
+        let diagnostics = profiles::profile_diagnostics(&self.state);
+        if let Some(notice) = self.control_mut(handles.notice) {
+            notice.set_caption(&diagnostics);
+        }
+        self.update_profile_detail();
+    }
+
+    fn update_profile_detail(&mut self) {
+        let text = self
+            .selected_profile_index()
+            .and_then(|index| self.state.profiles.get(index))
+            .map(|p| p.detail.clone())
+            .unwrap_or_else(|| "Select a startup profile to inspect its full expansion.".into());
+        let detail = self.profiles.detail;
+        if let Some(area) = self.control_mut(detail) {
+            area.set_text(&text);
+        }
+    }
+
+    fn set_profile_notice(&mut self, text: &str) {
+        let notice = self.profiles.notice;
+        if let Some(label) = self.control_mut(notice) {
+            label.set_caption(text);
+        }
+    }
+
+    fn selected_profile(&self) -> Option<&crate::state::ProfileProjection> {
+        self.selected_profile_index()
+            .and_then(|index| self.state.profiles.get(index))
+    }
+
+    fn validate_profile(&self) {
+        if let Some(profile) = self.selected_profile() {
+            profiles::validate_profile(&self.state, profile);
+        } else {
+            dialogs::message("Profile validation", "Select a startup profile first.");
+        }
+    }
+
+    fn edit_profile(&self, new: bool) {
+        profiles::show_editor(if new { None } else { self.selected_profile() });
+    }
+
+    fn import_profile(&mut self) {
+        if self.operation_running {
+            self.set_profile_notice("Another project operation is already running.");
+            return;
+        }
+        let Some(profile) = self.selected_profile().cloned() else {
+            self.set_profile_notice("Select a source-local profile first.");
+            return;
+        };
+        let Some(source) = profiles::source_for_import(&profile).map(str::to_owned) else {
+            self.set_profile_notice("F6 applies only to a new or changed source-local profile.");
+            return;
+        };
+        let manifest = match profiles::import_manifest_text(&self.state, &source) {
+            Ok(text) => text,
+            Err(error) => {
+                self.set_profile_notice(&error);
+                return;
+            }
+        };
+        if profiles::confirm_import(&profile, &source, &manifest) {
+            self.start_state_job(
+                StateAction::ImportProfile {
+                    source,
+                    name: profile.name,
+                },
+                "Importing reviewed startup profile…",
+            );
+        }
+    }
+
+    fn remove_profile(&mut self) {
+        if self.operation_running {
+            self.set_profile_notice("Another project operation is already running.");
+            return;
+        }
+        let Some(profile) = self.selected_profile().cloned() else {
+            self.set_profile_notice("Select an imported profile first.");
+            return;
+        };
+        if !matches!(
+            profile.row.origin,
+            switchyard_ops::ProfileOrigin::ImportedFromSource { .. }
+        ) {
+            self.set_profile_notice("Only imported profiles can be removed here.");
+            return;
+        }
+        let preview = format!(
+            "Remove imported startup profile `{}`?\n\nThe source manifest and project profiles will not be changed.",
+            profile.name
+        );
+        if confirm::safe_remove(&preview) {
+            self.start_state_job(
+                StateAction::RemoveProfile { name: profile.name },
+                "Removing imported profile…",
+            );
+        }
+    }
+
+    fn show_profile_details(&self) {
+        if let Some(profile) = self.selected_profile() {
+            appcui::dialogs::message("Startup profile details", &profile.detail);
+        } else {
+            appcui::dialogs::message("Startup profile details", "No startup profile is selected.");
         }
     }
 
@@ -501,6 +656,32 @@ impl TreeViewEvents<code::TreeRow> for SwitchyardShell {
     }
 }
 
+impl ListViewEvents<ProfileRowView> for SwitchyardShell {
+    fn on_current_item_changed(
+        &mut self,
+        handle: Handle<ListView<ProfileRowView>>,
+    ) -> EventProcessStatus {
+        if handle == self.profiles.list {
+            self.update_profile_detail();
+            EventProcessStatus::Processed
+        } else {
+            EventProcessStatus::Ignored
+        }
+    }
+    fn on_item_action(
+        &mut self,
+        handle: Handle<ListView<ProfileRowView>>,
+        _: usize,
+    ) -> EventProcessStatus {
+        if handle == self.profiles.list {
+            self.show_profile_details();
+            EventProcessStatus::Processed
+        } else {
+            EventProcessStatus::Ignored
+        }
+    }
+}
+
 impl BackgroundTaskEvents<StateUpdate, TaskResponse> for SwitchyardShell {
     fn on_update(
         &mut self,
@@ -516,6 +697,9 @@ impl BackgroundTaskEvents<StateUpdate, TaskResponse> for SwitchyardShell {
                 .as_deref()
                 .unwrap_or("Project state refreshed."),
         );
+        if let Some(notice) = update.notice.as_deref() {
+            self.set_profile_notice(notice);
+        }
         EventProcessStatus::Processed
     }
 
@@ -553,8 +737,8 @@ impl CommandBarEvents for SwitchyardShell {
             .and_then(Tab::current_tab)
             .is_some_and(|index| index == 1)
         {
-            // List controls consume Insert/Space for selection and plain
-            // letters for their search bar, so actions bind to F-keys.
+            // List controls reserve selection keys; tab actions stay on the
+            // standard F-key/Delete/Enter scheme.
             commandbar.set(key!("F2"), "Add", switchyardshell::Commands::AddCode);
             commandbar.set(key!("F3"), "Worktree", switchyardshell::Commands::Worktree);
             commandbar.set(
@@ -566,6 +750,33 @@ impl CommandBarEvents for SwitchyardShell {
                 key!("Enter"),
                 "Details",
                 switchyardshell::Commands::CodeDetails,
+            );
+        } else if self
+            .control(self.tabs)
+            .and_then(Tab::current_tab)
+            .is_some_and(|index| index == 2)
+        {
+            commandbar.set(key!("F2"), "New", switchyardshell::Commands::NewProfile);
+            commandbar.set(key!("F3"), "Edit", switchyardshell::Commands::EditProfile);
+            commandbar.set(
+                key!("F4"),
+                "Validate",
+                switchyardshell::Commands::ValidateProfile,
+            );
+            commandbar.set(
+                key!("F6"),
+                "Import",
+                switchyardshell::Commands::ImportProfile,
+            );
+            commandbar.set(
+                key!("Delete"),
+                "Remove",
+                switchyardshell::Commands::RemoveProfile,
+            );
+            commandbar.set(
+                key!("Enter"),
+                "Details",
+                switchyardshell::Commands::ProfileDetails,
             );
         }
     }
@@ -582,6 +793,12 @@ impl CommandBarEvents for SwitchyardShell {
             switchyardshell::Commands::Worktree => self.create_worktree(),
             switchyardshell::Commands::RemoveCode => self.remove_code(),
             switchyardshell::Commands::CodeDetails => self.show_code_details(),
+            switchyardshell::Commands::NewProfile => self.edit_profile(true),
+            switchyardshell::Commands::EditProfile => self.edit_profile(false),
+            switchyardshell::Commands::ValidateProfile => self.validate_profile(),
+            switchyardshell::Commands::ImportProfile => self.import_profile(),
+            switchyardshell::Commands::RemoveProfile => self.remove_profile(),
+            switchyardshell::Commands::ProfileDetails => self.show_profile_details(),
         }
     }
 }
