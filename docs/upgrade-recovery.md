@@ -5,6 +5,13 @@ recovery manifests live below `.switchyard/generated/`, while runtime resources 
 Switchyard ownership and resource-hash labels. Stop the daemon before copying or
 replacing the database.
 
+These steps are the same on supported Linux hosts and Apple Silicon macOS 26 or newer.
+On macOS, leave Docker Desktop running while stopping or upgrading the native daemon;
+after a Docker Desktop restart, run `switchyard status` and then `switchyard up` to
+reconcile only ownership-labelled resources. The sidecar admin bridge re-inspects exact
+ownership labels and targets the inspected immutable container ID, so a reused
+container name cannot redirect recovery to a replacement container.
+
 ## Upgrade binaries and schema
 
 The current SQLite state schema is v7. Schema v6 added reviewed source-profile import

@@ -3,12 +3,20 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-for command in cargo node npm git tar sha256sum install find sort awk sed uname; do
+for command in cargo node npm git tar install find sort awk sed uname; do
   command -v "$command" >/dev/null || {
     echo "release: $command is required" >&2
     exit 1
   }
 done
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256_files() { sha256sum "$@"; }
+elif command -v shasum >/dev/null 2>&1; then
+  sha256_files() { shasum -a 256 "$@"; }
+else
+  echo "release: sha256sum or shasum is required" >&2
+  exit 1
+fi
 node_major=$(node -p 'process.versions.node.split(".")[0]')
 [[ $node_major == 24 ]] || {
   echo "release: Node.js 24 is required to build packages/web (found $(node --version))" >&2
@@ -28,9 +36,10 @@ git_describe=$(git describe --always --dirty)
 release_version="${cargo_version}+${git_describe//\//-}"
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 machine=$(uname -m)
-case "$machine" in
-  x86_64|amd64) arch=x86_64 ;;
-  aarch64|arm64) arch=aarch64 ;;
+case "$os:$machine" in
+  darwin:arm64) arch=arm64 ;;
+  *:x86_64|*:amd64) arch=x86_64 ;;
+  *:aarch64|*:arm64) arch=aarch64 ;;
   *) arch=$machine ;;
 esac
 archive_base="switchyard-${release_version}-${os}-${arch}"
@@ -85,7 +94,7 @@ sed \
 
 (
   cd dist
-  sha256sum "$archive_base.tar.gz" RELEASE_NOTES.md > SHA256SUMS
+  sha256_files "$archive_base.tar.gz" RELEASE_NOTES.md > SHA256SUMS
 )
 if [[ -n ${SWITCHYARD_SIGNING_KEY:-} ]]; then
   command -v ssh-keygen >/dev/null || {

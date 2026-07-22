@@ -17,9 +17,16 @@ use switchyard_router::{
     host_gateway::{ensure_certificates, preflight},
 };
 
+fn secure_tempdir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("sy-host-gateway-")
+        .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+        .unwrap()
+}
+
 #[test]
 fn host_auth_precedes_config_access_but_certificate_commands_remain_tokenless() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = secure_tempdir();
     let missing_config = directory.path().join("missing.json");
     let binary = env!("CARGO_BIN_EXE_switchyard-router");
 
@@ -55,7 +62,7 @@ async fn host_mode_terminates_https_and_routes_to_loopback() {
     let upstream = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let upstream_port = upstream.local_addr().unwrap().port();
     let gateway_port = free_port();
-    let directory = tempfile::tempdir().unwrap();
+    let directory = secure_tempdir();
     let certificate = directory.path().join("host.pem");
     let private_key = directory.path().join("host-key.pem");
     let socket = directory.path().join("admin.socket");

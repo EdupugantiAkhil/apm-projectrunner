@@ -560,7 +560,11 @@ impl SourceManager {
                 format!("source `{name}` is not registered"),
             )
         })?;
-        let root = if source.path.starts_with(&self.worktree_root) {
+        let registered_as_linked_worktree = source
+            .repository_path
+            .as_deref()
+            .is_some_and(|repository| repository != source.path);
+        let root = if registered_as_linked_worktree {
             &self.worktree_root
         } else {
             &self.clone_root
@@ -1130,6 +1134,7 @@ mod tests {
             .worktrees(&repository)
             .unwrap();
         assert_eq!(worktrees.len(), 2);
+        let linked = linked.canonicalize().unwrap();
         assert!(worktrees.iter().any(|entry| entry.path == linked));
     }
 
@@ -1212,9 +1217,12 @@ mod tests {
             .create_clone(&store, "repo", "clone", Some("main"))
             .unwrap();
         assert!(
-            clone
-                .path
-                .starts_with(temp.path().join(".switchyard/clones"))
+            clone.path.starts_with(
+                temp.path()
+                    .canonicalize()
+                    .unwrap()
+                    .join(".switchyard/clones")
+            )
         );
         assert_eq!(
             manager.inspect(&clone.path, Some("main")).identity.dirty,
@@ -1240,9 +1248,12 @@ mod tests {
             )
             .unwrap();
         assert!(
-            clone
-                .path
-                .starts_with(temp.path().join(".switchyard/clones"))
+            clone.path.starts_with(
+                temp.path()
+                    .canonicalize()
+                    .unwrap()
+                    .join(".switchyard/clones")
+            )
         );
         assert_eq!(clone.kind, RegisteredSourceKind::Managed);
         manager.remove(&store, "url-clone", false).unwrap();

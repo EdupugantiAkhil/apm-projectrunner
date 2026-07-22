@@ -8,6 +8,53 @@ Updated: 2026-07-22
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
 
+## 2026-07-22 macOS portability — product and release completion
+
+- Apple Silicon macOS 26 or newer is now a supported local host target with Docker
+  Desktop in Linux-container mode. Bootstrap rejects Intel Macs and older macOS
+  releases explicitly. Apple Containers are not required: the shared Docker/Compose
+  runtime remains intact, while sidecar control crosses Docker Desktop through the
+  ownership-checked exec bridge instead of a shared-filesystem socket.
+- The exec bridge now inspects and verifies the complete ownership tuple and then uses
+  the immutable inspected container ID for execution, closing the name-reuse race.
+  Router integration coverage exercises authentication, apply, inspect, counters,
+  events, drain, redaction, malformed frames, and the 1 MiB bound through the bridge.
+- `examples/jas-base/smoke.sh`: PASSED on macOS after the platform fixes. It covers the
+  image, legacy-script, Process Compose, worktree, custom-domain, independent binding,
+  persistent-volume initialization, restart, and ownership cleanup workflows. The final
+  unified Phase 6 proof passed Rust formatting/tests/Clippy/rustdoc, the React clean
+  install/build and all 16 GUI tests, and the live JAS fixture in one run.
+- Native macOS router tests pass for HTTP, HTTPS, streaming, WebSocket, gRPC, raw TCP,
+  CORS, browser identity, managed proxy, and transactional rollback. The daemon API
+  worktree failure was a real `/var` versus `/private/var` canonical-path bug and is now
+  fixed using the durable registered source relationship rather than lexical roots.
+- The opt-in routing-matrix Docker Desktop restart proof passed: it preserved applied
+  route state, recovered stopped Compose resources, refreshed the host gateway after
+  Docker reassigned published ports, restored the selected route, and completed
+  ownership-safe stop and cleanup. Daemon restart, stale-state, interrupted-operation,
+  and sidecar crash recovery remain covered by the native and fixture proofs.
+- Release assembly now works with stock macOS `shasum` and Bash 3.2, produces a
+  `darwin-arm64` archive, performs checksum verification, fresh install, in-place
+  ownership-checked upgrade, executable invocation, uninstall, and an empty-prefix
+  assertion. The final archive smoke passed, and a throwaway Ed25519 signing key
+  produced and successfully verified its checksum signature with the fixed
+  `switchyard-release` identity/namespace.
+- GitHub Actions now has an Apple Silicon `macos-26` Rust/GUI/release job. Live Docker
+  routing is gated to an explicitly enabled self-hosted Apple Silicon runner labelled
+  `switchyard-docker`, because hosted arm64 macOS runners do not provide nested
+  virtualization.
+- macOS HTTPS guidance prints reversible per-user Login Keychain commands and never
+  invokes privilege escalation. Automatic `.local` publication remains explicitly
+  Linux-only; loopback and acknowledged explicit-address LAN binding remain available
+  on macOS. The complete reliability suite passed its core, raw-TCP, HTTP reload,
+  health-flap soak, and daemon-concurrency checks on macOS; fd/RSS bounds remain the
+  precise Linux-only `/proc` evidence.
+- No supported Chromium/Chrome for Testing bundle is installed on this host and a clean
+  macOS user account is not available, so the final real-browser clean-account launch
+  acceptance item remains open. Discovery, supported-version enforcement, profile
+  isolation, private proxy-auth extension creation, and native `open` integration are
+  implemented and covered below that external acceptance boundary.
+
 ## 2026-07-22 macOS portability — native-host foundation
 
 - The ordered implementation and release checklist is tracked under `macOS support

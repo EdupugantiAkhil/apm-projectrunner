@@ -10,18 +10,15 @@ The Phase 7 source audit and its tracked findings are in
 [`security-review.md`](security-review.md). Configuration, HTTP API, state-file, and
 SQLite compatibility commitments are in [`support-policy.md`](support-policy.md).
 
-Switchyard development is Linux-first. Native Linux on `x86_64` or `aarch64` with a
-Linux Docker Engine and Docker Compose v2 is the supported path; CI runs on `x86_64`
-Linux. The runtime relies on Docker-provided Linux network namespaces for
+Switchyard supports native Linux on `x86_64` or `aarch64` and Apple Silicon on macOS
+26 or newer. Linux uses Docker Engine; macOS uses Docker Desktop configured for Linux
+containers. The runtime relies on Docker-provided Linux network namespaces for
 consumer/router sidecar isolation; developers do not need to create namespaces or run
 the router as root.
 
-Apple Silicon on macOS 26 or newer is a planned host-gateway platform and may be used
-for workspace-only work with Docker Desktop configured for Linux containers.
-End-to-end routing support on that platform is not yet part of Phase 0. Intel Macs and
-older macOS releases are outside the planned support scope. On Windows, use a Linux
-WSL2 distribution with Docker Desktop integration; native Windows development is not
-currently supported.
+Intel Macs and older macOS releases are outside the support scope. On Windows, use a
+Linux WSL2 distribution with Docker Desktop integration; native Windows development is
+not currently supported.
 
 ## Bootstrap
 
@@ -34,7 +31,8 @@ run:
 
 The command is diagnostic and does not use `sudo` or change the host. It checks the
 pinned Rust compiler, CMake (required to build Pingora), Docker daemon access, Docker
-Compose v2, Linux-container mode, and, on native Linux, network namespace availability.
+Compose v2, Linux-container mode, Linux network namespace availability, or the Apple
+Silicon and macOS 26 minimums as appropriate.
 Follow any reported remediation and rerun it until all checks pass.
 
 Create a minimal project from the embedded reference template with:
@@ -60,11 +58,10 @@ repository scripts during discovery or edits `.switchyard` generated/runtime sta
 
 ## Routing-proof platforms
 
-The Phase 4 release gate supports native Linux `x86_64` and `aarch64`, both using Linux
-containers, Docker Engine, and Compose v2. The dependency-free fixture and Rust router
-build for the host architecture; no architecture-specific image is downloaded. CI runs
-the complete proof on `x86_64`, and the same command is verified on `aarch64` during
-development. macOS, native Windows, and public/LAN exposure remain outside this gate.
+The Phase 4 routing proof supports native Linux `x86_64` and `aarch64` with Docker
+Engine and Apple Silicon macOS 26 or newer with Docker Desktop. Every platform runs
+Linux containers and Compose v2. Native Windows and public/LAN exposure remain outside
+this gate.
 
 Run the clean-checkout release proof with:
 
@@ -144,6 +141,12 @@ The suite covers router-core snapshot reload storms, TCP and HTTP data-plane rel
 storms with Linux `/proc` fd/RSS leak checks, an HTTP soak with health flapping, and an
 in-process daemon API concurrency test. Each test duration is printed by the script,
 and any failed assertion exits non-zero.
+
+On macOS the same concurrency, response-integrity, route-atomicity, health-flap, and
+active-connection drain assertions run, but the `/proc` fd/RSS samples are compiled out
+because macOS has no `/proc`. The macOS release evidence is therefore functional soak
+and lifecycle cleanup rather than an OS-level fd/RSS leak bound; Linux CI remains the
+resource-metric gate.
 
 ## Sources and worktrees
 

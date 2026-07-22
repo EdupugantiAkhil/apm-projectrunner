@@ -9,10 +9,14 @@ elif [[ $# -ne 0 ]]; then
   exit 2
 fi
 
-command -v sha256sum >/dev/null || {
-  echo "uninstall: sha256sum is required" >&2
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256_file() { sha256sum "$1" | awk '{print $1}'; }
+elif command -v shasum >/dev/null 2>&1; then
+  sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
+else
+  echo "uninstall: sha256sum or shasum is required" >&2
   exit 1
-}
+fi
 require_safe_parent() {
   local relative=$1 current=$prefix part
   local -a parts
@@ -48,7 +52,7 @@ while read -r expected relative; do
     echo "uninstall: owned file is missing or unsafe: $destination" >&2
     exit 1
   }
-  actual=$(sha256sum "$destination" | awk '{print $1}')
+  actual=$(sha256_file "$destination")
   [[ $actual == "$expected" ]] || {
     echo "uninstall: refusing to remove modified file $destination" >&2
     exit 1

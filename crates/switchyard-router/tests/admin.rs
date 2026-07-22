@@ -48,9 +48,13 @@ async fn request(path: &Path, request: Value) -> Value {
 }
 
 async fn bridged_request(path: &Path, request: Value) -> std::process::Output {
-    let path = path.to_owned();
     let mut encoded = serde_json::to_vec(&request).unwrap();
     encoded.push(b'\n');
+    bridged_bytes(path, encoded).await
+}
+
+async fn bridged_bytes(path: &Path, encoded: Vec<u8>) -> std::process::Output {
+    let path = path.to_owned();
     tokio::task::spawn_blocking(move || {
         let mut child = Command::new(env!("CARGO_BIN_EXE_switchyard-router"))
             .arg("admin-client")
@@ -68,9 +72,10 @@ async fn bridged_request(path: &Path, request: Value) -> std::process::Output {
 }
 
 fn socket_path(prefix: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let temporary_root = std::env::temp_dir().canonicalize().unwrap();
     let directory = tempfile::Builder::new()
         .prefix(prefix)
-        .tempdir_in("/private/tmp")
+        .tempdir_in(temporary_root)
         .unwrap();
     let socket = directory.path().join("admin.sock");
     (directory, socket)
@@ -170,8 +175,55 @@ async fn admin_client_preserves_framing_authentication_and_response() {
     assert_eq!(current["result"]["version"], 7);
     assert!(!current.to_string().contains("bridge-secret"));
 
-    process.request_shutdown();
-    process.wait().await.unwrap();
+    let applied = bridged_request(
+        &socket,
+        json!({"token": "bridge-secret", "operation": "apply", "config": config(8)}),
+    )
+    .await;
+    assert!(applied.status.success());
+    let applied: Value = serde_json::from_slice(&applied.stdout).unwrap();
+    assert_eq!(applied["result"]["status"], "activated");
+
+    for operation in ["routes", "counters", "events"] {
+        let response = bridged_request(
+            &socket,
+            json!({"token": "bridge-secret", "operation": operation}),
+        )
+        .await;
+        assert!(
+            response.status.success(),
+            "{operation}: {:?}",
+            response.stderr
+        );
+        let response: Value = serde_json::from_slice(&response.stdout).unwrap();
+        assert_eq!(response["ok"], true);
+        assert!(!response.to_string().contains("bridge-secret"));
+    }
+
+    let drained = bridged_request(
+        &socket,
+        json!({"token": "bridge-secret", "operation": "drain"}),
+    )
+    .await;
+    assert!(drained.status.success());
+    let drained: Value = serde_json::from_slice(&drained.stdout).unwrap();
+    assert_eq!(drained["result"]["status"], "draining");
+    tokio::time::timeout(Duration::from_secs(2), process.wait())
+        .await
+        .expect("router did not shut down after bridged drain")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn admin_client_rejects_unframed_and_oversized_requests_before_connecting() {
+    let (_directory, socket) = socket_path("sy-admin-bounds-");
+    let unframed = bridged_bytes(&socket, b"{}".to_vec()).await;
+    assert!(!unframed.status.success());
+    assert!(String::from_utf8_lossy(&unframed.stderr).contains("newline-terminated frame"));
+
+    let oversized = bridged_bytes(&socket, vec![b'x'; 1024 * 1024 + 2]).await;
+    assert!(!oversized.status.success());
+    assert!(String::from_utf8_lossy(&oversized.stderr).contains("at most 1 MiB"));
 }
 
 #[tokio::test]

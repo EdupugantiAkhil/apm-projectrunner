@@ -304,5 +304,21 @@ assert after["requestCount"] > before["requestCount"]
 assert after["services"] == before["services"]
 PY
 
+if [[ ${SWITCHYARD_TEST_DOCKER_DESKTOP_RESTART:-0} == 1 ]]; then
+  [[ "$(uname -s)" == "Darwin" ]] || {
+    echo "routing-matrix proof: Docker Desktop restart mode requires macOS" >&2
+    exit 1
+  }
+  docker desktop restart --timeout 120
+  "$switchyard" up "$deployment"
+  recovered_after_desktop_restart="$(browser_identity ui-1)"
+  python3 - "$after_restart" "$recovered_after_desktop_restart" <<'PY'
+import json, sys
+before, after = map(json.loads, sys.argv[1:])
+assert after["requestCount"] > before["requestCount"]
+assert after["services"] == before["services"]
+PY
+fi
+
 echo "host routing decisions: $(admin_request "$runtime_dir/host.socket" events)"
 echo "routing-matrix proof: custom domains, fixed localhost routes, atomic switching, rollback, crash recovery, delayed readiness, isolation, and persistence verified"

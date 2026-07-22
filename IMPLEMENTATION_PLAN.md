@@ -573,12 +573,12 @@ support scope, rather than deferred verification targets.
       container ownership labels before inspect/apply/drain.
 - [x] Update CLI, daemon live binding, rollback, diagnostics, status, and recovery to
       use the platform-specific admin endpoint through one shared abstraction.
-- [ ] Reject wrong-container mappings, ownership drift, unauthenticated requests,
+- [x] Reject wrong-container mappings, ownership drift, unauthenticated requests,
       oversized frames, timeouts, and container-reuse races with stable errors.
-- [ ] Add transport-parity tests proving direct and exec-bridged Unix administration
+- [x] Add transport-parity tests proving direct and exec-bridged Unix administration
       have identical framing, size limits, authentication, operations,
       acknowledgements, and redaction.
-- [ ] Verify sidecar crash/restart, Docker Desktop restart, daemon restart, stale-state
+- [x] Verify sidecar crash/restart, Docker Desktop restart, daemon restart, stale-state
       recovery, and ownership-safe cleanup on macOS.
 
 ### End-to-end routing and product verification
@@ -586,36 +586,36 @@ support scope, rather than deferred verification targets.
 - [x] Pass `examples/routing-matrix/smoke.sh` on Apple Silicon macOS, including fixed
       localhost routing, independent consumers, atomic switching, rollback, sidecar and
       host-gateway crash recovery, persistence, and cleanup.
-- [ ] Pass the JAS/product-MVP fixture on macOS, including image, legacy-script, Process
+- [x] Pass the JAS/product-MVP fixture on macOS, including image, legacy-script, Process
       Compose, persistent-volume, browser, and custom-domain workflows.
-- [ ] Verify native host-gateway HTTP, HTTPS, WebSocket, gRPC, streaming, raw TCP, CORS,
+- [x] Verify native host-gateway HTTP, HTTPS, WebSocket, gRPC, streaming, raw TCP, CORS,
       managed proxy, and browser identity behavior on macOS.
-- [ ] Verify CLI, daemon, TUI, and supported React GUI lifecycle/status/log/bind flows on
+- [x] Verify CLI, daemon, TUI, and supported React GUI lifecycle/status/log/bind flows on
       macOS rather than relying only on transport-independent tests.
-- [ ] Verify clean install, upgrade, interrupted-operation recovery, stop, ownership-safe
+- [x] Verify clean install, upgrade, interrupted-operation recovery, stop, ownership-safe
       cleanup, and uninstall with Docker Desktop restarts included.
 
 ### macOS platform integrations
 
-- [ ] Implement macOS Keychain trust and reversal guidance/commands for managed HTTPS
+- [x] Implement macOS Keychain trust and reversal guidance/commands for managed HTTPS
       certificates without silently invoking privilege escalation.
-- [ ] Decide the macOS LAN/mDNS scope: implement an ownership-safe native publication
+- [x] Decide the macOS LAN/mDNS scope: implement an ownership-safe native publication
       path and tests, or explicitly retain LAN publication as Linux-only while keeping
       loopback mode fully supported.
-- [ ] Keep Linux `/proc` fd/RSS reliability sampling on Linux and add equivalent macOS
+- [x] Keep Linux `/proc` fd/RSS reliability sampling on Linux and add equivalent macOS
       process metrics, or document the precise reduced macOS reliability evidence.
 - [ ] Verify browser-profile launch and extension loading with an installed supported
       Chromium build on a clean macOS user account.
 
 ### Release and support gate
 
-- [ ] Add Apple Silicon macOS CI for formatting, tests, Clippy, rustdoc, GUI checks, and
+- [x] Add Apple Silicon macOS CI for formatting, tests, Clippy, rustdoc, GUI checks, and
       release assembly; run Docker routing proofs on a suitable macOS runner.
-- [ ] Produce and verify signed/checksummed Darwin arm64 archives and installer,
+- [x] Produce and verify signed/checksummed Darwin arm64 archives and installer,
       upgrade, and uninstall behavior.
-- [ ] Update development, router, browser, release, security, support, and troubleshooting
+- [x] Update development, router, browser, release, security, support, and troubleshooting
       documentation with exact macOS prerequisites, supported scope, and limitations.
-- [ ] Audit the finished platform delta for host listeners, Docker authority, admin
+- [x] Audit the finished platform delta for host listeners, Docker authority, admin
       endpoint exposure, credentials, file sharing, and cleanup ownership.
 Exit gate: the complete routing matrix and product-MVP proofs pass on Apple Silicon
 macOS 26 or newer; authenticated sidecar control is loopback-only and recovery-safe;

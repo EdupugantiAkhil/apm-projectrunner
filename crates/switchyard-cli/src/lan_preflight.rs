@@ -232,6 +232,13 @@ impl<'a> LanRuntime<'a> {
             });
         }
 
+        if !cfg!(target_os = "linux") {
+            return Err(LanError::Preflight(
+                "automatic .local publication is supported only on Linux; macOS supports loopback and explicitly addressed LAN gateways, but does not start an mDNS publisher"
+                    .into(),
+            ));
+        }
+
         if let Some(state) = self.read_state()? {
             if state.definition_hash == self.plan.definition_hash
                 && state.publishers.iter().all(|publisher| {
@@ -320,6 +327,25 @@ impl<'a> LanRuntime<'a> {
 
     pub fn status(&self) -> Result<MdnsStatus, LanError> {
         let desired = desired_publications(self.plan, &SystemRunner)?;
+        if !cfg!(target_os = "linux") && desired.requested {
+            return Ok(MdnsStatus {
+                publications: desired
+                    .targets
+                    .into_iter()
+                    .map(|(name, address)| PublicationStatus {
+                        name,
+                        address,
+                        outcome: PublicationOutcome::Failed,
+                        detail: "not published; automatic .local publication is Linux-only".into(),
+                    })
+                    .collect(),
+                checks: vec![check(
+                    "platform",
+                    CheckOutcome::Fail,
+                    "automatic .local publication is supported only on Linux; use loopback or explicitly addressed LAN access on macOS",
+                )],
+            });
+        }
         let Some(state) = self.read_state()? else {
             if !desired.requested {
                 return Ok(MdnsStatus {

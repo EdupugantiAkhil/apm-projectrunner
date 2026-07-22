@@ -53,7 +53,22 @@ case "$host_os" in
     fi
     ;;
   Darwin)
-    pass "macOS host detected (${host_arch})"
+    if [[ "$host_arch" == "arm64" ]]; then
+      pass "Apple Silicon macOS host detected"
+    else
+      fail "Apple Silicon (arm64) is required on macOS; Intel Macs are not supported"
+    fi
+    if [[ -x /usr/bin/sw_vers ]]; then
+      macos_version="$(/usr/bin/sw_vers -productVersion 2>/dev/null)"
+      macos_major="${macos_version%%.*}"
+      if [[ "$macos_major" =~ ^[0-9]+$ ]] && ((macos_major >= 26)); then
+        pass "macOS ${macos_version} satisfies the macOS 26 minimum"
+      else
+        fail "macOS 26 or newer is required (found ${macos_version:-unknown})"
+      fi
+    else
+      fail "macOS version could not be read with /usr/bin/sw_vers"
+    fi
     if [[ -x /usr/bin/nohup ]] && [[ -x /bin/ps ]]; then
       pass "macOS host-process lifecycle tools are available"
     else

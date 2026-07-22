@@ -29,6 +29,27 @@ filesystem.
 There were no critical or low-severity findings. Remediation proposals are design
 recommendations; this audit did not change product code.
 
+## 2026-07-22 macOS platform delta
+
+The Apple Silicon port does not add a second router or expose a TCP administration
+listener. Sidecars keep their mode-`0600` Unix socket inside the Linux container; the
+host verifies all four ownership labels, captures the inspected immutable container ID,
+and executes the bounded admin client against that ID. Requests and bearer tokens cross
+stdin, never argv or generated Compose. This closes both Docker name-reuse and
+inspect-by-name/exec-by-name races; removal between inspection and exec fails closed.
+
+Docker Desktop file sharing contains authored source/config mounts already present in
+the plan, but no host admin socket or Docker socket is mounted into a container. Native
+gateway listeners retain the same loopback default, explicit LAN acknowledgement, and
+loopback-only provider rules. Automatic `.local` publication is rejected on macOS
+rather than starting an unowned Bonjour process. Certificate trust is printed as
+reversible per-user Login Keychain commands and is never executed automatically.
+Cleanup continues to require exact project labels, resource hashes, state ownership,
+and explicit volume confirmation. Local Apple Silicon proofs cover wrong-token and
+oversized admin frames, full bridged operations, crash and Docker Desktop restart
+recovery, fixed-address routing, persisted volumes, and empty ownership-labelled
+cleanup. The pre-existing cross-platform findings below remain applicable.
+
 ## 1. Host listeners
 
 ### Examined

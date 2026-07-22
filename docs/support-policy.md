@@ -7,6 +7,12 @@ same commit.
 
 ## Supported clients
 
+Supported native hosts are Linux `x86_64`/`aarch64` and Apple Silicon on macOS 26 or
+newer. macOS requires Docker Desktop in Linux-container mode. Intel Macs and older
+macOS versions are intentionally unsupported, not pending compatibility targets.
+Automatic `.local` mDNS publication remains Linux-only; macOS loopback routing and
+explicitly addressed, acknowledged LAN listeners remain supported.
+
 The CLI and Ratatui TUI are the command-line and primary interactive control planes. The
 React GUI remains a supported secondary client for deployment monitoring and operations,
 including status, topology, route operations, logs, and lifecycle controls.

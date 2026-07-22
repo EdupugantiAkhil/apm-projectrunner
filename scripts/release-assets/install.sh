@@ -10,10 +10,14 @@ elif [[ $# -ne 0 ]]; then
   exit 2
 fi
 
-command -v sha256sum >/dev/null || {
-  echo "install: sha256sum is required" >&2
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256_file() { sha256sum "$1" | awk '{print $1}'; }
+elif command -v shasum >/dev/null 2>&1; then
+  sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
+else
+  echo "install: sha256sum or shasum is required" >&2
   exit 1
-}
+fi
 
 require_safe_parent() {
   local relative=$1 current=$prefix part
@@ -34,7 +38,10 @@ require_safe_parent() {
 
 manifest="$prefix/share/switchyard/installed-files.manifest"
 require_safe_parent "share/switchyard/installed-files.manifest"
-declare -A owned_hashes=()
+# Bash 3.2 treats a declared empty array as unbound under `set -u`. Keep an ignored
+# sentinel so a first install can iterate safely on stock macOS Bash.
+declare -a owned_hashes=("")
+declare -a owned_relatives=("")
 if [[ -e $manifest || -L $manifest ]]; then
   [[ -f $manifest && ! -L $manifest ]] || {
     echo "install: refusing non-regular manifest at $manifest" >&2
@@ -42,13 +49,32 @@ if [[ -e $manifest || -L $manifest ]]; then
   }
   while read -r expected relative; do
     [[ -n ${expected:-} && -n ${relative:-} ]] || continue
-    owned_hashes["$relative"]=$expected
+    owned_hashes+=("$expected")
+    owned_relatives+=("$relative")
   done < "$manifest"
 fi
 
+owned_hash_for() {
+  local wanted=$1 index
+  for index in "${!owned_relatives[@]}"; do
+    if [[ ${owned_relatives[$index]} == "$wanted" ]]; then
+      printf '%s\n' "${owned_hashes[$index]}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+is_new_path() {
+  local wanted=$1 candidate
+  for candidate in "${relatives[@]}"; do
+    [[ $candidate == "$wanted" ]] && return 0
+  done
+  return 1
+}
+
 declare -a sources=()
 declare -a relatives=()
-declare -A new_paths=()
 for binary in switchyard switchyard-daemon switchyard-router; do
   sources+=("$package_root/bin/$binary")
   relatives+=("bin/$binary")
@@ -58,12 +84,12 @@ relatives+=("bin/switchyard-uninstall")
 while IFS= read -r -d '' source; do
   sources+=("$source")
   relatives+=("share/switchyard/web/${source#"$package_root/web/"}")
-done < <(find "$package_root/web" -type f -print0 | sort -z)
+done < <(find "$package_root/web" -type f -print0)
 
-for relative in "${relatives[@]}"; do
-  new_paths["$relative"]=1
-done
-for relative in "${!owned_hashes[@]}"; do
+for index in "${!owned_relatives[@]}"; do
+  relative=${owned_relatives[$index]}
+  expected=${owned_hashes[$index]}
+  [[ -n $relative ]] || continue
   case "$relative" in
     /*|../*|*/../*|*/..) echo "install: unsafe prior manifest path $relative" >&2; exit 1 ;;
   esac
@@ -72,8 +98,8 @@ for relative in "${!owned_hashes[@]}"; do
     echo "install: prior owned file is missing or unsafe: $destination" >&2
     exit 1
   }
-  actual=$(sha256sum "$destination" | awk '{print $1}')
-  [[ $actual == "${owned_hashes[$relative]}" ]] || {
+  actual=$(sha256_file "$destination")
+  [[ $actual == "$expected" ]] || {
     echo "install: prior owned file was modified: $destination" >&2
     exit 1
   }
@@ -89,12 +115,12 @@ for index in "${!sources[@]}"; do
     exit 1
   }
   if [[ -e $destination || -L $destination ]]; then
-    expected=${owned_hashes[$relative]:-}
+    expected=$(owned_hash_for "$relative" || true)
     [[ -n $expected && -f $destination && ! -L $destination ]] || {
       echo "install: refusing to overwrite non-Switchyard file $destination" >&2
       exit 1
     }
-    actual=$(sha256sum "$destination" | awk '{print $1}')
+    actual=$(sha256_file "$destination")
     [[ $actual == "$expected" ]] || {
       echo "install: refusing to overwrite modified Switchyard file $destination" >&2
       exit 1
@@ -114,11 +140,12 @@ for index in "${!sources[@]}"; do
   if [[ $relative == share/switchyard/web/* ]]; then
     chmod 0644 "$destination"
   fi
-  sha256sum "$destination" | awk -v path="$relative" '{print $1 "  " path}' >> "$temporary_manifest"
+  printf '%s  %s\n' "$(sha256_file "$destination")" "$relative" >> "$temporary_manifest"
   echo "installed $destination"
 done
-for relative in "${!owned_hashes[@]}"; do
-  if [[ -z ${new_paths[$relative]:-} ]]; then
+for relative in "${owned_relatives[@]}"; do
+  [[ -n $relative ]] || continue
+  if ! is_new_path "$relative"; then
     destination="$prefix/$relative"
     rm -- "$destination"
     echo "removed obsolete $destination"

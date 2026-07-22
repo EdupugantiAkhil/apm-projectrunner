@@ -75,7 +75,10 @@ async fn three_unchanged_browser_callers_route_independently_and_fail_closed() {
     let profile_ui_upstream = IdentityUpstream::start("profile-ui-provider").await;
     let browser_port = unused_port();
     let profile_port = unused_port();
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::Builder::new()
+        .prefix("sy-phase3-")
+        .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+        .unwrap();
     let credential = directory.path().join("profile.credential");
     fs::write(&credential, "profile-token").unwrap();
     fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
@@ -316,7 +319,10 @@ async fn host_process_preserves_streaming_websocket_grpc_and_raw_tcp() {
     let websocket_port = unused_port();
     let grpc_port = unused_port();
     let tcp_port = unused_port();
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::Builder::new()
+        .prefix("sy-phase3-")
+        .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+        .unwrap();
 
     let config: RouterConfig = serde_json::from_value(json!({
         "apiVersion": "switchyard.dev/router/v1alpha1",

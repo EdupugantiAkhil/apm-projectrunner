@@ -1,5 +1,5 @@
 use std::{
-    fs, io,
+    io,
     net::SocketAddr,
     sync::{
         Arc,
@@ -7,6 +7,9 @@ use std::{
     },
     time::{Duration, Instant},
 };
+
+#[cfg(target_os = "linux")]
+use std::fs;
 
 use router_tcp::{
     TcpProxy, TcpProxyOptions, TcpTarget, TcpTelemetry, TcpTelemetrySnapshot, TransitionPolicy,
@@ -300,6 +303,11 @@ async fn reload_storm_under_concurrent_clients_has_no_partial_tcp_responses_or_l
         let client_errors = Arc::clone(&client_errors);
         tasks.push(tokio::spawn(async move {
             while !stop.load(Ordering::Relaxed) {
+                // macOS has a substantially smaller default ephemeral-port range
+                // than Linux. Bound connection churn so this remains a proxy stress
+                // test instead of exhausting the host TCP tuple table.
+                #[cfg(not(target_os = "linux"))]
+                sleep(Duration::from_millis(100)).await;
                 match TcpStream::connect(proxy.local_addr()).await {
                     Ok(mut stream) => {
                         let mut identity = [0_u8];

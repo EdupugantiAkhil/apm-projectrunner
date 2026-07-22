@@ -1,5 +1,33 @@
 # Agent mistakes and lessons
 
+## 2026-07-22 — Verify against stock platform tools and kernel limits
+
+- The release path initially claimed native archives while requiring GNU
+  `sha256sum`, Bash 4 associative arrays/`mapfile`, and GNU `sort -z`. Correction:
+  support stock macOS `shasum` and Bash 3.2 throughout assembly, install, upgrade,
+  verification, and uninstall, then run the packaged scripts rather than treating a
+  successful Rust build as release proof. Lesson: native support includes the scripts
+  shipped around the binary, not only the binary itself.
+- A shell inspection loop used `path` as a zsh variable and temporarily replaced the
+  shell's command search path, making ordinary commands appear missing. Correction:
+  use task-specific names such as `candidate`. Lesson: zsh's lowercase `path` is tied
+  to `PATH`; avoid common shell/system variable names in diagnostics as well as scripts.
+- The unpaced reliability client exhausted macOS's smaller ephemeral TCP port range and
+  reported incomplete proxy exchanges even though ordinary protocol tests passed.
+  Correction: retain full Linux pressure while pacing macOS clients below host tuple
+  exhaustion. Lesson: a portability stress test must bound incidental OS resources or
+  it measures host defaults instead of the component invariant.
+- macOS canonicalizes temporary paths from `/var` to `/private/var`, and accepted
+  sockets can inherit nonblocking state differently from Linux. Correction: compare
+  canonical source paths, create security-sensitive test roots below the canonical temp
+  directory, and set blocking mode explicitly in synchronous test servers. Lesson:
+  never use Linux path aliases or accepted-socket behavior as portable identity.
+- A pre-mutation host-runtime check treated unavailable published Docker ports as a
+  fatal mismatch after Docker Desktop restarted, preventing Compose from restoring the
+  containers that would make those ports available. Correction: preserve ownership
+  and state errors, but defer port comparison startup errors until after runtime `up`.
+  Lesson: recovery preflights must not require the stopped dependency they recover.
+
 ## 2026-07-22 — Keep platform commitments demand-driven
 
 - The initial macOS checklist retained future Intel verification without a current

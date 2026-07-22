@@ -1,8 +1,9 @@
 # Releases and diagnostics
 
-Switchyard release archives are native, host-platform builds. The project is
-Linux-first: `scripts/release.sh` records the current operating system and architecture
-in the artifact name and release notes and does not cross-compile.
+Switchyard release archives are native host-platform builds for supported Linux hosts
+and Apple Silicon on macOS 26 or newer. `scripts/release.sh` records the current
+operating system and architecture in the artifact name and release notes and does not
+cross-compile. Intel macOS archives are not supported.
 
 ## Build a release
 
@@ -20,6 +21,11 @@ these files under `dist/`:
 - `RELEASE_NOTES.md`, generated from `docs/release-notes-template.md` plus commits since
   the newest reachable tag (or all commits when there is no tag)
 - `SHA256SUMS` covering the archive and release notes
+
+Linux archives use `sha256sum`; macOS archives use the system `shasum -a 256` when GNU
+coreutils is absent. The installer, verifier, upgrade path, and uninstaller accept the
+same checksum format and run with the stock macOS Bash 3.2. A Darwin release built on a
+supported host is named with the `darwin-arm64` platform suffix.
 
 Run the fast, Docker-free packaging proof against that output:
 
@@ -39,6 +45,14 @@ Checksums are mandatory for every release:
 cd dist
 sha256sum --check SHA256SUMS
 ```
+
+On macOS, the equivalent stock command is `shasum -a 256 --check SHA256SUMS`.
+
+CI runs the Rust, GUI, documentation, and release-assembly gates on GitHub's Apple
+Silicon `macos-26` image. Docker Desktop cannot run on that hosted VM because nested
+virtualization is unavailable, so the workflow enables the live routing proofs only
+when repository variable `SWITCHYARD_MACOS_DOCKER_RUNNER=true` selects a self-hosted
+Apple Silicon runner labelled `switchyard-docker`.
 
 Signing is optional so local and development builds do not depend on host GPG state.
 Set `SWITCHYARD_SIGNING_KEY` to an SSH private-key file to produce
@@ -66,7 +80,8 @@ ssh-keygen -Y verify \
 ```
 
 An absent signature is explicit: the build prints that it is unsigned and continues.
-It must still pass `sha256sum --check`. Switchyard does not use GPG or minisign.
+It must still pass the platform checksum command above. Switchyard does not use GPG or
+minisign.
 
 ## Install, upgrade, and uninstall
 

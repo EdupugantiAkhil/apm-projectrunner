@@ -120,10 +120,15 @@ impl<'a> HostRuntime<'a> {
                 }
             }
         }
-        if matches!(status, HostGatewayStatus::Running { .. })
-            && !self.running_config_matches_published_upstreams()?
-        {
-            return Ok(true);
+        if matches!(status, HostGatewayStatus::Running { .. }) {
+            return match self.running_config_matches_published_upstreams() {
+                Ok(matches) => Ok(!matches),
+                // This check deliberately runs before Compose recovery. A stopped
+                // Docker Desktop service means the gateway may need refreshing; it
+                // must not prevent `runtime.up` from starting that service first.
+                Err(HostRuntimeError::Startup(_)) => Ok(true),
+                Err(error) => Err(error),
+            };
         }
         Ok(host_token_required(true, &status))
     }

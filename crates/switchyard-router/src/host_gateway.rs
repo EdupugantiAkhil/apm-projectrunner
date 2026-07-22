@@ -399,6 +399,8 @@ pub fn trust_guidance(config: &RouterConfig) -> String {
     }
     format!(
         "Generated certificates are self-signed and are not installed automatically.\n\
+         macOS (per-user Login Keychain, no sudo): run `security add-trusted-cert -r trustRoot -p ssl -k \"$HOME/Library/Keychains/login.keychain-db\" \"<certificate-path>\"` for each configured certificate. macOS may show a user-authentication dialog.\n\
+         Before certificate cleanup on macOS, reverse that trust with `security remove-trusted-cert \"<certificate-path>\"` for each configured certificate.\n\
          Linux (Debian/Ubuntu): copy each certificate to /usr/local/share/ca-certificates with a .crt suffix, then run `sudo update-ca-certificates`.\n\
          Firefox may use its own trust store; import the certificate under Authorities if system trust is disabled.\n\
          Remove the copied trust-store file and run `sudo update-ca-certificates --fresh` before `switchyard-router certificates cleanup`.\n\
@@ -931,6 +933,18 @@ mod tests {
         assert!(!certificate.exists());
         assert!(!key.exists());
         assert!(!marker_path.exists());
+    }
+
+    #[test]
+    fn trust_guidance_includes_reversible_per_user_macos_commands() {
+        let directory = tempfile::tempdir().unwrap();
+        let certificate = directory.path().join("host.pem");
+        let key = directory.path().join("host-key.pem");
+        let guidance = trust_guidance(&config(0, &certificate, &key));
+        assert!(guidance.contains("security add-trusted-cert -r trustRoot -p ssl"));
+        assert!(guidance.contains("$HOME/Library/Keychains/login.keychain-db"));
+        assert!(guidance.contains("security remove-trusted-cert"));
+        assert!(guidance.contains(&certificate.display().to_string()));
     }
 
     #[test]

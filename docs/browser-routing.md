@@ -76,8 +76,10 @@ helper is an MV3 extension that answers proxy-only authentication challenges thr
 Managed-profile proxying is HTTP-only in this phase and does not implement HTTPS
 `CONNECT` or local TLS interception. An HTTPS `startUrl` is rejected with guidance to
 use extension-header or Origin routing instead.
-The launcher auto-detects Chromium and `chromium-browser`. Set `SWITCHYARD_CHROMIUM` to
-an executable path for another Chromium build or Chrome for Testing. [Chrome 137 and
+The launcher auto-detects Chromium and `chromium-browser` on Linux. On macOS it also
+discovers standard `/Applications` bundles for Chromium and the Stable, Beta, Dev, or
+Canary channels of Chrome for Testing. Set `SWITCHYARD_CHROMIUM` to an executable path
+for another Chromium build or Chrome for Testing. [Chrome 137 and
 newer removed the required unpacked-extension launch
 flag](https://developer.chrome.com/blog/extension-news-june-2025) from branded Chrome, and Edge
 does not provide a supported fallback, so neither is auto-detected. Unsupported browsers

@@ -281,18 +281,32 @@ fn docker_exec_request(
             "container",
             "inspect",
             "--format",
-            "{{json .Config.Labels}}",
+            r#"{"id":{{json .Id}},"labels":{{json .Config.Labels}}}"#,
             container,
         ],
         None,
         timeout,
     )?;
-    let labels: Value =
+    let inspection: Value =
         serde_json::from_slice(&inspect.stdout).map_err(|error| AdminError::Endpoint {
             code: "invalid_container_inspection",
             message: error.to_string(),
         })?;
-    verify_container_labels(&labels, container, deployment, instance, resource_hash)?;
+    let container_id = inspection
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| AdminError::Endpoint {
+            code: "invalid_container_inspection",
+            message: "Docker inspection did not return a container ID".into(),
+        })?;
+    let labels = inspection
+        .get("labels")
+        .ok_or_else(|| AdminError::Endpoint {
+            code: "invalid_container_inspection",
+            message: "Docker inspection did not return container labels".into(),
+        })?;
+    verify_container_labels(labels, container, deployment, instance, resource_hash)?;
 
     let socket = socket_path.to_str().ok_or_else(|| AdminError::Endpoint {
         code: "invalid_endpoint",
@@ -302,7 +316,7 @@ fn docker_exec_request(
         &[
             "exec",
             "--interactive",
-            container,
+            container_id,
             "/usr/local/bin/switchyard-router",
             "admin-client",
             socket,

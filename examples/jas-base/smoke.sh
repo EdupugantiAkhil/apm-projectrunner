@@ -184,8 +184,12 @@ before, after = map(json.loads, sys.argv[1:])
 for store in ["kv", "document"]:
     previous = before["selectedProviders"]["database"][store]
     current = after["selectedProviders"]["database"][store]
-    assert previous["initialized"] and current["initialized"]
-    assert current["initializationCount"] == previous["initializationCount"] + 1
+    assert previous["initialized"] and current["initialized"], (store, previous, current)
+    assert current["initializationCount"] == previous["initializationCount"] + 1, (
+        store,
+        previous,
+        current,
+    )
 PY
 
 "$switchyard" down "$deployment"

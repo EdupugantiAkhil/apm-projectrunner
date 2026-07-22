@@ -1671,7 +1671,7 @@ async fn source_and_worktree_endpoints_enforce_auth_validation_and_non_destructi
         &[],
     )
     .await;
-    assert_eq!(status, 409);
+    assert_eq!(status, 409, "{}", String::from_utf8_lossy(&body));
     let error: switchyard_daemon::contract::ApiErrorV1 = json_body(&body);
     assert_eq!(error.code, "source_dirty");
     assert_eq!(

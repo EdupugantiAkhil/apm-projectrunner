@@ -108,6 +108,12 @@ the owner-only `.switchyard/run/<deployment>/mdns-publication.json`; logs are in
 same directory. `down`, `cleanup`, gateway replacement, and a re-apply that disables
 LAN exposure stop only identity-verified owned publishers and remove the state.
 
+Automatic `.local` publication is intentionally Linux-only. On macOS, loopback routing
+is fully supported and an acknowledged gateway can bind an explicit LAN address, but
+Switchyard does not start or own a Bonjour publisher. Use the host's concrete address
+or separately managed DNS on that platform; requesting automatic `.local` publication
+fails before any publisher process or state is created.
+
 Before publication, `switchyard up` reports these structured LAN checks; `status`
 retains the report and shows each name/address as `published` or `failed`:
 
@@ -217,7 +223,11 @@ cargo run --package switchyard-router -- certificates cleanup host-router.json
 ```
 
 Trust installation remains an explicit user action because it changes the OS/browser
-security boundary. For non-`*.localhost` names, configure local DNS or `/etc/hosts`
+security boundary. On macOS the printed command adds each certificate to the current
+user's Login Keychain with SSL trust and no `sudo`; macOS may display its normal user
+authentication dialog. Run the printed `security remove-trusted-cert` command before
+certificate cleanup to reverse that trust. Switchyard never executes either Keychain
+command itself. For non-`*.localhost` names, configure local DNS or `/etc/hosts`
 separately; certificate generation does not claim DNS ownership.
 
 Managed profiles are planned into `host-router.json` as dedicated loopback listeners.

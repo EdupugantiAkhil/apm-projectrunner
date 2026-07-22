@@ -27,6 +27,36 @@ jobs:
       - name: Documentation
         run: ./scripts/check.sh doc
 
+  macos-checks:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: packages/web/package-lock.json
+      - name: Native prerequisites
+        run: |
+          test "$(uname -m)" = arm64
+          test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
+          cmake --version
+      - name: Rust formatting, Clippy, tests, and rustdoc
+        run: ./scripts/check.sh
+      - name: React GUI build and tests
+        working-directory: packages/web
+        run: |
+          npm ci
+          npm run build
+          npm test
+      - name: Darwin arm64 release assembly and install smoke
+        run: |
+          ./scripts/release.sh
+          test "$(find dist -maxdepth 1 -name 'switchyard-*-darwin-arm64.tar.gz' | wc -l | tr -d ' ')" = 1
+          ./scripts/release-smoke.sh
+
   dependency-audit:
     runs-on: ubuntu-latest
     steps:
@@ -48,3 +78,24 @@ jobs:
         run: rustup show active-toolchain
       - name: Complete Phase 4 proof
         run: ./scripts/phase4-proof.sh
+
+  macos-docker-routing-proof:
+    if: vars.SWITCHYARD_MACOS_DOCKER_RUNNER == 'true'
+    runs-on: [self-hosted, macOS, ARM64, switchyard-docker]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: packages/web/package-lock.json
+      - name: Bootstrap Apple Silicon Docker Desktop runner
+        run: ./scripts/bootstrap
+      - name: Complete macOS routing and product proofs
+        env:
+          SWITCHYARD_TEST_DOCKER_DESKTOP_RESTART: 1
+        run: |
+          ./examples/routing-matrix/smoke.sh
+          ./scripts/phase6-proof.sh
