@@ -10,6 +10,10 @@ Updated: 2026-07-22
 
 ## 2026-07-22 macOS portability — native-host foundation
 
+- The ordered implementation and release checklist is tracked under `macOS support
+  track` in `IMPLEMENTATION_PLAN.md`; macOS remains workspace-only until that exit gate
+  passes.
+
 - Bootstrap now verifies the native macOS host-process tools, and the CLI builds and
   passes its focused test and Clippy suites on Apple Silicon macOS with Docker Desktop
   running Linux containers.

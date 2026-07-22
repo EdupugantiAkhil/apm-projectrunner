@@ -541,6 +541,88 @@ execution on that device; everything outside the cut is clearly labeled unsuppor
 Exit gate: one clearly documented primary interactive experience ships with full local
 workflow coverage, the limited remote cut, and no ambiguous duplicate product model.
 
+## macOS support track
+
+Goal: promote macOS with Docker Desktop Linux containers from workspace-only use to a
+verified local Switchyard platform without weakening routing isolation, authenticated
+control, ownership-aware recovery, or cleanup guarantees. Apple Silicon is the first
+verification target; Intel macOS remains unclaimed until separately tested.
+
+### Foundation
+
+- [x] Build the Rust workspace natively on Apple Silicon with the pinned toolchain.
+- [x] Make bootstrap validate macOS, CMake, Docker Desktop, Compose, and Linux-container
+      mode.
+- [x] Replace native host-gateway `setsid` and `/proc` assumptions with macOS launch,
+      PID-reuse, executable, and command-line identity checks.
+- [x] Discover supported Chromium and Chrome for Testing application bundles and use
+      the native `open` integration where appropriate.
+- [x] Make maintained fixture images use the workspace Rust 1.88 compiler floor.
+- [x] Make Unix-socket tests use paths below macOS `SUN_LEN` limits.
+
+### Portable sidecar administration
+
+- [ ] Replace the Docker Desktop-incompatible bind-mounted Unix sidecar admin channel
+      on macOS with authenticated TCP published strictly on host `127.0.0.1`; retain
+      owner-only Unix sockets on Linux.
+- [ ] Let Docker allocate collision-free host ports and persist/observe the exact
+      sidecar-to-port mapping without making generated plans nondeterministic.
+- [ ] Authenticate every request and verify deployment, router/consumer identity,
+      container ownership labels, and expected endpoint before inspect/apply/drain.
+- [ ] Update CLI, daemon live binding, rollback, diagnostics, status, and recovery to
+      use the platform-specific admin endpoint through one shared abstraction.
+- [ ] Reject wildcard/LAN admin binds, stale port mappings, wrong-container mappings,
+      unauthenticated requests, and PID/container-reuse races with stable errors.
+- [ ] Add transport-parity tests proving Unix and TCP administration have identical
+      framing, size limits, authentication, operations, acknowledgements, and redaction.
+- [ ] Verify sidecar crash/restart, Docker Desktop restart, daemon restart, stale-state
+      recovery, and ownership-safe cleanup on macOS.
+
+### End-to-end routing and product verification
+
+- [ ] Pass `examples/routing-matrix/smoke.sh` on Apple Silicon macOS, including fixed
+      localhost routing, independent consumers, atomic switching, rollback, sidecar and
+      host-gateway crash recovery, persistence, and cleanup.
+- [ ] Pass the JAS/product-MVP fixture on macOS, including image, legacy-script, Process
+      Compose, persistent-volume, browser, and custom-domain workflows.
+- [ ] Verify native host-gateway HTTP, HTTPS, WebSocket, gRPC, streaming, raw TCP, CORS,
+      managed proxy, and browser identity behavior on macOS.
+- [ ] Verify CLI, daemon, TUI, and supported React GUI lifecycle/status/log/bind flows on
+      macOS rather than relying only on transport-independent tests.
+- [ ] Verify clean install, upgrade, interrupted-operation recovery, stop, ownership-safe
+      cleanup, and uninstall with Docker Desktop restarts included.
+
+### macOS platform integrations
+
+- [ ] Implement macOS Keychain trust and reversal guidance/commands for managed HTTPS
+      certificates without silently invoking privilege escalation.
+- [ ] Decide the macOS LAN/mDNS scope: implement an ownership-safe native publication
+      path and tests, or explicitly retain LAN publication as Linux-only while keeping
+      loopback mode fully supported.
+- [ ] Keep Linux `/proc` fd/RSS reliability sampling on Linux and add equivalent macOS
+      process metrics, or document the precise reduced macOS reliability evidence.
+- [ ] Verify browser-profile launch and extension loading with an installed supported
+      Chromium build on a clean macOS user account.
+
+### Release and support gate
+
+- [ ] Add Apple Silicon macOS CI for formatting, tests, Clippy, rustdoc, GUI checks, and
+      release assembly; run Docker routing proofs on a suitable macOS runner.
+- [ ] Produce and verify signed/checksummed Darwin arm64 archives and installer,
+      upgrade, and uninstall behavior.
+- [ ] Update development, router, browser, release, security, support, and troubleshooting
+      documentation with exact macOS prerequisites, supported scope, and limitations.
+- [ ] Audit the finished platform delta for host listeners, Docker authority, admin
+      endpoint exposure, credentials, file sharing, and cleanup ownership.
+- [ ] Evaluate and verify Intel macOS separately before adding Darwin x86_64 to the
+      support matrix.
+
+Exit gate: the complete routing matrix and product-MVP proofs pass on Apple Silicon
+macOS; authenticated sidecar control is loopback-only and recovery-safe; install,
+upgrade, browser, HTTPS, stop, and cleanup workflows are verified; unsupported LAN or
+Intel scope is explicit; and release/support documentation no longer calls macOS
+workspace-only.
+
 ## Deferred ideas
 
 These items are intentionally outside the current phase gates. Move an item into a phase
