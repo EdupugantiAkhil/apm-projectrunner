@@ -1,5 +1,13 @@
 # Agent mistakes and lessons
 
+## 2026-07-22 — Keep platform commitments demand-driven
+
+- The initial macOS checklist retained future Intel verification without a current
+  product requirement. Correction: define the supported target as Apple Silicon on
+  macOS 26 or newer and remove Intel and older-release compatibility from the backlog.
+  Lesson: unsupported platforms should not silently become deferred release work; add
+  them only when demand and acceptance hardware justify the maintenance cost.
+
 ## 2026-07-22 — macOS routing requires a portable sidecar admin channel
 
 - The initial macOS port focused on the native host gateway's `setsid` and `/proc`
@@ -9,6 +17,14 @@
   keep macOS support provisional until the authenticated sidecar admin transport is
   reachable without a bind-mounted Unix socket. Lesson: host-process portability and
   container-to-host control-channel portability are separate release gates.
+- Resolution: keep the socket inside the sidecar filesystem and reach it through an
+  ownership-verified, stdin-framed `docker exec` helper. This avoids both Docker
+  Desktop shared-filesystem socket semantics and a new TCP administration listener.
+- The routing proof's startup-order assertion parsed Docker's nanosecond RFC 3339
+  timestamps with Python's microsecond-limited `datetime.fromisoformat`, so the first
+  post-transport proof stopped after healthy startup. Correction: compare equal-offset
+  RFC 3339 strings directly. Lesson: fixture assertions must accept Docker's documented
+  timestamp precision across engines and host platforms.
 - The clean proof initially failed before routing because maintained fixture
   Dockerfiles still pinned Rust 1.85 while `rust-toolchain.toml` and the workspace now
   require 1.88. Correction: align both fixture build images with Rust 1.88. Lesson:

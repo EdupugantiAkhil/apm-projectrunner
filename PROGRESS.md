@@ -11,8 +11,10 @@ Updated: 2026-07-22
 ## 2026-07-22 macOS portability — native-host foundation
 
 - The ordered implementation and release checklist is tracked under `macOS support
-  track` in `IMPLEMENTATION_PLAN.md`; macOS remains workspace-only until that exit gate
-  passes.
+  track` in `IMPLEMENTATION_PLAN.md`. The intended product target is now explicitly
+  limited to Apple Silicon on macOS 26 or newer; Intel Macs and older macOS releases
+  are not deferred compatibility work. The targeted macOS platform remains
+  workspace-only until that exit gate passes.
 
 - Bootstrap now verifies the native macOS host-process tools, and the CLI builds and
   passes its focused test and Clippy suites on Apple Silicon macOS with Docker Desktop
@@ -33,6 +35,27 @@ Updated: 2026-07-22
   parity, and focused CLI Clippy with warnings denied. The live routing matrix builds
   its native and Linux/arm64 binaries and starts provider containers, then stops at the
   documented Docker Desktop sidecar-admin socket boundary.
+
+## 2026-07-22 macOS portability — portable sidecar administration
+
+- Replaced host-bind-mounted sidecar sockets with mode-`0600` Unix sockets that remain
+  inside each sidecar filesystem. The shared typed client verifies the exact container's
+  managed, deployment, instance, and resource-hash labels before sending the
+  authenticated request over stdin to a bounded `docker exec` admin bridge. No admin
+  port is published and the token is absent from command arguments and generated plans.
+- CLI binding and route inspection, daemon multi-router apply and rollback, diagnostics,
+  and the maintained routing fixture now use the shared endpoint abstraction. The
+  native host gateway retains its directly reachable owner-only Unix socket.
+- `examples/routing-matrix/smoke.sh`: PASSED on Apple Silicon macOS 26.5.2 with Docker
+  Desktop. This verifies fixed localhost isolation, custom domains, live sidecar and
+  host switching, unhealthy-provider rollback, sidecar/application/host crash recovery,
+  Compose restart, persistent volume state, and ownership-safe cleanup. The generated
+  sidecars no longer mount a host runtime directory.
+- Focused verification passed: workspace compile, planner/admin/CLI tests, the router
+  bridge integration test, and Clippy with warnings denied for all affected crates. A
+  pre-existing daemon source/worktree API test remains red on this host because it
+  returns HTTP 400 where the test expects 409; the failure reproduces in isolation and
+  is unrelated to router administration.
 
 ## 2026-07-18 Phase D part 1 remote-device runtime
 

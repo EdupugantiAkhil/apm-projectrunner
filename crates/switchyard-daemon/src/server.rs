@@ -240,7 +240,7 @@ impl OperationBackend for CliBackend {
 
 struct RouterTarget {
     id: String,
-    socket: PathBuf,
+    endpoint: switchyard_router_admin::AdminEndpoint,
     old: router_config::RouterConfig,
     candidate: router_config::RouterConfig,
 }
@@ -248,13 +248,13 @@ struct RouterTarget {
 trait RouterAdmin {
     fn current_snapshot(
         &self,
-        socket: &Path,
+        endpoint: &switchyard_router_admin::AdminEndpoint,
         token: &str,
     ) -> Result<switchyard_router_admin::SnapshotIdentity, switchyard_router_admin::AdminError>;
 
     fn apply_snapshot(
         &self,
-        socket: &Path,
+        endpoint: &switchyard_router_admin::AdminEndpoint,
         token: &str,
         config: &router_config::RouterConfig,
     ) -> Result<switchyard_router_admin::ApplyAcknowledgement, switchyard_router_admin::AdminError>;
@@ -265,21 +265,21 @@ struct LocalRouterAdmin;
 impl RouterAdmin for LocalRouterAdmin {
     fn current_snapshot(
         &self,
-        socket: &Path,
+        endpoint: &switchyard_router_admin::AdminEndpoint,
         token: &str,
     ) -> Result<switchyard_router_admin::SnapshotIdentity, switchyard_router_admin::AdminError>
     {
-        switchyard_router_admin::current_snapshot(socket, token)
+        switchyard_router_admin::current_snapshot(endpoint, token)
     }
 
     fn apply_snapshot(
         &self,
-        socket: &Path,
+        endpoint: &switchyard_router_admin::AdminEndpoint,
         token: &str,
         config: &router_config::RouterConfig,
     ) -> Result<switchyard_router_admin::ApplyAcknowledgement, switchyard_router_admin::AdminError>
     {
-        switchyard_router_admin::apply_snapshot(socket, token, config)
+        switchyard_router_admin::apply_snapshot(endpoint, token, config)
     }
 }
 
@@ -380,7 +380,13 @@ fn apply_live_binding_with_admin(
         .ok_or_else(|| ApiErrorV1::new("router_missing", "consumer has no sidecar router"))?;
     let mut targets = vec![RouterTarget {
         id: format!("sidecar:{consumer}"),
-        socket: project_root.join(&sidecar.admin_socket),
+        endpoint: switchyard_router_admin::AdminEndpoint::docker_exec(
+            &sidecar.service,
+            &sidecar.admin_socket,
+            &plan.deployment,
+            consumer,
+            &plan.resource_hash,
+        ),
         old: old_sidecar,
         candidate: candidate_sidecar,
     }];
@@ -417,7 +423,7 @@ fn apply_live_binding_with_admin(
         set_transition(&mut candidate, transition);
         targets.push(RouterTarget {
             id: "host-gateway".into(),
-            socket: host_socket,
+            endpoint: switchyard_router_admin::AdminEndpoint::unix(host_socket),
             old,
             candidate,
         });
@@ -437,7 +443,7 @@ fn apply_live_binding_with_admin(
             failure = Some("operation was cancelled".to_owned());
             break;
         }
-        let observed = match admin.current_snapshot(&target.socket, token) {
+        let observed = match admin.current_snapshot(&target.endpoint, token) {
             Ok(observed) => observed,
             Err(error) => {
                 failure = Some(error.to_string());
@@ -473,7 +479,7 @@ fn apply_live_binding_with_admin(
             EventKindV1::Route,
             json!({"router": target.id, "binding": consumer, "desiredVersion": version, "status": "pending"}),
         );
-        match admin.apply_snapshot(&target.socket, token, &target.candidate) {
+        match admin.apply_snapshot(&target.endpoint, token, &target.candidate) {
             Ok(ack)
                 if ack.version == version
                     && ack.checksum == checksum
@@ -634,7 +640,7 @@ fn rollback_applied_targets(
 ) {
     for (index, previously_observed) in applied.into_iter().rev() {
         let target = &mut targets[index];
-        let observed = match admin.current_snapshot(&target.socket, token) {
+        let observed = match admin.current_snapshot(&target.endpoint, token) {
             Ok(observed) => observed,
             Err(error) => {
                 attempts.push(rollback_attempt(
@@ -676,7 +682,7 @@ fn rollback_applied_targets(
         ));
         set_transition(&mut target.old, transition);
         let checksum = snapshot_checksum(&target.old);
-        match admin.apply_snapshot(&target.socket, token, &target.old) {
+        match admin.apply_snapshot(&target.endpoint, token, &target.old) {
             Ok(ack)
                 if ack.version == rollback_version
                     && ack.checksum == checksum
@@ -3552,11 +3558,11 @@ mod tests {
     impl RouterAdmin for FailingRollbackAdmin {
         fn current_snapshot(
             &self,
-            socket: &Path,
+            endpoint: &switchyard_router_admin::AdminEndpoint,
             _token: &str,
         ) -> Result<switchyard_router_admin::SnapshotIdentity, switchyard_router_admin::AdminError>
         {
-            if socket == Path::new("second.socket") {
+            if endpoint == &switchyard_router_admin::AdminEndpoint::unix("second.socket") {
                 return Err(switchyard_router_admin::AdminError::InvalidResponse(
                     "observation unavailable".into(),
                 ));
@@ -3570,17 +3576,25 @@ mod tests {
 
         fn apply_snapshot(
             &self,
-            socket: &Path,
+            endpoint: &switchyard_router_admin::AdminEndpoint,
             _token: &str,
             config: &router_config::RouterConfig,
         ) -> Result<
             switchyard_router_admin::ApplyAcknowledgement,
             switchyard_router_admin::AdminError,
         > {
+            let rendered = match endpoint {
+                switchyard_router_admin::AdminEndpoint::Unix(path) => {
+                    path.to_string_lossy().into_owned()
+                }
+                switchyard_router_admin::AdminEndpoint::DockerExec { container, .. } => {
+                    container.clone()
+                }
+            };
             self.applied
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
-                .push(socket.to_string_lossy().into_owned());
+                .push(rendered);
             Ok(switchyard_router_admin::ApplyAcknowledgement {
                 version: config.spec.snapshot.version,
                 checksum: snapshot_checksum(config),
@@ -3600,7 +3614,7 @@ mod tests {
             candidate.spec.snapshot.version = 2;
             RouterTarget {
                 id: id.into(),
-                socket: socket.into(),
+                endpoint: switchyard_router_admin::AdminEndpoint::unix(socket),
                 old: config.clone(),
                 candidate,
             }

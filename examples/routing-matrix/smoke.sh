@@ -115,6 +115,18 @@ if not response.get("ok", False):
 PY
 }
 
+sidecar_admin_request() {
+  local service="$1"
+  local operation="$2"
+  python3 - "$SWITCHYARD_ROUTER_TOKEN" "$operation" <<'PY' |
+import json
+import sys
+print(json.dumps({"token": sys.argv[1], "operation": sys.argv[2]}))
+PY
+    "${compose[@]}" exec --no-TTY "$service" \
+      /usr/local/bin/switchyard-router admin-client /tmp/switchyard-admin.socket
+}
+
 make_host_snapshot() {
   local version="$1"
   local ui_one_backend="$2"
@@ -167,7 +179,6 @@ PY
 
 startup_order="$("${compose[@]}" ps --quiet routing-matrix--services-feature-catalog--app routing-matrix--backend-1--app--app | xargs docker inspect --format '{{.Name}} {{.State.StartedAt}}')"
 python3 - "$started_ns" "$ready_ns" "$startup_order" <<'PY'
-import datetime
 import sys
 
 started, ready = map(int, sys.argv[1:3])
@@ -175,7 +186,9 @@ assert ready - started >= 1_000_000_000, "delayed dependency readiness was not o
 times = {}
 for line in sys.argv[3].splitlines():
     name, value = line.split()
-    times[name] = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    # Docker emits RFC 3339 timestamps with nanoseconds while Python's datetime parser
+    # accepts only microseconds. Equal-offset RFC 3339 values sort chronologically.
+    times[name] = value
 provider = next(value for name, value in times.items() if "services-feature-catalog" in name)
 backend = next(value for name, value in times.items() if "backend-1--app--app" in name)
 assert backend > provider
@@ -221,8 +234,8 @@ assert groups(feature) == {"services-feature"}
 assert main["services"]["audit"] == feature["services"]["audit"] == {"service": "audit", "provider": "services-shared/audit"}
 PY
 test "$application_ids_before" = "$("${compose[@]}" ps --quiet routing-matrix--ui-1--app routing-matrix--ui-2--app routing-matrix--ui-3--app routing-matrix--backend-1--app--app routing-matrix--backend-2--app--app)"
-echo "sidecar route snapshot: $(admin_request "$runtime_dir/backend-1.socket" routes)"
-echo "sidecar routing decisions: $(admin_request "$runtime_dir/backend-1.socket" events)"
+echo "sidecar route snapshot: $(sidecar_admin_request routing-matrix--backend-1--app--router routes)"
+echo "sidecar routing decisions: $(sidecar_admin_request routing-matrix--backend-1--app--router events)"
 
 "${compose[@]}" stop routing-matrix--services-main-catalog--app >/dev/null
 if "$switchyard" bind "$deployment" backend-1 main-services >"$runtime_dir/rejected-bind.log" 2>&1; then

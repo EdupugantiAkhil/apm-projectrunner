@@ -129,11 +129,10 @@ services:
 
   backend-1-sidecar:
     <<: *sidecar
-    command: ["/usr/local/bin/switchyard-router", "/etc/switchyard/router.json", "/run/switchyard/router-admin.socket"]
+    command: ["/usr/local/bin/switchyard-router", "/etc/switchyard/router.json", "/tmp/switchyard-admin.socket"]
     network_mode: service:backend-1-namespace
     volumes:
       - ./router-backend-1.json:/etc/switchyard/router.json:ro
-      - ${SWITCHYARD_RUN_DIR:-./.run}/backend-1:/run/switchyard
     depends_on:
       backend-1-namespace: { condition: service_started }
       services-feature-catalog: { condition: service_healthy }
@@ -156,11 +155,10 @@ services:
 
   backend-2-sidecar:
     <<: *sidecar
-    command: ["/usr/local/bin/switchyard-router", "/etc/switchyard/router.json", "/run/switchyard/router-admin.socket"]
+    command: ["/usr/local/bin/switchyard-router", "/etc/switchyard/router.json", "/tmp/switchyard-admin.socket"]
     network_mode: service:backend-2-namespace
     volumes:
       - ./router-backend-2.json:/etc/switchyard/router.json:ro
-      - ${SWITCHYARD_RUN_DIR:-./.run}/backend-2:/run/switchyard
     depends_on:
       backend-2-namespace: { condition: service_started }
       services-main-catalog: { condition: service_healthy }

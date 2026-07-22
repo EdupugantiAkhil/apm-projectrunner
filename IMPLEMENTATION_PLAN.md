@@ -543,10 +543,11 @@ workflow coverage, the limited remote cut, and no ambiguous duplicate product mo
 
 ## macOS support track
 
-Goal: promote macOS with Docker Desktop Linux containers from workspace-only use to a
-verified local Switchyard platform without weakening routing isolation, authenticated
-control, ownership-aware recovery, or cleanup guarantees. Apple Silicon is the first
-verification target; Intel macOS remains unclaimed until separately tested.
+Goal: promote Apple Silicon on macOS 26 or newer with Docker Desktop Linux containers
+from workspace-only use to a verified local Switchyard platform without weakening
+routing isolation, authenticated control, ownership-aware recovery, or cleanup
+guarantees. Intel Macs and older macOS releases are intentionally outside the product
+support scope, rather than deferred verification targets.
 
 ### Foundation
 
@@ -562,25 +563,27 @@ verification target; Intel macOS remains unclaimed until separately tested.
 
 ### Portable sidecar administration
 
-- [ ] Replace the Docker Desktop-incompatible bind-mounted Unix sidecar admin channel
-      on macOS with authenticated TCP published strictly on host `127.0.0.1`; retain
-      owner-only Unix sockets on Linux.
-- [ ] Let Docker allocate collision-free host ports and persist/observe the exact
-      sidecar-to-port mapping without making generated plans nondeterministic.
-- [ ] Authenticate every request and verify deployment, router/consumer identity,
-      container ownership labels, and expected endpoint before inspect/apply/drain.
-- [ ] Update CLI, daemon live binding, rollback, diagnostics, status, and recovery to
+- [x] Replace the Docker Desktop-incompatible bind-mounted Unix sidecar admin channel
+      with an owner-only socket inside the sidecar filesystem and a bounded
+      ownership-verified `docker exec` bridge; retain an owner-only host Unix socket for
+      the native gateway.
+- [x] Pass authenticated requests to the in-container admin client over stdin without
+      placing tokens in process arguments, environment inspection, or generated plans.
+- [x] Authenticate every request and verify deployment, router/consumer identity and
+      container ownership labels before inspect/apply/drain.
+- [x] Update CLI, daemon live binding, rollback, diagnostics, status, and recovery to
       use the platform-specific admin endpoint through one shared abstraction.
-- [ ] Reject wildcard/LAN admin binds, stale port mappings, wrong-container mappings,
-      unauthenticated requests, and PID/container-reuse races with stable errors.
-- [ ] Add transport-parity tests proving Unix and TCP administration have identical
-      framing, size limits, authentication, operations, acknowledgements, and redaction.
+- [ ] Reject wrong-container mappings, ownership drift, unauthenticated requests,
+      oversized frames, timeouts, and container-reuse races with stable errors.
+- [ ] Add transport-parity tests proving direct and exec-bridged Unix administration
+      have identical framing, size limits, authentication, operations,
+      acknowledgements, and redaction.
 - [ ] Verify sidecar crash/restart, Docker Desktop restart, daemon restart, stale-state
       recovery, and ownership-safe cleanup on macOS.
 
 ### End-to-end routing and product verification
 
-- [ ] Pass `examples/routing-matrix/smoke.sh` on Apple Silicon macOS, including fixed
+- [x] Pass `examples/routing-matrix/smoke.sh` on Apple Silicon macOS, including fixed
       localhost routing, independent consumers, atomic switching, rollback, sidecar and
       host-gateway crash recovery, persistence, and cleanup.
 - [ ] Pass the JAS/product-MVP fixture on macOS, including image, legacy-script, Process
@@ -614,14 +617,11 @@ verification target; Intel macOS remains unclaimed until separately tested.
       documentation with exact macOS prerequisites, supported scope, and limitations.
 - [ ] Audit the finished platform delta for host listeners, Docker authority, admin
       endpoint exposure, credentials, file sharing, and cleanup ownership.
-- [ ] Evaluate and verify Intel macOS separately before adding Darwin x86_64 to the
-      support matrix.
-
 Exit gate: the complete routing matrix and product-MVP proofs pass on Apple Silicon
-macOS; authenticated sidecar control is loopback-only and recovery-safe; install,
-upgrade, browser, HTTPS, stop, and cleanup workflows are verified; unsupported LAN or
-Intel scope is explicit; and release/support documentation no longer calls macOS
-workspace-only.
+macOS 26 or newer; authenticated sidecar control is loopback-only and recovery-safe;
+install, upgrade, browser, HTTPS, stop, and cleanup workflows are verified; unsupported
+LAN or other platform scope is explicit; and release/support documentation no longer
+calls the targeted macOS platform workspace-only.
 
 ## Deferred ideas
 

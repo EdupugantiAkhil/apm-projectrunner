@@ -16,10 +16,12 @@ Linux. The runtime relies on Docker-provided Linux network namespaces for
 consumer/router sidecar isolation; developers do not need to create namespaces or run
 the router as root.
 
-macOS is a planned host-gateway platform and may be used for workspace-only work with
-Docker Desktop configured for Linux containers. End-to-end routing support on macOS is
-not yet part of Phase 0. On Windows, use a Linux WSL2 distribution with Docker Desktop
-integration; native Windows development is not currently supported.
+Apple Silicon on macOS 26 or newer is a planned host-gateway platform and may be used
+for workspace-only work with Docker Desktop configured for Linux containers.
+End-to-end routing support on that platform is not yet part of Phase 0. Intel Macs and
+older macOS releases are outside the planned support scope. On Windows, use a Linux
+WSL2 distribution with Docker Desktop integration; native Windows development is not
+currently supported.
 
 ## Bootstrap
 

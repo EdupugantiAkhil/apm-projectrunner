@@ -14,9 +14,13 @@ listeners from one immutable route snapshot. HTTP requests pin the snapshot sele
 request start. TCP reloads apply the configured `close`, `drain`, or `pin` policy to
 connections using the previous target.
 
-The Linux-first administration channel is a mode-`0600` Unix socket. Each connection
-accepts one newline-terminated JSON object of at most 1 MiB and returns one JSON object.
-Every request includes the token:
+The native gateway administration channel is a mode-`0600` Unix socket. A sidecar keeps
+the same owner-only socket inside its container filesystem. The control plane first
+verifies the exact container's Switchyard ownership labels, then invokes the bounded
+router admin client with `docker exec` and sends the request over stdin; no sidecar
+administration port is published and no token appears in process arguments. Each
+connection accepts one newline-terminated JSON object of at most 1 MiB and returns one
+JSON object. Every request includes the token:
 
 ```json
 {"token":"...","operation":"current-version"}

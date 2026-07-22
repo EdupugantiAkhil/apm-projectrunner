@@ -1,6 +1,11 @@
 #![cfg(unix)]
 
-use std::{path::Path, time::Duration};
+use std::{
+    io::Write as _,
+    path::Path,
+    process::{Command, Stdio},
+    time::Duration,
+};
 
 use router_config::RouterConfig;
 use serde_json::{Value, json};
@@ -40,6 +45,26 @@ async fn request(path: &Path, request: Value) -> Value {
     let mut response = Vec::new();
     stream.read_to_end(&mut response).await.unwrap();
     serde_json::from_slice(&response).unwrap()
+}
+
+async fn bridged_request(path: &Path, request: Value) -> std::process::Output {
+    let path = path.to_owned();
+    let mut encoded = serde_json::to_vec(&request).unwrap();
+    encoded.push(b'\n');
+    tokio::task::spawn_blocking(move || {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_switchyard-router"))
+            .arg("admin-client")
+            .arg(path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&encoded).unwrap();
+        child.wait_with_output().unwrap()
+    })
+    .await
+    .unwrap()
 }
 
 fn socket_path(prefix: &str) -> (tempfile::TempDir, std::path::PathBuf) {
@@ -111,6 +136,42 @@ async fn authenticates_inspects_applies_and_drains() {
         .expect("router did not shut down after drain")
         .unwrap();
     assert!(!socket.exists());
+}
+
+#[tokio::test]
+async fn admin_client_preserves_framing_authentication_and_response() {
+    let (_directory, socket) = socket_path("sy-admin-bridge-");
+    let process = RouterProcess::start(
+        config(7),
+        AdminOptions {
+            socket_path: socket.clone(),
+            token: "bridge-secret".into(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let unauthorized = bridged_request(
+        &socket,
+        json!({"token": "wrong", "operation": "current-version"}),
+    )
+    .await;
+    assert!(unauthorized.status.success());
+    let unauthorized: Value = serde_json::from_slice(&unauthorized.stdout).unwrap();
+    assert_eq!(unauthorized["error"]["code"], "unauthorized");
+
+    let current = bridged_request(
+        &socket,
+        json!({"token": "bridge-secret", "operation": "current-version"}),
+    )
+    .await;
+    assert!(current.status.success());
+    let current: Value = serde_json::from_slice(&current.stdout).unwrap();
+    assert_eq!(current["result"]["version"], 7);
+    assert!(!current.to_string().contains("bridge-secret"));
+
+    process.request_shutdown();
+    process.wait().await.unwrap();
 }
 
 #[tokio::test]

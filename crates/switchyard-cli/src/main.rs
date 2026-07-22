@@ -13,7 +13,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env, fmt, fs, io,
     net::{SocketAddr, TcpListener, ToSocketAddrs},
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, ExitCode, Stdio},
     time::{SystemTime, UNIX_EPOCH},
@@ -219,12 +218,6 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 )
                 .into());
             }
-            for sidecar in plan.sidecars.values() {
-                if let Some(parent) = workspace_root.join(&sidecar.admin_socket).parent() {
-                    fs::create_dir_all(parent)?;
-                    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-                }
-            }
             let artifact_dir = switchyard_planner::write_plan(&workspace_root, &plan)?;
             println!("wrote {}", artifact_dir.display());
             println!("building `{}`", plan.deployment);
@@ -252,7 +245,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         } => {
             let bundle = load_bind_base(&workspace_root, &bundle)?;
             let mut plan = plan_with_binding(&workspace_root, &bundle, &consumer, &group)?;
-            apply_binding(&workspace_root, &mut plan, &consumer, transition)?;
+            apply_binding(&mut plan, &consumer, transition)?;
             switchyard_planner::write_plan(&workspace_root, &plan)?;
             println!("bound `{consumer}` to `{group}`");
         }
@@ -274,12 +267,12 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             );
             print_source_identities(&plan);
             if routes {
-                print_routes(&workspace_root, &plan)?;
+                print_routes(&plan)?;
             }
         }
         CliCommand::Routes { bundle } => {
             let (_, plan) = load_and_plan(&bundle)?;
-            print_routes(&workspace_root, &plan)?;
+            print_routes(&plan)?;
         }
         CliCommand::Logs { bundle, target } => {
             let (_, plan) = load_and_plan(&bundle)?;
@@ -1554,7 +1547,6 @@ fn print_status(status: &DeploymentStatus) {
 }
 
 fn apply_binding(
-    workspace_root: &Path,
     plan: &mut Plan,
     consumer: &str,
     transition: Option<cli::TransitionArgument>,
@@ -1597,15 +1589,21 @@ fn apply_binding(
     })?;
     let token = env::var("SWITCHYARD_ROUTER_TOKEN")
         .map_err(|_| MessageError("SWITCHYARD_ROUTER_TOKEN must be set for bind".into()))?;
-    let socket = workspace_root.join(&sidecar.admin_socket);
-    let next_version = switchyard_router_admin::current_snapshot(&socket, &token)?
+    let endpoint = switchyard_router_admin::AdminEndpoint::docker_exec(
+        &sidecar.service,
+        &sidecar.admin_socket,
+        &plan.deployment,
+        consumer,
+        &plan.resource_hash,
+    );
+    let next_version = switchyard_router_admin::current_snapshot(&endpoint, &token)?
         .version
         .checked_add(1)
         .ok_or_else(|| MessageError("router snapshot version is exhausted".into()))?;
     config.spec.snapshot.version = next_version;
     config.spec.snapshot.id =
         router_config::RouteSnapshotId::new(format!("{consumer}-bind-{next_version}"));
-    let acknowledgement = switchyard_router_admin::apply_snapshot(&socket, &token, &config)?;
+    let acknowledgement = switchyard_router_admin::apply_snapshot(&endpoint, &token, &config)?;
     plan.route_configs
         .insert(consumer.to_owned(), serde_json::to_string_pretty(&config)?);
     println!(
@@ -1615,7 +1613,7 @@ fn apply_binding(
     Ok(())
 }
 
-fn print_routes(workspace_root: &Path, plan: &Plan) -> Result<(), Box<dyn std::error::Error>> {
+fn print_routes(plan: &Plan) -> Result<(), Box<dyn std::error::Error>> {
     if plan.sidecars.is_empty() {
         println!("Routes: none");
         return Ok(());
@@ -1624,10 +1622,14 @@ fn print_routes(workspace_root: &Path, plan: &Plan) -> Result<(), Box<dyn std::e
         MessageError("SWITCHYARD_ROUTER_TOKEN must be set to inspect routes".into())
     })?;
     for (consumer, sidecar) in &plan.sidecars {
-        let routes = switchyard_router_admin::inspect_routes(
-            &workspace_root.join(&sidecar.admin_socket),
-            &token,
-        )?;
+        let endpoint = switchyard_router_admin::AdminEndpoint::docker_exec(
+            &sidecar.service,
+            &sidecar.admin_socket,
+            &plan.deployment,
+            consumer,
+            &plan.resource_hash,
+        );
+        let routes = switchyard_router_admin::inspect_routes(&endpoint, &token)?;
         println!("[{consumer}]\n{}", serde_json::to_string_pretty(&routes)?);
     }
     Ok(())

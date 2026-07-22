@@ -1,14 +1,11 @@
 use std::{
     collections::BTreeMap,
     env, fs,
-    io::{self, BufRead, BufReader, Write},
-    os::unix::{
-        fs::{OpenOptionsExt, PermissionsExt},
-        net::UnixStream,
-    },
+    io::Write,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Command,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde_json::{Map, Value, json};
@@ -129,7 +126,7 @@ pub fn write_bundle(
         "logs": {
             "hostGateway": tail_file(&run_dir.join("host-gateway.log"), LOG_TAIL_LINES),
         },
-        "routerEvents": collect_router_events(workspace_root, &run_dir, plan.as_ref()),
+        "routerEvents": collect_router_events(&run_dir, plan.as_ref()),
         "resourceObservations": resources,
     });
 
@@ -248,46 +245,41 @@ fn tail_file(path: &Path, limit: usize) -> Value {
     )
 }
 
-fn collect_router_events(
-    workspace_root: &Path,
-    run_dir: &Path,
-    plan: Option<&switchyard_planner::Plan>,
-) -> Value {
+fn collect_router_events(run_dir: &Path, plan: Option<&switchyard_planner::Plan>) -> Value {
     let Some(token) = env::var_os("SWITCHYARD_ROUTER_TOKEN") else {
         return json!({"unavailable": "SWITCHYARD_ROUTER_TOKEN is not set"});
     };
     let Some(token) = token.to_str() else {
         return json!({"unavailable": "SWITCHYARD_ROUTER_TOKEN is not valid UTF-8"});
     };
-    let mut sockets = BTreeMap::from([("host".to_owned(), run_dir.join("host.socket"))]);
+    let mut endpoints = BTreeMap::from([(
+        "host".to_owned(),
+        switchyard_router_admin::AdminEndpoint::unix(run_dir.join("host.socket")),
+    )]);
     if let Some(plan) = plan {
         for (name, sidecar) in &plan.sidecars {
-            sockets.insert(name.clone(), workspace_root.join(&sidecar.admin_socket));
+            endpoints.insert(
+                name.clone(),
+                switchyard_router_admin::AdminEndpoint::docker_exec(
+                    &sidecar.service,
+                    &sidecar.admin_socket,
+                    &plan.deployment,
+                    name,
+                    &plan.resource_hash,
+                ),
+            );
         }
     }
     Value::Object(
-        sockets
+        endpoints
             .into_iter()
-            .map(|(name, socket)| {
-                let value = router_events(&socket, token)
+            .map(|(name, endpoint)| {
+                let value = switchyard_router_admin::events(&endpoint, token)
                     .unwrap_or_else(|error| json!({"unavailable": error.to_string()}));
                 (name, value)
             })
             .collect(),
     )
-}
-
-fn router_events(socket: &Path, token: &str) -> io::Result<Value> {
-    let mut stream = UnixStream::connect(socket)?;
-    stream.set_read_timeout(Some(Duration::from_secs(1)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(1)))?;
-    serde_json::to_writer(&mut stream, &json!({"token": token, "operation": "events"}))?;
-    stream.write_all(b"\n")?;
-    stream.flush()?;
-    let mut response = String::new();
-    BufReader::new(stream).read_line(&mut response)?;
-    let response: Value = serde_json::from_str(&response)?;
-    Ok(response.get("result").cloned().unwrap_or(response))
 }
 
 fn now_seconds() -> u64 {

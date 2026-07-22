@@ -1482,9 +1482,7 @@ fn generate(
     let project = resource_name(&["sy", deployment]);
     let network = resource_name(&["sy", deployment, "private"]);
     let artifact_dir = PathBuf::from(".switchyard/generated").join(deployment);
-    let runtime_dir = PathBuf::from(".switchyard/run").join(deployment);
     let artifact_bind_dir = bundle.workspace_root.join(&artifact_dir);
-    let runtime_bind_dir = bundle.workspace_root.join(&runtime_dir);
     let definition_bytes = serde_json::to_vec(bundle)?;
     let mut definition_digest = Sha256::new();
     definition_digest.update(definition_bytes);
@@ -1656,7 +1654,7 @@ fn generate(
                 let config_path = artifact_dir
                     .join("routes")
                     .join(format!("{}.json", instance.name));
-                let admin_socket = runtime_dir.join(format!("{}.socket", instance.name));
+                let admin_socket = PathBuf::from("/tmp/switchyard-admin.socket");
                 let sidecar = compose_sidecar(
                     &bundle.spec.router_image,
                     &base_name,
@@ -1664,7 +1662,6 @@ fn generate(
                     &artifact_bind_dir
                         .join("routes")
                         .join(format!("{}.json", instance.name)),
-                    &runtime_bind_dir,
                     &provider_dependencies,
                     &instance_labels,
                 );
@@ -2447,7 +2444,6 @@ fn compose_sidecar(
     namespace_service: &str,
     sidecar_name: &str,
     config_path: &Path,
-    runtime_dir: &Path,
     providers: &BTreeMap<String, bool>,
     labels: &BTreeMap<String, String>,
 ) -> Value {
@@ -2476,18 +2472,17 @@ fn compose_sidecar(
         "command": [
             "/usr/local/bin/switchyard-router",
             format!("/config/{}", config_path.file_name().unwrap_or_default().to_string_lossy()),
-            format!("/run/switchyard/{}.socket", config_path.file_stem().unwrap_or_default().to_string_lossy()),
+            "/tmp/switchyard-admin.socket",
         ],
         "environment": {
             "SWITCHYARD_ROUTER_TOKEN": "${SWITCHYARD_ROUTER_TOKEN:?set SWITCHYARD_ROUTER_TOKEN}"
         },
         "volumes": [
             format!("{}:/config/{}:ro", config_path.display(), config_path.file_name().unwrap_or_default().to_string_lossy()),
-            format!("{}:/run/switchyard", runtime_dir.display()),
         ],
         "depends_on": depends_on,
         "healthcheck": {
-            "test": ["CMD", "test", "-S", format!("/run/switchyard/{}.socket", config_path.file_stem().unwrap_or_default().to_string_lossy())],
+            "test": ["CMD", "test", "-S", "/tmp/switchyard-admin.socket"],
             "interval": "1s",
             "timeout": "1s",
             "retries": 30,

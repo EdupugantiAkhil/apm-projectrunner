@@ -899,6 +899,14 @@ host, and native execution gives consistent access to host listeners and Docker'
 loopback-published ports on Linux, macOS, and Windows. A Linux-only host-network
 container may be offered later, but is not the portable default.
 
+Router administration is transport-independent. The native host router uses an
+owner-only Unix socket. A container sidecar keeps its owner-only Unix socket inside the
+sidecar filesystem; the control plane reaches it by executing the router's bounded
+admin client inside the exact ownership-verified container and passing the authenticated
+request over stdin. This avoids depending on host/VM shared filesystems for Unix socket
+semantics and does not publish an administration listener on the host or deployment
+network.
+
 The initial stack is therefore:
 
 | Concern | Phase 1 choice |
