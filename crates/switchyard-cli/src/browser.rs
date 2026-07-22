@@ -13,6 +13,14 @@ const API_VERSION: &str = "switchyard.dev/managed-profile/v1alpha1";
 const AUTH_OWNER_MARKER: &[u8] = b"switchyard-managed-profile-auth-v1\n";
 const MAX_PROXY_CREDENTIAL_BYTES: u64 = 256;
 const BROWSER_CANDIDATES: &[&str] = &["chromium", "chromium-browser"];
+#[cfg(target_os = "macos")]
+const MACOS_BROWSER_CANDIDATES: &[&str] = &[
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+    "/Applications/Google Chrome for Testing (Beta).app/Contents/MacOS/Google Chrome for Testing",
+    "/Applications/Google Chrome for Testing (Dev).app/Contents/MacOS/Google Chrome for Testing",
+    "/Applications/Google Chrome for Testing (Canary).app/Contents/MacOS/Google Chrome for Testing",
+];
 
 #[derive(Debug)]
 pub enum BrowserError {
@@ -438,11 +446,22 @@ fn find_browser() -> Result<PathBuf, BrowserError> {
         }
         return Ok(executable);
     }
-    BROWSER_CANDIDATES
+    let from_path = BROWSER_CANDIDATES
         .iter()
         .filter_map(|candidate| find_executable(candidate.as_ref()))
-        .find(|candidate| supported_browser_executable(candidate))
-        .ok_or(BrowserError::UnsupportedBrowser)
+        .find(|candidate| supported_browser_executable(candidate));
+    if from_path.is_some() {
+        return from_path.ok_or(BrowserError::UnsupportedBrowser);
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(candidate) = MACOS_BROWSER_CANDIDATES
+        .iter()
+        .map(PathBuf::from)
+        .find(|candidate| executable(candidate) && supported_browser_executable(candidate))
+    {
+        return Ok(candidate);
+    }
+    Err(BrowserError::UnsupportedBrowser)
 }
 
 fn supported_browser_executable(executable: &Path) -> bool {

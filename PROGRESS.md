@@ -1,12 +1,34 @@
 # Switchyard implementation progress
 
-Updated: 2026-07-18
+Updated: 2026-07-22
 
 ## Release status
 
 - Routing proof (Phases 0–4): complete.
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
+
+## 2026-07-22 macOS portability — native-host foundation
+
+- Bootstrap now verifies the native macOS host-process tools, and the CLI builds and
+  passes its focused test and Clippy suites on Apple Silicon macOS with Docker Desktop
+  running Linux containers.
+- The native host gateway now launches without Linux `setsid` and preserves
+  ownership-safe PID reuse, executable, and command-line checks using macOS process
+  metadata. Managed-browser discovery also covers standard Chromium and Chrome for
+  Testing application bundles.
+- The routing proof is not yet complete on macOS. Docker Desktop can create a Unix
+  socket inode in the host bind mount used by container sidecars, but its cross-VM
+  shared filesystem rejects required socket permission/operation calls with
+  `EINVAL`/`ENOTSUP`. A portable sidecar admin transport is still required before macOS
+  can be promoted to a supported end-to-end platform. The failed proof cleaned all
+  owned fixture resources.
+- The proof also exposed stale Rust 1.85 fixture images after the workspace compiler
+  floor moved to 1.88; both maintained fixture Dockerfiles now use Rust 1.88.
+- Verification completed: `./scripts/bootstrap`, all 59 CLI unit tests plus daemon
+  parity, and focused CLI Clippy with warnings denied. The live routing matrix builds
+  its native and Linux/arm64 binaries and starts provider containers, then stops at the
+  documented Docker Desktop sidecar-admin socket boundary.
 
 ## 2026-07-18 Phase D part 1 remote-device runtime
 

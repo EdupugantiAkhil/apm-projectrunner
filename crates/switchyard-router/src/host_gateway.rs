@@ -747,6 +747,13 @@ fn certificate_error(path: &Path, message: impl Into<String>) -> HostGatewayErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_directory() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("switchyard-router-")
+            .tempdir_in("/private/tmp")
+            .unwrap()
+    }
     use router_config::RouterConfig;
     use serde_json::json;
 
@@ -798,7 +805,7 @@ mod tests {
 
     #[test]
     fn preflight_reports_an_occupied_port_without_writing_certificates() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = test_directory();
         let occupied = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = occupied.local_addr().unwrap().port();
         let certificate = directory.path().join("host.pem");
@@ -811,7 +818,7 @@ mod tests {
 
     #[test]
     fn preflight_rejects_a_domain_claimed_by_different_slots() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = test_directory();
         let certificate = directory.path().join("host.pem");
         let key = directory.path().join("host-key.pem");
         let mut config = config(free_port(), &certificate, &key);
@@ -839,7 +846,7 @@ mod tests {
 
     #[test]
     fn exposure_summary_expands_wildcard_binds_to_actual_interfaces() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = test_directory();
         let mut config = config(
             18080,
             &directory.path().join("host.pem"),
@@ -868,7 +875,7 @@ mod tests {
 
     #[test]
     fn provider_upstreams_remain_loopback_only_with_and_without_lan_mode() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = test_directory();
         let mut config = config(
             18080,
             &directory.path().join("host.pem"),
@@ -893,7 +900,7 @@ mod tests {
 
     #[test]
     fn managed_certificates_are_secure_renewable_and_cleanable() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = test_directory();
         let certificate = directory.path().join("host.pem");
         let key = directory.path().join("host-key.pem");
         let config = config(0, &certificate, &key);
@@ -928,7 +935,7 @@ mod tests {
 
     #[test]
     fn external_certificates_are_never_overwritten_or_removed() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = test_directory();
         let certificate = directory.path().join("external.pem");
         let key = directory.path().join("external-key.pem");
         fs::write(&certificate, "certificate").unwrap();
@@ -943,7 +950,7 @@ mod tests {
 
     #[test]
     fn managed_proxy_credentials_are_private_and_owned() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = test_directory();
         let certificate = directory.path().join("host.pem");
         let key = directory.path().join("host-key.pem");
         let credential = directory.path().join("profile.credential");
@@ -973,7 +980,7 @@ mod tests {
 
     #[test]
     fn copied_markers_cannot_delete_different_configured_files() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = test_directory();
         let managed_certificate = directory.path().join("managed.pem");
         let managed_key = directory.path().join("managed-key.pem");
         let managed = config(1, &managed_certificate, &managed_key);
@@ -1038,7 +1045,7 @@ mod tests {
 
     #[test]
     fn credentials_match_pingora_file_and_token_rules() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = test_directory();
         let certificate = directory.path().join("host.pem");
         let key = directory.path().join("host-key.pem");
         let credential = directory.path().join("profile.credential");
@@ -1062,8 +1069,8 @@ mod tests {
     fn managed_files_reject_symlinked_parent_directories() {
         use std::os::unix::fs::symlink;
 
-        let directory = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
+        let directory = test_directory();
+        let outside = test_directory();
         let linked = directory.path().join("linked");
         symlink(outside.path(), &linked).unwrap();
         let certificate = linked.join("host.pem");

@@ -53,7 +53,12 @@ case "$host_os" in
     fi
     ;;
   Darwin)
-    note "macOS detected (${host_arch}); use Docker Desktop with Linux containers (Linux is the primary development platform)"
+    pass "macOS host detected (${host_arch})"
+    if [[ -x /usr/bin/nohup ]] && [[ -x /bin/ps ]]; then
+      pass "macOS host-process lifecycle tools are available"
+    else
+      fail "macOS requires /usr/bin/nohup and /bin/ps for native host-router lifecycle"
+    fi
     ;;
   *)
     fail "unsupported host '${host_os}'; use native Linux or a Linux WSL2 environment"

@@ -1,5 +1,20 @@
 # Agent mistakes and lessons
 
+## 2026-07-22 — macOS routing requires a portable sidecar admin channel
+
+- The initial macOS port focused on the native host gateway's `setsid` and `/proc`
+  dependencies. The live proof then showed that Docker Desktop creates the sidecar Unix
+  admin socket inode in a host bind-mounted directory but rejects required permission
+  and socket operations across the VM boundary with `EINVAL`/`ENOTSUP`. Correction:
+  keep macOS support provisional until the authenticated sidecar admin transport is
+  reachable without a bind-mounted Unix socket. Lesson: host-process portability and
+  container-to-host control-channel portability are separate release gates.
+- The clean proof initially failed before routing because maintained fixture
+  Dockerfiles still pinned Rust 1.85 while `rust-toolchain.toml` and the workspace now
+  require 1.88. Correction: align both fixture build images with Rust 1.88. Lesson:
+  every compiler-floor change must search container build stages as well as CI and host
+  toolchain declarations.
+
 ## 2026-07-18 — Remote Compose resources need explicit ownership
 
 - The first remote-runtime cut removed each remote service's explicit network and let

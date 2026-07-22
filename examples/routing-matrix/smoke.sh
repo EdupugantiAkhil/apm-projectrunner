@@ -269,7 +269,11 @@ test "$backend_id" = "$("${compose[@]}" ps --quiet routing-matrix--backend-1--ap
 host_pid="$(python3 -c 'import json; print(json.load(open(".switchyard/run/routing-matrix/host-gateway.json"))["pid"])')"
 kill -KILL "$host_pid"
 for _ in {1..50}; do
-  [[ ! -e "/proc/$host_pid" ]] && break
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    [[ ! -e "/proc/$host_pid" ]] && break
+  else
+    ! kill -0 "$host_pid" 2>/dev/null && break
+  fi
   sleep 0.1
 done
 "$switchyard" up "$deployment"

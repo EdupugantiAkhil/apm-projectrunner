@@ -13,6 +13,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env, fmt, fs, io,
     net::{SocketAddr, TcpListener, ToSocketAddrs},
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, ExitCode, Stdio},
     time::{SystemTime, UNIX_EPOCH},
@@ -221,6 +222,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             for sidecar in plan.sidecars.values() {
                 if let Some(parent) = workspace_root.join(&sidecar.admin_socket).parent() {
                     fs::create_dir_all(parent)?;
+                    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
                 }
             }
             let artifact_dir = switchyard_planner::write_plan(&workspace_root, &plan)?;

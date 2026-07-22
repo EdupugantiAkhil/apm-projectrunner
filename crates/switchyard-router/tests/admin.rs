@@ -42,16 +42,18 @@ async fn request(path: &Path, request: Value) -> Value {
     serde_json::from_slice(&response).unwrap()
 }
 
+fn socket_path(prefix: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let directory = tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir_in("/private/tmp")
+        .unwrap();
+    let socket = directory.path().join("admin.sock");
+    (directory, socket)
+}
+
 #[tokio::test]
 async fn authenticates_inspects_applies_and_drains() {
-    let socket = std::env::temp_dir().join(format!(
-        "switchyard-router-admin-{}-{}.sock",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let (_directory, socket) = socket_path("sy-admin-");
     let process = RouterProcess::start(
         config(1),
         AdminOptions {
@@ -116,14 +118,7 @@ async fn unhealthy_candidate_rolls_back_without_displacing_active_snapshot() {
     let health = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let unavailable_port = health.local_addr().unwrap().port();
     drop(health);
-    let socket = std::env::temp_dir().join(format!(
-        "switchyard-router-rollback-{}-{}.sock",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let (_directory, socket) = socket_path("sy-rollback-");
     let process = RouterProcess::start(
         config(1),
         AdminOptions {

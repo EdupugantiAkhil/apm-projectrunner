@@ -206,8 +206,8 @@ impl<'a> HostRuntime<'a> {
             .open(&log_path)?;
         fs::set_permissions(&log_path, fs::Permissions::from_mode(0o600))?;
         let admin_socket = paths.socket.clone();
-        let mut child = Command::new("setsid")
-            .arg(&executable)
+        let mut command = detached_command(&executable);
+        let mut child = command
             .arg("host")
             .arg(&config_path)
             .arg(&admin_socket)
@@ -715,39 +715,91 @@ enum ProcessIdentity {
 }
 
 fn inspect_process(state: &ProcessState) -> Result<ProcessIdentity, HostRuntimeError> {
-    let stat = match fs::read_to_string(format!("/proc/{}/stat", state.pid)) {
-        Ok(stat) => stat,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(ProcessIdentity::Missing);
+    #[cfg(target_os = "macos")]
+    return inspect_process_macos(state);
+
+    #[cfg(target_os = "linux")]
+    {
+        let stat = match fs::read_to_string(format!("/proc/{}/stat", state.pid)) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(ProcessIdentity::Missing);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let current_ticks = parse_start_ticks(&stat).ok_or_else(|| {
+            HostRuntimeError::StaleState(format!("could not parse /proc/{}/stat", state.pid))
+        })?;
+        if current_ticks != state.start_ticks {
+            return Ok(ProcessIdentity::Different(format!(
+                "pid {} was reused by another process",
+                state.pid
+            )));
         }
-        Err(error) => return Err(error.into()),
+        let expected_executable = find_router_binary()?;
+        let executable = fs::canonicalize(format!("/proc/{}/exe", state.pid))?;
+        if state.executable != expected_executable || executable != expected_executable {
+            return Ok(ProcessIdentity::Different(format!(
+                "pid {} executable does not match the currently configured router binary",
+                state.pid
+            )));
+        }
+        let command_line = fs::read(format!("/proc/{}/cmdline", state.pid))?;
+        let config = state.config.as_os_str().as_encoded_bytes();
+        let has_host_mode = command_line
+            .split(|byte| *byte == 0)
+            .any(|arg| arg == b"host");
+        let has_config = command_line
+            .split(|byte| *byte == 0)
+            .any(|argument| argument == config);
+        if !has_host_mode || !has_config {
+            return Ok(ProcessIdentity::Different(format!(
+                "pid {} command line does not match the generated host gateway",
+                state.pid
+            )));
+        }
+        Ok(ProcessIdentity::Owned)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn inspect_process_macos(state: &ProcessState) -> Result<ProcessIdentity, HostRuntimeError> {
+    let Some(started) = macos_process_field(state.pid, "lstart")? else {
+        return Ok(ProcessIdentity::Missing);
     };
-    let current_ticks = parse_start_ticks(&stat).ok_or_else(|| {
-        HostRuntimeError::StaleState(format!("could not parse /proc/{}/stat", state.pid))
-    })?;
-    if current_ticks != state.start_ticks {
+    if stable_process_token(&started) != state.start_ticks {
         return Ok(ProcessIdentity::Different(format!(
             "pid {} was reused by another process",
             state.pid
         )));
     }
-    let expected_executable = find_router_binary()?;
-    let executable = fs::canonicalize(format!("/proc/{}/exe", state.pid))?;
-    if state.executable != expected_executable || executable != expected_executable {
+    let Some(command_name) = macos_process_field(state.pid, "comm")? else {
+        return Ok(ProcessIdentity::Missing);
+    };
+    let expected_name = state
+        .executable
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if state.executable != find_router_binary()?
+        || Path::new(command_name.trim())
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some(expected_name)
+    {
         return Ok(ProcessIdentity::Different(format!(
             "pid {} executable does not match the currently configured router binary",
             state.pid
         )));
     }
-    let command_line = fs::read(format!("/proc/{}/cmdline", state.pid))?;
-    let config = state.config.as_os_str().as_encoded_bytes();
-    let has_host_mode = command_line
-        .split(|byte| *byte == 0)
-        .any(|arg| arg == b"host");
-    let has_config = command_line
-        .split(|byte| *byte == 0)
-        .any(|argument| argument == config);
-    if !has_host_mode || !has_config {
+    let Some(command_line) = macos_process_field(state.pid, "command")? else {
+        return Ok(ProcessIdentity::Missing);
+    };
+    if !command_line
+        .split_whitespace()
+        .any(|argument| argument == "host")
+        || !command_line.contains(state.config.to_string_lossy().as_ref())
+    {
         return Ok(ProcessIdentity::Different(format!(
             "pid {} command line does not match the generated host gateway",
             state.pid
@@ -756,6 +808,29 @@ fn inspect_process(state: &ProcessState) -> Result<ProcessIdentity, HostRuntimeE
     Ok(ProcessIdentity::Owned)
 }
 
+#[cfg(target_os = "macos")]
+fn macos_process_field(pid: u32, field: &str) -> Result<Option<String>, HostRuntimeError> {
+    let output = Command::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", &format!("{field}=")])
+        .output()?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    Ok((!value.is_empty()).then_some(value))
+}
+
+#[cfg(target_os = "macos")]
+fn stable_process_token(value: &str) -> u64 {
+    value
+        .as_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        })
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn parse_start_ticks(stat: &str) -> Option<u64> {
     let end = stat.rfind(')')?;
     stat.get(end + 1..)?
@@ -797,18 +872,39 @@ fn parse_published_address(
 }
 
 fn wait_for_start_ticks(pid: u32, timeout: Duration) -> Result<u64, HostRuntimeError> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        match fs::read_to_string(format!("/proc/{pid}/stat")) {
-            Ok(stat) => {
-                return parse_start_ticks(&stat).ok_or_else(|| {
-                    HostRuntimeError::Startup("could not read child process identity".into())
-                });
+    #[cfg(target_os = "macos")]
+    {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(started) = macos_process_field(pid, "lstart")? {
+                return Ok(stable_process_token(&started));
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound && Instant::now() < deadline => {
-                thread::sleep(Duration::from_millis(10));
+            if Instant::now() >= deadline {
+                return Err(HostRuntimeError::Startup(
+                    "could not read child process identity".into(),
+                ));
             }
-            Err(error) => return Err(error.into()),
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match fs::read_to_string(format!("/proc/{pid}/stat")) {
+                Ok(stat) => {
+                    return parse_start_ticks(&stat).ok_or_else(|| {
+                        HostRuntimeError::Startup("could not read child process identity".into())
+                    });
+                }
+                Err(error)
+                    if error.kind() == io::ErrorKind::NotFound && Instant::now() < deadline =>
+                {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => return Err(error.into()),
+            }
         }
     }
 }
@@ -818,26 +914,70 @@ fn wait_for_executable(
     expected: &Path,
     timeout: Duration,
 ) -> Result<(), HostRuntimeError> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        match fs::canonicalize(format!("/proc/{pid}/exe")) {
-            Ok(executable) if executable == expected => return Ok(()),
-            Ok(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
-            Ok(executable) => {
-                return Err(HostRuntimeError::Startup(format!(
-                    "launcher did not execute {} (running {})",
-                    expected.display(),
-                    executable.display()
-                )));
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+    #[cfg(target_os = "macos")]
+    {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let Some(command_name) = macos_process_field(pid, "comm")? else {
                 return Err(HostRuntimeError::Startup(
                     "host gateway launcher exited before startup".into(),
                 ));
+            };
+            let actual = Path::new(command_name.trim())
+                .file_name()
+                .and_then(|name| name.to_str());
+            let wanted = expected.file_name().and_then(|name| name.to_str());
+            if actual == wanted {
+                return Ok(());
             }
-            Err(error) => return Err(error.into()),
+            if Instant::now() >= deadline {
+                return Err(HostRuntimeError::Startup(format!(
+                    "launcher did not execute {} (running {})",
+                    expected.display(),
+                    command_name.trim()
+                )));
+            }
+            thread::sleep(Duration::from_millis(10));
         }
     }
+
+    #[cfg(target_os = "linux")]
+    {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match fs::canonicalize(format!("/proc/{pid}/exe")) {
+                Ok(executable) if executable == expected => return Ok(()),
+                Ok(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+                Ok(executable) => {
+                    return Err(HostRuntimeError::Startup(format!(
+                        "launcher did not execute {} (running {})",
+                        expected.display(),
+                        executable.display()
+                    )));
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    return Err(HostRuntimeError::Startup(
+                        "host gateway launcher exited before startup".into(),
+                    ));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn detached_command(executable: &Path) -> Command {
+    let mut command = Command::new("setsid");
+    command.arg(executable);
+    command
+}
+
+#[cfg(target_os = "macos")]
+fn detached_command(executable: &Path) -> Command {
+    let mut command = Command::new("/usr/bin/nohup");
+    command.arg(executable);
+    command
 }
 
 fn signal_owned(state: &ProcessState, signal: &str) -> Result<(), HostRuntimeError> {
@@ -1015,11 +1155,12 @@ mod tests {
     fn failed_startup_cleanup_allows_a_clean_retry() {
         use std::os::unix::net::UnixListener;
 
-        let root =
-            std::env::temp_dir().join(format!("switchyard-host-retry-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir(&root).unwrap();
-        let paths = checked_runtime_paths(&root, "demo", true).unwrap();
+        let temporary = tempfile::Builder::new()
+            .prefix("sy-host-")
+            .tempdir_in("/private/tmp")
+            .unwrap();
+        let root = temporary.path();
+        let paths = checked_runtime_paths(root, "demo", true).unwrap();
         let socket = UnixListener::bind(&paths.socket).unwrap();
         fs::write(&paths.state, b"owned startup state").unwrap();
         drop(socket);
@@ -1027,7 +1168,19 @@ mod tests {
         cleanup_startup_artifacts(&paths, true).unwrap();
         require_missing(&paths.socket, "host gateway socket").unwrap();
         require_missing(&paths.state, "host gateway state").unwrap();
-        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_process_tokens_are_stable_and_sensitive() {
+        assert_eq!(
+            stable_process_token("started"),
+            stable_process_token("started")
+        );
+        assert_ne!(
+            stable_process_token("started"),
+            stable_process_token("later")
+        );
     }
 
     #[test]
