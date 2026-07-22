@@ -541,3 +541,24 @@ the next refresh immediately cleared). Lesson: never rely on a UI framework's
 implicit first-focus or on notices as the only evidence an action ran; assert
 observable outcomes end to end, repeatedly, in both fresh and restarted
 sessions.
+
+## 2026-07-23 — Verify transport behavior and platform paths on their real consumers
+
+The macOS portability pass hard-coded `/private/tmp` in tests that also run on Linux,
+causing eleven Linux failures. The remote-device implementation also asserted an
+environment variable named `DOCKER_SSH_OPTS` instead of verifying the SSH subprocess
+that Docker actually launches; Docker Desktop ignored that variable, so a registered
+identity worked for the direct probe but not for Docker and unrelated agent keys caused
+`Too many authentication failures`. Corrections: choose the deliberately short test
+root per platform, and use a shared process-scoped SSH launcher with an executable-level
+argument-vector test, including an identity path containing spaces and cleanup after
+drop. Lesson: portability tests must run on every claimed host, and subprocess adapters
+must be tested at their observable process boundary rather than by asserting assumed
+environment variables.
+
+The isolated Linux verification initially let `rustup-init` update the remote user's
+`.zshenv` to source the temporary Cargo environment. Removing the toolchain then left a
+broken shell-startup reference. Correction: remove the exact generated line and the now
+empty file, and verify a fresh remote shell starts without a warning. Lesson: temporary
+toolchain installers must use their no-profile-modification option, and cleanup must
+audit shell startup files as well as the requested cache directories.

@@ -3447,6 +3447,16 @@ fn observe_docker_on(
     strict: bool,
 ) -> Result<Vec<switchyard_state::OwnedResourceObservation>, io::Error> {
     let mut observations = Vec::new();
+    let docker_transport = device
+        .map(|device| {
+            switchyard_docker_ssh::DockerSshTransport::new(
+                &device.user,
+                &device.host,
+                device.port,
+                device.identity_file.as_deref(),
+            )
+        })
+        .transpose()?;
     for (kind, noun, supports_all) in [
         (switchyard_state::ResourceKind::Container, "container", true),
         (switchyard_state::ResourceKind::Image, "image", true),
@@ -3460,7 +3470,7 @@ fn observe_docker_on(
         arguments.extend(["--filter", "label=dev.switchyard.managed=true", "--quiet"]);
         let mut command = std::process::Command::new("docker");
         command.args(arguments);
-        configure_docker_device(&mut command, device);
+        configure_docker_device(&mut command, docker_transport.as_ref());
         let output = command.output()?;
         if !output.status.success() {
             if strict {
@@ -3476,7 +3486,7 @@ fn observe_docker_on(
         {
             let mut command = std::process::Command::new("docker");
             command.args([noun, "inspect", id]);
-            configure_docker_device(&mut command, device);
+            configure_docker_device(&mut command, docker_transport.as_ref());
             let inspected = command.output()?;
             if !inspected.status.success() {
                 if strict {
@@ -3532,19 +3542,11 @@ fn observe_docker_on(
 
 fn configure_docker_device(
     command: &mut std::process::Command,
-    device: Option<&switchyard_state::GeneratedDevice>,
+    transport: Option<&switchyard_docker_ssh::DockerSshTransport>,
 ) {
-    let Some(device) = device else { return };
-    command.env(
-        "DOCKER_HOST",
-        format!("ssh://{}@{}:{}", device.user, device.host, device.port),
-    );
-    let identity = device
-        .identity_file
-        .as_ref()
-        .map(|path| format!("-i {} ", path.display()))
-        .unwrap_or_default();
-    command.env("DOCKER_SSH_OPTS", format!("{identity}-o BatchMode=yes"));
+    if let Some(transport) = transport {
+        transport.apply(command);
+    }
 }
 
 #[cfg(test)]

@@ -1,0 +1,13 @@
+[package]
+name = "switchyard-docker-ssh"
+description = "Process-scoped SSH transport configuration for Docker clients"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+tempfile = "3.20.0"
+
+[lints]
+workspace = true

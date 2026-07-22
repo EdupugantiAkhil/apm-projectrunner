@@ -1516,6 +1516,7 @@ crates/
   router-pingora/             HTTP/TLS/gRPC/WebSocket gateway implementation
   router-tcp/                 Tokio raw TCP forwarding
   router-config/              versioned router configuration protocol
+  switchyard-docker-ssh/      process-scoped explicit-identity Docker SSH transport
 packages/
   core/                       schemas, planner, naming, validation
   compose-runtime/            Compose generation and execution

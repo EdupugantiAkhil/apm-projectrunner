@@ -753,8 +753,18 @@ mod tests {
     fn test_directory() -> tempfile::TempDir {
         tempfile::Builder::new()
             .prefix("switchyard-router-")
-            .tempdir_in("/private/tmp")
+            .tempdir_in(short_test_temp_root())
             .unwrap()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn short_test_temp_root() -> &'static Path {
+        Path::new("/private/tmp")
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn short_test_temp_root() -> &'static Path {
+        Path::new("/tmp")
     }
     use router_config::RouterConfig;
     use serde_json::json;

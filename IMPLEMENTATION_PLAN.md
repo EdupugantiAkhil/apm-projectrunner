@@ -519,6 +519,9 @@ Entry gate: the Phase A remote-cut design is approved.
       cut.
 - [x] Validate device eligibility (SSH reachable, Docker reachable, resource claims)
       before start; ineligible selections fail validation with the concrete reason.
+- [x] Apply a registered explicit SSH identity to eligibility, lifecycle, status, logs,
+      recovery, and cleanup without relying on unsupported Docker SSH option variables
+      or mutating persistent OpenSSH configuration.
 - [x] Expose device placement in instance creation and show true placement everywhere.
 - [x] Verify end to end against a real LAN device.
 

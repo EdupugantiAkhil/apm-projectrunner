@@ -5,8 +5,17 @@ Date recorded: 2026-07-23
 Baseline under test: commit `5b87686` (`Complete Apple Silicon macOS support`)
 
 This document records the issues found while verifying the macOS portability changes
-on a real Linux/aarch64 NixOS host and while driving that host from macOS. It is an
-implementation handoff, not a claim that the issues are fixed.
+on a real Linux/aarch64 NixOS host and while driving that host from macOS.
+
+## Resolution
+
+Resolved on 2026-07-23. Platform-specific short test roots now preserve macOS socket
+limits without assuming `/private/tmp` on Linux. Docker SSH operations use the shared
+`switchyard-docker-ssh` process-scoped transport, which applies an explicit identity as
+a distinct argument with `BatchMode=yes` and `IdentitiesOnly=yes`. Full locked workspace
+tests pass on macOS and the real Linux/aarch64 host; the macOS-to-device lifecycle also
+passes with no usable agent and an identity path containing spaces. Details are in
+`PROGRESS.md`.
 
 ## Verification environment
 

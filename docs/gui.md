@@ -102,6 +102,9 @@ file path. **Check connection** refreshes the row with `ok`, `unreachable`, or
 `auth-failed`; **Remove** requires an explicit confirmation and removes only the
 registry entry.
 
-Device authentication uses the daemon user's existing SSH keys, configuration, and
-agent. The GUI and API do not accept passwords or key contents, and SQLite stores only
-the optional identity file path exactly as entered.
+Without an explicit identity, device authentication uses the daemon user's existing SSH
+configuration and agent. When an identity path is selected, it is used exclusively for
+the SSH probe and Docker operations, preventing unrelated agent keys from being tried
+first. The GUI and API do not accept passwords or key contents, and SQLite stores only
+the optional identity file path exactly as entered. Switchyard does not modify the
+user's persistent SSH configuration.

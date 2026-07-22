@@ -40,6 +40,8 @@ pub fn ssh_arguments(device: &RegisteredDevice) -> Vec<OsString> {
         "StrictHostKeyChecking=accept-new".into(),
     ];
     if let Some(identity) = &device.identity_file {
+        arguments.push("-o".into());
+        arguments.push("IdentitiesOnly=yes".into());
         arguments.push("-i".into());
         arguments.push(identity.as_os_str().to_owned());
     }
@@ -133,6 +135,8 @@ mod tests {
                 "ConnectTimeout=5",
                 "-o",
                 "StrictHostKeyChecking=accept-new",
+                "-o",
+                "IdentitiesOnly=yes",
                 "-i",
                 "keys/id_ed25519",
                 "-p",

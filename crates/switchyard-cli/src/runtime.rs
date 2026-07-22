@@ -9,6 +9,7 @@ use std::{
 
 use serde::Deserialize;
 use serde_json::Value;
+use switchyard_docker_ssh::DockerSshTransport;
 
 pub const MANAGED_LABEL: &str = "dev.switchyard.managed";
 pub const DEPLOYMENT_LABEL: &str = "dev.switchyard.deployment";
@@ -589,8 +590,9 @@ impl<E: CommandExecutor> DockerRuntime<E> {
     ) -> Result<(), RuntimeError> {
         let mut arguments = compose_arguments(plan, remote, &["logs", "--follow"]);
         arguments.extend(services.iter().cloned());
+        let environment = project_environment(plan, remote)?;
         self.executor
-            .stream_with_environment("docker", &arguments, &project_environment(plan, remote)?)
+            .stream_with_environment("docker", &arguments, &environment)
             .map_err(|error| {
                 map_project_error(remote, &render_command("docker", &arguments), error)
             })
@@ -638,24 +640,43 @@ fn secret_environment(plan: &RuntimePlan) -> Result<BTreeMap<String, OsString>, 
     Ok(environment)
 }
 
+struct ProjectEnvironment {
+    values: BTreeMap<String, OsString>,
+    _ssh_transport: Option<DockerSshTransport>,
+}
+
+impl std::ops::Deref for ProjectEnvironment {
+    type Target = BTreeMap<String, OsString>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.values
+    }
+}
+
 fn project_environment(
     plan: &RuntimePlan,
     remote: Option<&RemoteRuntimeProject>,
-) -> Result<BTreeMap<String, OsString>, RuntimeError> {
+) -> Result<ProjectEnvironment, RuntimeError> {
     let mut environment = secret_environment(plan)?;
-    if let Some(remote) = remote {
-        environment.insert(
-            "DOCKER_HOST".into(),
-            format!("ssh://{}@{}:{}", remote.user, remote.host, remote.port).into(),
-        );
-        let mut ssh_options = String::new();
-        if let Some(identity) = &remote.identity_file {
-            ssh_options.push_str(&format!("-i {} ", identity.display()));
+    let transport = remote
+        .map(|remote| {
+            DockerSshTransport::new(
+                &remote.user,
+                &remote.host,
+                remote.port,
+                remote.identity_file.as_deref(),
+            )
+        })
+        .transpose()?;
+    if let Some(transport) = &transport {
+        for (key, value) in transport.environment() {
+            environment.insert(key.to_string_lossy().into_owned(), value.clone());
         }
-        ssh_options.push_str("-o BatchMode=yes");
-        environment.insert("DOCKER_SSH_OPTS".into(), ssh_options.into());
     }
-    Ok(environment)
+    Ok(ProjectEnvironment {
+        values: environment,
+        _ssh_transport: transport,
+    })
 }
 
 fn project_identity<'a>(
@@ -1152,9 +1173,10 @@ mod tests {
             OsString::from("ssh://akhil@example-host:22")
         );
         assert_eq!(
-            remote_streams[0].environment["DOCKER_SSH_OPTS"],
-            OsString::from("-i /keys/build -o BatchMode=yes")
+            remote_streams[0].environment["SWITCHYARD_DOCKER_SSH_IDENTITY"],
+            OsString::from("/keys/build")
         );
+        assert!(remote_streams[0].environment.contains_key("PATH"));
         let remote_up = calls.iter().position(|call| {
             call.streamed
                 && call.environment.contains_key("DOCKER_HOST")

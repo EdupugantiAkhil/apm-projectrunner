@@ -1,12 +1,39 @@
 # Switchyard implementation progress
 
-Updated: 2026-07-22
+Updated: 2026-07-23
 
 ## Release status
 
 - Routing proof (Phases 0–4): complete.
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
+
+## 2026-07-23 Linux portability and explicit remote identity correction
+
+- Replaced the ineffective `DOCKER_SSH_OPTS` integration with one shared
+  process-scoped Docker SSH transport used by ops eligibility, CLI lifecycle/status/
+  logs/cleanup, and daemon reconciliation. An explicit registered identity is supplied
+  as an argument-safe value with `BatchMode=yes` and `IdentitiesOnly=yes`; paths with
+  spaces remain one argument. The private launcher directory is mode `0700`, is scoped
+  to the synchronous Docker operation, and is removed on drop. Devices without an
+  explicit identity retain normal OpenSSH configuration and agent behavior.
+- Direct SSH eligibility probes now also set `IdentitiesOnly=yes` whenever an explicit
+  identity is selected, so their authentication behavior agrees with Docker lifecycle
+  operations.
+- macOS socket-length tests retain their short `/private/tmp` root, while Linux uses
+  `/tmp`; this removes the eleven Linux failures introduced by the macOS portability
+  work without weakening socket, symlink, ownership, or cleanup assertions.
+- Focused transport, ops, CLI host/runtime, daemon, and router host-gateway tests pass
+  on macOS. Workspace Clippy with all targets/features and warnings denied is clean.
+- Full locked workspace tests pass on the real Linux/aarch64 NixOS host with Rust 1.88;
+  bootstrap also passes there. The board required debug symbols/incremental artifacts
+  disabled and serial final linking because its loop-backed root had only about 2 GiB
+  free; an initial transfer-only AppleDouble metadata failure was removed and rerun.
+- A real macOS-to-device lifecycle passed with no usable SSH agent and an identity path
+  containing spaces: eligibility, validate, plan, up/healthy, `InSync` status, followed
+  logs, down, destructive cleanup, and a remote zero-leftover check. The disposable
+  authorized key and verification state were removed. Routed traffic was not retested
+  because this Snapdragon vendor kernel's known Docker bridge defect is unchanged.
 
 ## 2026-07-22 macOS portability — product and release completion
 
@@ -126,8 +153,9 @@ Updated: 2026-07-22
   placement. Local sidecars and the host router target the registered device host and
   published capability port.
 - Docker lifecycle, logs, discovery, status, and cleanup carry per-command
-  `DOCKER_HOST`/`DOCKER_SSH_OPTS`, gate every remote with `docker version` before
-  mutation, start remotes before local consumers, and stop/clean in reverse order.
+  `DOCKER_HOST` and SSH transport state, gate every remote with `docker version` before
+  mutation, start remotes before local consumers, and stop/clean in reverse order. The
+  original `DOCKER_SSH_OPTS` implementation was replaced by the 2026-07-23 correction.
 - Generated manifests persist remote project/device placement. Reconciliation observes
   each referenced daemon, tags resources by device, and records an explicit
   `device_unreachable` diagnostic while retaining the last remote observations.

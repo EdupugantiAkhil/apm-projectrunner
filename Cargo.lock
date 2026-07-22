@@ -3323,6 +3323,7 @@ dependencies = [
  "switchyard-adapter-sdk",
  "switchyard-adapters",
  "switchyard-daemon",
+ "switchyard-docker-ssh",
  "switchyard-ops",
  "switchyard-planner",
  "switchyard-router-admin",
@@ -3347,6 +3348,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "switchyard-adapters",
+ "switchyard-docker-ssh",
  "switchyard-planner",
  "switchyard-router-admin",
  "switchyard-sources",
@@ -3357,6 +3359,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchyard-docker-ssh"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "switchyard-ops"
 version = "0.1.0"
 dependencies = [
@@ -3364,6 +3373,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "switchyard-daemon",
+ "switchyard-docker-ssh",
  "switchyard-planner",
  "switchyard-sources",
  "switchyard-state",

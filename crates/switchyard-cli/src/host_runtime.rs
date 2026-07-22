@@ -1162,7 +1162,7 @@ mod tests {
 
         let temporary = tempfile::Builder::new()
             .prefix("sy-host-")
-            .tempdir_in("/private/tmp")
+            .tempdir_in(short_test_temp_root())
             .unwrap();
         let root = temporary.path();
         let paths = checked_runtime_paths(root, "demo", true).unwrap();
@@ -1173,6 +1173,16 @@ mod tests {
         cleanup_startup_artifacts(&paths, true).unwrap();
         require_missing(&paths.socket, "host gateway socket").unwrap();
         require_missing(&paths.state, "host gateway state").unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn short_test_temp_root() -> &'static Path {
+        Path::new("/private/tmp")
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn short_test_temp_root() -> &'static Path {
+        Path::new("/tmp")
     }
 
     #[cfg(target_os = "macos")]

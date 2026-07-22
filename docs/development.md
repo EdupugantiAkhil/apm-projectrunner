@@ -198,6 +198,12 @@ switchyard device list
 
 The check first verifies SSH, then asks the remote Docker server for its version through
 `DOCKER_HOST=ssh://...`; it records eligibility or a concrete SSH, Docker availability,
-or permission failure without storing credentials. Use a device host that the local
+or permission failure without storing credentials. When `--identity` is present,
+Switchyard applies that key with `BatchMode=yes` and `IdentitiesOnly=yes` to both the
+probe and every Docker lifecycle, status, log, recovery, and cleanup operation. The
+launcher used to supply Docker's SSH helper is private, process-scoped, and removed
+after each operation; Switchyard does not edit persistent OpenSSH configuration. With
+no explicit identity, normal OpenSSH configuration and agent selection remain in use.
+Use a device host that the local
 router's containers can resolve and reach. A LAN IP is preferable to `localhost` or an
 mDNS name because routes use the registered host with the published service port.

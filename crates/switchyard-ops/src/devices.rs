@@ -5,6 +5,7 @@ use std::{
     process::Command,
 };
 
+use switchyard_docker_ssh::DockerSshTransport;
 use switchyard_state::{DeviceCheckStatus, RegisteredDevice};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,6 +79,20 @@ pub fn check_device_eligibility_with<E: DeviceCheckExecutor>(
         return (status, format!("no docker over SSH: SSH failed: {reason}"));
     }
 
+    let transport = match DockerSshTransport::new(
+        &device.user,
+        &device.host,
+        device.port,
+        device.identity_file.as_deref(),
+    ) {
+        Ok(transport) => transport,
+        Err(error) => {
+            return (
+                DeviceCheckStatus::Ineligible,
+                format!("no docker over SSH: could not prepare SSH transport: {error}"),
+            );
+        }
+    };
     let docker = match executor.run(
         OsStr::new("docker"),
         &[
@@ -85,7 +100,7 @@ pub fn check_device_eligibility_with<E: DeviceCheckExecutor>(
             "--format".into(),
             "{{.Server.Version}}".into(),
         ],
-        &docker_environment(device),
+        transport.environment(),
     ) {
         Ok(output) => output,
         Err(error) => {
@@ -145,7 +160,12 @@ fn ssh_arguments(device: &RegisteredDevice) -> Vec<OsString> {
         "StrictHostKeyChecking=accept-new".into(),
     ];
     if let Some(identity) = &device.identity_file {
-        arguments.extend(["-i".into(), identity.as_os_str().to_owned()]);
+        arguments.extend([
+            "-o".into(),
+            "IdentitiesOnly=yes".into(),
+            "-i".into(),
+            identity.as_os_str().to_owned(),
+        ]);
     }
     arguments.extend([
         "-p".into(),
@@ -154,20 +174,6 @@ fn ssh_arguments(device: &RegisteredDevice) -> Vec<OsString> {
         "true".into(),
     ]);
     arguments
-}
-
-fn docker_environment(device: &RegisteredDevice) -> BTreeMap<OsString, OsString> {
-    let mut environment = BTreeMap::from([(
-        "DOCKER_HOST".into(),
-        format!("ssh://{}@{}:{}", device.user, device.host, device.port).into(),
-    )]);
-    let mut options = String::from("-o BatchMode=yes");
-    if let Some(identity) = &device.identity_file {
-        options.push_str(" -i ");
-        options.push_str(&identity.to_string_lossy());
-    }
-    environment.insert("DOCKER_SSH_OPTS".into(), options.into());
-    environment
 }
 
 fn output_reason(output: &CheckOutput) -> String {
@@ -255,17 +261,18 @@ mod tests {
         let calls = executor.calls.borrow();
         assert_eq!(calls[0].0, "ssh");
         assert!(calls[0].1.contains(&OsString::from("BatchMode=yes")));
+        assert!(calls[0].1.contains(&OsString::from("IdentitiesOnly=yes")));
         assert_eq!(calls[1].0, "docker");
         assert_eq!(calls[1].1[2], "{{.Server.Version}}");
         assert_eq!(
             calls[1].2[OsStr::new("DOCKER_HOST")],
             "ssh://dev@192.0.2.10:2222"
         );
-        assert!(
-            calls[1].2[OsStr::new("DOCKER_SSH_OPTS")]
-                .to_string_lossy()
-                .contains("keys/id_ed25519")
+        assert_eq!(
+            calls[1].2[OsStr::new("SWITCHYARD_DOCKER_SSH_IDENTITY")],
+            "keys/id_ed25519"
         );
+        assert!(calls[1].2.contains_key(OsStr::new("PATH")));
     }
 
     #[test]
