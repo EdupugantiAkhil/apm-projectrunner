@@ -524,9 +524,15 @@ fn named_fixture(temp: &TempDir, name: &str) -> PathBuf {
 #[tokio::test]
 async fn deployment_and_adapter_endpoints_are_authenticated_and_shape_empty_state() {
     let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join(".switchyard")).unwrap();
+    fs::write(
+        temp.path().join(switchyard_state::PROJECT_MARKER_PATH),
+        r#"{"apiVersion":"switchyard.dev/v1alpha1","name":"browser-project"}"#,
+    )
+    .unwrap();
     let api = start_api(&temp, Arc::new(ImmediateBackend), 1);
 
-    for path in ["/api/v1/deployments", "/api/v1/adapters"] {
+    for path in ["/api/v1/project", "/api/v1/deployments", "/api/v1/adapters"] {
         let (status, _) = request(&api, None, "GET", path, None, &[]).await;
         assert_eq!(status, 401, "{path} bypassed authentication");
     }
@@ -544,6 +550,12 @@ async fn deployment_and_adapter_endpoints_are_authenticated_and_shape_empty_stat
         json_body::<Value>(&body),
         json!({"apiVersion":"v1","deployments":[]})
     );
+    let (status, body) = request(&api, Some(&api.token), "GET", "/api/v1/project", None, &[]).await;
+    assert_eq!(status, 200);
+    let project = json_body::<Value>(&body);
+    assert_eq!(project["name"], "browser-project");
+    assert_eq!(project["root"], temp.path().to_string_lossy().as_ref());
+    assert_eq!(project["registered"], true);
     let (status, body) =
         request(&api, Some(&api.token), "GET", "/api/v1/adapters", None, &[]).await;
     assert_eq!(status, 200);

@@ -50,6 +50,17 @@ For scripts, `switchyard init <directory>` remains available; use `--name <proje
 to override the directory-derived deployment name. Existing scaffold files are preserved
 unless `--force` is explicitly supplied.
 
+To adopt an existing non-empty code folder without adding template files, register it
+and open its browser dashboard:
+
+```sh
+switchyard project register path/to/code --name my-project
+switchyard gui path/to/code
+```
+
+The folder becomes its own initial registered source. The GUI command starts the
+project daemon when necessary; the TUI is optional for this workflow.
+
 The initialized skill follows the same authoring boundaries as the TUI: it inspects
 registered sources and devices, can propose project or reviewed source-local startup
 profiles, validates after authored edits, plans before start, and refuses to guess when

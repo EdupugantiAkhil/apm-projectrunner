@@ -6,6 +6,7 @@ mod diagnostics;
 mod host_runtime;
 mod init;
 mod lan_preflight;
+mod project;
 mod runtime;
 mod tailscale_publication;
 
@@ -13,6 +14,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env, fmt, fs, io,
     net::{SocketAddr, TcpListener, ToSocketAddrs},
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, ExitCode, Stdio},
     time::{SystemTime, UNIX_EPOCH},
@@ -39,7 +41,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         print!("{USAGE}");
         return Ok(ExitCode::SUCCESS);
     }
-    let workspace_root = env::current_dir()?;
+    let mut workspace_root = env::current_dir()?;
     if let CliCommand::Init {
         directory,
         name,
@@ -66,6 +68,44 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         );
         println!("deployment is valid (definition {})", plan.definition_hash);
         return Ok(ExitCode::SUCCESS);
+    }
+    if let CliCommand::ProjectRegister { directory, name } = &command {
+        let registration = project::register(directory, name.as_deref())?;
+        println!(
+            "{} Switchyard project `{}` at {}",
+            if registration.already_registered {
+                "found"
+            } else {
+                "registered"
+            },
+            registration.metadata.name,
+            registration.root.display()
+        );
+        println!("code source: {}", registration.source_name);
+        println!(
+            "open the dashboard with `switchyard gui {}`",
+            registration.root.display()
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    if let CliCommand::Gui { project_dir } = &command {
+        workspace_root = project_dir.canonicalize().map_err(|error| {
+            MessageError(format!(
+                "could not open project folder `{}`: {error}",
+                project_dir.display()
+            ))
+        })?;
+        let registered = switchyard_state::load_project_metadata(&workspace_root)?.is_some();
+        let legacy = workspace_root.join("deployment.yaml").is_file()
+            || workspace_root.join("deployments").is_dir();
+        if !registered && !legacy {
+            return Err(MessageError(format!(
+                "`{}` is not a Switchyard project; run `switchyard project register {}` first",
+                workspace_root.display(),
+                workspace_root.display()
+            ))
+            .into());
+        }
     }
     if let CliCommand::Diagnostics { deployment, output } = &command {
         let path = diagnostics::write_bundle(&workspace_root, deployment, output.as_deref())?;
@@ -335,7 +375,8 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         | CliCommand::DaemonStatus
         | CliCommand::DaemonStop
         | CliCommand::OperationCancel { .. }
-        | CliCommand::Gui
+        | CliCommand::Gui { .. }
+        | CliCommand::ProjectRegister { .. }
         | CliCommand::Tui { .. }
         | CliCommand::SourceList { .. }
         | CliCommand::SourceRegister { .. }
@@ -786,6 +827,8 @@ fn handle_daemon_command(
             }
             if let Some(path) = env::var_os("SWITCHYARD_GUI_DIST") {
                 config.gui_dist = path.into();
+            } else if let Some(path) = installed_gui_dist() {
+                config.gui_dist = path;
             }
             switchyard_daemon::run_blocking(config)?;
             Ok(Some(ExitCode::SUCCESS))
@@ -825,7 +868,8 @@ fn handle_daemon_command(
             }
             Ok(Some(ExitCode::SUCCESS))
         }
-        CliCommand::Gui => {
+        CliCommand::Gui { .. } => {
+            ensure_daemon_running(workspace_root)?;
             let url = gui_url(workspace_root)?;
             println!("{url}");
             let opener = if cfg!(target_os = "macos") {
@@ -843,6 +887,54 @@ fn handle_daemon_command(
         }
         _ => Ok(None),
     }
+}
+
+fn installed_gui_dist() -> Option<PathBuf> {
+    let executable = env::current_exe().ok()?;
+    let prefix = executable.parent()?.parent()?;
+    let candidate = prefix.join("share/switchyard/web");
+    candidate.is_dir().then_some(candidate)
+}
+
+fn ensure_daemon_running(workspace_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if switchyard_daemon::client::daemon_status(workspace_root)?.is_some() {
+        return Ok(());
+    }
+    fs::create_dir_all(workspace_root.join(".switchyard"))?;
+    let log_path = workspace_root.join(".switchyard/daemon.log");
+    let stdout = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(&log_path)?;
+    fs::set_permissions(&log_path, fs::Permissions::from_mode(0o600))?;
+    let stderr = stdout.try_clone()?;
+    let mut child = Command::new(env::current_exe()?)
+        .args(["daemon", "run"])
+        .current_dir(workspace_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()?;
+    for _ in 0..100 {
+        if switchyard_daemon::client::daemon_status(workspace_root)?.is_some() {
+            println!("started project daemon (log {})", log_path.display());
+            return Ok(());
+        }
+        if let Some(status) = child.try_wait()? {
+            return Err(MessageError(format!(
+                "project daemon exited with {status}; inspect {}",
+                log_path.display()
+            ))
+            .into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    Err(MessageError(format!(
+        "project daemon did not become ready; inspect {}",
+        log_path.display()
+    ))
+    .into())
 }
 
 fn gui_url(workspace_root: &Path) -> Result<String, MessageError> {
@@ -935,7 +1027,8 @@ fn daemon_request(
         | CliCommand::DaemonStatus
         | CliCommand::DaemonStop
         | CliCommand::OperationCancel { .. }
-        | CliCommand::Gui
+        | CliCommand::Gui { .. }
+        | CliCommand::ProjectRegister { .. }
         | CliCommand::Tui { .. }
         | CliCommand::SourceList { .. }
         | CliCommand::SourceRegister { .. }

@@ -49,6 +49,7 @@ optional `context` fields. Framework types are not part of the public Rust contr
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/v1/system/status` | Daemon identity, PID, active count, and heavy-operation limit |
+| `GET` | `/api/v1/project` | Project name, canonical root, and explicit-registration status |
 | `POST` | `/api/v1/system/shutdown` | Graceful authenticated shutdown |
 | `POST` | `/api/v1/commands/validate` | Validate desired state |
 | `POST` | `/api/v1/commands/plan` | Render the deterministic plan |

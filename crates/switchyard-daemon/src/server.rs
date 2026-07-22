@@ -42,7 +42,7 @@ use crate::contract::{
     CreateDeploymentRequestV1, CreateWorktreeRequestV1, DaemonStatusV1, DeploymentDefinitionV1,
     DeploymentDetailV1, DeploymentOperationSummaryV1, DeploymentRoutesV1, DeploymentSummaryV1,
     DeploymentValidationV1, DeploymentsV1, DiscoveryV1, EventKindV1, EventV1, GatewayExposureV1,
-    MdnsCheckV1, MdnsPublicationV1, MdnsPublishedNameV1, OperationStatusV1, OperationV1,
+    MdnsCheckV1, MdnsPublicationV1, MdnsPublishedNameV1, OperationStatusV1, OperationV1, ProjectV1,
     RegisterDeviceRequestV1, RegisterSourceRequestV1, RemoveWorktreeRequestV1, RouteHistoryV1,
     RouterBindingV1, TailscalePublicationV1, TransitionPolicyV1,
     UpdateDeploymentDefinitionRequestV1,
@@ -1275,6 +1275,7 @@ fn routes(inner: Arc<Inner>) -> Router {
         )
         .route("/gui/{*path}", get(serve_gui))
         .route("/api/v1/system/status", get(system_status))
+        .route("/api/v1/project", get(project_detail))
         .route("/api/v1/system/shutdown", post(system_shutdown))
         .route("/api/v1/commands/{kind}", post(start_command))
         .route("/api/v1/operations/{id}", get(get_operation))
@@ -2529,6 +2530,35 @@ async fn system_status(State(inner): State<Arc<Inner>>) -> Response {
         max_heavy_operations: inner.config.max_heavy_operations,
     })
     .into_response()
+}
+
+async fn project_detail(State(inner): State<Arc<Inner>>) -> Response {
+    match switchyard_state::load_project_metadata(&inner.config.project_root) {
+        Ok(metadata) => {
+            let registered = metadata.is_some();
+            let name = metadata.map(|metadata| metadata.name).unwrap_or_else(|| {
+                inner
+                    .config
+                    .project_root
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("switchyard-project")
+                    .to_owned()
+            });
+            Json(ProjectV1 {
+                api_version: API_VERSION.into(),
+                name,
+                root: inner.config.project_root.clone(),
+                registered,
+            })
+            .into_response()
+        }
+        Err(error) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            error.code(),
+            &error.to_string(),
+        ),
+    }
 }
 
 async fn system_shutdown(State(inner): State<Arc<Inner>>) -> Response {

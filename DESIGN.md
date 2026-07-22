@@ -947,13 +947,12 @@ Recommended implementation:
 
 ### Interactive clients and shared operations
 
-The Ratatui TUI is the primary local interactive control plane and remains the retained
-interface for new authoring workflows. It works through a plain SSH terminal on
-headless devices, preserves the existing terminal handoff used by Git and ephemeral SSH
-credential prompts, and extends a small working client instead of funding a second
-implementation of the same workflows. A native GUI would require a separate secure
-credential-prompt design and would remove terminal-only access, so it is not part of
-this milestone. `switchyard tui [project]` retains its command name.
+The React dashboard is the default local interactive control plane. An existing folder
+can be adopted non-destructively with `switchyard project register`, after which
+`switchyard gui [project]` starts its project-scoped daemon when needed and opens the
+authenticated dashboard. The Ratatui TUI remains supported as an optional headless and
+SSH-friendly client, including terminal handoff for Git and ephemeral SSH credential
+prompts. `switchyard tui [project]` retains its command name.
 
 Application behavior shared by interactive and command-line clients belongs in a new
 `switchyard-ops` crate. It owns operations that validate, plan, apply, and mutate
@@ -962,7 +961,7 @@ such as the rows, summaries, validation diagnostics, and operation states render
 view. It does not render widgets or parse command-line arguments and must not depend on
 `ratatui` or `clap`.
 
-The TUI, CLI, and daemon converge on this layer incrementally. Each new workflow
+The dashboard, TUI, CLI, and daemon converge on this layer incrementally. Each new workflow
 extracts the operations and projections it touches from client code; existing behavior
 is not moved in a big-bang rewrite.
 
@@ -1161,7 +1160,8 @@ The control plane records:
 
 ### Product subject and primary job
 
-The React GUI is a supported secondary client for deployment monitoring and operations.
+The React GUI is the default local interactive client for project setup, deployment
+authoring, monitoring, and operations.
 Its primary job is to answer and change:
 **“Which exact source-backed instances are connected right now?”**
 
@@ -1169,11 +1169,11 @@ It is an operational tool, not a generic admin dashboard. The main view should r
 a disciplined physical patch bay: service instances sit in typed lanes and visible
 cables connect consumers to providers.
 
-Startup-profile authoring, the guided instance-creation workflow, the connections
-matrix, and device placement are TUI-only. The GUI is not scheduled to receive these
-new authoring workflows. Authoring parity requires a separate milestone and design
-decision; it is not an implicit requirement for changes to the TUI. Existing GUI route
-visualization and complete binding operations remain supported.
+The dashboard must grow guided startup-profile authoring, instance creation, connection
+editing, and device placement through shared operations and schema-driven forms. Raw
+YAML remains an inspectable escape hatch, not the intended final interaction. The TUI
+may retain equivalent workflows for headless use, but new local authoring work should
+not require it.
 
 ### Visual direction
 
@@ -1337,7 +1337,8 @@ switchyard open <instance>
 switchyard down <deployment> [--volumes]
 switchyard source list
 switchyard worktree create <repository> <ref> <path>
-switchyard gui
+switchyard project register [<directory>] [--name <project-name>]
+switchyard gui [<project-directory>]
 ```
 
 The CLI calls the same API as the GUI. It must also support a one-shot mode for CI and

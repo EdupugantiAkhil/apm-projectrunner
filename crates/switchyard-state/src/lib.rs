@@ -65,6 +65,62 @@ pub const DEPLOYMENT_LABEL: &str = "dev.switchyard.deployment";
 /// Resource topology hash label used by the existing Docker runtime.
 pub const RESOURCE_HASH_LABEL: &str = "dev.switchyard.resource-hash";
 pub const DEVICE_LABEL: &str = "dev.switchyard.device";
+/// Project-local marker created when an existing folder is adopted by Switchyard.
+pub const PROJECT_MARKER_PATH: &str = ".switchyard/project.json";
+/// Contract version stored inside [`PROJECT_MARKER_PATH`].
+pub const PROJECT_API_VERSION: &str = "switchyard.dev/v1alpha1";
+
+/// Stable, human-facing identity for a Switchyard project folder.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectMetadata {
+    pub api_version: String,
+    pub name: String,
+}
+
+/// Reads a project marker when the folder has explicitly been registered.
+pub fn load_project_metadata(project_root: &Path) -> Result<Option<ProjectMetadata>, StateError> {
+    let path = project_root.join(PROJECT_MARKER_PATH);
+    match fs::read(&path) {
+        Ok(contents) => {
+            let metadata: ProjectMetadata = serde_json::from_slice(&contents).map_err(|error| {
+                invalid(
+                    "invalid_project_marker",
+                    format!("could not parse `{}`: {error}", path.display()),
+                )
+            })?;
+            if metadata.api_version != PROJECT_API_VERSION {
+                return Err(invalid(
+                    "unsupported_project_marker_version",
+                    format!(
+                        "unsupported project marker version `{}`",
+                        metadata.api_version
+                    ),
+                ));
+            }
+            if !valid_project_name(&metadata.name) {
+                return Err(invalid(
+                    "invalid_project_marker",
+                    format!("project marker contains invalid name `{}`", metadata.name),
+                ));
+            }
+            Ok(Some(metadata))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(StateError::Io(error)),
+    }
+}
+
+fn valid_project_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 63
+        && name.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit() && index > 0
+                || byte == b'-' && index > 0
+        })
+        && !name.ends_with('-')
+}
 
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("migrations/001_initial.sql")),
@@ -1956,6 +2012,27 @@ mod tests {
 
     fn open_temp(temp: &TempDir) -> (StateStore, OpenReport) {
         StateStore::open(temp.path().join("state.sqlite3")).unwrap()
+    }
+
+    #[test]
+    fn project_marker_rejects_unknown_versions_and_invalid_names() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir(temp.path().join(".switchyard")).unwrap();
+        let marker = temp.path().join(PROJECT_MARKER_PATH);
+        fs::write(&marker, r#"{"apiVersion":"future","name":"demo"}"#).unwrap();
+        assert_eq!(
+            load_project_metadata(temp.path()).unwrap_err().code(),
+            "unsupported_project_marker_version"
+        );
+        fs::write(
+            marker,
+            format!(r#"{{"apiVersion":"{PROJECT_API_VERSION}","name":"Not valid"}}"#),
+        )
+        .unwrap();
+        assert_eq!(
+            load_project_metadata(temp.path()).unwrap_err().code(),
+            "invalid_project_marker"
+        );
     }
 
     fn manifest(definition_hash: &str, resource_hash: &str) -> GeneratedManifest {

@@ -8,6 +8,32 @@ Updated: 2026-07-23
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
 
+## 2026-07-23 browser-first registered projects
+
+- Added non-destructive, idempotent `switchyard project register [directory] [--name]`.
+  It writes a versioned `.switchyard/project.json`, initializes project-local SQLite,
+  creates an empty authored `deployments/` directory, and registers the existing folder
+  itself as the first unmanaged source without modifying pre-existing files.
+  Project-root Git inspection excludes `.switchyard` so tool-owned state does not make
+  a clean checkout look modified; user changes remain visible.
+- `switchyard gui [project]` now selects that project from any working directory,
+  reuses its daemon or starts one in the background, records daemon output under
+  `.switchyard/daemon.log`, and opens the existing fragment-authenticated dashboard.
+- Added authenticated `GET /api/v1/project`; the dashboard rail shows the project name
+  and exposes its canonical root as hover context. Unmarked initialized projects remain
+  compatible, and the TUI remains available for headless use.
+- Updated the architecture, implementation checklist, GUI, development, API, and
+  support documentation to make the dashboard the default local interactive client.
+- Focused verification passes: CLI/daemon/state tests (61 CLI unit tests plus daemon
+  parity, 7 daemon unit tests, 16/17 daemon API tests with the declared reliability
+  ignore, and 17 state tests), all 16 GUI tests, and the production GUI build. A live
+  temporary non-empty folder smoke preserved its existing file, registered its root
+  source, auto-started the dashboard daemon, reported healthy status, and stopped it.
+- Final `./scripts/check.sh` passes end to end: formatting, workspace tests with only
+  the declared reliability ignores, all-target/all-feature Clippy with warnings denied,
+  and rustdoc with warnings denied. The final GUI run also passes all 16 tests and its
+  production TypeScript/Vite build.
+
 ## 2026-07-23 Linux portability and explicit remote identity correction
 
 - Replaced the ineffective `DOCKER_SSH_OPTS` integration with one shared

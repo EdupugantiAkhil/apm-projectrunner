@@ -1,5 +1,24 @@
 # Agent mistakes and lessons
 
+## 2026-07-23 — Project adoption must be compensating and non-destructive
+
+- The first registration draft inserted the root source before writing the project
+  marker, which could leave half-registered state if the marker write failed.
+  Correction: preflight both identities, atomically publish the marker with an
+  exclusive temporary file, then register the source and remove the new marker if that
+  final mutation fails. Lesson: a workflow spanning SQLite and the filesystem needs an
+  explicit mutation order and compensation path even when each mutation is safe alone.
+- Registering the project folder as its own source initially made Switchyard's new
+  `.switchyard` database and marker appear as user worktree changes. Correction: only
+  project-root source inspection excludes the Switchyard-owned state directory; other
+  source roots retain ordinary Git semantics. Lesson: adopting a source in place must
+  keep tool-owned local state out of source-identity and dirty-worktree decisions.
+- A combined follow-up command ran the GUI's npm step from the Rust workspace root,
+  where there is intentionally no `package.json`. Correction: rerun the unchanged GUI
+  test/build from `packages/web`. Lesson: mixed workspace verification commands must
+  set the package-specific working directory explicitly rather than inheriting the
+  preceding Rust command's root.
+
 ## 2026-07-22 — Verify against stock platform tools and kernel limits
 
 - The release path initially claimed native archives while requiring GNU

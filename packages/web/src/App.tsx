@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { ApiClient, ApiError, type AdapterRecord, type DeploymentDetail, type DeploymentSummary, type DeviceRecord, type Operation, type OperationEvent, type RouteState, type SourceRecord } from './api'
+import { ApiClient, ApiError, type AdapterRecord, type DeploymentDetail, type DeploymentSummary, type DeviceRecord, type Operation, type OperationEvent, type ProjectInfo, type RouteState, type SourceRecord } from './api'
 import DeploymentWorkspace, { RoutingEditor } from './DeploymentWorkspace'
 import DeploymentBuilder, { BlockLibrary } from './DeploymentBuilder'
 import './App.css'
@@ -17,6 +17,7 @@ const dirtyText = (source: SourceRecord) => {
 
 export default function App({ client = new ApiClient() }: { client?: ApiClient }) {
   const [view, setView] = useState<View>('deployments')
+  const [project, setProject] = useState<ProjectInfo | null>(null)
   const [deployments, setDeployments] = useState<DeploymentSummary[]>([])
   const [selected, setSelected] = useState('')
   const [detail, setDetail] = useState<DeploymentDetail | null>(null)
@@ -45,7 +46,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
   const loadDevices = async () => { setDevicesLoading(true); try { setDevices(await client.devices()) } catch (value) { report(value) } finally { setDevicesLoading(false) } }
   const loadSelected = async () => { if (!selected) return; const [nextDetail, nextRoutes] = await Promise.all([client.deployment(selected), client.routes(selected)]); setDetail(nextDetail); setRoutes(nextRoutes) }
 
-  useEffect(() => { void loadDeployments(); void loadSources(); void loadDevices(); void client.adapters().then(setAdapters).catch(report) }, [])
+  useEffect(() => { void client.project().then(setProject).catch(report); void loadDeployments(); void loadSources(); void loadDevices(); void client.adapters().then(setAdapters).catch(report) }, [])
   useEffect(() => {
     if (!selected) { setDetail(null); setRoutes(null); return }
     void loadSelected().catch(report)
@@ -92,7 +93,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
 
   return <div className="app-shell">
     <aside className="rail" aria-label="Deployment rail">
-      <div className="brand">SWITCHYARD <span>LOCAL</span></div>
+      <div className="brand">SWITCHYARD <span>LOCAL</span><small title={project?.root}>{project?.name ?? 'Loading project…'}</small></div>
       <nav aria-label="Main views" onKeyDown={navKeys}>
         {(['deployments', 'sources', 'devices', 'operations', 'library'] as View[]).map((item) => <button key={item} aria-current={view === item ? 'page' : undefined} onClick={() => setView(item)}>{item === 'library' ? 'block library' : item}</button>)}
       </nav>

@@ -159,7 +159,7 @@ pub fn scaffold(
     })
 }
 
-fn default_project_name(directory: &Path) -> Result<String, InitError> {
+pub(crate) fn default_project_name(directory: &Path) -> Result<String, InitError> {
     let basename = directory
         .file_name()
         .and_then(|name| name.to_str())
@@ -190,7 +190,7 @@ fn default_project_name(directory: &Path) -> Result<String, InitError> {
     Ok(name)
 }
 
-fn valid_metadata_name(name: &str) -> bool {
+pub(crate) fn valid_metadata_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 63
         && name.bytes().enumerate().all(|(index, byte)| {

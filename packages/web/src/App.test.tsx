@@ -28,6 +28,7 @@ function installFetch() {
   let deviceStatus = 'never'
   const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input)
+    if (url.endsWith('/project')) return json({ apiVersion: 'v1', name: 'payments-lab', root: '/project', registered: true })
     if (url.endsWith('/deployments') && (!init?.method || init.method === 'GET')) return json({ apiVersion: 'v1', deployments: [{ name: 'comparison', definitionHash: 'definition123', resourceHash: 'resource123', appliedAt: 1, lastOperation: { id: 'old', kind: 'apply', status: 'succeeded', startedAt: 1, finishedAt: 2 }, customDomains: [], bindings: {} }] })
     if (url.endsWith('/deployments/comparison/routes')) return json({ deployment: 'comparison', bindings: [{ router: 'host', binding: 'ui-feature', currentVersion: 4, desiredVersion: 4, status: 'active', lastErrorCode: null }], history: [] })
     if (url.endsWith('/deployments/comparison')) return json(deployment)
@@ -57,6 +58,7 @@ describe('Switchyard GUI', () => {
   it('renders deployment identity, state, routes, domains, and bindings', async () => {
     render(<App client={new ApiClient('test')} />)
     expect(await screen.findByRole('heading', { name: 'comparison', level: 1 })).toBeInTheDocument()
+    expect(screen.getByText('payments-lab')).toBeInTheDocument()
     expect(screen.getByText('/worktrees/ui-a')).toBeInTheDocument()
     expect(screen.getByText(/35ad2abcd/)).toBeInTheDocument()
     expect(screen.getByText('healthy')).toBeInTheDocument()
@@ -68,6 +70,7 @@ describe('Switchyard GUI', () => {
     const stopped = { ...deployment, resources: [], customDomains: [], reconciliation: { deployment: 'comparison', diagnostics: [{ code: 'observed_resources_missing', path: 'observed.resources', message: 'no labeled Docker resources were observed' }] } }
     vi.mocked(fetch).mockImplementation(async (input: string | URL | Request) => {
       const url = String(input)
+      if (url.endsWith('/project')) return json({ apiVersion: 'v1', name: 'payments-lab', root: '/project', registered: true })
       if (url.endsWith('/deployments')) return json({ apiVersion: 'v1', deployments: [{ name: 'comparison', definitionHash: 'definition123', resourceHash: 'resource123', appliedAt: 1, lastOperation: null, customDomains: [], bindings: {} }] })
       if (url.endsWith('/deployments/comparison/routes')) return json({ deployment: 'comparison', bindings: [], history: [] })
       if (url.endsWith('/deployments/comparison')) return json(stopped)

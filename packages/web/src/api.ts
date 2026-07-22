@@ -35,6 +35,7 @@ export interface DeploymentSummary {
   customDomains: string[]
   bindings: Record<string, string>
 }
+export interface ProjectInfo { apiVersion: string; name: string; root: string; registered: boolean }
 export interface DeploymentDetail {
   deployment: string
   definitionHash: string | null
@@ -135,6 +136,7 @@ export class ApiClient {
   }
 
   deployments() { return this.request<{ apiVersion: string; deployments: DeploymentSummary[] }>('/deployments') }
+  project() { return this.request<ProjectInfo>('/project') }
   deployment(name: string) { return this.request<DeploymentDetail>(`/deployments/${encodeURIComponent(name)}`) }
   routes(name: string) { return this.request<RouteState>(`/deployments/${encodeURIComponent(name)}/routes`) }
   adapters() { return this.request<AdapterRecord[]>('/adapters') }

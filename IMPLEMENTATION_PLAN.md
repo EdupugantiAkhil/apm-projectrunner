@@ -454,7 +454,11 @@ Entry gate: the product MVP is stable for local single-developer use.
 - [x] Deployment bundles round-trip across supported machines without embedding secrets.
 - [x] Release artifacts pass installation, upgrade, recovery, and uninstall tests.
 
-## TUI control plane
+## TUI control plane (completed historical milestone)
+
+The client-priority decision recorded in this completed milestone is superseded by the
+browser-first registered-project milestone below; its checked items remain historical
+implementation evidence.
 
 Goal: extend the retained Ratatui TUI into the primary local authoring experience while
 keeping the CLI, daemon, and supported secondary GUI aligned through shared operations.
@@ -543,6 +547,28 @@ execution on that device; everything outside the cut is clearly labeled unsuppor
 
 Exit gate: one clearly documented primary interactive experience ships with full local
 workflow coverage, the limited remote cut, and no ambiguous duplicate product model.
+
+## Browser-first registered projects
+
+Goal: let a developer adopt an existing code folder and enter its project-scoped HTML
+dashboard without first scaffolding a deployment, starting a daemon manually, or using
+the TUI.
+
+- [x] Add a non-destructive, idempotent `switchyard project register [directory]`
+      command with a versioned project marker and initial project-root source.
+- [x] Let `switchyard gui [project]` start the selected project's loopback daemon when
+      needed and preserve the existing fragment-to-memory authentication boundary.
+- [x] Expose authenticated project identity through the control API and render it in
+      the dashboard so users can see which folder they are managing.
+- [x] Keep empty registered projects usable through the existing dashboard deployment
+      builder, sources, devices, operations, definition editor, routes, and lifecycle
+      controls.
+- [x] Preserve existing unmarked/scaffolded projects and the optional TUI workflow.
+- [x] Add focused CLI, API, GUI, and live temporary-folder verification and update the
+      architecture and user documentation.
+
+Exit gate: an existing non-empty folder can be registered and opened in its dashboard
+with no TUI step and no manual daemon lifecycle step.
 
 ## macOS support track
 

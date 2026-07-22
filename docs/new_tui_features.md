@@ -1,3 +1,8 @@
+Status: completed historical design. The later browser-first registered-project
+milestone in `IMPLEMENTATION_PLAN.md` supersedes this document's TUI-primary and
+GUI-secondary client-priority decision; the feature contracts and completed checklist
+remain useful implementation history.
+
 it should have the following views
 
 1. Sources (git repo)

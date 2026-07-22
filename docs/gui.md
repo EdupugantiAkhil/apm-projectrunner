@@ -7,29 +7,29 @@ cd packages/web
 npm run build
 ```
 
-Start the loopback daemon from the project root, then launch the GUI:
+Adopt an existing code folder once, then launch its GUI from anywhere:
 
 ```text
-switchyard daemon run
-switchyard gui
+switchyard project register path/to/code --name my-project
+switchyard gui path/to/code
 ```
 
-`switchyard gui` requires a reachable daemon. It prints the local URL and makes a
-best-effort attempt to open it with `xdg-open` on Linux or `open` on macOS. Failure to
-start the desktop opener does not fail the command.
+Registration preserves existing files, creates project-local Switchyard state and an
+empty `deployments/` directory, and registers the folder itself as the first code
+source. Repeating the same registration is safe. `switchyard gui [project]` reuses a
+reachable project daemon or starts one in the background, prints the local URL, and
+makes a best-effort attempt to open it with `xdg-open` on Linux or `open` on macOS.
+Daemon output is appended to `.switchyard/daemon.log`. Failure to start the desktop
+opener does not fail the command.
 
 ## Supported scope
 
-The React GUI is a supported secondary client for deployment monitoring and operations.
-It retains its deployment status, topology, route operations, logs, source inspection,
-and lifecycle controls.
-
-New control-plane authoring workflows are TUI-only: source-local startup profiles, the
-guided instance-creation wizard, the connections matrix, and device placement. The GUI
-is not scheduled to receive these workflows. Adding GUI authoring parity requires a
-separate milestone and design decision rather than following TUI work automatically.
-The existing operational route table, topology visualization, and complete binding
-changes remain supported; they are not the new Connections authoring workflow.
+The React GUI is the default local interactive client. A newly registered empty project
+can add sources and devices, create and validate a deployment, edit its full authored
+definition, preview or start it, inspect topology and logs, and change complete route
+bindings. The TUI remains an optional headless/SSH client rather than a required setup
+step. Future guided authoring should extend the schema-driven dashboard instead of
+introducing a dashboard-only product model.
 
 ## Credential handling
 
@@ -77,9 +77,10 @@ the GUI: edit `deployments/<name>.yaml`, run `switchyard validate`, then plan or
 
 ## Builder and schema forms
 
-The existing deployment builder and schema forms remain available for their current
-deployment-definition workflow. They do not constitute parity with the new TUI-only
-authoring workflows described above.
+The existing deployment builder and schema forms provide the portable
+deployment-definition workflow. Some richer guided controls still exist only in the
+optional TUI, but the dashboard's full validated definition editor keeps those states
+manageable without requiring a TUI session while browser-native interactions evolve.
 
 **New deployment** opens the creation flow. Names use planner DNS-label rules. An
 instance selects a source and block, while execution configuration comes entirely from

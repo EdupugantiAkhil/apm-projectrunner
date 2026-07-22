@@ -13,19 +13,11 @@ macOS versions are intentionally unsupported, not pending compatibility targets.
 Automatic `.local` mDNS publication remains Linux-only; macOS loopback routing and
 explicitly addressed, acknowledged LAN listeners remain supported.
 
-The CLI and Ratatui TUI are the command-line and primary interactive control planes. The
-React GUI remains a supported secondary client for deployment monitoring and operations,
-including status, topology, route operations, logs, and lifecycle controls.
-
-Source-local startup-profile authoring, the guided instance-creation wizard, the
-connections matrix, and device placement are TUI-only. No GUI delivery schedule or
-authoring-parity promise applies to those workflows. Adding that parity requires a new,
-separately approved milestone; absence of those workflows from the GUI is not a client
-deprecation.
-
-The GUI's existing operational route table, topology visualization, and complete
-binding changes remain in scope. They do not imply support for the new Connections
-authoring workflow.
+The CLI is the command-line control plane and the React GUI is the default local
+interactive client. The Ratatui TUI remains supported for headless and SSH-terminal
+workflows, but registering or managing an ordinary local project does not require it.
+The dashboard supports project registration handoff, definition creation and editing,
+sources, devices, status, topology, route operations, logs, and lifecycle controls.
 
 ## What “not silently” means
 

@@ -234,6 +234,16 @@ pub struct DaemonStatusV1 {
     pub max_heavy_operations: usize,
 }
 
+/// Identity of the project folder owned by this daemon.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectV1 {
+    pub api_version: String,
+    pub name: String,
+    pub root: PathBuf,
+    pub registered: bool,
+}
+
 /// Latest operation fields shown beside a deployment list entry.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]

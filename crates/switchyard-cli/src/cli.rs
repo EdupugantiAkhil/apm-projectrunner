@@ -7,6 +7,10 @@ pub enum CliCommand {
         name: Option<String>,
         force: bool,
     },
+    ProjectRegister {
+        directory: PathBuf,
+        name: Option<String>,
+    },
     BundleExport {
         deployment: PathBuf,
         overlays: Vec<PathBuf>,
@@ -75,7 +79,9 @@ pub enum CliCommand {
     OperationCancel {
         id: String,
     },
-    Gui,
+    Gui {
+        project_dir: PathBuf,
+    },
     Tui {
         project_dir: PathBuf,
     },
@@ -144,6 +150,7 @@ impl std::error::Error for UsageError {}
 pub const USAGE: &str = "\
 Usage:
   switchyard init [<directory>] [--name <project-name>] [--force]
+  switchyard project register [<directory>] [--name <project-name>]
   switchyard validate <deployment.yaml>
   switchyard plan <deployment.yaml> [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
   switchyard up <deployment.yaml> [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
@@ -163,7 +170,7 @@ Usage:
   switchyard daemon status
   switchyard daemon stop
   switchyard operation cancel <operation-id>
-  switchyard gui
+  switchyard gui [<project-dir>]
   switchyard tui [<project-dir>]
   switchyard source list [--json]
   switchyard source register <name> <path>
@@ -199,6 +206,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
     };
     match command {
         "init" => parse_init(rest),
+        "project" if !rest.is_empty() && rest[0] == "register" => parse_project_register(rest),
         "bundle" if rest.len() >= 2 && rest[0] == "export" => parse_bundle_export(rest),
         "bundle" if rest.len() >= 3 && rest[0] == "import" => parse_bundle_import(rest),
         "diagnostics" if !rest.is_empty() => parse_diagnostics(rest),
@@ -259,7 +267,12 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
         "daemon" if rest == ["run"] => Ok(CliCommand::DaemonRun),
         "daemon" if rest == ["status"] => Ok(CliCommand::DaemonStatus),
         "daemon" if rest == ["stop"] => Ok(CliCommand::DaemonStop),
-        "gui" if rest.is_empty() => Ok(CliCommand::Gui),
+        "gui" if rest.is_empty() => Ok(CliCommand::Gui {
+            project_dir: PathBuf::from("."),
+        }),
+        "gui" if rest.len() == 1 => Ok(CliCommand::Gui {
+            project_dir: PathBuf::from(&rest[0]),
+        }),
         "tui" if rest.is_empty() => Ok(CliCommand::Tui {
             project_dir: PathBuf::from("."),
         }),
@@ -312,6 +325,36 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
             "invalid {command} arguments\n\n{USAGE}"
         ))),
     }
+}
+
+fn parse_project_register(rest: &[String]) -> Result<CliCommand, UsageError> {
+    let mut directory = PathBuf::from(".");
+    let mut name = None;
+    let mut saw_directory = false;
+    let mut index = 1;
+    while index < rest.len() {
+        match rest[index].as_str() {
+            "--name" if name.is_none() => {
+                name = Some(
+                    rest.get(index + 1)
+                        .ok_or_else(|| UsageError("--name requires a value".into()))?
+                        .clone(),
+                );
+                index += 2;
+            }
+            value if !value.starts_with('-') && !saw_directory => {
+                directory = PathBuf::from(value);
+                saw_directory = true;
+                index += 1;
+            }
+            value => {
+                return Err(UsageError(format!(
+                    "unexpected project register argument `{value}`"
+                )));
+            }
+        }
+    }
+    Ok(CliCommand::ProjectRegister { directory, name })
 }
 
 fn parse_init(rest: &[String]) -> Result<CliCommand, UsageError> {
@@ -793,9 +836,39 @@ mod tests {
     }
 
     #[test]
-    fn parses_gui_without_arguments() {
-        assert_eq!(parse(args(&["gui"])).unwrap(), CliCommand::Gui);
-        assert!(parse(args(&["gui", "extra"])).is_err());
+    fn parses_gui_with_optional_project_directory() {
+        assert_eq!(
+            parse(args(&["gui"])).unwrap(),
+            CliCommand::Gui {
+                project_dir: ".".into()
+            }
+        );
+        assert_eq!(
+            parse(args(&["gui", "demo"])).unwrap(),
+            CliCommand::Gui {
+                project_dir: "demo".into()
+            }
+        );
+        assert!(parse(args(&["gui", "one", "two"])).is_err());
+    }
+
+    #[test]
+    fn parses_project_registration() {
+        assert_eq!(
+            parse(args(&["project", "register"])).unwrap(),
+            CliCommand::ProjectRegister {
+                directory: ".".into(),
+                name: None
+            }
+        );
+        assert_eq!(
+            parse(args(&["project", "register", "demo", "--name", "my-demo"])).unwrap(),
+            CliCommand::ProjectRegister {
+                directory: "demo".into(),
+                name: Some("my-demo".into())
+            }
+        );
+        assert!(parse(args(&["project", "register", "one", "two"])).is_err());
     }
 
     #[test]

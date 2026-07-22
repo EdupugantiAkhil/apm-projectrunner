@@ -170,7 +170,9 @@ impl SourceManager {
 
     /// Inspects a path without mutating it. Expected Git absence/failures degrade to unknown.
     pub fn inspect(&self, path: &Path, requested_ref: Option<&str>) -> SourceInspection {
-        inspect_path(path, requested_ref)
+        let project_root_source =
+            path.canonicalize().ok() == self.workspace_root.canonicalize().ok();
+        inspect_path(path, requested_ref, project_root_source)
     }
 
     /// Lists live inspection for every registered source.
@@ -664,7 +666,11 @@ impl SourceManager {
     }
 }
 
-fn inspect_path(path: &Path, requested_ref: Option<&str>) -> SourceInspection {
+fn inspect_path(
+    path: &Path,
+    requested_ref: Option<&str>,
+    exclude_project_state: bool,
+) -> SourceInspection {
     let path_text = path.to_string_lossy();
     let repository = match git(path, &["rev-parse", "--show-toplevel"]) {
         Ok(value) => value,
@@ -688,7 +694,19 @@ fn inspect_path(path: &Path, requested_ref: Option<&str>) -> SourceInspection {
     let linked_worktree = common.zip(git_dir).map(|(common, git_dir)| {
         normalize_git_path(path, &common) != normalize_git_path(path, &git_dir)
     });
-    let changes = git(path, &["status", "--porcelain=v1", "--untracked-files=all"])
+    let status_arguments = if exclude_project_state {
+        vec![
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            ".",
+            ":(exclude).switchyard",
+        ]
+    } else {
+        vec!["status", "--porcelain=v1", "--untracked-files=all"]
+    };
+    let changes = git(path, &status_arguments)
         .ok()
         .map(|value| parse_dirty(&value));
     let upstream = git(
@@ -1136,6 +1154,21 @@ mod tests {
         assert_eq!(worktrees.len(), 2);
         let linked = linked.canonicalize().unwrap();
         assert!(worktrees.iter().any(|entry| entry.path == linked));
+    }
+
+    #[test]
+    fn project_root_source_excludes_switchyard_owned_state_from_dirty_counts() {
+        let temp = TempDir::new().unwrap();
+        let repository = repository(&temp);
+        fs::create_dir(repository.join(".switchyard")).unwrap();
+        fs::write(repository.join(".switchyard/state.sqlite3"), "owned").unwrap();
+        let manager = SourceManager::new(&repository);
+        let clean = manager.inspect(&repository, None);
+        assert_eq!(clean.changes, Some(DirtyState::default()));
+
+        fs::write(repository.join("user-file"), "untracked").unwrap();
+        let dirty = manager.inspect(&repository, None);
+        assert_eq!(dirty.changes.unwrap().untracked, 1);
     }
 
     #[test]
