@@ -16,12 +16,14 @@ futures-util = "0.3.32"
 local-ip-address = "0.6.13"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
+serde_yaml = { package = "yaml_serde", version = "0.10.4" }
 router-config = { path = "../router-config" }
 sha2 = "0.10.8"
 switchyard-state = { path = "../switchyard-state" }
 switchyard-adapters = { path = "../switchyard-adapters" }
 switchyard-docker-ssh = { path = "../switchyard-docker-ssh" }
 switchyard-planner = { path = "../switchyard-planner" }
+switchyard-profiles = { path = "../switchyard-profiles" }
 switchyard-router-admin = { path = "../switchyard-router-admin" }
 switchyard-sources = { path = "../switchyard-sources" }
 tokio = { version = "1.45.1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }

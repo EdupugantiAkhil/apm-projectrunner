@@ -23,8 +23,10 @@ pub use instances::{
 pub use profiles::{
     DiscoveredSourceProfiles, ProfileAdapterKind, ProfileContentHash, ProfileError, ProfileListing,
     ProfileOrigin, ProfileRow, ProfileService, ProfileTrust, SourceManifestError,
-    SourceProfileManifest, discover_source_profiles, import_source_profile, list_profiles,
-    load_profile_block, load_source_profile_block, project_profile_rows, remove_imported_profile,
+    SourceProfileManifest, SourceProfileManifestReview, discover_source_profiles,
+    import_reviewed_source_profile, import_source_profile, list_profiles, load_profile_block,
+    load_source_profile_block, project_profile_rows, remove_imported_profile,
+    review_source_profile_manifest,
 };
 pub use projections::{
     BindingRow, DefinitionHeader, DefinitionMetadata, DefinitionTopology, DeploymentEntry,

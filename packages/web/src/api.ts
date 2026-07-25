@@ -105,6 +105,13 @@ export interface OperationEvent { id: number; operationId: string; kind: 'operat
 export interface DeploymentDefinition { apiVersion: string; name: string; path: string; yaml: string; hash: string }
 export interface DeploymentValidation { apiVersion: string; name: string; valid: boolean; diagnostics: Array<{ code: string; path: string; message: string }>; preview: Record<string, unknown> }
 export interface AdapterRecord { kind: string; declaration: { id?: string; version?: string; capabilities?: string[]; [key: string]: unknown }; configurationSchema: JsonSchema }
+export type ProfileTrust = 'trusted' | 'imported' | 'changed' | 'not-imported'
+export type ProfileOrigin = { kind: 'project' } | { kind: 'imported-from-source' | 'discovered-in-source'; source: string; commit: string | null }
+export interface ProfileRecord { apiVersion: string; name: string; deployment: string; origin: ProfileOrigin; trust: ProfileTrust; shadowed: boolean; services: Array<{ name: string; adapterKind: 'container' | 'script' | 'process-compose' }> }
+export interface ProfilesResponse { apiVersion: string; profiles: ProfileRecord[]; sourceErrors: Array<{ source: string; message: string }> }
+export interface ProfileDefinition { apiVersion: string; name: string; deployment: string; origin: ProfileOrigin; trust: ProfileTrust; definition: Record<string, unknown> }
+export interface ProfileManifestReview { apiVersion: string; source: string; manifest: string; reviewHash: string }
+export interface ProfileValidation { apiVersion: string; name: string; deployment: string; checkout: string; valid: boolean; expandedServices: string[]; diagnostics: Array<{ code: string; path: string; message: string }>; error: string | null }
 export interface JsonSchema { type?: string | string[]; title?: string; description?: string; enum?: unknown[]; properties?: Record<string, JsonSchema>; required?: string[]; items?: JsonSchema; default?: unknown; oneOf?: unknown[]; anyOf?: unknown[]; allOf?: unknown[]; [key: string]: unknown }
 
 let memoryToken = ''
@@ -143,6 +150,16 @@ export class ApiClient {
   deployment(name: string) { return this.request<DeploymentDetail>(`/deployments/${encodeURIComponent(name)}`) }
   routes(name: string) { return this.request<RouteState>(`/deployments/${encodeURIComponent(name)}/routes`) }
   adapters() { return this.request<AdapterRecord[]>('/adapters') }
+  profiles() { return this.request<ProfilesResponse>('/profiles') }
+  profile(name: string, deployment: string, origin: ProfileOrigin) {
+    const query = new URLSearchParams({ deployment, origin: origin.kind })
+    if ('source' in origin) query.set('source', origin.source)
+    return this.request<ProfileDefinition>(`/profiles/${encodeURIComponent(name)}?${query}`)
+  }
+  profileManifest(name: string, source: string) { return this.request<ProfileManifestReview>(`/profiles/${encodeURIComponent(name)}/manifest?source=${encodeURIComponent(source)}`) }
+  validateProfile(profile: ProfileRecord, checkout: string) { return this.request<ProfileValidation>(`/profiles/${encodeURIComponent(profile.name)}/validate`, { method: 'POST', body: JSON.stringify({ deployment: profile.deployment, origin: profile.origin, checkout }) }) }
+  importProfile(name: string, source: string, reviewedManifestHash: string) { return this.request<ProfileRecord>(`/profiles/${encodeURIComponent(name)}/import`, { method: 'POST', body: JSON.stringify({ source, reviewedManifestHash }) }) }
+  removeProfile(name: string) { return this.request<void>(`/profiles/${encodeURIComponent(name)}`, { method: 'DELETE' }) }
   definition(name: string) { return this.request<DeploymentDefinition>(`/deployments/${encodeURIComponent(name)}/definition`) }
   validateDeployment(name: string, yaml: string) { return this.request<DeploymentValidation>('/deployments', { method: 'POST', body: JSON.stringify({ name, yaml, validateOnly: true }) }) }
   createDeployment(name: string, yaml: string) { return this.request<DeploymentDefinition>('/deployments', { method: 'POST', body: JSON.stringify({ name, yaml }) }) }

@@ -24,7 +24,8 @@ use switchyard_daemon::{
 };
 use switchyard_state::{
     AppliedSnapshot, LockRequest, OperationKind, OperationRecord, OperationStatus,
-    RouterApplyRecord, RouterApplyStatus, StateStore, StructuredContext,
+    RegisteredSource, RegisteredSourceKind, RouterApplyRecord, RouterApplyStatus, StateStore,
+    StructuredContext,
 };
 use tempfile::TempDir;
 use tokio::sync::watch;
@@ -394,6 +395,204 @@ async fn wait_terminal(api: &TestApi, id: &str) -> OperationV1 {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+#[tokio::test]
+async fn profile_library_enforces_reviewed_import_reimport_validation_and_removal() {
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("deployment.yaml"),
+        "apiVersion: switchyard.dev/v1alpha1\nkind: Deployment\nmetadata:\n  name: demo\nspec: {}\n",
+    )
+    .unwrap();
+    let checkout = temp.path().join("checkout");
+    fs::create_dir_all(&checkout).unwrap();
+    let manifest = |image: &str| {
+        format!(
+            "version: 1\nprofiles:\n  api:\n    parameters:\n      LOG_LEVEL:\n        required: false\n        default: info\n    services:\n      web:\n        execution:\n          type: container\n          image: {image}\n          command: [sleep, infinity]\n"
+        )
+    };
+    fs::write(
+        checkout.join("switchyard-profiles.yaml"),
+        manifest("busybox:1"),
+    )
+    .unwrap();
+    let (store, _) = StateStore::open(temp.path().join(".switchyard/state.sqlite3")).unwrap();
+    store
+        .register_source(&RegisteredSource {
+            name: "checkout".into(),
+            kind: RegisteredSourceKind::Unmanaged,
+            path: checkout.clone(),
+            repository_path: None,
+            requested_ref: None,
+            created_at: 1,
+            managed_relative_path: None,
+        })
+        .unwrap();
+    drop(store);
+    let api = start_api(&temp, Arc::new(ImmediateBackend), 1);
+
+    let (status, body) =
+        request(&api, Some(&api.token), "GET", "/api/v1/profiles", None, &[]).await;
+    assert_eq!(status, 200);
+    let listing: Value = json_body(&body);
+    assert_eq!(listing["profiles"][0]["trust"], "not-imported");
+    assert_eq!(
+        listing["profiles"][0]["origin"]["kind"],
+        "discovered-in-source"
+    );
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "GET",
+        "/api/v1/profiles/api?deployment=demo&origin=discovered-in-source&source=checkout",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let definition: Value = json_body(&body);
+    assert_eq!(
+        definition["definition"]["services"]["web"]["execution"]["image"],
+        "busybox:1"
+    );
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/profiles/api/validate",
+        Some(json!({
+            "deployment": "demo",
+            "origin": {"kind": "discovered-in-source", "source": "checkout", "commit": null},
+            "checkout": "checkout"
+        })),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let validation: Value = json_body(&body);
+    assert_eq!(validation["valid"], true);
+    assert_eq!(
+        validation["expandedServices"][0],
+        "demo--profile-validation-preview--web"
+    );
+
+    let (_, body) = request(
+        &api,
+        Some(&api.token),
+        "GET",
+        "/api/v1/profiles/api/manifest?source=checkout",
+        None,
+        &[],
+    )
+    .await;
+    let first_review: Value = json_body(&body);
+    fs::write(
+        checkout.join("switchyard-profiles.yaml"),
+        manifest("busybox:2"),
+    )
+    .unwrap();
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/profiles/api/import",
+        Some(json!({"source": "checkout", "reviewedManifestHash": first_review["reviewHash"]})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 409);
+    assert_eq!(
+        json_body::<Value>(&body)["code"],
+        "profile_manifest_review_changed"
+    );
+
+    let (_, body) = request(
+        &api,
+        Some(&api.token),
+        "GET",
+        "/api/v1/profiles/api/manifest?source=checkout",
+        None,
+        &[],
+    )
+    .await;
+    let reviewed: Value = json_body(&body);
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/profiles/api/import",
+        Some(json!({"source": "checkout", "reviewedManifestHash": reviewed["reviewHash"]})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 201);
+    assert_eq!(json_body::<Value>(&body)["trust"], "imported");
+
+    fs::write(
+        checkout.join("switchyard-profiles.yaml"),
+        manifest("busybox:3"),
+    )
+    .unwrap();
+    let (_, body) = request(&api, Some(&api.token), "GET", "/api/v1/profiles", None, &[]).await;
+    assert_eq!(json_body::<Value>(&body)["profiles"][0]["trust"], "changed");
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/profiles/api/import",
+        Some(json!({"source": "checkout", "reviewedManifestHash": reviewed["reviewHash"]})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 409);
+    assert_eq!(
+        json_body::<Value>(&body)["code"],
+        "profile_manifest_review_changed"
+    );
+
+    let (_, body) = request(
+        &api,
+        Some(&api.token),
+        "GET",
+        "/api/v1/profiles/api/manifest?source=checkout",
+        None,
+        &[],
+    )
+    .await;
+    let rereviewed: Value = json_body(&body);
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/profiles/api/import",
+        Some(json!({"source": "checkout", "reviewedManifestHash": rereviewed["reviewHash"]})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 201);
+    assert_eq!(json_body::<Value>(&body)["trust"], "imported");
+
+    assert_eq!(
+        request(
+            &api,
+            Some(&api.token),
+            "DELETE",
+            "/api/v1/profiles/api",
+            None,
+            &[],
+        )
+        .await
+        .0,
+        204
+    );
+    let (_, body) = request(&api, Some(&api.token), "GET", "/api/v1/profiles", None, &[]).await;
+    assert_eq!(
+        json_body::<Value>(&body)["profiles"][0]["trust"],
+        "not-imported"
+    );
 }
 
 #[tokio::test]

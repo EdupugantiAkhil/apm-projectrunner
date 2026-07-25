@@ -72,6 +72,12 @@ optional `context` fields. Framework types are not part of the public Rust contr
 | `POST` | `/api/v1/deployments` | Validate and atomically create a non-existing authored definition |
 | `PUT` | `/api/v1/deployments/{deployment}/definition` | Validate and atomically replace an authored definition using its expected hash |
 | `GET` | `/api/v1/adapters` | List built-in adapter declarations and configuration JSON Schemas |
+| `GET` | `/api/v1/profiles` | List project-local, imported, and source-local startup profiles with origin and trust |
+| `GET` | `/api/v1/profiles/{name}` | Read one selected profile's expanded planner definition |
+| `GET` | `/api/v1/profiles/{name}/manifest` | Read the verbatim source manifest and review hash required for import |
+| `POST` | `/api/v1/profiles/{name}/validate` | Validate a selected profile against a registered checkout |
+| `POST` | `/api/v1/profiles/{name}/import` | Import or re-import exactly the source manifest content previously reviewed |
+| `DELETE` | `/api/v1/profiles/{name}` | Remove an imported profile without changing source or project definitions |
 | `GET` | `/api/v1/sources` | List registrations with live source identity |
 | `POST` | `/api/v1/sources` | Register an existing path as unmanaged |
 | `DELETE` | `/api/v1/sources/{name}` | Forget a registration without deleting files |
@@ -142,6 +148,67 @@ use HTTP 422 `validation_failed` with `context.diagnostics`; absent definitions 
 `deployment_definition_not_found`. GET prefers a definition path recorded in an
 applied snapshot when present and otherwise checks the project-local deployments
 directory.
+
+The profile library is project-wide and follows the shared `switchyard-ops` precedence
+and trust projection. `GET /api/v1/profiles` scans authored deployment definitions and
+returns a deduplicated `profiles` array plus non-fatal `sourceErrors`. Each profile carries
+`name`, the deployment definition used for expansion, an origin (`project`,
+`imported-from-source`, or `discovered-in-source`), trust (`trusted`, `imported`,
+`changed`, or `not-imported`), `shadowed`, and its service/adapter summary. Project-local
+profiles are `trusted`; a recorded source import is `imported` while its canonical block
+content hash still matches the current source manifest; a changed hash is `changed`; and a
+source-local profile with no import record is `not-imported`.
+
+Profile names can collide across origins, so expanded reads select the list record with
+flat query fields:
+
+```text
+GET /api/v1/profiles/{name}?deployment=demo&origin=discovered-in-source&source=checkout
+```
+
+`source` is required for the two source origins and omitted for `project`. The response
+contains the selected origin and trust plus `definition`, the fully parsed planner block as
+JSON. Validation uses the same selector in a JSON body, with the origin in its normal tagged
+shape, and names a registered checkout:
+
+```json
+{
+  "deployment": "demo",
+  "origin": {
+    "kind": "discovered-in-source",
+    "source": "checkout",
+    "commit": null
+  },
+  "checkout": "checkout"
+}
+```
+
+The validation response contains `valid`, `expandedServices`, structured planner
+`diagnostics`, and nullable `error`. It uses string parameter defaults, the local device,
+and the synthetic instance name `profile-validation-preview`, matching the TUI expansion
+report; validation never starts a service or mutates a definition.
+
+Source-local trust requires a separate manifest review. First request
+`GET /api/v1/profiles/{name}/manifest?source=checkout`; it returns the verbatim
+`switchyard-profiles.yaml` and a SHA-256 `reviewHash`. Import or re-import then sends:
+
+```json
+{
+  "source": "checkout",
+  "reviewedManifestHash": "<reviewHash>"
+}
+```
+
+The server allows import only for `not-imported` discovered profiles or `changed` imported
+profiles. The shared operations layer re-reads the manifest, compares its exact bytes with
+the reviewed hash, parses and validates that same content, and records the canonical block
+hash only after the comparison succeeds. If any manifest byte changed after review, the
+request receives HTTP 409 `profile_manifest_review_changed`; the client must fetch and show
+the new manifest before retrying. Calling import for an already-current or project-local
+profile receives HTTP 409 `profile_import_not_required`. Successful initial imports and
+re-imports return HTTP 201 with the fresh `imported` profile row. Deletion returns HTTP 204,
+applies only to an imported profile, and leaves both the source manifest and authored
+project definitions unchanged.
 
 Source registration accepts `{ "name": "app", "path": "/code/app" }` and always
 records the path as `unmanaged`. Worktree creation accepts `repository`, `ref`, and

@@ -473,6 +473,154 @@ pub struct DeploymentRoutesV1 {
     pub history: Vec<RouteHistoryV1>,
 }
 
+/// Origin identity required to disambiguate profiles with the same name.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ProfileOriginV1 {
+    Project,
+    ImportedFromSource {
+        source: String,
+        commit: Option<String>,
+    },
+    DiscoveredInSource {
+        source: String,
+        commit: Option<String>,
+    },
+}
+
+/// Trust state derived by the shared profile operations layer.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfileTrustV1 {
+    Trusted,
+    Imported,
+    Changed,
+    NotImported,
+}
+
+/// Execution adapter family used by one profile service.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfileAdapterKindV1 {
+    Container,
+    Script,
+    ProcessCompose,
+}
+
+/// One service declared by a startup profile.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileServiceV1 {
+    pub name: String,
+    pub adapter_kind: ProfileAdapterKindV1,
+}
+
+/// One project-local, imported, or source-local startup profile.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileV1 {
+    pub api_version: String,
+    pub name: String,
+    pub deployment: String,
+    pub origin: ProfileOriginV1,
+    pub trust: ProfileTrustV1,
+    pub shadowed: bool,
+    pub services: Vec<ProfileServiceV1>,
+}
+
+/// Source manifest diagnostic retained without hiding valid profiles from other sources.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileSourceErrorV1 {
+    pub source: String,
+    pub message: String,
+}
+
+/// Project-wide profile library response.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfilesV1 {
+    pub api_version: String,
+    pub profiles: Vec<ProfileV1>,
+    pub source_errors: Vec<ProfileSourceErrorV1>,
+}
+
+/// Flat origin kind used in profile-selection query parameters.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfileOriginKindV1 {
+    Project,
+    ImportedFromSource,
+    DiscoveredInSource,
+}
+
+/// Query used to select one profile definition from the project-wide library.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProfileSelectorV1 {
+    pub deployment: String,
+    pub origin: ProfileOriginKindV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// Expanded planner block for one selected startup profile.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileDefinitionV1 {
+    pub api_version: String,
+    pub name: String,
+    pub deployment: String,
+    pub origin: ProfileOriginV1,
+    pub trust: ProfileTrustV1,
+    pub definition: Value,
+}
+
+/// Verbatim manifest that must be reviewed before importing source-local content.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileManifestReviewV1 {
+    pub api_version: String,
+    pub source: String,
+    pub manifest: String,
+    pub review_hash: String,
+}
+
+/// Request to validate a selected profile against a registered checkout.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ValidateProfileRequestV1 {
+    pub deployment: String,
+    pub origin: ProfileOriginV1,
+    pub checkout: String,
+}
+
+/// Planner-derived expansion report for profile/checkout validation.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileValidationV1 {
+    pub api_version: String,
+    pub name: String,
+    pub deployment: String,
+    pub checkout: String,
+    pub valid: bool,
+    pub expanded_services: Vec<String>,
+    pub diagnostics: Vec<switchyard_planner::Diagnostic>,
+    pub error: Option<String>,
+}
+
+/// Import request proving which verbatim source manifest the user reviewed.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImportProfileRequestV1 {
+    pub source: String,
+    pub reviewed_manifest_hash: String,
+}
+
 /// Request to register an existing path without taking ownership.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

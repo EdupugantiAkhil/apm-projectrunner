@@ -7,7 +7,35 @@ Updated: 2026-07-25
 - Routing proof (Phases 0–4): complete.
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
-- Web UI plan (`docs/web-ui-plan.md`): Parts 1, 2, and 6 complete.
+- Web UI plan (`docs/web-ui-plan.md`): Parts 1, 2, 3, and 6 complete.
+
+## 2026-07-25 web UI Part 3 — startup-profile library and trust workflow
+
+- Added authenticated profile list/detail/manifest-review/validate/import/remove endpoints.
+  The shared discovery, hashing, trust projection, import, and removal domain now lives in
+  the leaf `switchyard-profiles` crate. `switchyard-ops::profiles` and the existing ops-root
+  exports re-export that crate's single compiled set of types, while the daemon depends on
+  it directly; `switchyard-ops` can therefore retain its daemon dependency for standalone
+  reconciliation without a Cargo cycle or a cross-crate source include.
+- Added the only ops-layer API needed by the HTTP trust boundary: verbatim manifest review
+  with a SHA-256 review hash, and reviewed import that compares and parses those exact bytes
+  before recording trust. A changed manifest returns `profile_manifest_review_changed` and
+  cannot be imported until the client retrieves and displays the new content.
+- The Profiles web view shows origin/trust/shadow badges, expanded definitions, source
+  manifest review before import or re-import, imported-profile removal, and checkout
+  validation with expanded services and structured diagnostics. It explicitly states that
+  profile editing is unavailable until a shared mutation exists.
+- Added profile-domain reviewed-import coverage in `switchyard-profiles`, one daemon API
+  workflow covering discovery, detail, validation, stale review refusal, import,
+  changed-content re-review/re-import, and removal, plus web client and view coverage. The
+  daemon keeps its direct `yaml_serde` dependency for profile-validation request authoring;
+  no frontend dependency was added.
+- Verification: `cargo fmt --all -- --check` passed with no output; workspace Clippy with
+  all targets/features and warnings denied passed; the workspace test command passed with
+  271 tests and five declared reliability ignores (daemon 7 unit, daemon API 19 passed and
+  one ignored, profiles 8, ops 17, and all doc tests); all 24 web tests passed; `npx tsc -b`
+  passed with no output; `npm run lint` exited zero with the four pre-existing
+  exhaustive-dependencies warnings in `App.tsx` and `DeploymentBuilder.tsx`.
 
 ## 2026-07-25 web UI Part 2 — durable operations list
 

@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { ApiClient, ApiError, type AdapterRecord, type DeploymentDetail, type DeploymentSummary, type DeviceRecord, type Operation, type OperationEvent, type ProjectInfo, type RouteState, type SourceRecord } from './api'
+import { ApiClient, ApiError, type AdapterRecord, type DeploymentDetail, type DeploymentSummary, type DeviceRecord, type Operation, type OperationEvent, type ProfileRecord, type ProjectInfo, type RouteState, type SourceRecord } from './api'
 import DeploymentWorkspace, { RoutingEditor } from './DeploymentWorkspace'
 import DeploymentBuilder, { BlockLibrary } from './DeploymentBuilder'
+import ProfilesView from './ProfilesView'
 import './App.css'
 
-type View = 'deployments' | 'sources' | 'devices' | 'operations' | 'builder' | 'library'
+type View = 'deployments' | 'sources' | 'devices' | 'profiles' | 'operations' | 'builder' | 'library'
 const terminal = (status: Operation['status']) => ['succeeded', 'failed', 'cancelled'].includes(status)
 const short = (value?: string | null) => value ? value.slice(0, 9) : 'unknown'
 const stoppedDiagnostic = (detail: DeploymentDetail) => detail.resources.length === 0
@@ -26,6 +27,8 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
   const [devices, setDevices] = useState<DeviceRecord[]>([])
   const [devicesLoading, setDevicesLoading] = useState(true)
   const [adapters, setAdapters] = useState<AdapterRecord[]>([])
+  const [profiles, setProfiles] = useState<ProfileRecord[]>([])
+  const [profileSourceErrors, setProfileSourceErrors] = useState<Array<{ source: string; message: string }>>([])
   const [operations, setOperations] = useState<Operation[]>([])
   const [events, setEvents] = useState<OperationEvent[]>([])
   const [drawerOpen, setDrawerOpen] = useState(true)
@@ -44,6 +47,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
   }
   const loadSources = async () => { try { setSources(await client.sources()) } catch (value) { report(value) } }
   const loadDevices = async () => { setDevicesLoading(true); try { setDevices(await client.devices()) } catch (value) { report(value) } finally { setDevicesLoading(false) } }
+  const loadProfiles = async () => { try { const response = await client.profiles(); setProfiles(response.profiles); setProfileSourceErrors(response.sourceErrors) } catch (value) { report(value) } }
   const loadOperations = async () => {
     try {
       const response = await client.operations()
@@ -52,7 +56,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
   }
   const loadSelected = async () => { if (!selected) return; const [nextDetail, nextRoutes] = await Promise.all([client.deployment(selected), client.routes(selected)]); setDetail(nextDetail); setRoutes(nextRoutes) }
 
-  useEffect(() => { void client.project().then(setProject).catch(report); void loadDeployments(); void loadSources(); void loadDevices(); void client.adapters().then(setAdapters).catch(report) }, [])
+  useEffect(() => { void client.project().then(setProject).catch(report); void loadDeployments(); void loadSources(); void loadDevices(); void loadProfiles(); void client.adapters().then(setAdapters).catch(report) }, [])
   useEffect(() => {
     if (!selected) { setDetail(null); setRoutes(null); return }
     void loadSelected().catch(report)
@@ -90,7 +94,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
   }
   const navKeys = (event: KeyboardEvent<HTMLElement>) => {
     if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return
-    const views: View[] = ['deployments', 'sources', 'devices', 'operations', 'library']
+    const views: View[] = ['deployments', 'sources', 'devices', 'profiles', 'operations', 'library']
     const offset = event.key === 'ArrowRight' ? 1 : -1
     const next = views[(views.indexOf(view) + offset + views.length) % views.length]
     setView(next)
@@ -103,7 +107,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
     <aside className="rail" aria-label="Deployment rail">
       <div className="brand">SWITCHYARD <span>LOCAL</span><small title={project?.root}>{project?.name ?? 'Loading project…'}</small></div>
       <nav aria-label="Main views" onKeyDown={navKeys}>
-        {(['deployments', 'sources', 'devices', 'operations', 'library'] as View[]).map((item) => <button key={item} aria-current={view === item ? 'page' : undefined} onClick={() => { setView(item); if (item === 'operations') void loadOperations() }}>{item === 'library' ? 'block library' : item}</button>)}
+        {(['deployments', 'sources', 'devices', 'profiles', 'operations', 'library'] as View[]).map((item) => <button key={item} aria-current={view === item ? 'page' : undefined} onClick={() => { setView(item); if (item === 'operations') void loadOperations(); if (item === 'profiles') void loadProfiles() }}>{item === 'library' ? 'block library' : item}</button>)}
       </nav>
       <h2>Deployments</h2>
       <div className="deployment-list">
@@ -124,6 +128,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
       {view === 'deployments' && <DeploymentView client={client} detail={detail} routes={routes} onCommand={runCommand} observe={observe} refresh={async () => { await loadSelected(); await loadDeployments() }} report={report} />}
       {view === 'sources' && <SourcesView client={client} sources={sources} reload={loadSources} report={report} />}
       {view === 'devices' && <DevicesView client={client} devices={devices} loading={devicesLoading} reload={loadDevices} report={report} />}
+      {view === 'profiles' && <ProfilesView client={client} profiles={profiles} sourceErrors={profileSourceErrors} sources={sources} reload={loadProfiles} report={report} />}
       {view === 'operations' && <OperationsView operations={operations} onCancel={async (id) => { if (!window.confirm('Cancel this running operation?')) return; try { const cancelled = await client.cancel(id); setOperations((current) => current.map((item) => item.id === id ? cancelled : item)) } catch (value) { report(value) } }} />}
       {view === 'builder' && <DeploymentBuilder client={client} sources={sources} close={() => setView('deployments')} onOperation={observe} report={report} saved={async (name) => { await loadDeployments(); setSelected(name); setView('deployments'); setNotice(`Deployment ${name} saved; use Up when ready`) }} />}
       {view === 'library' && <BlockLibrary adapters={adapters} />}

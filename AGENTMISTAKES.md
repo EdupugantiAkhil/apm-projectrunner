@@ -1,5 +1,14 @@
 # Agent mistakes and lessons
 
+## 2026-07-25 — Shared domains need a real leaf crate
+
+- A cross-crate `#[path]` include compiled the profile domain into the daemon a second time
+  to dodge the existing `switchyard-ops` → `switchyard-daemon` dependency direction, and a
+  blanket `#[allow(dead_code)]` hid the resulting module warnings. Correction: extract the
+  shared profile domain into the leaf `switchyard-profiles` crate, re-export it from ops,
+  and depend on it directly from the daemon. Lesson: resolve a shared-domain dependency
+  cycle by introducing one owned leaf crate, not by compiling another crate's source twice.
+
 ## 2026-07-25 — Durable operation refresh should not add hook debt
 
 - The first Operations-view refresh used a new `useEffect` keyed to the active view,

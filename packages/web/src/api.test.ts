@@ -72,6 +72,27 @@ describe('ApiClient', () => {
     expect(fetchMock.mock.calls[0][1].method).toBeUndefined()
   })
 
+  it('uses versioned profile selection, review, validation, import, and removal contracts', async () => {
+    const responses = [
+      { apiVersion: 'v1', profiles: [], sourceErrors: [] },
+      { apiVersion: 'v1', definition: {} },
+      { apiVersion: 'v1', manifest: 'version: 1', reviewHash: 'hash' },
+      { apiVersion: 'v1', valid: true, expandedServices: [], diagnostics: [], error: null },
+      { apiVersion: 'v1', name: 'api' },
+    ]
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify(responses.shift() ?? null), { status: responses.length === 0 ? 200 : 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('token'); const origin = { kind: 'discovered-in-source' as const, source: 'shared app', commit: null }; const profile = { apiVersion: 'v1', name: 'api/worker', deployment: 'demo app', origin, trust: 'not-imported' as const, shadowed: false, services: [] }
+    await client.profiles(); await client.profile(profile.name, profile.deployment, origin); await client.profileManifest(profile.name, origin.source); await client.validateProfile(profile, 'checkout one'); await client.importProfile(profile.name, origin.source, 'review/hash')
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 204 })); await client.removeProfile(profile.name)
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/profiles')
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/profiles/api%2Fworker?deployment=demo+app&origin=discovered-in-source&source=shared+app')
+    expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/profiles/api%2Fworker/manifest?source=shared%20app')
+    expect(fetchMock.mock.calls[3][1].body).toBe(JSON.stringify({ deployment: 'demo app', origin, checkout: 'checkout one' }))
+    expect(fetchMock.mock.calls[4][1].body).toBe(JSON.stringify({ source: 'shared app', reviewedManifestHash: 'review/hash' }))
+    expect(fetchMock.mock.calls[5][1].method).toBe('DELETE')
+  })
+
   it('deregisters sources with an encoded DELETE and no body', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
     vi.stubGlobal('fetch', fetchMock)

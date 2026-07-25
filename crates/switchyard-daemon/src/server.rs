@@ -43,10 +43,13 @@ use crate::contract::{
     CreateDeploymentRequestV1, CreateWorktreeRequestV1, DaemonStatusV1, DeploymentDefinitionV1,
     DeploymentDetailV1, DeploymentOperationSummaryV1, DeploymentRoutesV1, DeploymentSummaryV1,
     DeploymentValidationV1, DeploymentsV1, DiscoveryV1, EventKindV1, EventV1, GatewayExposureV1,
-    MdnsCheckV1, MdnsPublicationV1, MdnsPublishedNameV1, OperationStatusV1, OperationV1,
-    OperationsV1, ProjectV1, RegisterDeviceRequestV1, RegisterSourceRequestV1,
-    RemoveWorktreeRequestV1, RouteHistoryV1, RouterBindingV1, TailscalePublicationV1,
-    TransitionPolicyV1, UpdateDeploymentDefinitionRequestV1,
+    ImportProfileRequestV1, MdnsCheckV1, MdnsPublicationV1, MdnsPublishedNameV1, OperationStatusV1,
+    OperationV1, OperationsV1, ProfileAdapterKindV1, ProfileDefinitionV1, ProfileManifestReviewV1,
+    ProfileOriginKindV1, ProfileOriginV1, ProfileSelectorV1, ProfileServiceV1,
+    ProfileSourceErrorV1, ProfileTrustV1, ProfileV1, ProfileValidationV1, ProfilesV1, ProjectV1,
+    RegisterDeviceRequestV1, RegisterSourceRequestV1, RemoveWorktreeRequestV1, RouteHistoryV1,
+    RouterBindingV1, TailscalePublicationV1, TransitionPolicyV1,
+    UpdateDeploymentDefinitionRequestV1, ValidateProfileRequestV1,
 };
 
 const LOCK_TTL_MILLIS: i64 = 15_000;
@@ -1298,6 +1301,17 @@ fn routes(inner: Arc<Inner>) -> Router {
         )
         .route("/api/v1/deployments/{deployment}", get(deployment_detail))
         .route("/api/v1/adapters", get(list_adapters))
+        .route("/api/v1/profiles", get(list_profiles))
+        .route(
+            "/api/v1/profiles/{name}",
+            get(profile_definition).delete(remove_profile),
+        )
+        .route(
+            "/api/v1/profiles/{name}/manifest",
+            get(profile_manifest_review),
+        )
+        .route("/api/v1/profiles/{name}/validate", post(validate_profile))
+        .route("/api/v1/profiles/{name}/import", post(import_profile))
         .route("/api/v1/sources", get(list_sources).post(register_source))
         .route("/api/v1/sources/{name}", delete(deregister_source))
         .route("/api/v1/devices", get(list_devices).post(register_device))
@@ -1357,6 +1371,575 @@ async fn serve_gui(State(inner): State<Arc<Inner>>, AxumPath(path): AxumPath<Str
 
 async fn list_adapters() -> Response {
     Json(switchyard_adapters::built_in_registry().list()).into_response()
+}
+
+#[derive(Clone)]
+struct ProfileRecord {
+    deployment: String,
+    definition: PathBuf,
+    row: switchyard_profiles::ProfileRow,
+}
+
+fn profile_definition_paths(root: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let primary = root.join("deployment.yaml");
+    if primary.is_file() {
+        paths.push(primary);
+    }
+    for directory in [root.to_path_buf(), root.join("deployments")] {
+        if let Ok(entries) = fs::read_dir(directory) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file()
+                    && matches!(
+                        path.extension().and_then(|value| value.to_str()),
+                        Some("yaml" | "yml")
+                    )
+                    && !paths.contains(&path)
+                {
+                    paths.push(path);
+                }
+            }
+        }
+    }
+    paths.sort();
+    paths
+}
+
+fn profile_records(
+    root: &Path,
+) -> Result<(Vec<ProfileRecord>, Vec<ProfileSourceErrorV1>), switchyard_profiles::ProfileError> {
+    let mut records = Vec::new();
+    let mut source_errors = Vec::new();
+    for definition in profile_definition_paths(root) {
+        let Ok(bundle) = switchyard_planner::load_bundle(&definition) else {
+            continue;
+        };
+        let deployment = bundle.metadata.name;
+        let listing = switchyard_profiles::list_profiles(root, &definition)?;
+        for row in listing.rows {
+            if records.iter().any(|record: &ProfileRecord| {
+                record.row.name == row.name && record.row.origin == row.origin
+            }) {
+                continue;
+            }
+            records.push(ProfileRecord {
+                deployment: deployment.clone(),
+                definition: definition.clone(),
+                row,
+            });
+        }
+        for error in listing.source_errors {
+            if !source_errors.iter().any(|existing: &ProfileSourceErrorV1| {
+                existing.source == error.source && existing.message == error.message
+            }) {
+                source_errors.push(ProfileSourceErrorV1 {
+                    source: error.source,
+                    message: error.message,
+                });
+            }
+        }
+    }
+    Ok((records, source_errors))
+}
+
+fn profile_origin(origin: &switchyard_profiles::ProfileOrigin) -> ProfileOriginV1 {
+    match origin {
+        switchyard_profiles::ProfileOrigin::Project => ProfileOriginV1::Project,
+        switchyard_profiles::ProfileOrigin::ImportedFromSource { source, commit } => {
+            ProfileOriginV1::ImportedFromSource {
+                source: source.clone(),
+                commit: commit.clone(),
+            }
+        }
+        switchyard_profiles::ProfileOrigin::DiscoveredInSource { source, commit } => {
+            ProfileOriginV1::DiscoveredInSource {
+                source: source.clone(),
+                commit: commit.clone(),
+            }
+        }
+    }
+}
+
+fn profile_trust(trust: switchyard_profiles::ProfileTrust) -> ProfileTrustV1 {
+    match trust {
+        switchyard_profiles::ProfileTrust::Trusted => ProfileTrustV1::Trusted,
+        switchyard_profiles::ProfileTrust::Imported => ProfileTrustV1::Imported,
+        switchyard_profiles::ProfileTrust::Changed => ProfileTrustV1::Changed,
+        switchyard_profiles::ProfileTrust::NotImported => ProfileTrustV1::NotImported,
+    }
+}
+
+fn profile_adapter(kind: switchyard_profiles::ProfileAdapterKind) -> ProfileAdapterKindV1 {
+    match kind {
+        switchyard_profiles::ProfileAdapterKind::Container => ProfileAdapterKindV1::Container,
+        switchyard_profiles::ProfileAdapterKind::Script => ProfileAdapterKindV1::Script,
+        switchyard_profiles::ProfileAdapterKind::ProcessCompose => {
+            ProfileAdapterKindV1::ProcessCompose
+        }
+    }
+}
+
+fn profile_contract(record: &ProfileRecord) -> ProfileV1 {
+    ProfileV1 {
+        api_version: API_VERSION.into(),
+        name: record.row.name.clone(),
+        deployment: record.deployment.clone(),
+        origin: profile_origin(&record.row.origin),
+        trust: profile_trust(record.row.trust),
+        shadowed: record.row.shadowed,
+        services: record
+            .row
+            .services
+            .iter()
+            .map(|service| ProfileServiceV1 {
+                name: service.name.clone(),
+                adapter_kind: profile_adapter(service.adapter_kind),
+            })
+            .collect(),
+    }
+}
+
+fn profile_origin_matches(
+    origin: &switchyard_profiles::ProfileOrigin,
+    selector: &ProfileSelectorV1,
+) -> bool {
+    match (origin, selector.origin) {
+        (switchyard_profiles::ProfileOrigin::Project, ProfileOriginKindV1::Project) => true,
+        (
+            switchyard_profiles::ProfileOrigin::ImportedFromSource { source, .. },
+            ProfileOriginKindV1::ImportedFromSource,
+        )
+        | (
+            switchyard_profiles::ProfileOrigin::DiscoveredInSource { source, .. },
+            ProfileOriginKindV1::DiscoveredInSource,
+        ) => selector.source.as_ref() == Some(source),
+        _ => false,
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn selected_profile(
+    root: &Path,
+    name: &str,
+    selector: &ProfileSelectorV1,
+) -> Result<ProfileRecord, Response> {
+    let (records, _) = profile_records(root).map_err(profile_error_response)?;
+    records
+        .into_iter()
+        .find(|record| {
+            record.row.name == name
+                && record.deployment == selector.deployment
+                && profile_origin_matches(&record.row.origin, selector)
+        })
+        .ok_or_else(|| {
+            api_error(
+                StatusCode::NOT_FOUND,
+                "profile_not_found",
+                "startup profile not found",
+            )
+        })
+}
+
+fn profile_error_response(error: switchyard_profiles::ProfileError) -> Response {
+    let status = match error {
+        switchyard_profiles::ProfileError::SourceNotFound { .. }
+        | switchyard_profiles::ProfileError::ProfileNotFound { .. } => StatusCode::NOT_FOUND,
+        switchyard_profiles::ProfileError::ManifestReviewChanged { .. } => StatusCode::CONFLICT,
+        switchyard_profiles::ProfileError::MalformedManifest { .. }
+        | switchyard_profiles::ProfileError::UnsupportedVersion { .. }
+        | switchyard_profiles::ProfileError::InvalidProfile { .. }
+        | switchyard_profiles::ProfileError::Definition(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        switchyard_profiles::ProfileError::Io { .. }
+        | switchyard_profiles::ProfileError::State(_)
+        | switchyard_profiles::ProfileError::Clock => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    api_error(status, error.code(), &error.to_string())
+}
+
+async fn list_profiles(State(inner): State<Arc<Inner>>) -> Response {
+    blocking_source_response(move || match profile_records(&inner.config.project_root) {
+        Ok((records, source_errors)) => Json(ProfilesV1 {
+            api_version: API_VERSION.into(),
+            profiles: records.iter().map(profile_contract).collect(),
+            source_errors,
+        })
+        .into_response(),
+        Err(error) => profile_error_response(error),
+    })
+    .await
+}
+
+async fn profile_definition(
+    State(inner): State<Arc<Inner>>,
+    AxumPath(name): AxumPath<String>,
+    Query(selector): Query<ProfileSelectorV1>,
+) -> Response {
+    blocking_source_response(move || {
+        let record = match selected_profile(&inner.config.project_root, &name, &selector) {
+            Ok(record) => record,
+            Err(response) => return response,
+        };
+        match switchyard_profiles::load_profile_block(
+            &inner.config.project_root,
+            &record.definition,
+            &record.row.name,
+            &record.row.origin,
+        ) {
+            Ok(block) => Json(ProfileDefinitionV1 {
+                api_version: API_VERSION.into(),
+                name: record.row.name,
+                deployment: record.deployment,
+                origin: profile_origin(&record.row.origin),
+                trust: profile_trust(record.row.trust),
+                definition: serde_json::to_value(block).unwrap_or_else(|_| json!({})),
+            })
+            .into_response(),
+            Err(error) => profile_error_response(error),
+        }
+    })
+    .await
+}
+
+#[derive(serde::Deserialize)]
+struct ProfileManifestQuery {
+    source: String,
+}
+
+async fn profile_manifest_review(
+    State(inner): State<Arc<Inner>>,
+    AxumPath(_name): AxumPath<String>,
+    Query(query): Query<ProfileManifestQuery>,
+) -> Response {
+    blocking_source_response(move || {
+        match switchyard_profiles::review_source_profile_manifest(
+            &inner.config.project_root,
+            &query.source,
+        ) {
+            Ok(review) => Json(ProfileManifestReviewV1 {
+                api_version: API_VERSION.into(),
+                source: query.source,
+                manifest: review.manifest,
+                review_hash: review.review_hash,
+            })
+            .into_response(),
+            Err(error) => profile_error_response(error),
+        }
+    })
+    .await
+}
+
+async fn import_profile(
+    State(inner): State<Arc<Inner>>,
+    AxumPath(name): AxumPath<String>,
+    payload: Result<Json<ImportProfileRequestV1>, JsonRejection>,
+) -> Response {
+    let request = match payload {
+        Ok(Json(request)) => request,
+        Err(error) => {
+            return api_error(StatusCode::BAD_REQUEST, "invalid_json", &error.body_text());
+        }
+    };
+    blocking_source_response(move || {
+        let (records, _) = match profile_records(&inner.config.project_root) {
+            Ok(records) => records,
+            Err(error) => return profile_error_response(error),
+        };
+        let importable = records.iter().any(|record| {
+            record.row.name == name
+                && match (&record.row.origin, record.row.trust) {
+                    (
+                        switchyard_profiles::ProfileOrigin::DiscoveredInSource { source, .. },
+                        switchyard_profiles::ProfileTrust::NotImported,
+                    )
+                    | (
+                        switchyard_profiles::ProfileOrigin::ImportedFromSource { source, .. },
+                        switchyard_profiles::ProfileTrust::Changed,
+                    ) => source == &request.source,
+                    _ => false,
+                }
+        });
+        if !importable {
+            return api_error(
+                StatusCode::CONFLICT,
+                "profile_import_not_required",
+                "only a new or changed source-local profile can be imported",
+            );
+        }
+        match switchyard_profiles::import_reviewed_source_profile(
+            &inner.config.project_root,
+            &request.source,
+            &name,
+            &request.reviewed_manifest_hash,
+        ) {
+            Ok(_) => {
+                let (records, _) = match profile_records(&inner.config.project_root) {
+                    Ok(records) => records,
+                    Err(error) => return profile_error_response(error),
+                };
+                match records.into_iter().find(|record| {
+                    record.row.name == name
+                        && matches!(
+                            &record.row.origin,
+                            switchyard_profiles::ProfileOrigin::ImportedFromSource { source, .. }
+                                if source == &request.source
+                        )
+                }) {
+                    Some(record) => {
+                        (StatusCode::CREATED, Json(profile_contract(&record))).into_response()
+                    }
+                    None => api_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "profile_import_missing",
+                        "imported profile was not visible after import",
+                    ),
+                }
+            }
+            Err(error) => profile_error_response(error),
+        }
+    })
+    .await
+}
+
+async fn remove_profile(
+    State(inner): State<Arc<Inner>>,
+    AxumPath(name): AxumPath<String>,
+) -> Response {
+    blocking_source_response(move || {
+        let (records, _) = match profile_records(&inner.config.project_root) {
+            Ok(records) => records,
+            Err(error) => return profile_error_response(error),
+        };
+        if !records.iter().any(|record| {
+            record.row.name == name
+                && matches!(
+                    record.row.origin,
+                    switchyard_profiles::ProfileOrigin::ImportedFromSource { .. }
+                )
+        }) {
+            return api_error(
+                StatusCode::NOT_FOUND,
+                "profile_import_not_found",
+                "imported startup profile not found",
+            );
+        }
+        match switchyard_profiles::remove_imported_profile(&inner.config.project_root, &name) {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(error) => profile_error_response(error),
+        }
+    })
+    .await
+}
+
+async fn validate_profile(
+    State(inner): State<Arc<Inner>>,
+    AxumPath(name): AxumPath<String>,
+    payload: Result<Json<ValidateProfileRequestV1>, JsonRejection>,
+) -> Response {
+    let request = match payload {
+        Ok(Json(request)) => request,
+        Err(error) => {
+            return api_error(StatusCode::BAD_REQUEST, "invalid_json", &error.body_text());
+        }
+    };
+    blocking_source_response(move || validate_profile_blocking(&inner, &name, request)).await
+}
+
+fn validate_profile_blocking(
+    inner: &Inner,
+    name: &str,
+    request: ValidateProfileRequestV1,
+) -> Response {
+    let (origin, source) = match request.origin {
+        ProfileOriginV1::Project => (ProfileOriginKindV1::Project, None),
+        ProfileOriginV1::ImportedFromSource { source, .. } => {
+            (ProfileOriginKindV1::ImportedFromSource, Some(source))
+        }
+        ProfileOriginV1::DiscoveredInSource { source, .. } => {
+            (ProfileOriginKindV1::DiscoveredInSource, Some(source))
+        }
+    };
+    let selector = ProfileSelectorV1 {
+        deployment: request.deployment.clone(),
+        origin,
+        source,
+    };
+    let record = match selected_profile(&inner.config.project_root, name, &selector) {
+        Ok(record) => record,
+        Err(response) => return response,
+    };
+    let block = match switchyard_profiles::load_profile_block(
+        &inner.config.project_root,
+        &record.definition,
+        name,
+        &record.row.origin,
+    ) {
+        Ok(block) => block,
+        Err(error) => return profile_error_response(error),
+    };
+    let store = inner
+        .store
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let checkout = match store.source(&request.checkout) {
+        Ok(Some(source)) => source,
+        Ok(None) => {
+            return api_error(
+                StatusCode::NOT_FOUND,
+                "source_not_found",
+                "validation checkout is not registered",
+            );
+        }
+        Err(error) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error.code(),
+                &error.to_string(),
+            );
+        }
+    };
+    drop(store);
+    let input = match fs::read_to_string(&record.definition) {
+        Ok(input) => input,
+        Err(error) => {
+            return Json(ProfileValidationV1 {
+                api_version: API_VERSION.into(),
+                name: name.into(),
+                deployment: record.deployment,
+                checkout: request.checkout,
+                valid: false,
+                expanded_services: Vec::new(),
+                diagnostics: Vec::new(),
+                error: Some(error.to_string()),
+            })
+            .into_response();
+        }
+    };
+    let mut value = match serde_yaml::from_str::<serde_yaml::Value>(&input) {
+        Ok(value) => value,
+        Err(error) => {
+            return Json(ProfileValidationV1 {
+                api_version: API_VERSION.into(),
+                name: name.into(),
+                deployment: record.deployment,
+                checkout: request.checkout,
+                valid: false,
+                expanded_services: Vec::new(),
+                diagnostics: Vec::new(),
+                error: Some(error.to_string()),
+            })
+            .into_response();
+        }
+    };
+    let Some(spec) = value
+        .as_mapping_mut()
+        .and_then(|root| root.get_mut("spec"))
+        .and_then(serde_yaml::Value::as_mapping_mut)
+    else {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "profile_validation_failed",
+            "deployment definition has no spec mapping",
+        );
+    };
+    let sources = spec
+        .entry(serde_yaml::Value::String("sources".into()))
+        .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
+    if let Some(sources) = sources.as_mapping_mut() {
+        sources.insert(
+            serde_yaml::Value::String(request.checkout.clone()),
+            serde_yaml::to_value(json!({"path": checkout.path})).unwrap_or_default(),
+        );
+    }
+    let blocks = spec
+        .entry(serde_yaml::Value::String("blocks".into()))
+        .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
+    if let Some(blocks) = blocks.as_mapping_mut() {
+        blocks.insert(
+            serde_yaml::Value::String(name.into()),
+            serde_yaml::to_value(&block).unwrap_or_default(),
+        );
+    }
+    let parameters = serde_json::to_value(&block)
+        .ok()
+        .and_then(|value| value.get("parameters").cloned())
+        .and_then(|value| value.as_object().cloned())
+        .map(|items| {
+            items
+                .into_iter()
+                .filter_map(|(parameter, spec)| {
+                    spec.get("default")
+                        .and_then(Value::as_str)
+                        .map(|value| (parameter, value.to_owned()))
+                })
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let instances = spec
+        .entry(serde_yaml::Value::String("instances".into()))
+        .or_insert_with(|| serde_yaml::Value::Sequence(Vec::new()));
+    if let Some(instances) = instances.as_sequence_mut() {
+        instances.push(
+            serde_yaml::to_value(json!({
+                "name": "profile-validation-preview",
+                "block": name,
+                "source": request.checkout,
+                "device": "local",
+                "parameters": parameters,
+            }))
+            .unwrap_or_default(),
+        );
+    }
+    let draft = match serde_yaml::to_string(&value) {
+        Ok(draft) => draft,
+        Err(error) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "profile_validation_failed",
+                &error.to_string(),
+            );
+        }
+    };
+    let bundle = match switchyard_planner::load_bundle_from_str(&draft, &record.definition) {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            return Json(ProfileValidationV1 {
+                api_version: API_VERSION.into(),
+                name: name.into(),
+                deployment: record.deployment,
+                checkout: request.checkout,
+                valid: false,
+                expanded_services: Vec::new(),
+                diagnostics: Vec::new(),
+                error: Some(error.to_string()),
+            })
+            .into_response();
+        }
+    };
+    let expanded_services = block
+        .services
+        .keys()
+        .map(|service| {
+            format!(
+                "{}--profile-validation-preview--{service}",
+                bundle.metadata.name
+            )
+        })
+        .collect();
+    let diagnostics = switchyard_planner::plan_with_devices(&bundle, &BTreeMap::new())
+        .err()
+        .unwrap_or_default();
+    Json(ProfileValidationV1 {
+        api_version: API_VERSION.into(),
+        name: name.into(),
+        deployment: record.deployment,
+        checkout: request.checkout,
+        valid: diagnostics.is_empty(),
+        expanded_services,
+        diagnostics,
+        error: None,
+    })
+    .into_response()
 }
 
 fn snapshot_fields(snapshot: Option<&Value>) -> (Vec<String>, Value) {

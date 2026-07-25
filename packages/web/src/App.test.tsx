@@ -13,6 +13,7 @@ const deployment = {
 }
 const source = { source: { name: 'feature-ui', kind: 'managed', path: '/worktrees/ui-a' }, inspection: { identity: { path: '/worktrees/ui-a', ref: 'feature/ui-redesign', commit: '35ad2abcdef', dirty: true }, branch: 'feature/ui-redesign', changes: { staged: 1, unstaged: 2, untracked: 3 }, ahead: 2, behind: 0, unknownCode: null } }
 const unmanagedSource = { source: { name: 'shared-app', kind: 'unmanaged' as const, path: '/code/shared-app' }, inspection: { identity: { path: '/code/shared-app', ref: 'main', commit: '123456789ab', dirty: true }, branch: 'main', changes: { staged: 4, unstaged: 5, untracked: 6 }, ahead: 0, behind: 0, unknownCode: null } }
+const sourceProfile = { apiVersion: 'v1', name: 'api', deployment: 'comparison', origin: { kind: 'discovered-in-source' as const, source: 'feature-ui', commit: '35ad2abcdef' }, trust: 'not-imported' as const, shadowed: false, services: [{ name: 'web', adapterKind: 'container' as const }] }
 
 class MockEventSource extends EventTarget {
   static instances: MockEventSource[] = []
@@ -38,6 +39,11 @@ function installFetch() {
     if (url.endsWith('/devices') && init?.method === 'POST') return json({ ...JSON.parse(String(init.body)), identityFile: null, createdAt: 1, lastCheckedAt: null, lastCheckStatus: 'never', lastCheckDetail: null }, 201)
     if (url.endsWith('/devices')) return json([{ name: 'build-host', host: 'host.test', port: 22, user: 'dev', identityFile: null, createdAt: 1, lastCheckedAt: deviceStatus === 'ok' ? 1000 : null, lastCheckStatus: deviceStatus, lastCheckDetail: deviceStatus === 'ok' ? 'SSH connection succeeded' : null }])
     if (url.endsWith('/adapters')) return json([{ kind: 'execution', declaration: { id: 'container', version: '1', capabilities: ['container'] }, configurationSchema: { type: 'object', properties: { type: { type: 'string', enum: ['container'], default: 'container' }, image: { type: 'string' } } } }])
+    if (url.endsWith('/profiles')) return json({ apiVersion: 'v1', profiles: [sourceProfile], sourceErrors: [] })
+    if (url.includes('/profiles/api?')) return json({ ...sourceProfile, definition: { parameters: { LOG_LEVEL: { default: 'info' } }, services: { web: { execution: { type: 'container', image: 'busybox' } } } } })
+    if (url.includes('/profiles/api/manifest?')) return json({ apiVersion: 'v1', source: 'feature-ui', manifest: 'version: 1\nprofiles:\n  api: {}\n', reviewHash: 'review-one' })
+    if (url.endsWith('/profiles/api/import') && init?.method === 'POST') return json({ ...sourceProfile, origin: { kind: 'imported-from-source', source: 'feature-ui', commit: '35ad2abcdef' }, trust: 'imported' }, 201)
+    if (url.endsWith('/profiles/api/validate') && init?.method === 'POST') return json({ apiVersion: 'v1', name: 'api', deployment: 'comparison', checkout: 'feature-ui', valid: true, expandedServices: ['comparison--profile-validation-preview--web'], diagnostics: [], error: null })
     if (url.endsWith('/operations')) return json({ apiVersion: 'v1', operations: [{ apiVersion: 'v1', id: 'op-cli', deployment: 'comparison', kind: 'cleanup', destructive: true, status: 'succeeded', startedAt: 5, finishedAt: 6, error: null, result: null }], nextCursor: null })
     if (url.endsWith('/deployments/comparison/definition') && (!init?.method || init.method === 'GET')) return json({ apiVersion: 'v1', name: 'comparison', path: '/project/deployments/comparison.yaml', hash: 'hash-one', yaml: 'metadata:\n  name: comparison\nspec:\n  uiRoutes: {}\n' })
     if (url.endsWith('/deployments/comparison/definition') && init?.method === 'PUT') return json({ apiVersion: 'v1', name: 'comparison', path: '/project/deployments/comparison.yaml', hash: 'hash-two', yaml: JSON.parse(String(init.body)).yaml })
@@ -112,6 +118,39 @@ describe('Switchyard GUI', () => {
     expect(removeWorktree).not.toHaveBeenCalled(); expect(screen.getByText(/Second step/)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Confirm removal' }))
     await waitFor(() => expect(removeWorktree).toHaveBeenCalledWith('feature-ui', true))
+  })
+
+  it('reviews a source manifest before import and validates the expanded profile', async () => {
+    const user = userEvent.setup(); const fetchMock = vi.mocked(fetch)
+    render(<App client={new ApiClient('test')} />)
+    await user.click(within(screen.getByRole('navigation', { name: 'Main views' })).getByRole('button', { name: 'profiles' }))
+    expect(await screen.findByText('Profile editing is not available')).toBeInTheDocument()
+    expect(screen.getByText('not imported')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Review manifest to import' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Review and trust import' })
+    expect(within(dialog).getByText(/version: 1/)).toBeInTheDocument()
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/profiles/api/manifest?source=feature-ui'))).toBe(true)
+    await user.click(within(dialog).getByRole('button', { name: 'Import reviewed manifest' }))
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith('/profiles/api/import') && init?.body === JSON.stringify({ source: 'feature-ui', reviewedManifestHash: 'review-one' }))).toBe(true))
+
+    await user.click(screen.getByRole('button', { name: 'Inspect' }))
+    expect(await screen.findByText(/"image": "busybox"/)).toBeInTheDocument()
+    await user.selectOptions(screen.getByLabelText('Validate against checkout'), 'feature-ui')
+    await user.click(screen.getByRole('button', { name: 'Validate expansion' }))
+    expect(await screen.findByText('Validation passed')).toBeInTheDocument()
+    expect(screen.getByText('comparison--profile-validation-preview--web')).toBeInTheDocument()
+  })
+
+  it('shows changed imported profiles as requiring re-review and supports removal', async () => {
+    const user = userEvent.setup(); const client = new ApiClient('test'); const changed = { ...sourceProfile, origin: { kind: 'imported-from-source' as const, source: 'feature-ui', commit: 'old' }, trust: 'changed' as const }
+    vi.spyOn(client, 'profiles').mockResolvedValue({ apiVersion: 'v1', profiles: [changed], sourceErrors: [] })
+    const remove = vi.spyOn(client, 'removeProfile').mockResolvedValue(); vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<App client={client} />)
+    await user.click(within(screen.getByRole('navigation', { name: 'Main views' })).getByRole('button', { name: 'profiles' }))
+    expect(await screen.findByText('changed — review again')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Review changed manifest' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Remove imported' }))
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('api'))
   })
 
   it('loads durable operations and keeps cancellation for active records', async () => {

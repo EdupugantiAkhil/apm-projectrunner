@@ -11,6 +11,7 @@ members = [
     "crates/switchyard-docker-ssh",
     "crates/switchyard-ops",
     "crates/switchyard-planner",
+    "crates/switchyard-profiles",
     "crates/switchyard-router",
     "crates/switchyard-router-admin",
     "crates/switchyard-sources",
