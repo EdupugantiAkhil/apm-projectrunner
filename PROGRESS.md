@@ -7,7 +7,31 @@ Updated: 2026-07-25
 - Routing proof (Phases 0–4): complete.
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
-- Web UI plan (`docs/web-ui-plan.md`): Parts 1, 2, 3, 4, 5, and 6 complete.
+- Web UI plan (`docs/web-ui-plan.md`): Parts 1, 2, 3, 4, 5, 6, and 7 complete.
+
+## 2026-07-25 web UI Part 7 — authored connection view while stopped
+
+- Replaced the stopped deployment's runtime-patch-bay placeholder with a separate desired
+  connection matrix loaded from the authored definition. It validates the definition to use
+  the API's parsed definition preview, lists consumed slots and compatible complete groups,
+  and includes consumers that have no binding yet.
+- Kept runtime and authored topology deliberately separate. The stopped view is headed
+  `Desired connections (authored state)` and says it is desired/authored rather than
+  observed/runtime state; the running view is now headed `Observed runtime patch bay` and
+  identifies its applied-snapshot source.
+- Offline changes update only the authored `spec.bindings` mapping, then save through
+  `updateDefinitionValidated` with the definition response's hash as `expectedHash`. Saved
+  bindings are therefore concurrency-checked and take effect on the next Up; the stopped
+  reconciliation callout and Run Up action remain unchanged.
+- Extracted resolved-group, consumed-slot, consumer-list, definition-preview, and targeted
+  binding-edit helpers into `packages/web/src/connectionModel.ts`. Both the runtime patch bay
+  and stopped authored view use the same consumed-slot derivation.
+- Added GUI coverage for stopped authored rendering with bound and unbound consumers, offline
+  validated persistence with the expected hash, and the observed runtime patch bay while
+  running.
+- Verification: all 29 web tests passed; `npx tsc -b` passed with no output; `npm run lint`
+  exited zero with the four pre-existing exhaustive-dependencies warnings in `App.tsx` and
+  `DeploymentBuilder.tsx`.
 
 ## 2026-07-25 web UI Part 5 — guided instance authoring
 

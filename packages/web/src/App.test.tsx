@@ -17,6 +17,9 @@ const sourceProfile = { apiVersion: 'v1', name: 'api', deployment: 'comparison',
 const trustedProfile = { apiVersion: 'v1', name: 'worker-profile', deployment: 'comparison', origin: { kind: 'project' as const }, trust: 'trusted' as const, shadowed: false, services: [{ name: 'web', adapterKind: 'container' as const }] }
 const localDevice = { name: 'local', kind: 'local', host: null, port: null, user: null, identityFile: null, createdAt: null, lastCheckedAt: null, lastCheckStatus: 'eligible', lastCheckDetail: null, reachability: 'reachable', eligibility: 'eligible', eligibilityReason: 'local execution is always eligible', placedInstances: [] }
 const remoteDevice = { name: 'build-host', kind: 'ssh', host: 'host.test', port: 22, user: 'dev', identityFile: null, createdAt: 1, lastCheckedAt: null, lastCheckStatus: 'never', lastCheckDetail: null, reachability: 'unchecked', eligibility: 'ineligible', eligibilityReason: 'unchecked', placedInstances: [{ deployment: 'comparison', instance: 'ui-feature' }] }
+const authoredSpec = { instances: [{ name: 'ui-feature', block: 'web-ui' }, { name: 'ui-unbound', block: 'web-ui' }, { name: 'backend-a' }, { name: 'backend-b' }, { name: 'python-a' }, { name: 'python-b' }, { name: 'shared-db' }], blocks: { 'web-ui': { services: { web: { consumes: { java: { protocol: 'tcp' }, python: { protocol: 'grpc' }, database: { protocol: 'tcp' } } } } } }, groups: { base: { providers: { java: 'backend-b', python: 'python-b', database: 'shared-db' } }, feature: { providers: { java: 'backend-a', python: 'python-a', database: 'shared-db' } } }, bindings: { 'ui-feature': 'feature' } }
+const authoredYaml = 'apiVersion: switchyard.dev/v1alpha1\nkind: Deployment\nmetadata:\n  name: comparison\nspec:\n  instances: []\n  blocks: {}\n  groups: {}\n  bindings:\n    ui-feature: feature\n'
+const authoredDefinition = { apiVersion: 'v1', name: 'comparison', path: '/project/deployments/comparison.yaml', hash: 'hash-one', yaml: authoredYaml }
 
 class MockEventSource extends EventTarget {
   static instances: MockEventSource[] = []
@@ -80,28 +83,25 @@ describe('Switchyard GUI', () => {
     expect(screen.getByRole('cell', { name: 'v4' })).toBeInTheDocument()
   })
 
-  it('presents a cleaned-up deployment as stopped with a clear Up action and reconciliation reason', async () => {
-    const stopped = { ...deployment, resources: [], customDomains: [], reconciliation: { deployment: 'comparison', diagnostics: [{ code: 'observed_resources_missing', path: 'observed.resources', message: 'no labeled Docker resources were observed' }] } }
-    vi.mocked(fetch).mockImplementation(async (input: string | URL | Request) => {
-      const url = String(input)
-      if (url.endsWith('/project')) return json({ apiVersion: 'v1', name: 'payments-lab', root: '/project', registered: true })
-      if (url.endsWith('/deployments')) return json({ apiVersion: 'v1', deployments: [{ name: 'comparison', definitionHash: 'definition123', resourceHash: 'resource123', appliedAt: 1, lastOperation: null, customDomains: [], bindings: {} }] })
-      if (url.endsWith('/deployments/comparison/routes')) return json({ deployment: 'comparison', bindings: [], history: [] })
-      if (url.endsWith('/deployments/comparison')) return json(stopped)
-      if (url.endsWith('/sources')) return json([source])
-      if (url.endsWith('/adapters')) return json([])
-      throw new Error(`unexpected request ${url}`)
-    })
-    render(<App client={new ApiClient('test')} />)
-    expect(await screen.findByText('Deployment is stopped or cleaned up')).toBeInTheDocument()
-    expect(screen.getAllByText('Stopped / cleaned up').length).toBeGreaterThan(0)
-    expect(screen.getAllByText(/no labeled Docker resources were observed/).length).toBeGreaterThan(0)
-    expect(screen.getByRole('button', { name: 'Run Up' })).toBeInTheDocument()
-    expect(screen.getAllByText('not running')).toHaveLength(6)
-    expect(screen.getByText('Live patch bay unavailable')).toBeInTheDocument()
-    expect(screen.queryByRole('img', { name: 'Route cables' })).not.toBeInTheDocument()
-    expect(screen.queryByText('state unknown')).not.toBeInTheDocument()
-    expect(screen.getByText('Unavailable while stopped')).toBeInTheDocument()
+  it('renders authored desired connections including unbound consumers while stopped', async () => {
+    const stopped = { ...deployment, resources: [], customDomains: [], reconciliation: { deployment: 'comparison', diagnostics: [{ code: 'observed_resources_missing', path: 'observed.resources', message: 'no labeled Docker resources were observed' }] } }; const client = new ApiClient('test')
+    vi.spyOn(client, 'deployment').mockResolvedValue(stopped); vi.spyOn(client, 'definition').mockResolvedValue(authoredDefinition); vi.spyOn(client, 'validateDeployment').mockResolvedValue({ apiVersion: 'v1', name: 'comparison', valid: true, diagnostics: [], preview: { definition: { spec: authoredSpec } } })
+    render(<App client={client} />)
+    expect(await screen.findByText('Deployment is stopped or cleaned up')).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Run Up' })).toBeInTheDocument(); expect(screen.getAllByText('not running')).toHaveLength(6)
+    expect(await screen.findByRole('heading', { name: 'Desired connections (authored state)' })).toBeInTheDocument()
+    expect(screen.getByText('Desired/authored state from the deployment definition, not observed/runtime state. Changes take effect on the next Up.')).toBeInTheDocument()
+    expect(screen.getByRole('rowheader', { name: 'ui-feature' })).toBeInTheDocument()
+    expect(screen.getByRole('rowheader', { name: 'ui-unbound' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Desired provider group for ui-unbound')).toHaveValue('')
+    expect(screen.getByText('Unbound — no desired provider')).toBeInTheDocument()
+    expect(screen.queryByRole('img', { name: 'Route cables' })).not.toBeInTheDocument(); expect(screen.getByText('Unavailable while stopped')).toBeInTheDocument()
+  })
+
+  it('saves an offline desired connection edit through validation with the expected hash', async () => {
+    const user = userEvent.setup(); const stopped = { ...deployment, resources: [], customDomains: [], reconciliation: { deployment: 'comparison', diagnostics: [{ code: 'observed_resources_missing', path: 'observed.resources', message: 'no labeled Docker resources were observed' }] } }; const client = new ApiClient('test')
+    vi.spyOn(client, 'deployment').mockResolvedValue(stopped); vi.spyOn(client, 'definition').mockResolvedValue(authoredDefinition); vi.spyOn(client, 'validateDeployment').mockResolvedValue({ apiVersion: 'v1', name: 'comparison', valid: true, diagnostics: [], preview: { definition: { spec: authoredSpec } } }); const update = vi.spyOn(client, 'updateDefinitionValidated').mockImplementation(async (_name, yaml) => ({ ...authoredDefinition, hash: 'hash-two', yaml }))
+    render(<App client={client} />); const select = await screen.findByLabelText('Desired provider group for ui-unbound'); await user.selectOptions(select, 'base'); await user.click(screen.getByRole('button', { name: 'Save desired connections' }))
+    await waitFor(() => expect(update).toHaveBeenCalledWith('comparison', expect.stringContaining('"ui-unbound": "base"'), 'hash-one'))
   })
 
   it('deregisters an unmanaged source without a dirty-state guard', async () => {
@@ -227,10 +227,10 @@ describe('Switchyard GUI', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/devices', expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: 'runner', user: 'dev', host: 'runner.test', port: 2222 }) })))
   })
 
-  it('renders patch lanes and cables and performs a keyboard-only complete binding switch', async () => {
+  it('renders the observed runtime patch bay while running and performs a keyboard-only complete binding switch', async () => {
     const user = userEvent.setup(); const fetchMock = vi.mocked(fetch)
     render(<App client={new ApiClient('test')} />); await screen.findByRole('heading', { name: 'comparison', level: 1 })
-    expect(screen.getByRole('img', { name: 'Route cables' }).querySelectorAll('path[data-slot]')).toHaveLength(3)
+    expect(screen.getByRole('heading', { name: 'Observed runtime patch bay' })).toBeInTheDocument(); expect(screen.getByText('Observed/runtime state from the applied snapshot.')).toBeInTheDocument(); expect(screen.getByRole('img', { name: 'Route cables' }).querySelectorAll('path[data-slot]')).toHaveLength(3)
     const lane = screen.getByRole('heading', { name: 'UI consumers' }).parentElement!; await user.click(within(lane).getByRole('button', { name: /ui-feature/ }))
     const select = screen.getByLabelText('Provider group for ui-feature'); select.focus(); await user.selectOptions(select, 'base')
     const dialog = screen.getByRole('dialog', { name: 'Preview complete route replacement' }); expect(within(dialog).getByText(/Snapshot v4/)).toBeInTheDocument(); expect(within(dialog).getAllByRole('row')).toHaveLength(4); expect(within(dialog).getByText('backend-b')).toBeInTheDocument()
