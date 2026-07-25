@@ -1,5 +1,15 @@
 # Agent mistakes and lessons
 
+## 2026-07-25 — Durable operation refresh should not add hook debt
+
+- The first Operations-view refresh used a new `useEffect` keyed to the active view,
+  adding another exhaustive-dependencies warning to a file that already has known hook
+  warnings. Correction: refresh through the existing mouse and keyboard navigation entry
+  points instead, while retaining the local operation update path for commands started by
+  the browser. Lesson: when a component intentionally uses local loader functions, prefer
+  explicit user-entry refreshes over adding another effect unless the loaders are first
+  stabilized consistently.
+
 ## 2026-07-23 — Project adoption must be compensating and non-destructive
 
 - The first registration draft inserted the root source before writing the project

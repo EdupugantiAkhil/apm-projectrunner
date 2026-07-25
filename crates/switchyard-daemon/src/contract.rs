@@ -169,12 +169,24 @@ pub struct OperationV1 {
     pub id: String,
     pub deployment: String,
     pub kind: CommandKind,
+    /// True when the operation stops or deletes runtime state.
+    pub destructive: bool,
     pub status: OperationStatusV1,
     pub started_at: i64,
     pub finished_at: Option<i64>,
     pub error: Option<ApiErrorV1>,
     /// Present while this daemon still retains the script-compatible command result.
     pub result: Option<CommandResultV1>,
+}
+
+/// One newest-first page of durable operation records.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationsV1 {
+    pub api_version: String,
+    pub operations: Vec<OperationV1>,
+    /// Stable operation ID to pass as `cursor` for the next older page.
+    pub next_cursor: Option<String>,
 }
 
 /// Versioned terminal/active operation states.

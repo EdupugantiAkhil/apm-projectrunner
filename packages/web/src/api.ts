@@ -20,12 +20,15 @@ export interface Operation {
   id: string
   deployment: string
   kind: CommandKind
+  destructive: boolean
   status: OperationStatus
   startedAt: number
   finishedAt: number | null
   error: ApiErrorBody | null
   result: { exitCode: number; stdout: string; stderr: string } | null
 }
+export interface OperationsResponse { apiVersion: string; operations: Operation[]; nextCursor: string | null }
+export interface OperationFilters { deployment?: string; instance?: string; kind?: CommandKind; status?: OperationStatus; cursor?: string }
 export interface DeploymentSummary {
   name: string
   definitionHash: string | null
@@ -160,6 +163,12 @@ export class ApiClient {
   }
   command(kind: CommandKind, bundle: string, extra: Record<string, unknown> = {}) {
     return this.request<Operation>(`/commands/${kind}`, { method: 'POST', body: JSON.stringify({ bundle, ...extra }) })
+  }
+  operations(filters: OperationFilters = {}) {
+    const query = new URLSearchParams()
+    for (const [name, value] of Object.entries(filters)) if (value) query.set(name, value)
+    const suffix = query.size ? `?${query}` : ''
+    return this.request<OperationsResponse>(`/operations${suffix}`)
   }
   operation(id: string) { return this.request<Operation>(`/operations/${encodeURIComponent(id)}`) }
   cancel(id: string) { return this.request<Operation>(`/operations/${encodeURIComponent(id)}/cancel`, { method: 'POST' }) }

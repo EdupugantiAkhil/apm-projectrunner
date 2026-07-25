@@ -19,7 +19,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use switchyard_daemon::{
     DaemonConfig,
-    contract::{CommandKind, CommandResultV1, OperationStatusV1, OperationV1},
+    contract::{CommandKind, CommandResultV1, OperationStatusV1, OperationV1, OperationsV1},
     server::{BackendOutcome, EventSink, OperationBackend, api_for_tests},
 };
 use switchyard_state::{
@@ -394,6 +394,163 @@ async fn wait_terminal(api: &TestApi, id: &str) -> OperationV1 {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+#[tokio::test]
+async fn durable_operation_list_filters_and_marks_destructive_records() {
+    let temp = TempDir::new().unwrap();
+    let state_path = temp.path().join(".switchyard/state.sqlite3");
+    let (store, _) = StateStore::open(&state_path).unwrap();
+    for (id, deployment, kind, status, started_at) in [
+        (
+            "op-cleanup",
+            "demo",
+            OperationKind::Cleanup,
+            OperationStatus::Failed,
+            40,
+        ),
+        (
+            "op-down",
+            "demo",
+            OperationKind::Stop,
+            OperationStatus::Succeeded,
+            30,
+        ),
+        (
+            "op-bind",
+            "other",
+            OperationKind::Bind,
+            OperationStatus::Succeeded,
+            20,
+        ),
+        (
+            "op-apply",
+            "demo",
+            OperationKind::Apply,
+            OperationStatus::Succeeded,
+            10,
+        ),
+    ] {
+        store
+            .start_operation(&OperationRecord {
+                id: id.into(),
+                deployment: deployment.into(),
+                kind,
+                status,
+                started_at,
+                finished_at: Some(started_at + 1),
+                error: None,
+            })
+            .unwrap();
+    }
+    drop(store);
+    let api = start_api(&temp, Arc::new(ImmediateBackend), 1);
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "GET",
+        "/api/v1/operations?deployment=demo&kind=cleanup&status=failed",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let page: OperationsV1 = json_body(&body);
+    assert_eq!(page.api_version, "v1");
+    assert_eq!(page.operations.len(), 1);
+    assert_eq!(page.operations[0].id, "op-cleanup");
+    assert!(page.operations[0].destructive);
+    assert!(page.operations[0].result.is_none());
+    assert!(page.next_cursor.is_none());
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "GET",
+        "/api/v1/operations?kind=down",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let page: OperationsV1 = json_body(&body);
+    assert_eq!(page.operations[0].kind, CommandKind::Down);
+    assert!(page.operations[0].destructive);
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "GET",
+        "/api/v1/operations?instance=api",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert_eq!(
+        json_body::<Value>(&body)["code"],
+        "unsupported_operation_filter"
+    );
+}
+
+#[tokio::test]
+async fn durable_operation_list_cursor_returns_the_next_older_page() {
+    let temp = TempDir::new().unwrap();
+    let state_path = temp.path().join(".switchyard/state.sqlite3");
+    let (store, _) = StateStore::open(&state_path).unwrap();
+    for index in 0..52 {
+        store
+            .start_operation(&OperationRecord {
+                id: format!("op-{index:03}"),
+                deployment: "demo".into(),
+                kind: OperationKind::Other("validate".into()),
+                status: OperationStatus::Succeeded,
+                started_at: index,
+                finished_at: Some(index + 1),
+                error: None,
+            })
+            .unwrap();
+    }
+    drop(store);
+    let api = start_api(&temp, Arc::new(ImmediateBackend), 1);
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "GET",
+        "/api/v1/operations",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let first: OperationsV1 = json_body(&body);
+    assert_eq!(first.operations.len(), 50);
+    assert_eq!(first.operations[0].id, "op-051");
+    assert_eq!(first.operations[49].id, "op-002");
+    assert_eq!(first.next_cursor.as_deref(), Some("op-002"));
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "GET",
+        "/api/v1/operations?cursor=op-002",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let second: OperationsV1 = json_body(&body);
+    assert_eq!(
+        second
+            .operations
+            .iter()
+            .map(|operation| operation.id.as_str())
+            .collect::<Vec<_>>(),
+        ["op-001", "op-000"]
+    );
+    assert!(second.next_cursor.is_none());
 }
 
 #[tokio::test]

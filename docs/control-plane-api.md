@@ -61,6 +61,7 @@ optional `context` fields. Framework types are not part of the public Rust contr
 | `POST` | `/api/v1/commands/open` | Open a managed browser profile |
 | `POST` | `/api/v1/commands/down` | Stop while preserving volumes |
 | `POST` | `/api/v1/commands/cleanup` | Ownership-checked destructive cleanup |
+| `GET` | `/api/v1/operations` | List durable operations with filters and cursor pagination |
 | `GET` | `/api/v1/operations/{id}` | Fetch current or durable terminal operation state |
 | `POST` | `/api/v1/operations/{id}/cancel` | Request cooperative cancellation |
 | `GET` | `/api/v1/operations/{id}/events` | Observe or resume the operation SSE stream |
@@ -91,6 +92,44 @@ for cleanup. A bind may also carry `transition` as `close`, `pin`, or `drain` wi
 stderr, and exit code remain available while an operation is active or retained in
 memory; terminal status and structured error data are durable in SQLite across restart.
 Raw output is deliberately not persisted because it can contain application secrets.
+
+The operation list is ordered by `startedAt` descending and then `id` descending, and
+returns at most 50 records:
+
+```json
+{
+  "apiVersion": "v1",
+  "operations": [
+    {
+      "apiVersion": "v1",
+      "id": "op-...",
+      "deployment": "demo",
+      "kind": "cleanup",
+      "destructive": true,
+      "status": "succeeded",
+      "startedAt": 1710000000000,
+      "finishedAt": 1710000000100,
+      "error": null,
+      "result": null
+    }
+  ],
+  "nextCursor": "op-..."
+}
+```
+
+`deployment`, `kind`, and `status` are exact-match query filters backed by the persisted
+`deployment_id`, `kind`, and `status` columns. `kind` accepts the command names in the
+table above; persisted stop records are exposed and filtered as `down`. Pass the returned
+`nextCursor` as `cursor` to fetch records older than that operation's stable
+`(startedAt, id)` boundary. `nextCursor` is null when there is no older page; an unknown
+cursor returns HTTP 400 `operation_cursor_not_found`. Each record's `destructive` field is
+computed by the daemon and is true for `cleanup` and `down`. Durable list records always
+have a null `result`, because stdout and stderr are intentionally memory-only.
+
+The `instance` query parameter is reserved but currently returns HTTP 400
+`unsupported_operation_filter`: the operations table has no instance column, so the daemon
+does not infer or invent one. A schema change is required before that filter can be
+implemented truthfully.
 
 Definition creation accepts `{ "name": "demo", "yaml": "..." }`. Setting
 `"validateOnly": true` runs the identical planner load/validate/plan path and returns

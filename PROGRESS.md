@@ -7,7 +7,29 @@ Updated: 2026-07-25
 - Routing proof (Phases 0–4): complete.
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
-- Web UI plan (`docs/web-ui-plan.md`): Parts 1 and 6 complete.
+- Web UI plan (`docs/web-ui-plan.md`): Parts 1, 2, and 6 complete.
+
+## 2026-07-25 web UI Part 2 — durable operations list
+
+- Added authenticated `GET /api/v1/operations`, backed only by the SQLite operations
+  table. It returns newest-first pages of 50 records, exact deployment/kind/status
+  filters, stable operation-ID cursors, and a server-computed destructive marker for
+  `down` and `cleanup`.
+- The persisted schema has no instance column. The accepted `instance` query parameter
+  therefore returns `unsupported_operation_filter` rather than inferring an inaccurate
+  value or adding an unrequested migration.
+- The web client types the page and filters, and the Operations view reloads durable
+  records whenever it is entered. In-memory command results remain visible for operations
+  started by the current browser, while CLI/daemon records survive browser reloads and
+  active durable records retain the existing cancellation action.
+- Added state query coverage, daemon API coverage for filters/cursors/destructive records,
+  and web client/view coverage.
+- Verification: `cargo fmt --all -- --check` passed with no output; workspace Clippy with
+  all targets/features and warnings denied passed; daemon/state tests passed (daemon 7
+  unit, 18 API with the declared reliability test ignored, state 18, all doc tests); all
+  21 web tests passed; `npx tsc -b` passed with no output; `npm run lint` exited zero with
+  only the four pre-existing exhaustive-dependencies warnings in `App.tsx` and
+  `DeploymentBuilder.tsx`.
 
 ## 2026-07-25 web UI Part 6 — initial connection authoring
 

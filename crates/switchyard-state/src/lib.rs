@@ -899,23 +899,70 @@ impl StateStore {
             .query_row(
                 "SELECT id, deployment_id, kind, status, started_at, finished_at, error_code, error_context_json FROM operations WHERE id=?1",
                 [id],
-                |row| {
-                    let error_code = row.get::<_, Option<String>>(6)?;
-                    let error_context = row.get::<_, Option<String>>(7)?;
-                    Ok(StoredOperation {
-                        id: row.get(0)?,
-                        deployment: row.get(1)?,
-                        kind: row.get(2)?,
-                        status: row.get(3)?,
-                        started_at: row.get(4)?,
-                        finished_at: row.get(5)?,
-                        error_code,
-                        error_context_json: error_context,
-                    })
-                },
+                stored_operation_from_row,
             )
             .optional()
             .map_err(Into::into)
+    }
+
+    /// Lists durable operations newest-first with stable cursor pagination.
+    pub fn operations(
+        &self,
+        query: &OperationQuery<'_>,
+    ) -> Result<Vec<StoredOperation>, StateError> {
+        if query.limit == 0 {
+            return Err(invalid(
+                "invalid_operation_limit",
+                "operation query limit must be greater than zero",
+            ));
+        }
+        let limit = i64::try_from(query.limit).map_err(|_| {
+            invalid(
+                "invalid_operation_limit",
+                "operation query limit exceeds SQLite range",
+            )
+        })?;
+        let cursor = match query.cursor {
+            Some(id) => Some(
+                self.connection
+                    .query_row(
+                        "SELECT started_at, id FROM operations WHERE id=?1",
+                        [id],
+                        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                    )
+                    .optional()?
+                    .ok_or_else(|| {
+                        invalid(
+                            "operation_cursor_not_found",
+                            format!("operation cursor `{id}` does not exist"),
+                        )
+                    })?,
+            ),
+            None => None,
+        };
+        let (cursor_started_at, cursor_id) =
+            cursor.as_ref().map_or((None, None), |(started_at, id)| {
+                (Some(*started_at), Some(id.as_str()))
+            });
+        let mut statement = self.connection.prepare(
+            "SELECT id, deployment_id, kind, status, started_at, finished_at, error_code, error_context_json \
+             FROM operations WHERE (?1 IS NULL OR deployment_id=?1) \
+             AND (?2 IS NULL OR kind=?2 OR (?2='apply' AND kind='start')) \
+             AND (?3 IS NULL OR status=?3) AND (?4 IS NULL OR started_at<?4 OR (started_at=?4 AND id<?5)) \
+             ORDER BY started_at DESC, id DESC LIMIT ?6",
+        )?;
+        let rows = statement.query_map(
+            params![
+                query.deployment,
+                query.kind,
+                query.status,
+                cursor_started_at,
+                cursor_id,
+                limit
+            ],
+            stored_operation_from_row,
+        )?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     /// Marks operations left running by an earlier daemon as failed during recovery.
@@ -1551,6 +1598,18 @@ pub struct OperationRecord {
     pub error: Option<OperationError>,
 }
 
+/// Filters and page boundary for a durable operation query.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OperationQuery<'a> {
+    pub deployment: Option<&'a str>,
+    pub kind: Option<&'a str>,
+    pub status: Option<&'a str>,
+    /// Stable operation ID returned as the preceding page's cursor.
+    pub cursor: Option<&'a str>,
+    /// Maximum rows to return.
+    pub limit: usize,
+}
+
 /// Persisted operation fields returned to the control plane without framework types.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoredOperation {
@@ -1563,6 +1622,20 @@ pub struct StoredOperation {
     pub error_code: Option<String>,
     pub error_context_json: Option<String>,
 }
+
+fn stored_operation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredOperation> {
+    Ok(StoredOperation {
+        id: row.get(0)?,
+        deployment: row.get(1)?,
+        kind: row.get(2)?,
+        status: row.get(3)?,
+        started_at: row.get(4)?,
+        finished_at: row.get(5)?,
+        error_code: row.get(6)?,
+        error_context_json: row.get(7)?,
+    })
+}
+
 /// Health and readiness history input.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HealthObservation {
@@ -2876,6 +2949,128 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert!(codes.contains(&DriftCode::OwnershipInvalid));
         assert!(codes.contains(&DriftCode::ObservedResourceHashMissing));
+    }
+
+    #[test]
+    fn durable_operations_support_filters_and_stable_cursors() {
+        let temp = TempDir::new().unwrap();
+        let (store, _) = open_temp(&temp);
+        for (id, deployment, kind, status, started_at) in [
+            (
+                "op-4",
+                "demo",
+                OperationKind::Cleanup,
+                OperationStatus::Failed,
+                4,
+            ),
+            (
+                "op-3",
+                "demo",
+                OperationKind::Bind,
+                OperationStatus::Succeeded,
+                3,
+            ),
+            (
+                "op-2",
+                "other",
+                OperationKind::Bind,
+                OperationStatus::Succeeded,
+                2,
+            ),
+            (
+                "op-1",
+                "demo",
+                OperationKind::Cleanup,
+                OperationStatus::Succeeded,
+                1,
+            ),
+            (
+                "op-0",
+                "demo",
+                OperationKind::Start,
+                OperationStatus::Succeeded,
+                0,
+            ),
+        ] {
+            store
+                .start_operation(&OperationRecord {
+                    id: id.into(),
+                    deployment: deployment.into(),
+                    kind,
+                    status,
+                    started_at,
+                    finished_at: Some(started_at),
+                    error: None,
+                })
+                .unwrap();
+        }
+
+        let first = store
+            .operations(&OperationQuery {
+                deployment: None,
+                kind: None,
+                status: None,
+                cursor: None,
+                limit: 2,
+            })
+            .unwrap();
+        assert_eq!(
+            first
+                .iter()
+                .map(|operation| operation.id.as_str())
+                .collect::<Vec<_>>(),
+            ["op-4", "op-3"]
+        );
+        let second = store
+            .operations(&OperationQuery {
+                deployment: None,
+                kind: None,
+                status: None,
+                cursor: Some("op-3"),
+                limit: 2,
+            })
+            .unwrap();
+        assert_eq!(
+            second
+                .iter()
+                .map(|operation| operation.id.as_str())
+                .collect::<Vec<_>>(),
+            ["op-2", "op-1"]
+        );
+        let filtered = store
+            .operations(&OperationQuery {
+                deployment: Some("demo"),
+                kind: Some("cleanup"),
+                status: Some("succeeded"),
+                cursor: None,
+                limit: 10,
+            })
+            .unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "op-1");
+        let legacy_start = store
+            .operations(&OperationQuery {
+                deployment: None,
+                kind: Some("apply"),
+                status: None,
+                cursor: None,
+                limit: 10,
+            })
+            .unwrap();
+        assert_eq!(legacy_start[0].id, "op-0");
+        assert_eq!(
+            store
+                .operations(&OperationQuery {
+                    deployment: None,
+                    kind: None,
+                    status: None,
+                    cursor: Some("missing"),
+                    limit: 1,
+                })
+                .unwrap_err()
+                .code(),
+            "operation_cursor_not_found"
+        );
     }
 
     #[test]

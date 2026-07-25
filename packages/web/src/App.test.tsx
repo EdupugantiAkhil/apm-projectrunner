@@ -38,6 +38,7 @@ function installFetch() {
     if (url.endsWith('/devices') && init?.method === 'POST') return json({ ...JSON.parse(String(init.body)), identityFile: null, createdAt: 1, lastCheckedAt: null, lastCheckStatus: 'never', lastCheckDetail: null }, 201)
     if (url.endsWith('/devices')) return json([{ name: 'build-host', host: 'host.test', port: 22, user: 'dev', identityFile: null, createdAt: 1, lastCheckedAt: deviceStatus === 'ok' ? 1000 : null, lastCheckStatus: deviceStatus, lastCheckDetail: deviceStatus === 'ok' ? 'SSH connection succeeded' : null }])
     if (url.endsWith('/adapters')) return json([{ kind: 'execution', declaration: { id: 'container', version: '1', capabilities: ['container'] }, configurationSchema: { type: 'object', properties: { type: { type: 'string', enum: ['container'], default: 'container' }, image: { type: 'string' } } } }])
+    if (url.endsWith('/operations')) return json({ apiVersion: 'v1', operations: [{ apiVersion: 'v1', id: 'op-cli', deployment: 'comparison', kind: 'cleanup', destructive: true, status: 'succeeded', startedAt: 5, finishedAt: 6, error: null, result: null }], nextCursor: null })
     if (url.endsWith('/deployments/comparison/definition') && (!init?.method || init.method === 'GET')) return json({ apiVersion: 'v1', name: 'comparison', path: '/project/deployments/comparison.yaml', hash: 'hash-one', yaml: 'metadata:\n  name: comparison\nspec:\n  uiRoutes: {}\n' })
     if (url.endsWith('/deployments/comparison/definition') && init?.method === 'PUT') return json({ apiVersion: 'v1', name: 'comparison', path: '/project/deployments/comparison.yaml', hash: 'hash-two', yaml: JSON.parse(String(init.body)).yaml })
     if (url.endsWith('/deployments') && init?.method === 'POST') { const body = JSON.parse(String(init.body)); if (body.validateOnly) return json({ apiVersion: 'v1', name: body.name, valid: true, diagnostics: [], preview: { expandedServiceCount: 1, routes: ['ui-feature'] } }); return json({ apiVersion: 'v1', name: body.name, path: `/project/deployments/${body.name}.yaml`, hash: 'new-hash', yaml: body.yaml }, 201) }
@@ -111,6 +112,19 @@ describe('Switchyard GUI', () => {
     expect(removeWorktree).not.toHaveBeenCalled(); expect(screen.getByText(/Second step/)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Confirm removal' }))
     await waitFor(() => expect(removeWorktree).toHaveBeenCalledWith('feature-ui', true))
+  })
+
+  it('loads durable operations and keeps cancellation for active records', async () => {
+    const user = userEvent.setup(); const client = new ApiClient('test')
+    vi.spyOn(client, 'operations').mockResolvedValue({ apiVersion: 'v1', operations: [{ apiVersion: 'v1', id: 'op-cli-running', deployment: 'comparison', kind: 'down', destructive: true, status: 'running', startedAt: 5, finishedAt: null, error: null, result: null }], nextCursor: null })
+    const cancel = vi.spyOn(client, 'cancel').mockResolvedValue({ apiVersion: 'v1', id: 'op-cli-running', deployment: 'comparison', kind: 'down', destructive: true, status: 'cancelled', startedAt: 5, finishedAt: 6, error: null, result: null })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<App client={client} />)
+    await user.click(within(screen.getByRole('navigation', { name: 'Main views' })).getByRole('button', { name: 'operations' }))
+    expect(await screen.findByText('op-cli-running')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(cancel).toHaveBeenCalledWith('op-cli-running'))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument())
   })
 
   it('renders live SSE fixtures in the operation drawer', async () => {

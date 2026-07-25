@@ -44,6 +44,12 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
   }
   const loadSources = async () => { try { setSources(await client.sources()) } catch (value) { report(value) } }
   const loadDevices = async () => { setDevicesLoading(true); try { setDevices(await client.devices()) } catch (value) { report(value) } finally { setDevicesLoading(false) } }
+  const loadOperations = async () => {
+    try {
+      const response = await client.operations()
+      setOperations((current) => response.operations.map((durable) => current.find((operation) => operation.id === durable.id && operation.result) ?? durable))
+    } catch (value) { report(value) }
+  }
   const loadSelected = async () => { if (!selected) return; const [nextDetail, nextRoutes] = await Promise.all([client.deployment(selected), client.routes(selected)]); setDetail(nextDetail); setRoutes(nextRoutes) }
 
   useEffect(() => { void client.project().then(setProject).catch(report); void loadDeployments(); void loadSources(); void loadDevices(); void client.adapters().then(setAdapters).catch(report) }, [])
@@ -86,7 +92,9 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
     if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return
     const views: View[] = ['deployments', 'sources', 'devices', 'operations', 'library']
     const offset = event.key === 'ArrowRight' ? 1 : -1
-    setView(views[(views.indexOf(view) + offset + views.length) % views.length])
+    const next = views[(views.indexOf(view) + offset + views.length) % views.length]
+    setView(next)
+    if (next === 'operations') void loadOperations()
     event.preventDefault()
   }
   const visibleEvents = events.filter((event) => !filter || operations.find((operation) => operation.id === event.operationId)?.deployment === filter)
@@ -95,7 +103,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
     <aside className="rail" aria-label="Deployment rail">
       <div className="brand">SWITCHYARD <span>LOCAL</span><small title={project?.root}>{project?.name ?? 'Loading project…'}</small></div>
       <nav aria-label="Main views" onKeyDown={navKeys}>
-        {(['deployments', 'sources', 'devices', 'operations', 'library'] as View[]).map((item) => <button key={item} aria-current={view === item ? 'page' : undefined} onClick={() => setView(item)}>{item === 'library' ? 'block library' : item}</button>)}
+        {(['deployments', 'sources', 'devices', 'operations', 'library'] as View[]).map((item) => <button key={item} aria-current={view === item ? 'page' : undefined} onClick={() => { setView(item); if (item === 'operations') void loadOperations() }}>{item === 'library' ? 'block library' : item}</button>)}
       </nav>
       <h2>Deployments</h2>
       <div className="deployment-list">
@@ -193,7 +201,7 @@ function DevicesView({ client, devices, loading, reload, report }: { client: Api
 }
 
 function OperationsView({ operations, onCancel }: { operations: Operation[]; onCancel: (id: string) => void }) {
-  return <section><h1>Operations</h1>{operations.length === 0 ? <p>No operations started in this GUI session.</p> : <ol className="timeline">{operations.map((operation) => <li key={operation.id}><div><span className={`status-dot status-${operation.status}`} /> <strong>{operation.kind}</strong> <span>{operation.status}</span><p className="mono">{operation.id}</p><time>{new Date(operation.startedAt).toLocaleString()}</time>{operation.result && operation.result.exitCode !== 0 && <div className="operation-error"><p>Failed command: {operation.kind}</p><p>Exit code: {operation.result.exitCode}</p><pre>{operation.result.stderr.split('\n').slice(-12).join('\n')}</pre></div>}</div>{!terminal(operation.status) && <button onClick={() => onCancel(operation.id)}>Cancel</button>}</li>)}</ol>}</section>
+  return <section><h1>Operations</h1>{operations.length === 0 ? <p>No durable operations recorded.</p> : <ol className="timeline">{operations.map((operation) => <li key={operation.id}><div><span className={`status-dot status-${operation.status}`} /> <strong>{operation.kind}</strong> <span>{operation.status}</span><p className="mono">{operation.id}</p><time>{new Date(operation.startedAt).toLocaleString()}</time>{operation.result && operation.result.exitCode !== 0 && <div className="operation-error"><p>Failed command: {operation.kind}</p><p>Exit code: {operation.result.exitCode}</p><pre>{operation.result.stderr.split('\n').slice(-12).join('\n')}</pre></div>}</div>{!terminal(operation.status) && <button onClick={() => onCancel(operation.id)}>Cancel</button>}</li>)}</ol>}</section>
 }
 
 function eventText(event: OperationEvent) { return String(event.data.line ?? event.data.message ?? JSON.stringify(event.data)) }

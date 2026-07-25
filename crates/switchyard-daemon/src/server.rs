@@ -27,8 +27,9 @@ use sha2::{Digest, Sha256};
 use switchyard_sources::{SourceError, SourceManager};
 use switchyard_state::{
     AppliedSnapshot, DeviceCheckStatus, GeneratedManifest, LockRequest, OperationKind,
-    OperationRecord, OperationStatus, ReconciliationInput, ReconciliationReport, RegisteredDevice,
-    RouterApplyRecord, RouterApplyStatus, StateError, StateStore, StructuredContext,
+    OperationQuery, OperationRecord, OperationStatus, ReconciliationInput, ReconciliationReport,
+    RegisteredDevice, RouterApplyRecord, RouterApplyStatus, StateError, StateStore,
+    StructuredContext,
 };
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -42,15 +43,16 @@ use crate::contract::{
     CreateDeploymentRequestV1, CreateWorktreeRequestV1, DaemonStatusV1, DeploymentDefinitionV1,
     DeploymentDetailV1, DeploymentOperationSummaryV1, DeploymentRoutesV1, DeploymentSummaryV1,
     DeploymentValidationV1, DeploymentsV1, DiscoveryV1, EventKindV1, EventV1, GatewayExposureV1,
-    MdnsCheckV1, MdnsPublicationV1, MdnsPublishedNameV1, OperationStatusV1, OperationV1, ProjectV1,
-    RegisterDeviceRequestV1, RegisterSourceRequestV1, RemoveWorktreeRequestV1, RouteHistoryV1,
-    RouterBindingV1, TailscalePublicationV1, TransitionPolicyV1,
-    UpdateDeploymentDefinitionRequestV1,
+    MdnsCheckV1, MdnsPublicationV1, MdnsPublishedNameV1, OperationStatusV1, OperationV1,
+    OperationsV1, ProjectV1, RegisterDeviceRequestV1, RegisterSourceRequestV1,
+    RemoveWorktreeRequestV1, RouteHistoryV1, RouterBindingV1, TailscalePublicationV1,
+    TransitionPolicyV1, UpdateDeploymentDefinitionRequestV1,
 };
 
 const LOCK_TTL_MILLIS: i64 = 15_000;
 const EVENT_CAPACITY: usize = 2_048;
 const TERMINAL_OPERATION_RETENTION: usize = 64;
+const OPERATION_PAGE_SIZE: usize = 50;
 
 /// Configuration for one daemon instance.
 #[derive(Clone, Debug)]
@@ -1278,6 +1280,7 @@ fn routes(inner: Arc<Inner>) -> Router {
         .route("/api/v1/project", get(project_detail))
         .route("/api/v1/system/shutdown", post(system_shutdown))
         .route("/api/v1/commands/{kind}", post(start_command))
+        .route("/api/v1/operations", get(list_operations))
         .route("/api/v1/operations/{id}", get(get_operation))
         .route("/api/v1/operations/{id}/cancel", post(cancel_operation))
         .route("/api/v1/operations/{id}/events", get(operation_events))
@@ -2650,6 +2653,7 @@ async fn begin_operation(
         id: id.clone(),
         deployment: deployment.clone(),
         kind,
+        destructive: operation_is_destructive(kind),
         status: OperationStatusV1::Pending,
         started_at,
         finished_at: None,
@@ -3033,6 +3037,94 @@ fn retain_terminal_operation(inner: &Inner, id: &str) {
     }
 }
 
+#[derive(Default, serde::Deserialize)]
+struct OperationsQuery {
+    deployment: Option<String>,
+    instance: Option<String>,
+    kind: Option<String>,
+    status: Option<String>,
+    cursor: Option<String>,
+}
+
+async fn list_operations(
+    State(inner): State<Arc<Inner>>,
+    Query(query): Query<OperationsQuery>,
+) -> Response {
+    if query.instance.is_some() {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "unsupported_operation_filter",
+            "operation records do not persist an instance field",
+        );
+    }
+    let kind = match query.kind.as_deref() {
+        Some(value) => match parse_kind(value) {
+            Some(kind) => Some(kind),
+            None => {
+                return api_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_operation_kind",
+                    "unknown operation kind filter",
+                );
+            }
+        },
+        None => None,
+    };
+    if let Some(status) = query.status.as_deref() {
+        if parse_operation_status(status).is_none() {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_operation_status",
+                "unknown operation status filter",
+            );
+        }
+    }
+    let stored_kind = kind.map(stored_operation_kind);
+    let stored = inner
+        .store
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .operations(&OperationQuery {
+            deployment: query.deployment.as_deref(),
+            kind: stored_kind,
+            status: query.status.as_deref(),
+            cursor: query.cursor.as_deref(),
+            limit: OPERATION_PAGE_SIZE + 1,
+        });
+    let mut stored = match stored {
+        Ok(stored) => stored,
+        Err(error) if error.code() == "operation_cursor_not_found" => {
+            return api_error(StatusCode::BAD_REQUEST, error.code(), &error.to_string());
+        }
+        Err(error) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error.code(),
+                &error.to_string(),
+            );
+        }
+    };
+    let has_more = stored.len() > OPERATION_PAGE_SIZE;
+    stored.truncate(OPERATION_PAGE_SIZE);
+    let next_cursor = has_more
+        .then(|| stored.last().map(|operation| operation.id.clone()))
+        .flatten();
+    let operations = match stored
+        .into_iter()
+        .map(operation_from_stored)
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(operations) => operations,
+        Err(error) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(error)).into_response(),
+    };
+    Json(OperationsV1 {
+        api_version: API_VERSION.into(),
+        operations,
+        next_cursor,
+    })
+    .into_response()
+}
+
 async fn get_operation(
     State(inner): State<Arc<Inner>>,
     AxumPath(id): AxumPath<String>,
@@ -3215,6 +3307,28 @@ fn parse_kind(value: &str) -> Option<CommandKind> {
     .find(|kind| kind.segment() == value)
 }
 
+fn parse_operation_status(value: &str) -> Option<OperationStatusV1> {
+    match value {
+        "pending" => Some(OperationStatusV1::Pending),
+        "running" => Some(OperationStatusV1::Running),
+        "succeeded" => Some(OperationStatusV1::Succeeded),
+        "failed" => Some(OperationStatusV1::Failed),
+        "cancelled" => Some(OperationStatusV1::Cancelled),
+        _ => None,
+    }
+}
+
+fn operation_is_destructive(kind: CommandKind) -> bool {
+    matches!(kind, CommandKind::Down | CommandKind::Cleanup)
+}
+
+fn stored_operation_kind(kind: CommandKind) -> &'static str {
+    match kind {
+        CommandKind::Down => "stop",
+        other => other.segment(),
+    }
+}
+
 fn state_kind(kind: CommandKind) -> OperationKind {
     match kind {
         CommandKind::Apply => OperationKind::Apply,
@@ -3261,25 +3375,18 @@ fn planner_devices(
 fn operation_from_stored(
     stored: switchyard_state::StoredOperation,
 ) -> Result<OperationV1, ApiErrorV1> {
-    let kind = parse_kind(if stored.kind == "start" {
-        "apply"
-    } else {
-        &stored.kind
+    let kind = parse_kind(match stored.kind.as_str() {
+        "start" => "apply",
+        "stop" => "down",
+        other => other,
     })
     .ok_or_else(|| ApiErrorV1::new("stored_operation_invalid", "unknown stored operation kind"))?;
-    let status = match stored.status.as_str() {
-        "pending" => OperationStatusV1::Pending,
-        "running" => OperationStatusV1::Running,
-        "succeeded" => OperationStatusV1::Succeeded,
-        "failed" => OperationStatusV1::Failed,
-        "cancelled" => OperationStatusV1::Cancelled,
-        _ => {
-            return Err(ApiErrorV1::new(
-                "stored_operation_invalid",
-                "unknown stored operation status",
-            ));
-        }
-    };
+    let status = parse_operation_status(&stored.status).ok_or_else(|| {
+        ApiErrorV1::new(
+            "stored_operation_invalid",
+            "unknown stored operation status",
+        )
+    })?;
     let error = stored.error_code.map(|code| ApiErrorV1 {
         code,
         message: "operation recorded a terminal error".into(),
@@ -3292,6 +3399,7 @@ fn operation_from_stored(
         id: stored.id,
         deployment: stored.deployment,
         kind,
+        destructive: operation_is_destructive(kind),
         status,
         started_at: stored.started_at,
         finished_at: stored.finished_at,
