@@ -22,9 +22,13 @@ Updated: 2026-07-25
 - Added timeline markers driven solely by `Operation.destructive`; the client does not maintain
   a destructive command-kind list. Added web coverage for case-insensitive narrowing,
   deployment-plus-text composition, filtered copying, and marker presence/absence from the field.
+- Added the same free-text filter to the durable Operations timeline itself, matching
+  deployment, kind, operation ID, status, and captured stdout/stderr over the loaded page.
+  Its help text names that scope, so the control does not imply it searches records the
+  browser has not fetched.
 - Verification: `npx tsc -b` passed with no output; `npm run lint` exited zero with exactly the
   four pre-existing exhaustive-dependencies warnings in `App.tsx` and `DeploymentBuilder.tsx`;
-  all 36 web tests passed across three files; `cargo fmt --check` passed with no output.
+  all 37 web tests passed across three files; `cargo fmt --check` passed with no output.
 
 ## 2026-07-25 web UI Part 9 — project run actions (partial scope)
 

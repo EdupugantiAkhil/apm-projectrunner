@@ -269,6 +269,19 @@ describe('Switchyard GUI', () => {
     expect(within(destructiveRow).getByText('Destructive')).toBeInTheDocument(); expect(within(safeRow).queryByText('Destructive')).not.toBeInTheDocument()
   })
 
+  it('filters the durable timeline by free text across fields and captured output', async () => {
+    const user = userEvent.setup(); const client = new ApiClient('test'); vi.spyOn(client, 'operations').mockResolvedValue({ apiVersion: 'v1', operations: [{ apiVersion: 'v1', id: 'op-cleanup', deployment: 'comparison', kind: 'cleanup', destructive: true, status: 'succeeded', startedAt: 5, finishedAt: 6, error: null, result: null }, { apiVersion: 'v1', id: 'op-apply', deployment: 'staging', kind: 'apply', destructive: false, status: 'failed', startedAt: 3, finishedAt: 4, error: null, result: { exitCode: 1, stdout: '', stderr: 'checkout-ui refused to start' } }], nextCursor: null })
+    render(<App client={client} />); await user.click(within(screen.getByRole('navigation', { name: 'Main views' })).getByRole('button', { name: 'operations' }))
+    expect(await screen.findByText('op-cleanup')).toBeInTheDocument()
+    const filter = screen.getByRole('textbox', { name: /Filter operations/ })
+    await user.type(filter, 'STAGING')
+    expect(screen.queryByText('op-cleanup')).not.toBeInTheDocument(); expect(screen.getByText('op-apply')).toBeInTheDocument()
+    await user.clear(filter); await user.type(filter, 'checkout-ui refused')
+    expect(screen.getByText('op-apply')).toBeInTheDocument(); expect(screen.queryByText('op-cleanup')).not.toBeInTheDocument()
+    await user.clear(filter); await user.type(filter, 'nothing-matches-this')
+    expect(screen.getByText('No operations match this filter.')).toBeInTheDocument()
+  })
+
   it('switches shell views with keyboard arrow navigation', async () => {
     const user = userEvent.setup()
     render(<App client={new ApiClient('test')} />)
