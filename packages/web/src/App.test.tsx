@@ -12,6 +12,7 @@ const deployment = {
   customDomains: ['ui.comparison.localhost'], bindings: { 'ui-feature': 'feature' },
 }
 const source = { source: { name: 'feature-ui', kind: 'managed', path: '/worktrees/ui-a' }, inspection: { identity: { path: '/worktrees/ui-a', ref: 'feature/ui-redesign', commit: '35ad2abcdef', dirty: true }, branch: 'feature/ui-redesign', changes: { staged: 1, unstaged: 2, untracked: 3 }, ahead: 2, behind: 0, unknownCode: null } }
+const unmanagedSource = { source: { name: 'shared-app', kind: 'unmanaged' as const, path: '/code/shared-app' }, inspection: { identity: { path: '/code/shared-app', ref: 'main', commit: '123456789ab', dirty: true }, branch: 'main', changes: { staged: 4, unstaged: 5, untracked: 6 }, ahead: 0, behind: 0, unknownCode: null } }
 
 class MockEventSource extends EventTarget {
   static instances: MockEventSource[] = []
@@ -90,16 +91,26 @@ describe('Switchyard GUI', () => {
     expect(screen.getByText('Unavailable while stopped')).toBeInTheDocument()
   })
 
-  it('requires an explicit second step before dirty worktree removal', async () => {
-    const user = userEvent.setup()
-    render(<App client={new ApiClient('test')} />)
+  it('deregisters an unmanaged source without a dirty-state guard', async () => {
+    const user = userEvent.setup(); const client = new ApiClient('test'); const deregister = vi.spyOn(client, 'deregisterSource').mockResolvedValue(); vi.spyOn(client, 'sources').mockResolvedValue([unmanagedSource])
+    render(<App client={client} />)
+    await user.click(within(screen.getByRole('navigation', { name: 'Main views' })).getByRole('button', { name: 'sources' }))
+    const card = (await screen.findByRole('heading', { name: 'shared-app' })).closest('article')!; await user.click(within(card).getByRole('button', { name: 'Remove' }))
+    const dialog = screen.getByRole('dialog'); expect(within(dialog).getByText('This forgets only the registration. Files on disk are untouched.')).toBeInTheDocument(); expect(within(dialog).queryByText(/Dirty worktree|Second step/)).not.toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm removal' }))
+    await waitFor(() => expect(deregister).toHaveBeenCalledWith('shared-app'))
+  })
+
+  it('removes a managed worktree only after the dirty-state guard', async () => {
+    const user = userEvent.setup(); const client = new ApiClient('test'); const removeWorktree = vi.spyOn(client, 'removeWorktree').mockResolvedValue({ staged: 1, unstaged: 2, untracked: 3 })
+    render(<App client={client} />)
     await user.click(within(screen.getByRole('navigation', { name: 'Main views' })).getByRole('button', { name: 'sources' }))
     await user.click(await screen.findByRole('button', { name: 'Remove' }))
-    expect(within(screen.getByRole('dialog')).getByText(/1 staged, 2 unstaged, 3 untracked/)).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Review dirty removal' }))
-    expect(screen.getByText(/Second step/)).toBeInTheDocument()
+    const dialog = screen.getByRole('dialog'); expect(within(dialog).getByText('This deletes the managed worktree directory from disk.')).toBeInTheDocument(); expect(within(dialog).getByText(/1 staged, 2 unstaged, 3 untracked/)).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Review dirty removal' }))
+    expect(removeWorktree).not.toHaveBeenCalled(); expect(screen.getByText(/Second step/)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Confirm removal' }))
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(removeWorktree).toHaveBeenCalledWith('feature-ui', true))
   })
 
   it('renders live SSE fixtures in the operation drawer', async () => {

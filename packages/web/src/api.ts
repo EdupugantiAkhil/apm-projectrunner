@@ -151,6 +151,7 @@ export class ApiClient {
   removeDevice(name: string) { return this.request<void>(`/devices/${encodeURIComponent(name)}`, { method: 'DELETE' }) }
   checkDevice(name: string) { return this.request<DeviceRecord>(`/devices/${encodeURIComponent(name)}/check`, { method: 'POST' }) }
   registerSource(name: string, path: string) { return this.request<SourceRecord>('/sources', { method: 'POST', body: JSON.stringify({ name, path }) }) }
+  deregisterSource(name: string) { return this.request<void>(`/sources/${encodeURIComponent(name)}`, { method: 'DELETE' }) }
   createWorktree(repository: string, ref: string, name?: string, path?: string) {
     return this.request<SourceRecord>('/worktrees', { method: 'POST', body: JSON.stringify({ repository, ref, name: name || undefined, path: path || undefined }) })
   }

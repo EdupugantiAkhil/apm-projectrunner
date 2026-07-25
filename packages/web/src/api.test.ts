@@ -63,4 +63,13 @@ describe('ApiClient', () => {
     expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/devices/build%20host/check')
     expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/devices/build%20host')
   })
+
+  it('deregisters sources with an encoded DELETE and no body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+    await new ApiClient('token').deregisterSource('shared app')
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/sources/shared%20app')
+    expect(fetchMock.mock.calls[0][1].method).toBe('DELETE')
+    expect(fetchMock.mock.calls[0][1].body).toBeUndefined()
+  })
 })

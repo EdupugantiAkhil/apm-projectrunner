@@ -1,12 +1,25 @@
 # Switchyard implementation progress
 
-Updated: 2026-07-23
+Updated: 2026-07-25
 
 ## Release status
 
 - Routing proof (Phases 0–4): complete.
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
+- Web UI plan (`docs/web-ui-plan.md`): Part 1 complete.
+
+## 2026-07-25 web UI Part 1 — unmanaged source deregistration
+
+- Added `ApiClient.deregisterSource(name)` against the already-routed
+  `DELETE /api/v1/sources/{name}` (`server.rs:1299`), which takes no body and returns
+  204; the endpoint was already documented in `docs/control-plane-api.md`.
+- `SourcesView` now offers Remove for unmanaged sources as well as managed ones. The
+  confirmation dialog states per kind whether the directory is deleted or only the
+  registration is forgotten, and the dirty-worktree two-step guard applies to managed
+  removal only, since unmanaged deregistration destroys nothing.
+- Verification: 18 GUI tests pass (3 new), `tsc -b` clean, `oxlint` clean apart from
+  the pre-existing exhaustive-deps warnings.
 
 ## 2026-07-23 browser-first registered projects
 
