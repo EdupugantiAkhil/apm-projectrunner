@@ -1,5 +1,22 @@
 # Agent mistakes and lessons
 
+## 2026-07-25 — A plan's checkboxes drift unless ticked in the same commit as the work
+
+- Every one of `docs/web-ui-plan.md`'s 65 acceptance boxes was still unticked after all 13
+  parts had shipped. Each part was committed with its `PROGRESS.md` entry but never with its
+  own boxes, so the plan read as 100% outstanding for 20 commits while `PROGRESS.md` recorded
+  it complete. Anyone reading the plan first would have concluded no work had been done.
+- The trap when reconciling: ticking boxes from `PROGRESS.md` just copies one document's claims
+  into another. Each box was instead checked against the code that satisfies it — the route in
+  `server.rs`, the exported client method, the rendered component — which is also what caught
+  the two that must stay unticked.
+- Do not tick a box for an acceptance criterion that was not actually met. Part 13 required a
+  human security review before merge and got a code-level audit instead; ticking it would have
+  destroyed the only record that the review is still owed.
+- Lesson: a checkbox list is a claim about state, so update it in the commit that changes that
+  state, or do not keep one. When two documents track the same work, name one authoritative in
+  the other so a reader can tell which to believe.
+
 ## 2026-07-25 — Isolated worktrees do not branch from current HEAD
 
 - Part 13 was delegated with worktree isolation to stop two concurrent agents from racing on one

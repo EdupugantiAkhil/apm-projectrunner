@@ -8,7 +8,28 @@ Updated: 2026-07-25
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
 - Web UI plan (`docs/web-ui-plan.md`): complete. Parts 1 through 13, including follow-up
-  Parts 11a–11c.
+  Parts 11a–11c. One acceptance item is still open: Part 13 called for a human security
+  review before merge and was merged on a code-level audit alone.
+
+## 2026-07-25 web UI plan — bookkeeping reconciliation
+
+- `docs/web-ui-plan.md` still had all 65 acceptance boxes unticked, including Part 1's, which
+  shipped 20 commits earlier. The checkboxes were never maintained as work landed, so the file
+  read as entirely outstanding while `PROGRESS.md` recorded it complete. Ticked them against
+  verified code rather than against this file's own claims: `deregisterSource` and the
+  `kind === 'managed'` branch for Part 1, the `/api/v1/operations` route and `destructive` field
+  for Part 2, `ProfilesView`/`RunActionsView`/`HomeView` and their documented endpoints for
+  Parts 3/9/12, `placedInstances` with the disabled removal button for Part 4, and
+  `instanceResources`/`serviceResources` for Part 11.
+- Two boxes deliberately left unticked. Part 9's shell-authoring item was struck through as
+  out of scope; rewrote it as a plain "Not built" line, since a ticked-looking strikethrough
+  reads ambiguously. Part 13's security-review item is genuinely open — that part was merged
+  on a code-level audit without human sign-off, so ticking it would have recorded a review
+  that did not happen. Noted the same caveat in Release status.
+- Added a Status section to the plan naming `PROGRESS.md` as the authoritative record, so the
+  two files cannot drift into contradiction again, and carried forward the two implementation
+  follow-ups worth remembering: Part 12's Home loader cost, and Part 11c's exact-name profile
+  join.
 
 ## 2026-07-25 web UI Part 13 — merge onto current main
 
