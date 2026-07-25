@@ -1,5 +1,15 @@
 # Agent mistakes and lessons
 
+## 2026-07-25 — Instance inspectors must not manufacture missing relationships
+
+- The first Part 11 draft treated an expanded block name as startup-profile provenance, matched
+  resources to services through container-name substrings, and approximated instance operations
+  by searching operation IDs and output. Correction: label profile provenance and per-service
+  observations unavailable, show the expanded block separately, and use an explicitly deployment-
+  scoped recent-operation list without the rejected instance filter or text inference. Lesson:
+  inspect persistence boundaries as well as frontend types before presenting a loose string or
+  planner convention as durable API metadata.
+
 ## 2026-07-25 — Deployment rail button names include visible status text
 
 - The first Part 10 composition test queried the staging rail button by the exact name

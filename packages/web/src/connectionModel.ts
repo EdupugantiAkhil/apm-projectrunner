@@ -22,6 +22,20 @@ export function consumedSlots(spec: ConnectionSpec) {
 
 export function connectionConsumers(spec: ConnectionSpec, consumed = consumedSlots(spec)) { return Array.from(new Set([...Object.keys(consumed), ...Object.keys(spec.routes ?? {}), ...Object.keys(spec.bindings ?? {}), ...Object.keys(spec.uiRoutes ?? {})])) }
 
+export type ActiveConnection = { direction: 'consumes' | 'provides'; consumer: string; slot: string; provider: string }
+
+export function activeConnections(spec: ConnectionSpec, instance: string) {
+  const groups = resolvedGroups(spec.groups); const bindings = spec.bindings ?? {}; const direct = spec.routes ?? {}; const result: ActiveConnection[] = []
+  for (const consumer of connectionConsumers(spec)) {
+    const routes = bindings[consumer] && groups[bindings[consumer]] ? groups[bindings[consumer]] : direct[consumer] ?? {}
+    for (const [slot, provider] of Object.entries(routes)) {
+      if (consumer === instance) result.push({ direction: 'consumes', consumer, slot, provider })
+      if (provider === instance || provider.startsWith(`${instance}/`)) result.push({ direction: 'provides', consumer, slot, provider })
+    }
+  }
+  return result
+}
+
 export function definitionSpec(preview: Record<string, unknown>): ConnectionSpec | null {
   const definition = preview.definition
   if (!definition || typeof definition !== 'object') return null

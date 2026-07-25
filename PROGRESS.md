@@ -7,7 +7,36 @@ Updated: 2026-07-25
 - Routing proof (Phases 0–4): complete.
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
-- Web UI plan (`docs/web-ui-plan.md`): Parts 1 through 10 complete.
+- Web UI plan (`docs/web-ui-plan.md`): Parts 1 through 11 complete.
+
+## 2026-07-25 web UI Part 11 — per-instance inspector
+
+- Unified instance inspection in the existing right-hand Inspector. Instance-card Inspect actions
+  and runtime patch-bay instance nodes now drive the same lifted selection; the former inline
+  `DeploymentWorkspace` node inspector was removed, leaving one inspector surface.
+- The selected instance view shows authored and observed placement, source identity, expanded
+  block services, active incoming and outgoing connections through the shared
+  `connectionModel.ts`, and the existing complete-provider-group editor and switch report.
+- Scope caveat: `DeploymentSnapshot.spec.instances` records an expanded block but no startup-
+  profile provenance. The inspector therefore renders Startup profile as unavailable and names
+  the expanded block separately rather than assuming every block name is a profile name.
+- Scope caveat: the deployment-detail API returns resources without a typed instance/service
+  relationship; persisted ownership labels exclude the planner's instance label and there is no
+  service label. The inspector lists the genuine expanded service inventory, but renders each
+  service's state, health, and resource placement as unavailable instead of matching resource
+  names. A daemon contract change is required to satisfy those fields literally.
+- Scope caveat: persisted operation records have no instance field and the daemon rejects an
+  `instance` filter. The inspector explicitly shows the five most recent loaded deployment-
+  scoped operations as an approximation; it neither sends the rejected filter nor infers scope
+  by matching operation IDs or output text.
+- Added coverage for the single-inspector invariant, patch-bay selection updating that same
+  inspector, authored and observed placement, expanded service inventory and its explicit
+  unavailable observations, active connections, startup-profile provenance absence, and the
+  documented deployment-scoped operations approximation.
+- Verification: `npx tsc -b` passed with no output; `npm run lint` exited zero with exactly the
+  four pre-existing exhaustive-dependencies warnings in `App.tsx` and
+  `DeploymentBuilder.tsx`; all 39 web tests passed across three files; `cargo fmt --all --check`
+  passed with no output.
 
 ## 2026-07-25 web UI Part 10 — rich operation and log filtering
 
