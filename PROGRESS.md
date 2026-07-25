@@ -1807,3 +1807,37 @@ implemented shape and the evidence used to close a phase.
 - Not yet re-verified on this branch: the Docker-based routing acceptance
   fixture and real LAN-device remote execution through the new TUI (ops layer
   unchanged; CLI-level coverage from the previous milestone still applies).
+
+
+## 2026-07-25 web UI Part 12 — Project Home and onboarding
+
+- Added Home to the top-level rail and Left/Right navigation cycle. Projects whose deployment
+  list is empty move from the existing initial Deployments state to Home after that list loads;
+  projects with one or more deployments retain the existing Deployments landing behavior.
+- Added an accessible five-item ordered setup checklist and a keyboard-reachable recommended
+  action that changes the real application view: Sources, Profiles, the new-deployment builder,
+  Deployments for startup/connection work, or Operations after completion.
+- Checklist signals are all client-visible API data: source uses non-empty `GET /sources`; profile
+  uses a non-shadowed `trusted` or `imported` profile; instance uses `spec.instances` from the
+  validated authored-definition preview (falling back explicitly to the applied snapshot only when
+  that preview omits the spec); startup uses a non-null deployment-summary `appliedAt`; connection
+  uses `consumedSlots`/`resolvedGroups` from `connectionModel.ts` and requires one consumer to have
+  a provider for every consumed slot.
+- Caveats: the profile API has no separate durable “selected profile” record, so that step means a
+  usable trusted/imported profile is available for the guided builder. The deployment API has no
+  structured project-wide running boolean, so startup completion uses the durable apply timestamp
+  and does not infer runtime state from resource-state strings. When source/profile/deployment data
+  cannot be loaded, or an authored spec cannot be obtained, the affected checklist step renders
+  `Unavailable / unknown` rather than incomplete. An applied-snapshot fallback is named as an
+  incomplete signal instead of being presented as current authored state.
+- Added project-wide problem categories from real fields: source `inspection.unknownCode`; profile
+  `sourceErrors`; deployment reconciliation diagnostics; device reachability and eligibility plus
+  the server-provided eligibility reason; operations with `status === failed`; and consumers whose
+  authored consumed slots lack providers, derived through `connectionModel.ts`. Load/spec failures
+  render each affected category as unavailable or incomplete while preserving any known problems.
+- Added five App tests for empty-project Home landing, unchanged non-empty landing, all checklist
+  completion transitions, recommended-action navigation into the builder, and aggregation across
+  source/profile/operation categories.
+- Verification: `npx tsc -b` passed with no output; `npm run lint` exited zero with exactly the four
+  pre-existing `react-hooks(exhaustive-deps)` warnings (two in `App.tsx`, two in
+  `DeploymentBuilder.tsx`); `npm test` passed all 46 tests across three files.

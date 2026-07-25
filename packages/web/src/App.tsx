@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { ApiClient, ApiError, type AdapterRecord, type DeploymentDetail, type DeploymentSummary, type DeviceRecord, type JsonValue, type Operation, type OperationEvent, type ProfileRecord, type ProjectInfo, type RouteHistory, type RouterBinding, type RouteState, type RunActionsResponse, type SourceRecord } from './api'
 import DeploymentWorkspace, { AuthoredConnections, InstanceBindingEditor, RoutingEditor } from './DeploymentWorkspace'
-import { activeConnections } from './connectionModel'
+import { activeConnections, definitionSpec, type ConnectionSpec } from './connectionModel'
 import DeploymentBuilder, { BlockLibrary } from './DeploymentBuilder'
+import HomeView from './HomeView'
+import type { DeploymentSignal, HomeDestination } from './homeModel'
 import ProfilesView from './ProfilesView'
 import { originLabel, trustLabel } from './profileModel'
 import RunActionsView from './RunActionsView'
 import './App.css'
 
-type View = 'deployments' | 'sources' | 'devices' | 'profiles' | 'run-actions' | 'operations' | 'builder' | 'library'
+type View = 'home' | 'deployments' | 'sources' | 'devices' | 'profiles' | 'run-actions' | 'operations' | 'builder' | 'library'
 const terminal = (status: Operation['status']) => ['succeeded', 'failed', 'cancelled'].includes(status)
 const short = (value?: string | null) => value ? value.slice(0, 9) : 'unknown'
 const stoppedDiagnostic = (detail: DeploymentDetail) => detail.resources.length === 0
@@ -42,18 +44,28 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
   const [builderDeployment, setBuilderDeployment] = useState('')
   const [project, setProject] = useState<ProjectInfo | null>(null)
   const [deployments, setDeployments] = useState<DeploymentSummary[]>([])
+  const [deploymentSignals, setDeploymentSignals] = useState<DeploymentSignal[]>([])
+  const [deploymentsLoading, setDeploymentsLoading] = useState(true)
+  const [deploymentsUnavailable, setDeploymentsUnavailable] = useState(false)
   const [selected, setSelected] = useState('')
   const [selectedInstance, setSelectedInstance] = useState('')
   const [detail, setDetail] = useState<DeploymentDetail | null>(null)
   const [routes, setRoutes] = useState<RouteState | null>(null)
   const [sources, setSources] = useState<SourceRecord[]>([])
+  const [sourcesLoading, setSourcesLoading] = useState(true)
+  const [sourcesUnavailable, setSourcesUnavailable] = useState(false)
   const [devices, setDevices] = useState<DeviceRecord[]>([])
   const [devicesLoading, setDevicesLoading] = useState(true)
+  const [devicesUnavailable, setDevicesUnavailable] = useState(false)
   const [adapters, setAdapters] = useState<AdapterRecord[]>([])
   const [profiles, setProfiles] = useState<ProfileRecord[]>([])
+  const [profilesLoading, setProfilesLoading] = useState(true)
+  const [profilesUnavailable, setProfilesUnavailable] = useState(false)
   const [profileSourceErrors, setProfileSourceErrors] = useState<Array<{ source: string; message: string }>>([])
   const [runActions, setRunActions] = useState<RunActionsResponse | null>(null)
   const [operations, setOperations] = useState<Operation[]>([])
+  const [operationsLoading, setOperationsLoading] = useState(true)
+  const [operationsUnavailable, setOperationsUnavailable] = useState(false)
   const [instanceOperations, setInstanceOperations] = useState<Operation[]>([])
   const [events, setEvents] = useState<OperationEvent[]>([])
   const [drawerOpen, setDrawerOpen] = useState(true)
@@ -64,22 +76,32 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
   const subscriptions = useRef<Map<string, { close(): void }>>(new Map())
 
   const report = (value: unknown) => setError(value instanceof ApiError ? `${value.code}: ${value.message}` : String(value))
+  const loadDeploymentSignal = async (summary: DeploymentSummary): Promise<DeploymentSignal> => {
+    try {
+      const found = await client.deployment(summary.name); const definition = await client.definition(summary.name); const validation = await client.validateDeployment(summary.name, definition.yaml); const authored = definitionSpec(validation.preview); const applied: ConnectionSpec | null = found.snapshot?.spec ?? null; const spec = authored ?? applied
+      return { summary, detail: found, spec, error: authored ? null : applied ? 'Validated definition preview omitted the authored spec; checklist and connection signals fall back to the applied snapshot.' : 'Deployment spec is unavailable from the validated definition preview and applied snapshot.' }
+    } catch (value) { return { summary, detail: null, spec: null, error: value instanceof ApiError ? `${value.code}: ${value.message}` : String(value) } }
+  }
   const loadDeployments = async () => {
+    setDeploymentsLoading(true); setDeploymentsUnavailable(false)
     try {
       const response = await client.deployments()
       setDeployments(response.deployments)
       setSelected((current) => current || response.deployments[0]?.name || '')
-    } catch (value) { report(value) }
+      if (response.deployments.length === 0) setView((current) => current === 'deployments' ? 'home' : current)
+      setDeploymentSignals(await Promise.all(response.deployments.map(loadDeploymentSignal)))
+    } catch (value) { setDeploymentsUnavailable(true); report(value) } finally { setDeploymentsLoading(false) }
   }
-  const loadSources = async () => { try { setSources(await client.sources()) } catch (value) { report(value) } }
-  const loadDevices = async () => { setDevicesLoading(true); try { setDevices(await client.devices()) } catch (value) { report(value) } finally { setDevicesLoading(false) } }
-  const loadProfiles = async () => { try { const response = await client.profiles(); setProfiles(response.profiles); setProfileSourceErrors(response.sourceErrors) } catch (value) { report(value) } }
+  const loadSources = async () => { setSourcesLoading(true); setSourcesUnavailable(false); try { setSources(await client.sources()) } catch (value) { setSourcesUnavailable(true); report(value) } finally { setSourcesLoading(false) } }
+  const loadDevices = async () => { setDevicesLoading(true); setDevicesUnavailable(false); try { setDevices(await client.devices()) } catch (value) { setDevicesUnavailable(true); report(value) } finally { setDevicesLoading(false) } }
+  const loadProfiles = async () => { setProfilesLoading(true); setProfilesUnavailable(false); try { const response = await client.profiles(); setProfiles(response.profiles); setProfileSourceErrors(response.sourceErrors) } catch (value) { setProfilesUnavailable(true); report(value) } finally { setProfilesLoading(false) } }
   const loadRunActions = async () => { try { setRunActions(await client.runActions()) } catch (value) { report(value) } }
   const loadOperations = async () => {
+    setOperationsLoading(true); setOperationsUnavailable(false)
     try {
       const response = await client.operations()
       setOperations((current) => response.operations.map((durable) => current.find((operation) => operation.id === durable.id && operation.result) ?? durable))
-    } catch (value) { report(value) }
+    } catch (value) { setOperationsUnavailable(true); report(value) } finally { setOperationsLoading(false) }
   }
   const loadSelected = async () => { if (!selected) return; const [nextDetail, nextRoutes] = await Promise.all([client.deployment(selected), client.routes(selected)]); setDetail(nextDetail); setRoutes(nextRoutes) }
 
@@ -130,9 +152,10 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
     const bundle = `.switchyard/generated/${selected}/resolved-deployment.yaml`
     try { observe(await client.command(kind, bundle, { ...(kind === 'cleanup' ? { confirmed: true } : {}), ...(kind === 'logs' && target ? { target } : {}), ...(kind === 'open' && target ? { ui: target } : {}) })); setView('operations') } catch (value) { report(value) }
   }
+  const navigateFromHome = (destination: HomeDestination) => { if (destination === 'builder') setBuilderDeployment(''); setView(destination); if (destination === 'operations') void loadOperations(); if (destination === 'profiles') void loadProfiles() }
   const navKeys = (event: KeyboardEvent<HTMLElement>) => {
     if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return
-    const views: View[] = ['deployments', 'sources', 'devices', 'profiles', 'run-actions', 'operations', 'library']
+    const views: View[] = ['home', 'deployments', 'sources', 'devices', 'profiles', 'run-actions', 'operations', 'library']
     const offset = event.key === 'ArrowRight' ? 1 : -1
     const next = views[(views.indexOf(view) + offset + views.length) % views.length]
     setView(next)
@@ -150,7 +173,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
     <aside className="rail" aria-label="Deployment rail">
       <div className="brand">SWITCHYARD <span>LOCAL</span><small title={project?.root}>{project?.name ?? 'Loading project…'}</small></div>
       <nav aria-label="Main views" onKeyDown={navKeys}>
-        {(['deployments', 'sources', 'devices', 'profiles', 'run-actions', 'operations', 'library'] as View[]).map((item) => <button key={item} aria-current={view === item ? 'page' : undefined} onClick={() => { setView(item); if (item === 'operations') void loadOperations(); if (item === 'profiles') void loadProfiles(); if (item === 'run-actions') void loadRunActions() }}>{item === 'library' ? 'block library' : item === 'run-actions' ? 'run actions' : item}</button>)}
+        {(['home', 'deployments', 'sources', 'devices', 'profiles', 'run-actions', 'operations', 'library'] as View[]).map((item) => <button key={item} aria-current={view === item ? 'page' : undefined} onClick={() => { setView(item); if (item === 'operations') void loadOperations(); if (item === 'profiles') void loadProfiles(); if (item === 'run-actions') void loadRunActions() }}>{item === 'library' ? 'block library' : item === 'run-actions' ? 'run actions' : item}</button>)}
       </nav>
       <h2>Deployments</h2>
       <div className="deployment-list">
@@ -168,6 +191,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
     </aside>
     <main className="canvas" id="main-content">
       {error && <div className="error" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError('')}>×</button></div>}
+      {view === 'home' && <HomeView project={project} sources={sources} profiles={profiles} profileSourceErrors={profileSourceErrors} deployments={deploymentSignals} devices={devices} operations={operations} loading={{ sources: sourcesLoading, profiles: profilesLoading, deployments: deploymentsLoading, devices: devicesLoading, operations: operationsLoading }} unavailable={{ sources: sourcesUnavailable, profiles: profilesUnavailable, deployments: deploymentsUnavailable, devices: devicesUnavailable, operations: operationsUnavailable }} navigate={navigateFromHome} />}
       {view === 'deployments' && <DeploymentView client={client} detail={detail} routes={routes} selectedInstance={selectedInstance} onSelectInstance={setSelectedInstance} onAddInstance={(deployment) => { setBuilderDeployment(deployment); setView('builder') }} onCommand={runCommand} observe={observe} refresh={async () => { await loadSelected(); await loadDeployments() }} report={report} />}
       {view === 'sources' && <SourcesView client={client} sources={sources} reload={loadSources} report={report} />}
       {view === 'devices' && <DevicesView client={client} devices={devices} loading={devicesLoading} reload={loadDevices} report={report} />}

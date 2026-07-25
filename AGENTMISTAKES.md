@@ -650,3 +650,13 @@ audit shell startup files as well as the requested cache directories.
   cannot find `package.json`, despite existing project guidance. Correction: rerun it from
   `packages/web`; it passed. Lesson: treat the required package working directory as part
   of every npm command, including focused tests.
+
+
+## 2026-07-25 — Typed API spies require typed shared fixtures
+
+- The first Part 12 checklist test passed existing loosely inferred source and device fixtures into
+  typed `ApiClient` spies. TypeScript had widened their discriminants (`kind`, reachability, and
+  eligibility) to `string`, so `tsc` rejected the otherwise valid fixture data. Correction: annotate
+  the shared fixtures as `SourceRecord` and `DeviceRecord`. Lesson: fixtures used only behind JSON
+  helpers may tolerate widened literals, but reusing them at a typed mock boundary requires the API
+  record type at declaration time.

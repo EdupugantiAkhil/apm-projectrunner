@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
-import { ApiClient, type Operation, type OperationEvent, type RunActionPreview, type RunActionsResponse, type RouteState } from './api'
+import { ApiClient, type DeviceRecord, type Operation, type OperationEvent, type RunActionPreview, type RunActionsResponse, type RouteState, type SourceRecord } from './api'
 
 const deployment = {
   apiVersion: 'v1', deployment: 'comparison', definitionHash: 'definition123', resourceHash: 'resource123', appliedAt: 1,
@@ -11,12 +11,12 @@ const deployment = {
   reconciliation: { deployment: 'comparison', diagnostics: [] }, resources: [{ kind: 'container', id: 'one', name: 'comparison-ui-feature', labels: { 'dev.switchyard.instance': 'ui-feature' }, state: 'healthy', device: 'build-host' }],
   customDomains: ['ui.comparison.localhost'], bindings: { 'ui-feature': 'feature' },
 }
-const source = { source: { name: 'feature-ui', kind: 'managed', path: '/worktrees/ui-a' }, inspection: { identity: { path: '/worktrees/ui-a', ref: 'feature/ui-redesign', commit: '35ad2abcdef', dirty: true }, branch: 'feature/ui-redesign', changes: { staged: 1, unstaged: 2, untracked: 3 }, ahead: 2, behind: 0, unknownCode: null } }
+const source: SourceRecord = { source: { name: 'feature-ui', kind: 'managed', path: '/worktrees/ui-a' }, inspection: { identity: { path: '/worktrees/ui-a', ref: 'feature/ui-redesign', commit: '35ad2abcdef', dirty: true }, branch: 'feature/ui-redesign', changes: { staged: 1, unstaged: 2, untracked: 3 }, ahead: 2, behind: 0, unknownCode: null } }
 const unmanagedSource = { source: { name: 'shared-app', kind: 'unmanaged' as const, path: '/code/shared-app' }, inspection: { identity: { path: '/code/shared-app', ref: 'main', commit: '123456789ab', dirty: true }, branch: 'main', changes: { staged: 4, unstaged: 5, untracked: 6 }, ahead: 0, behind: 0, unknownCode: null } }
 const sourceProfile = { apiVersion: 'v1', name: 'api', deployment: 'comparison', origin: { kind: 'discovered-in-source' as const, source: 'feature-ui', commit: '35ad2abcdef' }, trust: 'not-imported' as const, shadowed: false, services: [{ name: 'web', adapterKind: 'container' as const }] }
 const trustedProfile = { apiVersion: 'v1', name: 'worker-profile', deployment: 'comparison', origin: { kind: 'project' as const }, trust: 'trusted' as const, shadowed: false, services: [{ name: 'web', adapterKind: 'container' as const }] }
-const localDevice = { name: 'local', kind: 'local', host: null, port: null, user: null, identityFile: null, createdAt: null, lastCheckedAt: null, lastCheckStatus: 'eligible', lastCheckDetail: null, reachability: 'reachable', eligibility: 'eligible', eligibilityReason: 'local execution is always eligible', placedInstances: [] }
-const remoteDevice = { name: 'build-host', kind: 'ssh', host: 'host.test', port: 22, user: 'dev', identityFile: null, createdAt: 1, lastCheckedAt: null, lastCheckStatus: 'never', lastCheckDetail: null, reachability: 'unchecked', eligibility: 'ineligible', eligibilityReason: 'unchecked', placedInstances: [{ deployment: 'comparison', instance: 'ui-feature' }] }
+const localDevice: DeviceRecord = { name: 'local', kind: 'local', host: null, port: null, user: null, identityFile: null, createdAt: null, lastCheckedAt: null, lastCheckStatus: 'eligible', lastCheckDetail: null, reachability: 'reachable', eligibility: 'eligible', eligibilityReason: 'local execution is always eligible', placedInstances: [] }
+const remoteDevice: DeviceRecord = { name: 'build-host', kind: 'ssh', host: 'host.test', port: 22, user: 'dev', identityFile: null, createdAt: 1, lastCheckedAt: null, lastCheckStatus: 'never', lastCheckDetail: null, reachability: 'unchecked', eligibility: 'ineligible', eligibilityReason: 'unchecked', placedInstances: [{ deployment: 'comparison', instance: 'ui-feature' }] }
 const authoredSpec = { instances: [{ name: 'ui-feature', block: 'web-ui' }, { name: 'ui-unbound', block: 'web-ui' }, { name: 'backend-a' }, { name: 'backend-b' }, { name: 'python-a' }, { name: 'python-b' }, { name: 'shared-db' }], blocks: { 'web-ui': { services: { web: { consumes: { java: { protocol: 'tcp' }, python: { protocol: 'grpc' }, database: { protocol: 'tcp' } } } } } }, groups: { base: { providers: { java: 'backend-b', python: 'python-b', database: 'shared-db' } }, feature: { providers: { java: 'backend-a', python: 'python-a', database: 'shared-db' } } }, bindings: { 'ui-feature': 'feature' } }
 const authoredYaml = 'apiVersion: switchyard.dev/v1alpha1\nkind: Deployment\nmetadata:\n  name: comparison\nspec:\n  instances: []\n  blocks: {}\n  groups: {}\n  bindings:\n    ui-feature: feature\n'
 const authoredDefinition = { apiVersion: 'v1', name: 'comparison', path: '/project/deployments/comparison.yaml', hash: 'hash-one', yaml: authoredYaml }
@@ -314,6 +314,50 @@ describe('Switchyard GUI', () => {
     expect(screen.getByText('op-apply')).toBeInTheDocument(); expect(screen.queryByText('op-cleanup')).not.toBeInTheDocument()
     await user.clear(filter); await user.type(filter, 'nothing-matches-this')
     expect(screen.getByText('No operations match this filter.')).toBeInTheDocument()
+  })
+
+  it('lands on Home when the project has no deployments', async () => {
+    const client = new ApiClient('test'); vi.spyOn(client, 'deployments').mockResolvedValue({ apiVersion: 'v1', deployments: [] })
+    render(<App client={client} />)
+    expect(await screen.findByRole('heading', { name: 'payments-lab', level: 1 })).toBeInTheDocument()
+    expect(within(screen.getByRole('navigation', { name: 'Main views' })).getByRole('button', { name: 'home' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('heading', { name: 'Setup progress' })).toBeInTheDocument()
+  })
+
+  it('keeps Deployments as the landing view when deployments already exist', async () => {
+    render(<App client={new ApiClient('test')} />)
+    expect(await screen.findByRole('heading', { name: 'comparison', level: 1 })).toBeInTheDocument()
+    expect(within(screen.getByRole('navigation', { name: 'Main views' })).getByRole('button', { name: 'deployments' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.queryByRole('heading', { name: 'Setup progress' })).not.toBeInTheDocument()
+  })
+
+  it('moves every setup checklist step from incomplete to complete from API signals', async () => {
+    const empty = new ApiClient('test'); vi.spyOn(empty, 'deployments').mockResolvedValue({ apiVersion: 'v1', deployments: [] }); vi.spyOn(empty, 'sources').mockResolvedValue([]); vi.spyOn(empty, 'profiles').mockResolvedValue({ apiVersion: 'v1', profiles: [], sourceErrors: [] }); vi.spyOn(empty, 'devices').mockResolvedValue([localDevice]); vi.spyOn(empty, 'operations').mockResolvedValue({ apiVersion: 'v1', operations: [], nextCursor: null })
+    render(<App client={empty} />); await screen.findByRole('heading', { name: 'Setup progress' })
+    await waitFor(() => expect(screen.getAllByText('Not complete')).toHaveLength(5))
+    for (const label of ['Source registered', 'Profile selected', 'Instance created', 'Startup complete', 'Connection bound']) expect(within(screen.getByText(label).closest('li')!).getByText('Not complete')).toBeInTheDocument()
+    cleanup()
+
+    const ready = new ApiClient('test'); const summary = { name: 'comparison', definitionHash: 'definition123', resourceHash: 'resource123', appliedAt: 1, lastOperation: null, customDomains: [], bindings: { ui: 'base' } }; const complete = { ...deployment, appliedAt: 1, snapshot: { spec: { instances: [{ name: 'ui', block: 'web' }], blocks: { web: { services: { app: { consumes: { api: { protocol: 'tcp' } } } } } }, groups: { base: { providers: { api: 'backend' } } }, bindings: { ui: 'base' } } } }
+    vi.spyOn(ready, 'deployments').mockResolvedValue({ apiVersion: 'v1', deployments: [summary] }); vi.spyOn(ready, 'deployment').mockResolvedValue(complete); vi.spyOn(ready, 'definition').mockResolvedValue(authoredDefinition); vi.spyOn(ready, 'validateDeployment').mockResolvedValue({ apiVersion: 'v1', name: 'comparison', valid: true, diagnostics: [], preview: { definition: complete.snapshot } }); vi.spyOn(ready, 'sources').mockResolvedValue([source]); vi.spyOn(ready, 'profiles').mockResolvedValue({ apiVersion: 'v1', profiles: [trustedProfile], sourceErrors: [] }); vi.spyOn(ready, 'devices').mockResolvedValue([localDevice]); vi.spyOn(ready, 'operations').mockResolvedValue({ apiVersion: 'v1', operations: [], nextCursor: null })
+    render(<App client={ready} />); await screen.findByRole('heading', { name: 'comparison', level: 1 }); await userEvent.click(within(screen.getByRole('navigation', { name: 'Main views' })).getByRole('button', { name: 'home' }))
+    await waitFor(() => expect(screen.getAllByText('Complete')).toHaveLength(5))
+  })
+
+  it('navigates the next recommended Create instance action into the builder', async () => {
+    const user = userEvent.setup(); const client = new ApiClient('test'); vi.spyOn(client, 'deployments').mockResolvedValue({ apiVersion: 'v1', deployments: [] }); vi.spyOn(client, 'sources').mockResolvedValue([source]); vi.spyOn(client, 'profiles').mockResolvedValue({ apiVersion: 'v1', profiles: [trustedProfile], sourceErrors: [] })
+    render(<App client={client} />)
+    await user.click(await screen.findByRole('button', { name: 'Create an instance' }))
+    expect(await screen.findByRole('heading', { name: 'New deployment', level: 1 })).toBeInTheDocument()
+  })
+
+  it('aggregates source, profile, and operation problems on Home', async () => {
+    const client = new ApiClient('test'); const failed: Operation = { apiVersion: 'v1', id: 'op-failed', deployment: 'comparison', instance: null, kind: 'apply', destructive: false, status: 'failed', startedAt: 5, finishedAt: 6, error: { code: 'apply_failed', message: 'container startup failed' }, result: null }
+    vi.spyOn(client, 'deployments').mockResolvedValue({ apiVersion: 'v1', deployments: [] }); vi.spyOn(client, 'sources').mockResolvedValue([{ ...source, inspection: { ...source.inspection, unknownCode: 'git_unavailable' } }]); vi.spyOn(client, 'profiles').mockResolvedValue({ apiVersion: 'v1', profiles: [], sourceErrors: [{ source: 'feature-ui', message: 'manifest is invalid' }] }); vi.spyOn(client, 'devices').mockResolvedValue([localDevice]); vi.spyOn(client, 'operations').mockResolvedValue({ apiVersion: 'v1', operations: [failed], nextCursor: null })
+    render(<App client={client} />); await screen.findByRole('heading', { name: 'Project-wide problems' })
+    expect(await screen.findByText('feature-ui: inspection unavailable (git_unavailable).')).toBeInTheDocument()
+    expect(screen.getByText('feature-ui: manifest is invalid')).toBeInTheDocument()
+    expect(screen.getByText('comparison apply: container startup failed.')).toBeInTheDocument()
   })
 
   it('switches shell views with keyboard arrow navigation', async () => {
