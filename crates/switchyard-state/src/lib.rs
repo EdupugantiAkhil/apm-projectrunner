@@ -57,7 +57,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The schema version understood by this crate.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 /// Ownership label used by the existing Docker runtime.
 pub const MANAGED_LABEL: &str = "dev.switchyard.managed";
 /// Deployment ownership label used by the existing Docker runtime.
@@ -135,6 +135,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (5, include_str!("migrations/005_devices.sql")),
     (6, include_str!("migrations/006_profiles.sql")),
     (7, include_str!("migrations/007_device_eligibility.sql")),
+    (8, include_str!("migrations/008_operation_instance.sql")),
 ];
 
 /// A source-local startup profile explicitly reviewed and imported into project state.
@@ -837,7 +838,7 @@ impl StateStore {
     pub fn deployments(&self) -> Result<Vec<StoredDeployment>, StateError> {
         let mut statement = self.connection.prepare(
             "SELECT d.id,d.applied_definition_hash,d.applied_snapshot_json,d.applied_at,\
-             o.id,o.kind,o.status,o.started_at,o.finished_at,o.error_code,o.error_context_json \
+             o.id,o.kind,o.status,o.started_at,o.finished_at,o.error_code,o.error_context_json,o.instance \
              FROM deployments d LEFT JOIN operations o ON o.id=(\
                SELECT latest.id FROM operations latest WHERE latest.deployment_id=d.id \
                ORDER BY latest.started_at DESC,latest.id DESC LIMIT 1) ORDER BY d.id",
@@ -860,6 +861,7 @@ impl StateStore {
                     error_context_json: row
                         .get(10)
                         .expect("joined operation error context is valid"),
+                    instance: row.get(11).expect("joined operation instance is valid"),
                 }),
             })
         })?;
@@ -870,9 +872,12 @@ impl StateStore {
     pub fn start_operation(&self, operation: &OperationRecord) -> Result<(), StateError> {
         validate_id("operation id", &operation.id)?;
         validate_id("deployment", &operation.deployment)?;
+        if let Some(instance) = &operation.instance {
+            validate_id("operation instance", instance)?;
+        }
         self.connection.execute(
-            "INSERT INTO operations(id, deployment_id, kind, status, started_at, finished_at, error_code, error_context_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-            params![operation.id, operation.deployment, operation.kind.as_str(), operation.status.as_str(), operation.started_at, operation.finished_at, operation.error.as_ref().map(|e| e.code.as_str()), operation.error.as_ref().map(|e| e.context.as_json())],
+            "INSERT INTO operations(id, deployment_id, kind, status, started_at, finished_at, error_code, error_context_json, instance) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![operation.id, operation.deployment, operation.kind.as_str(), operation.status.as_str(), operation.started_at, operation.finished_at, operation.error.as_ref().map(|e| e.code.as_str()), operation.error.as_ref().map(|e| e.context.as_json()), operation.instance],
         )?;
         Ok(())
     }
@@ -902,7 +907,7 @@ impl StateStore {
     pub fn operation(&self, id: &str) -> Result<Option<StoredOperation>, StateError> {
         self.connection
             .query_row(
-                "SELECT id, deployment_id, kind, status, started_at, finished_at, error_code, error_context_json FROM operations WHERE id=?1",
+                "SELECT id, deployment_id, kind, status, started_at, finished_at, error_code, error_context_json, instance FROM operations WHERE id=?1",
                 [id],
                 stored_operation_from_row,
             )
@@ -950,15 +955,17 @@ impl StateStore {
                 (Some(*started_at), Some(id.as_str()))
             });
         let mut statement = self.connection.prepare(
-            "SELECT id, deployment_id, kind, status, started_at, finished_at, error_code, error_context_json \
+            "SELECT id, deployment_id, kind, status, started_at, finished_at, error_code, error_context_json, instance \
              FROM operations WHERE (?1 IS NULL OR deployment_id=?1) \
-             AND (?2 IS NULL OR kind=?2 OR (?2='apply' AND kind='start')) \
-             AND (?3 IS NULL OR status=?3) AND (?4 IS NULL OR started_at<?4 OR (started_at=?4 AND id<?5)) \
-             ORDER BY started_at DESC, id DESC LIMIT ?6",
+             AND (?2 IS NULL OR instance=?2) \
+             AND (?3 IS NULL OR kind=?3 OR (?3='apply' AND kind='start')) \
+             AND (?4 IS NULL OR status=?4) AND (?5 IS NULL OR started_at<?5 OR (started_at=?5 AND id<?6)) \
+             ORDER BY started_at DESC, id DESC LIMIT ?7",
         )?;
         let rows = statement.query_map(
             params![
                 query.deployment,
+                query.instance,
                 query.kind,
                 query.status,
                 cursor_started_at,
@@ -1596,6 +1603,8 @@ pub struct OperationRecord {
     pub id: String,
     /// Deployment being observed or mutated.
     pub deployment: String,
+    /// Single instance targeted by the operation, when one is genuinely known.
+    pub instance: Option<String>,
     /// Operation category.
     pub kind: OperationKind,
     /// Current operation status.
@@ -1612,6 +1621,7 @@ pub struct OperationRecord {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct OperationQuery<'a> {
     pub deployment: Option<&'a str>,
+    pub instance: Option<&'a str>,
     pub kind: Option<&'a str>,
     pub status: Option<&'a str>,
     /// Stable operation ID returned as the preceding page's cursor.
@@ -1625,6 +1635,7 @@ pub struct OperationQuery<'a> {
 pub struct StoredOperation {
     pub id: String,
     pub deployment: String,
+    pub instance: Option<String>,
     pub kind: String,
     pub status: String,
     pub started_at: i64,
@@ -1643,6 +1654,7 @@ fn stored_operation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Stored
         finished_at: row.get(5)?,
         error_code: row.get(6)?,
         error_context_json: row.get(7)?,
+        instance: row.get(8)?,
     })
 }
 
@@ -2576,10 +2588,42 @@ mod tests {
         let path = temp.path().join("state-v4.sqlite3");
         historical_database(&path, 4);
         let (store, report) = StateStore::open(&path).unwrap();
-        assert_eq!(report.applied_migrations, vec![5, 6, 7]);
+        assert_eq!(report.applied_migrations, vec![5, 6, 7, 8]);
         assert!(report.backup_path.unwrap().is_file());
         assert_eq!(
             scalar::<i64>(&store.connection, "SELECT COUNT(*) FROM devices"),
+            0
+        );
+    }
+
+    #[test]
+    fn version_seven_store_adds_nullable_operation_instance_with_backup() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("state-v7.sqlite3");
+        historical_database(&path, 7);
+
+        let (store, report) = StateStore::open(&path).unwrap();
+        assert_eq!(report.applied_migrations, vec![8]);
+        let backup = report.backup_path.expect("version 7 database is backed up");
+        assert!(backup.is_file());
+        assert_eq!(
+            store.operation("operation-v7").unwrap().unwrap().instance,
+            None
+        );
+        assert_eq!(
+            scalar::<i64>(
+                &store.connection,
+                "SELECT COUNT(*) FROM pragma_table_info('operations') WHERE name='instance'"
+            ),
+            1
+        );
+        let backup_connection = Connection::open(backup).unwrap();
+        assert_eq!(current_schema_version(&backup_connection).unwrap(), 7);
+        assert_eq!(
+            scalar::<i64>(
+                &backup_connection,
+                "SELECT COUNT(*) FROM pragma_table_info('operations') WHERE name='instance'"
+            ),
             0
         );
     }
@@ -2599,7 +2643,7 @@ mod tests {
         drop(connection);
 
         let (store, report) = StateStore::open(&path).unwrap();
-        assert_eq!(report.applied_migrations, vec![2, 3, 4, 5, 6, 7]);
+        assert_eq!(report.applied_migrations, vec![2, 3, 4, 5, 6, 7, 8]);
         let backup = report.backup_path.unwrap();
         assert!(backup.is_file());
         let versions = store
@@ -2610,7 +2654,7 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8]);
         let backup_connection = Connection::open(backup).unwrap();
         assert_eq!(current_schema_version(&backup_connection).unwrap(), 1);
     }
@@ -2697,7 +2741,7 @@ mod tests {
         let restored = temp.path().join("restored-from-backup.sqlite3");
         fs::copy(&backup, &restored).unwrap();
         let (store, report) = StateStore::open(&restored).unwrap();
-        assert_eq!(report.applied_migrations, vec![3, 4, 5, 6, 7]);
+        assert_eq!(report.applied_migrations, vec![3, 4, 5, 6, 7, 8]);
         assert_consistent(&store.connection);
         assert_historical_values(&store.connection, 2);
     }
@@ -3016,17 +3060,27 @@ mod tests {
     fn durable_operations_support_filters_and_stable_cursors() {
         let temp = TempDir::new().unwrap();
         let (store, _) = open_temp(&temp);
-        for (id, deployment, kind, status, started_at) in [
+        for (id, deployment, instance, kind, status, started_at) in [
+            (
+                "op-5",
+                "demo",
+                Some("api"),
+                OperationKind::Other("logs".into()),
+                OperationStatus::Succeeded,
+                5,
+            ),
             (
                 "op-4",
                 "demo",
-                OperationKind::Cleanup,
+                Some("worker"),
+                OperationKind::Other("logs".into()),
                 OperationStatus::Failed,
                 4,
             ),
             (
                 "op-3",
                 "demo",
+                Some("api"),
                 OperationKind::Bind,
                 OperationStatus::Succeeded,
                 3,
@@ -3034,6 +3088,7 @@ mod tests {
             (
                 "op-2",
                 "other",
+                Some("api"),
                 OperationKind::Bind,
                 OperationStatus::Succeeded,
                 2,
@@ -3041,6 +3096,7 @@ mod tests {
             (
                 "op-1",
                 "demo",
+                None,
                 OperationKind::Cleanup,
                 OperationStatus::Succeeded,
                 1,
@@ -3048,6 +3104,7 @@ mod tests {
             (
                 "op-0",
                 "demo",
+                None,
                 OperationKind::Start,
                 OperationStatus::Succeeded,
                 0,
@@ -3057,6 +3114,7 @@ mod tests {
                 .start_operation(&OperationRecord {
                     id: id.into(),
                     deployment: deployment.into(),
+                    instance: instance.map(str::to_owned),
                     kind,
                     status,
                     started_at,
@@ -3069,6 +3127,7 @@ mod tests {
         let first = store
             .operations(&OperationQuery {
                 deployment: None,
+                instance: None,
                 kind: None,
                 status: None,
                 cursor: None,
@@ -3080,14 +3139,15 @@ mod tests {
                 .iter()
                 .map(|operation| operation.id.as_str())
                 .collect::<Vec<_>>(),
-            ["op-4", "op-3"]
+            ["op-5", "op-4"]
         );
         let second = store
             .operations(&OperationQuery {
                 deployment: None,
+                instance: None,
                 kind: None,
                 status: None,
-                cursor: Some("op-3"),
+                cursor: Some("op-4"),
                 limit: 2,
             })
             .unwrap();
@@ -3096,11 +3156,12 @@ mod tests {
                 .iter()
                 .map(|operation| operation.id.as_str())
                 .collect::<Vec<_>>(),
-            ["op-2", "op-1"]
+            ["op-3", "op-2"]
         );
         let filtered = store
             .operations(&OperationQuery {
                 deployment: Some("demo"),
+                instance: None,
                 kind: Some("cleanup"),
                 status: Some("succeeded"),
                 cursor: None,
@@ -3109,9 +3170,40 @@ mod tests {
             .unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, "op-1");
+        assert_eq!(filtered[0].instance, None);
+        let instance_first = store
+            .operations(&OperationQuery {
+                deployment: Some("demo"),
+                instance: Some("api"),
+                kind: None,
+                status: None,
+                cursor: None,
+                limit: 1,
+            })
+            .unwrap();
+        assert_eq!(instance_first[0].id, "op-5");
+        assert_eq!(instance_first[0].instance.as_deref(), Some("api"));
+        let instance_second = store
+            .operations(&OperationQuery {
+                deployment: Some("demo"),
+                instance: Some("api"),
+                kind: None,
+                status: None,
+                cursor: Some("op-5"),
+                limit: 10,
+            })
+            .unwrap();
+        assert_eq!(
+            instance_second
+                .iter()
+                .map(|operation| operation.id.as_str())
+                .collect::<Vec<_>>(),
+            ["op-3"]
+        );
         let legacy_start = store
             .operations(&OperationQuery {
                 deployment: None,
+                instance: None,
                 kind: Some("apply"),
                 status: None,
                 cursor: None,
@@ -3119,10 +3211,12 @@ mod tests {
             })
             .unwrap();
         assert_eq!(legacy_start[0].id, "op-0");
+        assert_eq!(legacy_start[0].instance, None);
         assert_eq!(
             store
                 .operations(&OperationQuery {
                     deployment: None,
+                    instance: None,
                     kind: None,
                     status: None,
                     cursor: Some("missing"),
@@ -3143,6 +3237,7 @@ mod tests {
             .start_operation(&OperationRecord {
                 id: "operation-1".into(),
                 deployment: "demo".into(),
+                instance: None,
                 kind: OperationKind::Build,
                 status: OperationStatus::Running,
                 started_at: 1,

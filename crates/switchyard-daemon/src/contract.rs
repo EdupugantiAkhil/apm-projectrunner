@@ -177,6 +177,9 @@ pub struct OperationV1 {
     pub api_version: String,
     pub id: String,
     pub deployment: String,
+    /// Single instance targeted by the operation, or null for deployment-wide/legacy records.
+    #[serde(default)]
+    pub instance: Option<String>,
     pub kind: CommandKind,
     /// True when the operation stops or deletes runtime state.
     pub destructive: bool,

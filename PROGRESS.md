@@ -7,7 +7,34 @@ Updated: 2026-07-25
 - Routing proof (Phases 0–4): complete.
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
-- Web UI plan (`docs/web-ui-plan.md`): Parts 1 through 11 and follow-up Part 11a complete.
+- Web UI plan (`docs/web-ui-plan.md`): Parts 1 through 11 and follow-up Parts 11a–11b complete.
+
+## 2026-07-25 web UI Part 11b — instance-scoped operations
+
+- Added ordered schema migration 008 and bumped the state schema to version 8. Operations now
+  carry a nullable `instance` column plus an instance/time cursor index; opening an existing v7
+  database creates the documented pre-migration backup before applying the column and index.
+- Preserved honest legacy semantics: rows written before migration 008 remain readable with
+  `instance` null. Null means the operation is not attributed to one specific instance, whether
+  because it is deployment-wide, its target could not be validated, or it predates attribution.
+- Persist genuine instance scope for bind consumers, validated logs targets (`instance` or
+  `instance/component`), and managed-profile opens whose profile name is also an authored instance.
+  Deployment-wide commands and structured/shell run actions remain null rather than inventing scope.
+- Added exact instance filtering in state and daemon operation lists while preserving newest-first
+  `(startedAt, id)` cursor pagination. Operation responses now expose nullable `instance`; the old
+  `unsupported_operation_filter` rejection has been removed.
+- The inspector requests the selected instance's durable operation page and shows instance-scoped
+  records only. Deployment-wide and legacy null rows are deliberately not blended because they do
+  not identify which instance they affected; an instance with no attributed rows gets an explicit
+  empty state.
+- Added state coverage for v7 migration backup, legacy null readability, exact filtering, and
+  filtered cursor pagination; daemon coverage for a genuinely targeted logs operation; and web
+  coverage for filtered rendering and the honest empty state.
+- Verification: `cargo fmt --all --check` passed with no output; workspace Clippy with all targets
+  and warnings denied passed; `cargo test --workspace` passed across 53 test/doc-test binaries with
+  276 tests passing and the five declared reliability tests ignored; `npx tsc -b` passed with no
+  output; `npm run lint` exited zero with exactly the four pre-existing exhaustive-dependencies
+  warnings; all 40 web tests passed across three files.
 
 ## 2026-07-25 web UI Part 11a — per-service resource attribution
 
@@ -49,10 +76,10 @@ Updated: 2026-07-25
   persistence, and the inspector uses them for per-service state, health, and placement without
   matching resource names. Legacy resource rows recorded before Part 11a remain explicitly
   unavailable until observed again because their missing attribution cannot be honestly backfilled.
-- Scope caveat: persisted operation records have no instance field and the daemon rejects an
-  `instance` filter. The inspector explicitly shows the five most recent loaded deployment-
-  scoped operations as an approximation; it neither sends the rejected filter nor infers scope
-  by matching operation IDs or output text.
+- Closed by Part 11b: operation records now have nullable instance attribution, the daemon
+  supports an exact persisted `instance` filter, and the inspector requests only the selected
+  instance's operations. Deployment-wide and legacy null-instance rows remain readable but are
+  explicitly excluded rather than blended into the instance list.
 - Added coverage for the single-inspector invariant, patch-bay selection updating that same
   inspector, authored and observed placement, expanded service inventory and its explicit
   unavailable observations, active connections, startup-profile provenance absence, and the

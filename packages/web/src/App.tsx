@@ -53,6 +53,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
   const [profileSourceErrors, setProfileSourceErrors] = useState<Array<{ source: string; message: string }>>([])
   const [runActions, setRunActions] = useState<RunActionsResponse | null>(null)
   const [operations, setOperations] = useState<Operation[]>([])
+  const [instanceOperations, setInstanceOperations] = useState<Operation[]>([])
   const [events, setEvents] = useState<OperationEvent[]>([])
   const [drawerOpen, setDrawerOpen] = useState(true)
   const [deploymentFilter, setDeploymentFilter] = useState('')
@@ -87,10 +88,18 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
     if (!selected) { setDetail(null); setRoutes(null); return }
     void loadSelected().catch(report)
   }, [selected])
+  useEffect(() => {
+    setInstanceOperations([])
+    if (!selected || !selectedInstance) return
+    let active = true
+    void client.operations({ deployment: selected, instance: selectedInstance }).then((response) => { if (active) setInstanceOperations(response.operations) }).catch((value) => { if (active) setError(value instanceof ApiError ? `${value.code}: ${value.message}` : String(value)) })
+    return () => { active = false }
+  }, [client, selected, selectedInstance])
   useEffect(() => () => { for (const subscription of subscriptions.current.values()) subscription.close() }, [])
 
   const observe = (started: Operation): Promise<Operation | null> => {
     setOperations((current) => [started, ...current.filter((item) => item.id !== started.id)])
+    if (started.deployment === selected && started.instance === selectedInstance) setInstanceOperations((current) => [started, ...current.filter((item) => item.id !== started.id)])
     setNotice(`${started.kind} ${started.status}`)
     const subscription = client.subscribe(started.id, (event) => {
       setEvents((current) => [...current, event])
@@ -99,6 +108,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
     subscriptions.current.set(started.id, subscription)
     return client.pollOperation(started.id).then((finished) => {
       setOperations((current) => current.map((item) => item.id === finished.id ? finished : item))
+      setInstanceOperations((current) => current.map((item) => item.id === finished.id ? finished : item))
       setNotice(`${finished.kind} ${finished.status}`)
       subscription.close()
       subscriptions.current.delete(finished.id)
@@ -168,7 +178,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
     </main>
     <aside className="inspector" aria-label="Inspector">
       <h2>Inspector</h2>
-      {detail ? <DeploymentInspector client={client} detail={detail} routes={routes} operations={operations} selectedInstance={selectedInstance} onOperation={observe} refresh={async () => { await loadSelected(); await loadDeployments() }} report={report} /> : <p className="muted">Select a deployment</p>}
+      {detail ? <DeploymentInspector client={client} detail={detail} routes={routes} operations={instanceOperations} selectedInstance={selectedInstance} onOperation={observe} refresh={async () => { await loadSelected(); await loadDeployments() }} report={report} /> : <p className="muted">Select a deployment</p>}
     </aside>
     <section className={`event-drawer ${drawerOpen ? 'open' : ''}`} aria-label="Events and logs">
       <header><button aria-expanded={drawerOpen} onClick={() => setDrawerOpen((value) => !value)}>Events & logs {drawerOpen ? '▾' : '▴'}</button><label>Deployment <select value={deploymentFilter} onChange={(event) => setDeploymentFilter(event.target.value)}><option value="">All</option>{deployments.map((deployment) => <option key={deployment.name}>{deployment.name}</option>)}</select></label><label>Filter events and logs <input value={textFilter} onChange={(event) => setTextFilter(event.target.value)} /></label><button onClick={() => void navigator.clipboard?.writeText(visibleEvents.map(eventText).join('\n'))}>Copy plain text</button></header>
@@ -196,12 +206,12 @@ function DeploymentInspector({ client, detail, routes, operations, selectedInsta
   const stopped = stoppedDiagnostic(detail); const spec = detail.snapshot?.spec
   const instance = spec?.instances?.find((item) => item.name === selectedInstance)
   if (selectedInstance && instance) {
-    const identity = detail.sourceIdentities[selectedInstance]; const block = instance.block ? spec?.blocks?.[instance.block] : undefined; const services = Object.keys(block?.services ?? {}); const observedDevices = observedPlacement(detail, selectedInstance); const connections = activeConnections(spec ?? {}, selectedInstance); const recent = operations.filter((operation) => operation.deployment === detail.deployment).slice(0, 5)
+    const identity = detail.sourceIdentities[selectedInstance]; const block = instance.block ? spec?.blocks?.[instance.block] : undefined; const services = Object.keys(block?.services ?? {}); const observedDevices = observedPlacement(detail, selectedInstance); const connections = activeConnections(spec ?? {}, selectedInstance); const recent = operations.slice(0, 5)
     return <section className="instance-inspector" aria-label={`Selected instance ${selectedInstance}`}><p className="eyebrow">Instance</p><h3>{selectedInstance}</h3><dl><dt>Startup profile</dt><dd>unavailable — the applied snapshot records only the expanded block</dd><dt>Expanded block</dt><dd className="mono">{instance.block ?? 'not recorded'}</dd><dt>Authored placement</dt><dd className="mono">{instance.device ?? 'local'}</dd><dt>Observed placement</dt><dd className="mono">{observedDevices.length ? observedDevices.join(', ') : 'not observed'}</dd><dt>Source</dt><dd className="mono">{instance.source ?? 'not recorded'}</dd>{identity && <><dt>Path</dt><dd className="mono">{identity.path}</dd><dt>Ref</dt><dd className="mono">{identity.ref ?? 'detached'}</dd><dt>Commit</dt><dd className="mono">{short(identity.commit)}</dd></>}</dl>
       <h3>Expanded services</h3><p className="help">Service names come from the applied snapshot. Observed state, health, and placement use the persisted instance and service ownership labels; resources recorded before those labels were retained remain honestly unavailable until observed again.</p>{services.length ? <ul className="inspector-services">{services.map((service) => { const observed = observedService(detail, selectedInstance, service); return <li key={service}><strong>{service}</strong><dl><dt>State</dt><dd>{observed.state}</dd><dt>Health</dt><dd>{observed.health}</dd><dt>Resource placement</dt><dd>{observed.placement}</dd></dl></li> })}</ul> : <p className="muted">No services are declared by this expanded block.</p>}
       <h3>Active connections</h3>{connections.length ? <ul>{connections.map((connection) => <li key={`${connection.direction}-${connection.consumer}-${connection.slot}-${connection.provider}`}><strong>{connection.direction === 'consumes' ? 'Consumes' : 'Provides'}</strong> <span className="mono">{connection.consumer} / {connection.slot} → {connection.provider}</span></li>)}</ul> : <p className="muted">No active connections for this instance.</p>}
       {!stopped && <InstanceBindingEditor client={client} detail={detail} routes={routes} instance={selectedInstance} onOperation={onOperation} refresh={refresh} report={report} />}
-      <h3>Recent operations</h3><p className="help">Instance scoping is unavailable because persisted operations have no instance field. Showing the five most recent loaded operations for deployment <span className="mono">{detail.deployment}</span>; no rejected instance filter or output-text inference is used.</p>{recent.length ? <ol className="inspector-operations">{recent.map((operation) => <li key={operation.id}><strong>{operation.kind}</strong> — {operation.status}<br /><span className="mono">{operation.id}</span></li>)}</ol> : <p className="muted">No loaded operations for this deployment.</p>}
+      <h3>Recent operations</h3><p className="help">Only operations durably attributed to instance <span className="mono">{selectedInstance}</span> are shown. Deployment-wide operations and legacy records whose instance is null are not blended into this list.</p>{recent.length ? <ol className="inspector-operations">{recent.map((operation) => <li key={operation.id}><strong>{operation.kind}</strong> — {operation.status}<br /><span className="mono">{operation.id}</span></li>)}</ol> : <p className="muted">No instance-scoped operations recorded for {selectedInstance}.</p>}
     </section>
   }
   return <><p className="eyebrow">Deployment</p><h3>{detail.deployment}</h3><p className="muted">Select Inspect on an instance card or select an instance in the runtime patch bay for per-instance details.</p><dl><dt>State</dt><dd>{stopped ? 'Stopped / cleaned up' : 'Active'}</dd><dt>Definition</dt><dd className="mono">{short(detail.definitionHash)}</dd><dt>Resources</dt><dd className="mono">{short(detail.resourceHash)}</dd><dt>Drift</dt><dd>{detail.reconciliation.diagnostics.length ? `${detail.reconciliation.diagnostics.length} warnings` : 'Reconciled'}</dd></dl>

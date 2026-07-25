@@ -115,6 +115,7 @@ returns at most 50 records:
       "apiVersion": "v1",
       "id": "op-...",
       "deployment": "demo",
+      "instance": null,
       "kind": "cleanup",
       "destructive": true,
       "status": "succeeded",
@@ -128,19 +129,26 @@ returns at most 50 records:
 }
 ```
 
-`deployment`, `kind`, and `status` are exact-match query filters backed by the persisted
-`deployment_id`, `kind`, and `status` columns. `kind` accepts the command names in the
-table above; persisted stop records are exposed and filtered as `down`. Pass the returned
-`nextCursor` as `cursor` to fetch records older than that operation's stable
-`(startedAt, id)` boundary. `nextCursor` is null when there is no older page; an unknown
-cursor returns HTTP 400 `operation_cursor_not_found`. Each record's `destructive` field is
-computed by the daemon and is true for `cleanup` and `down`. Durable list records always
-have a null `result`, because stdout and stderr are intentionally memory-only.
+`deployment`, `instance`, `kind`, and `status` are exact-match query filters backed by the
+persisted `deployment_id`, nullable `instance`, `kind`, and `status` columns. `kind` accepts
+the command names in the table above; persisted stop records are exposed and filtered as
+`down`. Filters compose with AND semantics. Pass the returned `nextCursor` as `cursor` to
+fetch records older than that operation's stable `(startedAt, id)` boundary. Cursor
+pagination keeps the same boundary while filters are active. `nextCursor` is null when
+there is no older page; an unknown cursor returns HTTP 400
+`operation_cursor_not_found`. Each record's `destructive` field is computed by the daemon
+and is true for `cleanup` and `down`. Durable list records always have a null `result`,
+because stdout and stderr are intentionally memory-only.
 
-The `instance` query parameter is reserved but currently returns HTTP 400
-`unsupported_operation_filter`: the operations table has no instance column, so the daemon
-does not infer or invent one. A schema change is required before that filter can be
-implemented truthfully.
+`instance` is populated only when one specific authored instance is genuinely identified:
+bind uses its consumer instance; logs uses the instance portion of a validated
+`instance` or `instance/component` target; and open uses the managed-profile name only when
+that name is also an authored instance in the loaded bundle. Deployment-wide commands
+(validate, plan, apply, status, routes, down, and cleanup), structured or shell run actions,
+deployment-wide logs, invalid/unresolvable targets, and operation rows written before
+schema version 8 have `instance: null`. Null means "not attributed to one instance"; it is
+never inferred from operation IDs or output. An `instance` filter therefore excludes null
+rows rather than mis-attributing them.
 
 Definition creation accepts `{ "name": "demo", "yaml": "..." }`. Setting
 `"validateOnly": true` runs the identical planner load/validate/plan path and returns

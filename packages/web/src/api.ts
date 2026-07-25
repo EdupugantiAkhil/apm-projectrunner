@@ -19,6 +19,7 @@ export interface Operation {
   apiVersion: string
   id: string
   deployment: string
+  instance: string | null
   kind: CommandKind
   destructive: boolean
   status: OperationStatus

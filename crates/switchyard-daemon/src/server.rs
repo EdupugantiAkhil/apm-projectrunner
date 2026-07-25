@@ -4031,6 +4031,51 @@ impl OperationInvocation {
             ) => false,
         }
     }
+
+    fn instance(&self, kind: CommandKind, project_root: &Path) -> Option<String> {
+        let (bundle, candidate, require_managed_profile) = match self {
+            Self::Command { request, .. } => match kind {
+                CommandKind::Bind => (
+                    request.bundle.as_path(),
+                    request.consumer.as_deref()?,
+                    false,
+                ),
+                CommandKind::Logs => {
+                    let target = request.target.as_deref()?;
+                    let instance = target
+                        .split_once('/')
+                        .map_or(target, |(instance, _)| instance);
+                    (request.bundle.as_path(), instance, false)
+                }
+                CommandKind::Open => (request.bundle.as_path(), request.ui.as_deref()?, true),
+                _ => return None,
+            },
+            Self::RunAction(switchyard_run_actions::OperationSpec::Bind {
+                bundle,
+                consumer,
+                ..
+            }) => (bundle.as_path(), consumer.as_str(), false),
+            Self::RunAction(
+                switchyard_run_actions::OperationSpec::Structured { .. }
+                | switchyard_run_actions::OperationSpec::Shell(_),
+            ) => return None,
+        };
+        let bundle = if bundle.is_absolute() {
+            bundle.to_owned()
+        } else {
+            project_root.join(bundle)
+        };
+        let bundle = switchyard_planner::load_bundle(&bundle).ok()?;
+        if require_managed_profile && !bundle.spec.managed_profiles.contains_key(candidate) {
+            return None;
+        }
+        bundle
+            .spec
+            .instances
+            .iter()
+            .any(|instance| instance.name == candidate)
+            .then(|| candidate.to_owned())
+    }
 }
 
 async fn begin_operation(
@@ -4077,10 +4122,12 @@ async fn begin_operation(
     } else {
         None
     };
+    let instance = invocation.instance(kind, &inner.config.project_root);
     let operation = OperationV1 {
         api_version: API_VERSION.into(),
         id: id.clone(),
         deployment: deployment.clone(),
+        instance: instance.clone(),
         kind,
         destructive: operation_is_destructive(kind),
         status: OperationStatusV1::Pending,
@@ -4096,6 +4143,7 @@ async fn begin_operation(
         .start_operation(&OperationRecord {
             id: id.clone(),
             deployment,
+            instance,
             kind: state_kind(kind),
             status: OperationStatus::Pending,
             started_at,
@@ -4500,13 +4548,6 @@ async fn list_operations(
     State(inner): State<Arc<Inner>>,
     Query(query): Query<OperationsQuery>,
 ) -> Response {
-    if query.instance.is_some() {
-        return api_error(
-            StatusCode::BAD_REQUEST,
-            "unsupported_operation_filter",
-            "operation records do not persist an instance field",
-        );
-    }
     let kind = match query.kind.as_deref() {
         Some(value) => match parse_kind(value) {
             Some(kind) => Some(kind),
@@ -4536,6 +4577,7 @@ async fn list_operations(
         .unwrap_or_else(|error| error.into_inner())
         .operations(&OperationQuery {
             deployment: query.deployment.as_deref(),
+            instance: query.instance.as_deref(),
             kind: stored_kind,
             status: query.status.as_deref(),
             cursor: query.cursor.as_deref(),
@@ -4849,6 +4891,7 @@ fn operation_from_stored(
         api_version: API_VERSION.into(),
         id: stored.id,
         deployment: stored.deployment,
+        instance: stored.instance,
         kind,
         destructive: operation_is_destructive(kind),
         status,

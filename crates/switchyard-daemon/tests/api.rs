@@ -870,17 +870,27 @@ async fn durable_operation_list_filters_and_marks_destructive_records() {
     let temp = TempDir::new().unwrap();
     let state_path = temp.path().join(".switchyard/state.sqlite3");
     let (store, _) = StateStore::open(&state_path).unwrap();
-    for (id, deployment, kind, status, started_at) in [
+    for (id, deployment, instance, kind, status, started_at) in [
         (
             "op-cleanup",
             "demo",
+            None,
             OperationKind::Cleanup,
             OperationStatus::Failed,
             40,
         ),
         (
+            "op-logs",
+            "demo",
+            Some("api"),
+            OperationKind::Other("logs".into()),
+            OperationStatus::Succeeded,
+            35,
+        ),
+        (
             "op-down",
             "demo",
+            None,
             OperationKind::Stop,
             OperationStatus::Succeeded,
             30,
@@ -888,6 +898,7 @@ async fn durable_operation_list_filters_and_marks_destructive_records() {
         (
             "op-bind",
             "other",
+            Some("api"),
             OperationKind::Bind,
             OperationStatus::Succeeded,
             20,
@@ -895,6 +906,7 @@ async fn durable_operation_list_filters_and_marks_destructive_records() {
         (
             "op-apply",
             "demo",
+            None,
             OperationKind::Apply,
             OperationStatus::Succeeded,
             10,
@@ -904,6 +916,7 @@ async fn durable_operation_list_filters_and_marks_destructive_records() {
             .start_operation(&OperationRecord {
                 id: id.into(),
                 deployment: deployment.into(),
+                instance: instance.map(str::to_owned),
                 kind,
                 status,
                 started_at,
@@ -951,16 +964,53 @@ async fn durable_operation_list_filters_and_marks_destructive_records() {
         &api,
         Some(&api.token),
         "GET",
-        "/api/v1/operations?instance=api",
+        "/api/v1/operations?deployment=demo&instance=api",
         None,
         &[],
     )
     .await;
-    assert_eq!(status, 400);
+    assert_eq!(status, 200);
+    let page: OperationsV1 = json_body(&body);
+    assert_eq!(page.operations.len(), 1);
+    assert_eq!(page.operations[0].id, "op-logs");
+    assert_eq!(page.operations[0].instance.as_deref(), Some("api"));
+}
+
+#[tokio::test]
+async fn instance_targeted_logs_operation_is_recorded_and_filterable() {
+    let temp = TempDir::new().unwrap();
+    let api = start_api(&temp, Arc::new(ImmediateBackend), 1);
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/commands/logs",
+        Some(json!({"bundle": fixture(), "target": "consumer-a/api"})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 202);
+    let operation: OperationV1 = json_body(&body);
+    assert_eq!(operation.instance.as_deref(), Some("consumer-a"));
     assert_eq!(
-        json_body::<Value>(&body)["code"],
-        "unsupported_operation_filter"
+        wait_terminal(&api, &operation.id).await.instance.as_deref(),
+        Some("consumer-a")
     );
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "GET",
+        "/api/v1/operations?deployment=comparison&instance=consumer-a",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let page: OperationsV1 = json_body(&body);
+    assert_eq!(page.operations.len(), 1);
+    assert_eq!(page.operations[0].id, operation.id);
+    assert_eq!(page.operations[0].instance.as_deref(), Some("consumer-a"));
 }
 
 #[tokio::test]
@@ -973,6 +1023,7 @@ async fn durable_operation_list_cursor_returns_the_next_older_page() {
             .start_operation(&OperationRecord {
                 id: format!("op-{index:03}"),
                 deployment: "demo".into(),
+                instance: None,
                 kind: OperationKind::Other("validate".into()),
                 status: OperationStatus::Succeeded,
                 started_at: index,
@@ -1591,6 +1642,7 @@ async fn deployment_list_and_detail_include_applied_manifest_and_reconciliation(
         .start_operation(&OperationRecord {
             id: "op-1".into(),
             deployment: "demo".into(),
+            instance: None,
             kind: OperationKind::Apply,
             status: OperationStatus::Succeeded,
             started_at: 11,
