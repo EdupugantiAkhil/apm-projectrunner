@@ -7,7 +7,24 @@ Updated: 2026-07-25
 - Routing proof (Phases 0–4): complete.
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
-- Web UI plan (`docs/web-ui-plan.md`): Parts 1 through 9 complete.
+- Web UI plan (`docs/web-ui-plan.md`): Parts 1 through 10 complete.
+
+## 2026-07-25 web UI Part 10 — rich operation and log filtering
+
+- Added one accessible, case-insensitive free-text filter to the event drawer. It composes
+  with the existing deployment selector using AND semantics and matches each visible output
+  line plus its parent operation's deployment, command kind (the available operation label),
+  and operation ID. Copy plain text continues to serialize exactly that filtered event set.
+- Scope caveat: emitted operation events contain only `line` and `stderr` metadata, while the
+  durable parent operation provides deployment, kind, and ID. There are no structured instance
+  or service fields to filter. Instance/service searching therefore honestly matches those names
+  when they occur in the output line; no daemon fields or inferred metadata were fabricated.
+- Added timeline markers driven solely by `Operation.destructive`; the client does not maintain
+  a destructive command-kind list. Added web coverage for case-insensitive narrowing,
+  deployment-plus-text composition, filtered copying, and marker presence/absence from the field.
+- Verification: `npx tsc -b` passed with no output; `npm run lint` exited zero with exactly the
+  four pre-existing exhaustive-dependencies warnings in `App.tsx` and `DeploymentBuilder.tsx`;
+  all 36 web tests passed across three files; `cargo fmt --check` passed with no output.
 
 ## 2026-07-25 web UI Part 9 — project run actions (partial scope)
 

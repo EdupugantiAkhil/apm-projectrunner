@@ -230,6 +230,45 @@ describe('Switchyard GUI', () => {
     expect((await screen.findAllByText('succeeded')).length).toBeGreaterThan(0)
   })
 
+  it('narrows the event drawer with a case-insensitive free-text filter', async () => {
+    const user = userEvent.setup()
+    render(<App client={new ApiClient('test')} />)
+    await screen.findByRole('heading', { name: 'comparison', level: 1 }); await user.click(screen.getByRole('button', { name: 'Validate' }))
+    MockEventSource.instances[0].emit({ id: 1, operationId: 'op-new', kind: 'log', timestamp: 10, data: { line: 'api-service ready on ui-feature' } })
+    MockEventSource.instances[0].emit({ id: 2, operationId: 'op-new', kind: 'log', timestamp: 11, data: { line: 'worker queue drained' } })
+    expect(await screen.findByText(/api-service ready/)).toBeInTheDocument(); expect(screen.getByText(/worker queue drained/)).toBeInTheDocument()
+    await user.type(screen.getByLabelText('Filter events and logs'), 'API-SERVICE')
+    expect(screen.getByText(/api-service ready/)).toBeInTheDocument(); expect(screen.queryByText(/worker queue drained/)).not.toBeInTheDocument()
+  })
+
+  it('composes the deployment select and free-text event filters', async () => {
+    const user = userEvent.setup(); const client = new ApiClient('test'); const summaries = [{ name: 'comparison', definitionHash: 'definition123', resourceHash: 'resource123', appliedAt: 1, lastOperation: null, customDomains: [], bindings: {} }, { name: 'staging', definitionHash: 'definition456', resourceHash: 'resource456', appliedAt: 2, lastOperation: null, customDomains: [], bindings: {} }]
+    vi.spyOn(client, 'deployments').mockResolvedValue({ apiVersion: 'v1', deployments: summaries }); vi.spyOn(client, 'deployment').mockImplementation(async (name) => ({ ...deployment, deployment: name, reconciliation: { ...deployment.reconciliation, deployment: name } })); vi.spyOn(client, 'routes').mockImplementation(async (name) => ({ ...routeState, deployment: name }))
+    vi.spyOn(client, 'command').mockImplementation(async (_kind, bundle) => ({ apiVersion: 'v1', id: bundle.includes('staging') ? 'op-staging' : 'op-comparison', deployment: bundle.includes('staging') ? 'staging' : 'comparison', kind: 'validate', destructive: false, status: 'running', startedAt: 10, finishedAt: null, error: null, result: null })); vi.spyOn(client, 'pollOperation').mockImplementation(async (id) => ({ apiVersion: 'v1', id, deployment: id === 'op-staging' ? 'staging' : 'comparison', kind: 'validate', destructive: false, status: 'succeeded', startedAt: 10, finishedAt: 11, error: null, result: { exitCode: 0, stdout: '', stderr: '' } }))
+    render(<App client={client} />); await screen.findByRole('heading', { name: 'comparison', level: 1 }); await user.click(screen.getByRole('button', { name: 'Validate' })); MockEventSource.instances[0].emit({ id: 1, operationId: 'op-comparison', kind: 'log', timestamp: 10, data: { line: 'shared service comparison output' } })
+    await user.click(screen.getByRole('button', { name: /^staging/ })); await screen.findByRole('heading', { name: 'staging', level: 1 }); await user.click(screen.getByRole('button', { name: 'Validate' })); MockEventSource.instances[1].emit({ id: 2, operationId: 'op-staging', kind: 'log', timestamp: 11, data: { line: 'shared service staging output' } })
+    await user.selectOptions(screen.getByLabelText('Deployment'), 'staging'); await user.type(screen.getByLabelText('Filter events and logs'), 'shared service')
+    expect(screen.getByText(/shared service staging output/)).toBeInTheDocument(); expect(screen.queryByText(/shared service comparison output/)).not.toBeInTheDocument()
+    await user.clear(screen.getByLabelText('Filter events and logs')); await user.type(screen.getByLabelText('Filter events and logs'), 'comparison')
+    expect(screen.queryByText(/shared service comparison output/)).not.toBeInTheDocument(); expect(screen.queryByText(/shared service staging output/)).not.toBeInTheDocument()
+  })
+
+  it('copies exactly the free-text-filtered event set as plain text', async () => {
+    const user = userEvent.setup(); const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue()
+    render(<App client={new ApiClient('test')} />)
+    await screen.findByRole('heading', { name: 'comparison', level: 1 }); await user.click(screen.getByRole('button', { name: 'Validate' }))
+    MockEventSource.instances[0].emit({ id: 1, operationId: 'op-new', kind: 'log', timestamp: 10, data: { line: 'include api-service output' } }); MockEventSource.instances[0].emit({ id: 2, operationId: 'op-new', kind: 'log', timestamp: 11, data: { line: 'exclude worker output' } })
+    await user.type(screen.getByLabelText('Filter events and logs'), 'api-service'); await user.click(screen.getByRole('button', { name: 'Copy plain text' }))
+    expect(writeText).toHaveBeenCalledWith('include api-service output')
+  })
+
+  it('renders destructive timeline markers only from the operation field', async () => {
+    const user = userEvent.setup(); const client = new ApiClient('test'); vi.spyOn(client, 'operations').mockResolvedValue({ apiVersion: 'v1', operations: [{ apiVersion: 'v1', id: 'op-destructive', deployment: 'comparison', kind: 'cleanup', destructive: true, status: 'succeeded', startedAt: 5, finishedAt: 6, error: null, result: null }, { apiVersion: 'v1', id: 'op-safe', deployment: 'comparison', kind: 'down', destructive: false, status: 'succeeded', startedAt: 3, finishedAt: 4, error: null, result: null }], nextCursor: null })
+    render(<App client={client} />); await user.click(within(screen.getByRole('navigation', { name: 'Main views' })).getByRole('button', { name: 'operations' }))
+    const destructiveRow = (await screen.findByText('op-destructive')).closest('li')!; const safeRow = screen.getByText('op-safe').closest('li')!
+    expect(within(destructiveRow).getByText('Destructive')).toBeInTheDocument(); expect(within(safeRow).queryByText('Destructive')).not.toBeInTheDocument()
+  })
+
   it('switches shell views with keyboard arrow navigation', async () => {
     const user = userEvent.setup()
     render(<App client={new ApiClient('test')} />)

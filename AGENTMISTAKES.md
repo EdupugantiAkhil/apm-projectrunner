@@ -1,5 +1,12 @@
 # Agent mistakes and lessons
 
+## 2026-07-25 — Deployment rail button names include visible status text
+
+- The first Part 10 composition test queried the staging rail button by the exact name
+  `staging`, but its accessible name also includes the visible `unknown` status. Correction:
+  match the stable deployment-name prefix. Lesson: queries for composite controls must account
+  for all visible child text, while still anchoring on the stable identifying portion.
+
 ## 2026-07-25 — Additive API modes must preserve the original lookup path
 
 - The first guided-authoring extension always resolved the requested deployment through the

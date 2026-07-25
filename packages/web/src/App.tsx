@@ -49,7 +49,8 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
   const [operations, setOperations] = useState<Operation[]>([])
   const [events, setEvents] = useState<OperationEvent[]>([])
   const [drawerOpen, setDrawerOpen] = useState(true)
-  const [filter, setFilter] = useState('')
+  const [deploymentFilter, setDeploymentFilter] = useState('')
+  const [textFilter, setTextFilter] = useState('')
   const [notice, setNotice] = useState('Ready')
   const [error, setError] = useState('')
   const subscriptions = useRef<Map<string, { close(): void }>>(new Map())
@@ -121,7 +122,11 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
     if (next === 'run-actions') void loadRunActions()
     event.preventDefault()
   }
-  const visibleEvents = events.filter((event) => !filter || operations.find((operation) => operation.id === event.operationId)?.deployment === filter)
+  const eventQuery = textFilter.trim().toLocaleLowerCase()
+  const visibleEvents = events.filter((event) => {
+    const operation = operations.find((item) => item.id === event.operationId)
+    return (!deploymentFilter || operation?.deployment === deploymentFilter) && (!eventQuery || [eventText(event), operation?.deployment, operation?.kind, operation?.id].some((value) => value?.toLocaleLowerCase().includes(eventQuery)))
+  })
 
   return <div className="app-shell">
     <aside className="rail" aria-label="Deployment rail">
@@ -159,7 +164,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
       {detail ? <DeploymentInspector detail={detail} /> : <p className="muted">Select a deployment</p>}
     </aside>
     <section className={`event-drawer ${drawerOpen ? 'open' : ''}`} aria-label="Events and logs">
-      <header><button aria-expanded={drawerOpen} onClick={() => setDrawerOpen((value) => !value)}>Events & logs {drawerOpen ? '▾' : '▴'}</button><label>Deployment <select value={filter} onChange={(event) => setFilter(event.target.value)}><option value="">All</option>{deployments.map((deployment) => <option key={deployment.name}>{deployment.name}</option>)}</select></label><button onClick={() => void navigator.clipboard?.writeText(visibleEvents.map(eventText).join('\n'))}>Copy plain text</button></header>
+      <header><button aria-expanded={drawerOpen} onClick={() => setDrawerOpen((value) => !value)}>Events & logs {drawerOpen ? '▾' : '▴'}</button><label>Deployment <select value={deploymentFilter} onChange={(event) => setDeploymentFilter(event.target.value)}><option value="">All</option>{deployments.map((deployment) => <option key={deployment.name}>{deployment.name}</option>)}</select></label><label>Filter events and logs <input value={textFilter} onChange={(event) => setTextFilter(event.target.value)} /></label><button onClick={() => void navigator.clipboard?.writeText(visibleEvents.map(eventText).join('\n'))}>Copy plain text</button></header>
       {drawerOpen && <div className="log-lines" role="log">{visibleEvents.length ? visibleEvents.map((event) => <div key={`${event.operationId}-${event.id}`}><time>{new Date(event.timestamp).toLocaleTimeString()}</time> <b>{event.kind}</b> {eventText(event)}</div>) : <p>No events yet.</p>}</div>}
     </section>
     <div className="sr-only" aria-live="polite" aria-atomic="true">{notice}</div>
@@ -227,7 +232,7 @@ function DevicesView({ client, devices, loading, reload, report }: { client: Api
 }
 
 function OperationsView({ operations, onCancel }: { operations: Operation[]; onCancel: (id: string) => void }) {
-  return <section><h1>Operations</h1>{operations.length === 0 ? <p>No durable operations recorded.</p> : <ol className="timeline">{operations.map((operation) => <li key={operation.id}><div><span className={`status-dot status-${operation.status}`} /> <strong>{operation.kind}</strong> <span>{operation.status}</span><p className="mono">{operation.id}</p><time>{new Date(operation.startedAt).toLocaleString()}</time>{operation.result && operation.result.exitCode !== 0 && <div className="operation-error"><p>Failed command: {operation.kind}</p><p>Exit code: {operation.result.exitCode}</p><pre>{operation.result.stderr.split('\n').slice(-12).join('\n')}</pre></div>}</div>{!terminal(operation.status) && <button onClick={() => onCancel(operation.id)}>Cancel</button>}</li>)}</ol>}</section>
+  return <section><h1>Operations</h1>{operations.length === 0 ? <p>No durable operations recorded.</p> : <ol className="timeline">{operations.map((operation) => <li key={operation.id}><div><span className={`status-dot status-${operation.status}`} /> <strong>{operation.kind}</strong> <span>{operation.status}</span>{operation.destructive && <span className="destructive-marker">Destructive</span>}<p className="mono">{operation.id}</p><time>{new Date(operation.startedAt).toLocaleString()}</time>{operation.result && operation.result.exitCode !== 0 && <div className="operation-error"><p>Failed command: {operation.kind}</p><p>Exit code: {operation.result.exitCode}</p><pre>{operation.result.stderr.split('\n').slice(-12).join('\n')}</pre></div>}</div>{!terminal(operation.status) && <button onClick={() => onCancel(operation.id)}>Cancel</button>}</li>)}</ol>}</section>
 }
 
 function eventText(event: OperationEvent) { return String(event.data.line ?? event.data.message ?? JSON.stringify(event.data)) }
