@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -85,6 +85,49 @@ struct ImmediateBackend;
 
 struct LockLossBackend {
     cancelled: Arc<AtomicBool>,
+}
+
+#[derive(Default)]
+struct RunActionBackend {
+    invocations: Arc<Mutex<Vec<switchyard_run_actions::OperationSpec>>>,
+}
+
+impl OperationBackend for RunActionBackend {
+    fn run(
+        &self,
+        _kind: CommandKind,
+        _arguments: Vec<String>,
+        _cancellation: watch::Receiver<bool>,
+        _events: EventSink,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<BackendOutcome, switchyard_daemon::contract::ApiErrorV1>>
+                + Send,
+        >,
+    > {
+        Box::pin(async { unreachable!("run actions use the dedicated backend hook") })
+    }
+
+    fn run_action(
+        &self,
+        spec: switchyard_run_actions::OperationSpec,
+        _cancellation: watch::Receiver<bool>,
+        _events: EventSink,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<BackendOutcome, switchyard_daemon::contract::ApiErrorV1>>
+                + Send,
+        >,
+    > {
+        self.invocations.lock().unwrap().push(spec);
+        Box::pin(async {
+            Ok(BackendOutcome::Completed(CommandResultV1 {
+                exit_code: 0,
+                stdout: "run action completed\n".into(),
+                stderr: String::new(),
+            }))
+        })
+    }
 }
 
 impl OperationBackend for LockLossBackend {
@@ -395,6 +438,199 @@ async fn wait_terminal(api: &TestApi, id: &str) -> OperationV1 {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+#[tokio::test]
+async fn run_actions_list_structured_crud_reject_shell_authoring_and_gate_shell_execution() {
+    let temp = TempDir::new().unwrap();
+    fs::create_dir_all(temp.path().join(".switchyard")).unwrap();
+    fs::write(
+        temp.path().join(switchyard_run_actions::FILE_NAME),
+        "- name: existing shell\n  description: existing terminal-only action\n  shell: printf shell\n",
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("deployment.yaml"),
+        "apiVersion: switchyard.dev/v1alpha1\nkind: Deployment\nmetadata:\n  name: demo\nspec: {}\n",
+    )
+    .unwrap();
+    let backend = Arc::new(RunActionBackend::default());
+    let api = start_api(&temp, backend.clone(), 1);
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "GET",
+        "/api/v1/run-actions",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let listed: Value = json_body(&body);
+    assert_eq!(listed["actions"][0]["type"], "shell");
+    assert_eq!(listed["shellNoticeAcknowledged"], false);
+
+    let structured = json!({
+        "name": "dev plan",
+        "description": "plan development",
+        "type": "structured",
+        "command": "plan",
+        "overlays": ["overlays/dev.yaml"],
+        "variation": "fast",
+        "set": ["LOG_LEVEL=debug"]
+    });
+    let (status, _) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/run-actions",
+        Some(structured),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 201);
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "PUT",
+        "/api/v1/run-actions/dev%20plan",
+        Some(json!({"name": "dev plan", "type": "structured", "command": "status"})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(json_body::<Value>(&body)["actions"][1]["command"], "status");
+
+    for (method, path, body) in [
+        (
+            "POST",
+            "/api/v1/run-actions",
+            json!({"name": "browser shell", "type": "shell", "command": "echo blocked"}),
+        ),
+        (
+            "PUT",
+            "/api/v1/run-actions/dev%20plan",
+            json!({"name": "dev plan", "type": "shell", "command": "echo blocked"}),
+        ),
+        (
+            "PUT",
+            "/api/v1/run-actions/existing%20shell",
+            json!({"name": "existing shell", "type": "structured", "command": "plan"}),
+        ),
+    ] {
+        let (status, body) = request(&api, Some(&api.token), method, path, Some(body), &[]).await;
+        assert_eq!(status, 403);
+        assert_eq!(
+            json_body::<Value>(&body)["code"],
+            "shell_run_action_authoring_forbidden"
+        );
+    }
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/run-actions/existing%20shell/execute",
+        Some(json!({})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let shell_preview: Value = json_body(&body);
+    assert_eq!(shell_preview["execution"]["command"], "printf shell");
+    assert_eq!(shell_preview["shellAcknowledgementRequired"], true);
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/run-actions/existing%20shell/execute",
+        Some(json!({"confirmed": true, "previewHash": shell_preview["previewHash"]})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 409);
+    assert_eq!(
+        json_body::<Value>(&body)["code"],
+        "shell_run_acknowledgement_required"
+    );
+    assert!(!switchyard_run_actions::shell_notice_acknowledged(
+        temp.path()
+    ));
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/run-actions/existing%20shell/execute",
+        Some(json!({"confirmed": true, "previewHash": shell_preview["previewHash"], "acknowledgeShellWarning": true})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 202);
+    let shell_operation: OperationV1 = json_body(&body);
+    assert_eq!(
+        wait_terminal(&api, &shell_operation.id).await.status,
+        OperationStatusV1::Succeeded
+    );
+    assert!(switchyard_run_actions::shell_notice_acknowledged(
+        temp.path()
+    ));
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/run-actions/dev%20plan/execute",
+        Some(json!({"bundle": "deployment.yaml"})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let structured_preview: Value = json_body(&body);
+    assert_eq!(
+        structured_preview["execution"]["argv"],
+        json!(["status", "deployment.yaml"])
+    );
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/run-actions/dev%20plan/execute",
+        Some(json!({"bundle": "deployment.yaml", "confirmed": true, "previewHash": structured_preview["previewHash"]})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 202);
+    let structured_operation: OperationV1 = json_body(&body);
+    assert_eq!(
+        wait_terminal(&api, &structured_operation.id).await.status,
+        OperationStatusV1::Succeeded
+    );
+    assert!(matches!(
+        backend.invocations.lock().unwrap().as_slice(),
+        [
+            switchyard_run_actions::OperationSpec::Shell(_),
+            switchyard_run_actions::OperationSpec::Structured {
+                command: switchyard_run_actions::StructuredCommand::Status,
+                ..
+            }
+        ]
+    ));
+
+    let (status, _) = request(
+        &api,
+        Some(&api.token),
+        "DELETE",
+        "/api/v1/run-actions/dev%20plan",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 204);
 }
 
 #[tokio::test]

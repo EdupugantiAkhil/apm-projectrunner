@@ -7,7 +7,31 @@ Updated: 2026-07-25
 - Routing proof (Phases 0–4): complete.
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
-- Web UI plan (`docs/web-ui-plan.md`): Parts 1 through 8 complete.
+- Web UI plan (`docs/web-ui-plan.md`): Parts 1 through 9 complete.
+
+## 2026-07-25 web UI Part 9 — project run actions (partial scope)
+
+- Extracted the shared run-action file model, validation, CRUD, shell acknowledgement, typed
+  operation specification, and process construction from `switchyard-ops` into the
+  `switchyard-run-actions` leaf crate. Ops now re-exports that domain and the daemon consumes
+  it directly, without a cross-crate source include or a new frontend dependency.
+- Added authenticated list, structured-only CRUD, and preview/hash-confirmed execution routes.
+  The server rejects shell-shaped authoring and mutations targeting an existing shell action
+  with `shell_run_action_authoring_forbidden`. Shell execution requires a server-side
+  `acknowledgeShellWarning` request before the project-local acknowledgement marker is written
+  and execution begins.
+- Added the Run actions rail view with structured and shell action presentation, structured
+  authoring only, an explicit CLI/TUI shell-authoring boundary, deployment selection for
+  structured actions, and an exact command/argv confirmation dialog before every run.
+- Documented every run-action endpoint and its confirmation, validation, and acknowledgement
+  contracts. Added daemon API coverage for list/CRUD, authoring rejection, acknowledgement
+  enforcement, and both run paths; added API-client and view coverage for request shapes, the
+  visible authoring boundary, and structured/shell confirmation previews.
+- Verification: `cargo fmt --all -- --check` passed with no output; workspace Clippy with all
+  targets/features and warnings denied passed; `cargo test --workspace --all-features` passed
+  with the five declared reliability tests ignored; all 32 web tests passed; `npx tsc -b`
+  passed with no output; `npm run lint` exited zero with the four pre-existing
+  exhaustive-dependencies warnings in `App.tsx` and `DeploymentBuilder.tsx`.
 
 ## 2026-07-25 web UI Part 8 — connection transition and rollback details
 

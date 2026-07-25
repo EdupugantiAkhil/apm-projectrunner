@@ -93,6 +93,28 @@ describe('ApiClient', () => {
     expect(fetchMock.mock.calls[5][1].method).toBe('DELETE')
   })
 
+  it('uses versioned run-action listing, structured mutations, preview, and hash-bound execution', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ apiVersion: 'v1', actions: [], shellNoticeAcknowledged: false }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ apiVersion: 'v1', actions: [], shellNoticeAcknowledged: false }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ apiVersion: 'v1', actions: [], shellNoticeAcknowledged: false }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ apiVersion: 'v1', name: 'dev plan' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ apiVersion: 'v1', id: 'op-run' }), { status: 202 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('token')
+    const action = { name: 'dev plan', type: 'structured' as const, command: 'plan' as const, overlays: ['overlays/dev.yaml'], set: ['LOG_LEVEL=debug'] }
+    const preview = { apiVersion: 'v1', name: 'dev plan', description: 'plan', target: { kind: 'deployment' as const, name: 'demo', bundle: 'deployments/demo.yaml' }, execution: { type: 'structured' as const, argv: ['plan', 'deployments/demo.yaml'] }, shellNoticeAcknowledged: false, shellAcknowledgementRequired: false, previewHash: 'preview/hash' }
+    await client.runActions(); await client.createRunAction(action); await client.updateRunAction('old action', action); await client.deleteRunAction('old action'); await client.previewRunAction('dev plan', preview.target.bundle); await client.executeRunAction('dev plan', preview)
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/run-actions')
+    expect(fetchMock.mock.calls[1][1].body).toBe(JSON.stringify(action))
+    expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/run-actions/old%20action')
+    expect(fetchMock.mock.calls[2][1].method).toBe('PUT')
+    expect(fetchMock.mock.calls[3][1].method).toBe('DELETE')
+    expect(fetchMock.mock.calls[4][1].body).toBe(JSON.stringify({ bundle: 'deployments/demo.yaml' }))
+    expect(fetchMock.mock.calls[5][1].body).toBe(JSON.stringify({ bundle: 'deployments/demo.yaml', confirmed: true, previewHash: 'preview/hash', acknowledgeShellWarning: false }))
+  })
+
   it('deregisters sources with an encoded DELETE and no body', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
     vi.stubGlobal('fetch', fetchMock)

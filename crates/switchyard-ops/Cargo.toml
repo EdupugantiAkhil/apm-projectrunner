@@ -15,6 +15,7 @@ switchyard-daemon = { path = "../switchyard-daemon" }
 switchyard-devices = { path = "../switchyard-devices" }
 switchyard-planner = { path = "../switchyard-planner" }
 switchyard-profiles = { path = "../switchyard-profiles" }
+switchyard-run-actions = { path = "../switchyard-run-actions" }
 switchyard-sources = { path = "../switchyard-sources" }
 switchyard-state = { path = "../switchyard-state" }
 

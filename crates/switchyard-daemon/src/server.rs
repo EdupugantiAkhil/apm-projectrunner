@@ -44,15 +44,16 @@ use crate::contract::{
     CreateDeploymentRequestV1, CreateWorktreeRequestV1, DaemonStatusV1, DeploymentDefinitionV1,
     DeploymentDetailV1, DeploymentOperationSummaryV1, DeploymentRoutesV1, DeploymentSummaryV1,
     DeploymentValidationV1, DeploymentsV1, DeviceEligibilityV1, DeviceKindV1, DevicePlacementV1,
-    DeviceReachabilityV1, DeviceV1, DiscoveryV1, EventKindV1, EventV1, GatewayExposureV1,
-    ImportProfileRequestV1, MdnsCheckV1, MdnsPublicationV1, MdnsPublishedNameV1, OperationStatusV1,
-    OperationV1, OperationsV1, ProfileAdapterKindV1, ProfileDefinitionV1, ProfileManifestReviewV1,
-    ProfileOriginKindV1, ProfileOriginV1, ProfileSelectorV1, ProfileServicePreviewV1,
-    ProfileServiceV1, ProfileSourceErrorV1, ProfileTrustV1, ProfileV1, ProfileValidationV1,
-    ProfileVolumePreviewV1, ProfilesV1, ProjectV1, RegisterDeviceRequestV1,
-    RegisterSourceRequestV1, RemoveWorktreeRequestV1, RouteHistoryV1, RouterBindingV1,
-    TailscalePublicationV1, TransitionPolicyV1, UpdateDeploymentDefinitionRequestV1,
-    ValidateProfileRequestV1,
+    DeviceReachabilityV1, DeviceV1, DiscoveryV1, EventKindV1, EventV1, ExecuteRunActionRequestV1,
+    GatewayExposureV1, ImportProfileRequestV1, MdnsCheckV1, MdnsPublicationV1, MdnsPublishedNameV1,
+    OperationStatusV1, OperationV1, OperationsV1, ProfileAdapterKindV1, ProfileDefinitionV1,
+    ProfileManifestReviewV1, ProfileOriginKindV1, ProfileOriginV1, ProfileSelectorV1,
+    ProfileServicePreviewV1, ProfileServiceV1, ProfileSourceErrorV1, ProfileTrustV1, ProfileV1,
+    ProfileValidationV1, ProfileVolumePreviewV1, ProfilesV1, ProjectV1, PutRunActionRequestV1,
+    RegisterDeviceRequestV1, RegisterSourceRequestV1, RemoveWorktreeRequestV1, RouteHistoryV1,
+    RouterBindingV1, RunActionDefinitionV1, RunActionExecutionV1, RunActionPreviewV1,
+    RunActionTargetV1, RunActionV1, RunActionsV1, TailscalePublicationV1, TransitionPolicyV1,
+    UpdateDeploymentDefinitionRequestV1, ValidateProfileRequestV1,
 };
 
 const LOCK_TTL_MILLIS: i64 = 15_000;
@@ -109,6 +110,44 @@ pub trait OperationBackend: Send + Sync + 'static {
         cancellation: watch::Receiver<bool>,
         events: EventSink,
     ) -> BackendFuture;
+
+    /// Executes a project run action through the same injectable operation boundary.
+    fn run_action(
+        &self,
+        spec: switchyard_run_actions::OperationSpec,
+        cancellation: watch::Receiver<bool>,
+        events: EventSink,
+    ) -> BackendFuture {
+        match &spec {
+            switchyard_run_actions::OperationSpec::Structured { command, .. } => {
+                let kind = match command {
+                    switchyard_run_actions::StructuredCommand::Up => CommandKind::Apply,
+                    switchyard_run_actions::StructuredCommand::Down => CommandKind::Down,
+                    switchyard_run_actions::StructuredCommand::Plan => CommandKind::Plan,
+                    switchyard_run_actions::StructuredCommand::Status => CommandKind::Status,
+                };
+                let arguments = spec
+                    .arguments()
+                    .expect("structured run action has arguments")
+                    .into_iter()
+                    .map(|argument| argument.to_string_lossy().into_owned())
+                    .collect();
+                self.run(kind, arguments, cancellation, events)
+            }
+            switchyard_run_actions::OperationSpec::Shell(_) => Box::pin(async {
+                Err(ApiErrorV1::new(
+                    "run_action_backend_unsupported",
+                    "operation backend does not support shell run actions",
+                ))
+            }),
+            switchyard_run_actions::OperationSpec::Bind { .. } => Box::pin(async {
+                Err(ApiErrorV1::new(
+                    "run_action_invalid",
+                    "bind is not a project run action",
+                ))
+            }),
+        }
+    }
 
     /// Native daemon-owned live bind path. Test backends may retain the command path.
     fn live_bind(
@@ -199,6 +238,78 @@ impl OperationBackend for CliBackend {
                 ApiErrorV1::new(
                     "operation_wait_failed",
                     format!("command wait failed: {error}"),
+                )
+            })?;
+            let stdout = stdout_task
+                .await
+                .map_err(|error| ApiErrorV1::new("output_task_failed", error.to_string()))??;
+            let stderr = stderr_task
+                .await
+                .map_err(|error| ApiErrorV1::new("output_task_failed", error.to_string()))??;
+            let result = CommandResultV1 {
+                exit_code: status.code().unwrap_or(if cancelled { 130 } else { 1 }),
+                stdout,
+                stderr,
+            };
+            Ok(if cancelled {
+                BackendOutcome::Cancelled(result)
+            } else {
+                BackendOutcome::Completed(result)
+            })
+        })
+    }
+
+    fn run_action(
+        &self,
+        spec: switchyard_run_actions::OperationSpec,
+        mut cancellation: watch::Receiver<bool>,
+        events: EventSink,
+    ) -> BackendFuture {
+        let program = self.program.clone();
+        let project_root = self.project_root.clone();
+        let router_token = self.router_token.clone();
+        Box::pin(async move {
+            let mut command = spec.process_command_with(Some(&program));
+            command
+                .current_dir(project_root)
+                .env("SWITCHYARD_BYPASS_DAEMON", "1")
+                .env("SWITCHYARD_ROUTER_TOKEN", router_token)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut child = tokio::process::Command::from(command)
+                .kill_on_drop(true)
+                .spawn()
+                .map_err(|error| {
+                    ApiErrorV1::new(
+                        "operation_spawn_failed",
+                        format!("could not start run action: {error}"),
+                    )
+                })?;
+            let stdout = child.stdout.take().expect("piped stdout");
+            let stderr = child.stderr.take().expect("piped stderr");
+            let stdout_events = events.clone();
+            let stdout_task = tokio::spawn(read_output(
+                stdout,
+                false,
+                CommandKind::RunAction,
+                stdout_events,
+            ));
+            let stderr_task =
+                tokio::spawn(read_output(stderr, true, CommandKind::RunAction, events));
+            let (status, cancelled) = tokio::select! {
+                status = child.wait() => (status, false),
+                changed = cancellation.changed() => {
+                    if changed.is_ok() && *cancellation.borrow() {
+                        let _ = child.kill().await;
+                    }
+                    (child.wait().await, true)
+                }
+            };
+            let status = status.map_err(|error| {
+                ApiErrorV1::new(
+                    "operation_wait_failed",
+                    format!("run action wait failed: {error}"),
                 )
             })?;
             let stdout = stdout_task
@@ -1304,6 +1415,18 @@ fn routes(inner: Arc<Inner>) -> Router {
         )
         .route("/api/v1/deployments/{deployment}", get(deployment_detail))
         .route("/api/v1/adapters", get(list_adapters))
+        .route(
+            "/api/v1/run-actions",
+            get(list_run_actions).post(create_run_action),
+        )
+        .route(
+            "/api/v1/run-actions/{name}",
+            axum::routing::put(update_run_action).delete(delete_run_action),
+        )
+        .route(
+            "/api/v1/run-actions/{name}/execute",
+            post(execute_run_action),
+        )
         .route("/api/v1/profiles", get(list_profiles))
         .route(
             "/api/v1/profiles/{name}",
@@ -1374,6 +1497,393 @@ async fn serve_gui(State(inner): State<Arc<Inner>>, AxumPath(path): AxumPath<Str
 
 async fn list_adapters() -> Response {
     Json(switchyard_adapters::built_in_registry().list()).into_response()
+}
+
+fn run_action_contract(script: &switchyard_run_actions::RunScript) -> RunActionV1 {
+    let definition = match (script.command, script.shell.as_ref()) {
+        (Some(command), None) => RunActionDefinitionV1::Structured {
+            command,
+            overlays: script.overlays.clone(),
+            variation: script.variation.clone(),
+            set: script.set.clone(),
+        },
+        (None, Some(command)) => RunActionDefinitionV1::Shell {
+            command: command.clone(),
+        },
+        _ => unreachable!("loaded run actions are validated"),
+    };
+    RunActionV1 {
+        name: script.name.clone(),
+        description: script.description.clone(),
+        definition,
+    }
+}
+
+fn run_actions_contract(
+    root: &Path,
+    actions: &[switchyard_run_actions::RunScript],
+) -> RunActionsV1 {
+    RunActionsV1 {
+        api_version: API_VERSION.into(),
+        actions: actions.iter().map(run_action_contract).collect(),
+        shell_notice_acknowledged: switchyard_run_actions::shell_notice_acknowledged(root),
+    }
+}
+
+fn run_action_error_response(error: switchyard_run_actions::RunActionError) -> Response {
+    let status = match error {
+        switchyard_run_actions::RunActionError::NotFound { .. } => StatusCode::NOT_FOUND,
+        switchyard_run_actions::RunActionError::DuplicateName { .. } => StatusCode::CONFLICT,
+        switchyard_run_actions::RunActionError::InvalidFile { .. }
+        | switchyard_run_actions::RunActionError::InvalidAction { .. } => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
+        switchyard_run_actions::RunActionError::Io { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    api_error(status, error.code(), &error.to_string())
+}
+
+fn structured_run_action_request(
+    request: PutRunActionRequestV1,
+) -> Result<switchyard_run_actions::RunScript, Box<Response>> {
+    let PutRunActionRequestV1::Structured {
+        name,
+        description,
+        command,
+        overlays,
+        variation,
+        set,
+    } = request
+    else {
+        return Err(Box::new(api_error(
+            StatusCode::FORBIDDEN,
+            "shell_run_action_authoring_forbidden",
+            "HTTP clients may not create or edit shell run actions; use the CLI or TUI",
+        )));
+    };
+    let script = switchyard_run_actions::RunScript {
+        name,
+        description,
+        command: Some(command),
+        overlays,
+        variation,
+        set,
+        shell: None,
+    };
+    script.validate().map_err(|message| {
+        Box::new(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "run_action_invalid",
+            &message,
+        ))
+    })?;
+    Ok(script)
+}
+
+async fn list_run_actions(State(inner): State<Arc<Inner>>) -> Response {
+    blocking_source_response(move || {
+        match switchyard_run_actions::load_result(&inner.config.project_root) {
+            Ok(actions) => {
+                Json(run_actions_contract(&inner.config.project_root, &actions)).into_response()
+            }
+            Err(error) => run_action_error_response(error),
+        }
+    })
+    .await
+}
+
+async fn create_run_action(
+    State(inner): State<Arc<Inner>>,
+    payload: Result<Json<PutRunActionRequestV1>, JsonRejection>,
+) -> Response {
+    let request = match payload {
+        Ok(Json(request)) => request,
+        Err(error) => {
+            return api_error(StatusCode::BAD_REQUEST, "invalid_json", &error.body_text());
+        }
+    };
+    let script = match structured_run_action_request(request) {
+        Ok(script) => script,
+        Err(response) => return *response,
+    };
+    blocking_source_response(move || {
+        match switchyard_run_actions::create(&inner.config.project_root, script) {
+            Ok(actions) => (
+                StatusCode::CREATED,
+                Json(run_actions_contract(&inner.config.project_root, &actions)),
+            )
+                .into_response(),
+            Err(error) => run_action_error_response(error),
+        }
+    })
+    .await
+}
+
+async fn update_run_action(
+    State(inner): State<Arc<Inner>>,
+    AxumPath(name): AxumPath<String>,
+    payload: Result<Json<PutRunActionRequestV1>, JsonRejection>,
+) -> Response {
+    let request = match payload {
+        Ok(Json(request)) => request,
+        Err(error) => {
+            return api_error(StatusCode::BAD_REQUEST, "invalid_json", &error.body_text());
+        }
+    };
+    let script = match structured_run_action_request(request) {
+        Ok(script) => script,
+        Err(response) => return *response,
+    };
+    blocking_source_response(move || {
+        let actions = match switchyard_run_actions::load_result(&inner.config.project_root) {
+            Ok(actions) => actions,
+            Err(error) => return run_action_error_response(error),
+        };
+        let Some(existing) = actions.iter().find(|action| action.name == name) else {
+            return run_action_error_response(switchyard_run_actions::RunActionError::NotFound {
+                name,
+            });
+        };
+        if existing.is_shell() {
+            return api_error(
+                StatusCode::FORBIDDEN,
+                "shell_run_action_authoring_forbidden",
+                "HTTP clients may not edit shell run actions; use the CLI or TUI",
+            );
+        }
+        match switchyard_run_actions::update(&inner.config.project_root, &name, script) {
+            Ok(actions) => {
+                Json(run_actions_contract(&inner.config.project_root, &actions)).into_response()
+            }
+            Err(error) => run_action_error_response(error),
+        }
+    })
+    .await
+}
+
+async fn delete_run_action(
+    State(inner): State<Arc<Inner>>,
+    AxumPath(name): AxumPath<String>,
+) -> Response {
+    blocking_source_response(move || {
+        let actions = match switchyard_run_actions::load_result(&inner.config.project_root) {
+            Ok(actions) => actions,
+            Err(error) => return run_action_error_response(error),
+        };
+        let Some(action) = actions.iter().find(|action| action.name == name) else {
+            return run_action_error_response(switchyard_run_actions::RunActionError::NotFound {
+                name,
+            });
+        };
+        if action.is_shell() {
+            return api_error(
+                StatusCode::FORBIDDEN,
+                "shell_run_action_authoring_forbidden",
+                "HTTP clients may not delete shell run actions; use the CLI or TUI",
+            );
+        }
+        match switchyard_run_actions::delete(&inner.config.project_root, &name) {
+            Ok(_) => StatusCode::NO_CONTENT.into_response(),
+            Err(error) => run_action_error_response(error),
+        }
+    })
+    .await
+}
+
+fn run_action_preview(
+    inner: &Inner,
+    script: &switchyard_run_actions::RunScript,
+    request: &ExecuteRunActionRequestV1,
+) -> Result<
+    (
+        RunActionPreviewV1,
+        switchyard_run_actions::OperationSpec,
+        String,
+    ),
+    Box<Response>,
+> {
+    let bundle = if script.command.is_some() {
+        request.bundle.clone().ok_or_else(|| {
+            Box::new(api_error(
+                StatusCode::BAD_REQUEST,
+                "run_action_target_required",
+                "a structured run action requires a deployment bundle",
+            ))
+        })?
+    } else {
+        inner.config.project_root.join("deployment.yaml")
+    };
+    let resolved_bundle = if bundle.is_absolute() {
+        bundle.clone()
+    } else {
+        inner.config.project_root.join(&bundle)
+    };
+    let (target, deployment) = if script.command.is_some() {
+        let loaded = switchyard_planner::load_bundle(&resolved_bundle).map_err(|error| {
+            Box::new(api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "run_action_target_invalid",
+                &error.to_string(),
+            ))
+        })?;
+        let deployment = loaded.metadata.name;
+        (
+            RunActionTargetV1::Deployment {
+                name: deployment.clone(),
+                bundle: bundle.clone(),
+            },
+            deployment,
+        )
+    } else {
+        (
+            RunActionTargetV1::ProjectShellContext {
+                root: inner.config.project_root.clone(),
+            },
+            "project-shell-context".into(),
+        )
+    };
+    let spec =
+        switchyard_run_actions::OperationSpec::from_script(script, bundle).map_err(|error| {
+            Box::new(api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "run_action_invalid",
+                &error,
+            ))
+        })?;
+    let execution = match &spec {
+        switchyard_run_actions::OperationSpec::Structured { .. } => {
+            RunActionExecutionV1::Structured {
+                argv: spec
+                    .arguments()
+                    .expect("structured run action has arguments")
+                    .into_iter()
+                    .map(|argument| argument.to_string_lossy().into_owned())
+                    .collect(),
+            }
+        }
+        switchyard_run_actions::OperationSpec::Shell(command) => RunActionExecutionV1::Shell {
+            command: command.clone(),
+        },
+        switchyard_run_actions::OperationSpec::Bind { .. } => {
+            unreachable!("run scripts cannot bind")
+        }
+    };
+    let acknowledged =
+        switchyard_run_actions::shell_notice_acknowledged(&inner.config.project_root);
+    let mut preview = RunActionPreviewV1 {
+        api_version: API_VERSION.into(),
+        name: script.name.clone(),
+        description: script
+            .description
+            .clone()
+            .unwrap_or_else(|| "No description.".into()),
+        target,
+        execution,
+        shell_notice_acknowledged: acknowledged,
+        shell_acknowledgement_required: script.is_shell() && !acknowledged,
+        preview_hash: String::new(),
+    };
+    let encoded = serde_json::to_vec(&preview).expect("run-action preview serializes");
+    preview.preview_hash = format!("{:x}", Sha256::digest(encoded));
+    Ok((preview, spec, deployment))
+}
+
+async fn execute_run_action(
+    State(inner): State<Arc<Inner>>,
+    AxumPath(name): AxumPath<String>,
+    payload: Result<Json<ExecuteRunActionRequestV1>, JsonRejection>,
+) -> Response {
+    let request = match payload {
+        Ok(Json(request)) => request,
+        Err(error) => {
+            return api_error(StatusCode::BAD_REQUEST, "invalid_json", &error.body_text());
+        }
+    };
+    let root = inner.config.project_root.clone();
+    let loaded =
+        tokio::task::spawn_blocking(move || switchyard_run_actions::load_result(&root)).await;
+    let actions = match loaded {
+        Ok(Ok(actions)) => actions,
+        Ok(Err(error)) => return run_action_error_response(error),
+        Err(error) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "run_action_task_failed",
+                &error.to_string(),
+            );
+        }
+    };
+    let Some(script) = actions.into_iter().find(|action| action.name == name) else {
+        return run_action_error_response(switchyard_run_actions::RunActionError::NotFound {
+            name,
+        });
+    };
+    let (preview, spec, deployment) = match run_action_preview(&inner, &script, &request) {
+        Ok(preview) => preview,
+        Err(response) => return *response,
+    };
+    if !request.confirmed {
+        return Json(preview).into_response();
+    }
+    let Some(presented_hash) = request.preview_hash.as_deref() else {
+        let mut error = ApiErrorV1::new(
+            "run_action_confirmation_required",
+            "preview the run action and return its previewHash before execution",
+        );
+        error.context = Some(json!({"preview": preview}));
+        return (StatusCode::CONFLICT, Json(error)).into_response();
+    };
+    if presented_hash != preview.preview_hash {
+        let mut error = ApiErrorV1::new(
+            "run_action_preview_changed",
+            "run action preview changed; review the current command before execution",
+        );
+        error.context = Some(json!({"preview": preview}));
+        return (StatusCode::CONFLICT, Json(error)).into_response();
+    }
+    if script.is_shell() && !preview.shell_notice_acknowledged {
+        if !request.acknowledge_shell_warning {
+            let mut error = ApiErrorV1::new(
+                "shell_run_acknowledgement_required",
+                "explicitly acknowledge the project-local shell warning before execution",
+            );
+            error.context = Some(json!({"preview": preview}));
+            return (StatusCode::CONFLICT, Json(error)).into_response();
+        }
+        let root = inner.config.project_root.clone();
+        let acknowledged = tokio::task::spawn_blocking(move || {
+            switchyard_run_actions::acknowledge_shell_notice(&root)
+        })
+        .await;
+        match acknowledged {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                return api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "shell_run_acknowledgement_write_failed",
+                    &error,
+                );
+            }
+            Err(error) => {
+                return api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "run_action_task_failed",
+                    &error.to_string(),
+                );
+            }
+        }
+    }
+    match begin_operation(
+        inner,
+        CommandKind::RunAction,
+        deployment,
+        OperationInvocation::RunAction(spec),
+    )
+    .await
+    {
+        Ok(operation) => (StatusCode::ACCEPTED, Json(operation)).into_response(),
+        Err((status, error)) => (status, Json(error)).into_response(),
+    }
 }
 
 #[derive(Clone)]
@@ -3470,9 +3980,56 @@ async fn start_command(
         inner.config.project_root.join(&request.bundle)
     };
     let deployment = deployment_id(&bundle_path);
-    match begin_operation(inner, kind, deployment, arguments, request).await {
+    match begin_operation(
+        inner,
+        kind,
+        deployment,
+        OperationInvocation::Command { arguments, request },
+    )
+    .await
+    {
         Ok(operation) => (StatusCode::ACCEPTED, Json(operation)).into_response(),
         Err((status, error)) => (status, Json(error)).into_response(),
+    }
+}
+
+enum OperationInvocation {
+    Command {
+        arguments: Vec<String>,
+        request: CommandRequestV1,
+    },
+    RunAction(switchyard_run_actions::OperationSpec),
+}
+
+impl OperationInvocation {
+    fn mutating(&self, kind: CommandKind) -> bool {
+        match self {
+            Self::Command { .. } => kind.mutating(),
+            Self::RunAction(switchyard_run_actions::OperationSpec::Structured {
+                command, ..
+            }) => matches!(
+                command,
+                switchyard_run_actions::StructuredCommand::Up
+                    | switchyard_run_actions::StructuredCommand::Down
+            ),
+            Self::RunAction(
+                switchyard_run_actions::OperationSpec::Shell(_)
+                | switchyard_run_actions::OperationSpec::Bind { .. },
+            ) => false,
+        }
+    }
+
+    fn heavy(&self, kind: CommandKind) -> bool {
+        match self {
+            Self::Command { .. } => kind.heavy(),
+            Self::RunAction(switchyard_run_actions::OperationSpec::Structured {
+                command, ..
+            }) => matches!(command, switchyard_run_actions::StructuredCommand::Up),
+            Self::RunAction(
+                switchyard_run_actions::OperationSpec::Shell(_)
+                | switchyard_run_actions::OperationSpec::Bind { .. },
+            ) => false,
+        }
     }
 }
 
@@ -3480,8 +4037,7 @@ async fn begin_operation(
     inner: Arc<Inner>,
     kind: CommandKind,
     deployment: String,
-    arguments: Vec<String>,
-    request: CommandRequestV1,
+    invocation: OperationInvocation,
 ) -> Result<OperationV1, (StatusCode, ApiErrorV1)> {
     let id = format!(
         "op-{}-{}",
@@ -3490,7 +4046,7 @@ async fn begin_operation(
     );
     let lock_token = random_hex(16).map_err(internal_error)?;
     let started_at = now_millis();
-    let lock = if kind.mutating() {
+    let lock = if invocation.mutating(kind) {
         let request = LockRequest {
             deployment: &deployment,
             owner: &inner.instance_id,
@@ -3575,8 +4131,7 @@ async fn begin_operation(
         inner,
         id,
         kind,
-        arguments,
-        request,
+        invocation,
         cancellation_rx,
         events,
         lock,
@@ -3589,13 +4144,13 @@ async fn execute_operation(
     inner: Arc<Inner>,
     id: String,
     kind: CommandKind,
-    arguments: Vec<String>,
-    request: CommandRequestV1,
+    invocation: OperationInvocation,
     cancellation: watch::Receiver<bool>,
     events: Arc<EventLog>,
     mut lock: Option<switchyard_state::OperationLock>,
 ) {
-    let permit = if kind.heavy() {
+    let heavy = invocation.heavy(kind);
+    let permit = if heavy {
         tokio::select! {
             permit = inner.heavy.acquire() => permit.ok(),
             _ = cancellation_wait(cancellation.clone()) => None,
@@ -3603,7 +4158,7 @@ async fn execute_operation(
     } else {
         None
     };
-    if kind.heavy() && permit.is_none() {
+    if heavy && permit.is_none() {
         finish_operation(
             &inner,
             &id,
@@ -3623,14 +4178,34 @@ async fn execute_operation(
         operation_id: id.clone(),
         log: events.clone(),
     };
-    let persistence_request = request.clone();
-    let mut work = if kind == CommandKind::Bind {
-        inner
-            .backend
-            .live_bind(request, id.clone(), cancellation.clone(), sink.clone())
-            .unwrap_or_else(|| inner.backend.run(kind, arguments, cancellation, sink))
-    } else {
-        inner.backend.run(kind, arguments, cancellation, sink)
+    let (mut work, persistence_bundle) = match invocation {
+        OperationInvocation::Command { arguments, request } => {
+            let persistence_bundle = matches!(kind, CommandKind::Apply | CommandKind::Bind)
+                .then(|| request.bundle.clone());
+            let work = if kind == CommandKind::Bind {
+                inner
+                    .backend
+                    .live_bind(request, id.clone(), cancellation.clone(), sink.clone())
+                    .unwrap_or_else(|| inner.backend.run(kind, arguments, cancellation, sink))
+            } else {
+                inner.backend.run(kind, arguments, cancellation, sink)
+            };
+            (work, persistence_bundle)
+        }
+        OperationInvocation::RunAction(spec) => {
+            let persistence_bundle = match &spec {
+                switchyard_run_actions::OperationSpec::Structured {
+                    command: switchyard_run_actions::StructuredCommand::Up,
+                    bundle,
+                    ..
+                } => Some(bundle.clone()),
+                _ => None,
+            };
+            (
+                inner.backend.run_action(spec, cancellation, sink),
+                persistence_bundle,
+            )
+        }
     };
     let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
     let mut lock_lost = None;
@@ -3661,9 +4236,11 @@ async fn execute_operation(
             &outcome,
             Ok(BackendOutcome::LiveBinding { result, .. }) if result.exit_code == 0
         ));
-    if successful_apply && matches!(kind, CommandKind::Apply | CommandKind::Bind) {
-        if let Err(error) = persist_applied_snapshot(&inner, &persistence_request) {
-            outcome = Err(error);
+    if successful_apply {
+        if let Some(bundle) = persistence_bundle {
+            if let Err(error) = persist_applied_snapshot(&inner, &bundle) {
+                outcome = Err(error);
+            }
         }
     }
     match outcome {
@@ -3775,11 +4352,11 @@ async fn execute_operation(
     }
 }
 
-fn persist_applied_snapshot(inner: &Inner, request: &CommandRequestV1) -> Result<(), ApiErrorV1> {
-    let bundle_path = if request.bundle.is_absolute() {
-        request.bundle.clone()
+fn persist_applied_snapshot(inner: &Inner, bundle: &Path) -> Result<(), ApiErrorV1> {
+    let bundle_path = if bundle.is_absolute() {
+        bundle.to_path_buf()
     } else {
-        inner.config.project_root.join(&request.bundle)
+        inner.config.project_root.join(bundle)
     };
     let bundle = switchyard_planner::load_bundle(&bundle_path)
         .map_err(|error| ApiErrorV1::new("bundle_load_failed", error.to_string()))?;
@@ -4175,6 +4752,7 @@ fn parse_kind(value: &str) -> Option<CommandKind> {
         CommandKind::Open,
         CommandKind::Down,
         CommandKind::Cleanup,
+        CommandKind::RunAction,
     ]
     .into_iter()
     .find(|kind| kind.segment() == value)

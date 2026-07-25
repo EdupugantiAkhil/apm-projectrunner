@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
-import { ApiClient, type OperationEvent, type RouteState } from './api'
+import { ApiClient, type Operation, type OperationEvent, type RunActionPreview, type RunActionsResponse, type RouteState } from './api'
 
 const deployment = {
   apiVersion: 'v1', deployment: 'comparison', definitionHash: 'definition123', resourceHash: 'resource123', appliedAt: 1,
@@ -163,6 +163,47 @@ describe('Switchyard GUI', () => {
     expect(screen.getByRole('button', { name: 'Review changed manifest' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Remove imported' }))
     await waitFor(() => expect(remove).toHaveBeenCalledWith('api'))
+  })
+
+  it('lists only structured authoring, previews exact commands, and acknowledges shell execution', async () => {
+    const user = userEvent.setup(); const client = new ApiClient('test')
+    const actions: RunActionsResponse = {
+      apiVersion: 'v1', shellNoticeAcknowledged: false,
+      actions: [
+        { name: 'dev plan', description: 'Plan development', type: 'structured', command: 'plan', overlays: ['overlays/dev.yaml'], variation: 'fast', set: ['LOG_LEVEL=debug'] },
+        { name: 'shell status', description: 'Legacy terminal command', type: 'shell', command: 'git status --short' },
+      ],
+    }
+    const structuredPreview: RunActionPreview = { apiVersion: 'v1', name: 'dev plan', description: 'Plan development', target: { kind: 'deployment', name: 'comparison', bundle: '.switchyard/generated/comparison/resolved-deployment.yaml' }, execution: { type: 'structured', argv: ['plan', '.switchyard/generated/comparison/resolved-deployment.yaml', '--with', 'overlays/dev.yaml', '--variation', 'fast', '--set', 'LOG_LEVEL=debug'] }, shellNoticeAcknowledged: false, shellAcknowledgementRequired: false, previewHash: 'structured-preview' }
+    const shellPreview: RunActionPreview = { apiVersion: 'v1', name: 'shell status', description: 'Legacy terminal command', target: { kind: 'project-shell-context', root: '/project' }, execution: { type: 'shell', command: 'git status --short' }, shellNoticeAcknowledged: false, shellAcknowledgementRequired: true, previewHash: 'shell-preview' }
+    const operation: Operation = { apiVersion: 'v1', id: 'op-run', deployment: 'comparison', kind: 'run-action', destructive: false, status: 'running', startedAt: 10, finishedAt: null, error: null, result: null }
+    vi.spyOn(client, 'runActions').mockResolvedValue(actions)
+    vi.spyOn(client, 'previewRunAction').mockImplementation(async (name) => name === 'dev plan' ? structuredPreview : shellPreview)
+    const execute = vi.spyOn(client, 'executeRunAction').mockResolvedValue(operation)
+    vi.spyOn(client, 'pollOperation').mockResolvedValue({ ...operation, status: 'succeeded', finishedAt: 11, result: { exitCode: 0, stdout: '', stderr: '' } })
+    render(<App client={client} />)
+
+    await user.click(within(screen.getByRole('navigation', { name: 'Main views' })).getByRole('button', { name: 'run actions' }))
+    expect(await screen.findByText('Shell action authoring is unavailable in the browser')).toBeInTheDocument()
+    expect(screen.getByText(/Create and edit shell actions through the CLI or TUI/)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Create structured action' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Create shell action' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Preview and run' }))
+    const structuredDialog = await screen.findByRole('dialog', { name: 'Confirm run action · dev plan' })
+    expect(within(structuredDialog).getByText('Argument vector')).toBeInTheDocument()
+    expect(within(structuredDialog).getByText('plan .switchyard/generated/comparison/resolved-deployment.yaml --with overlays/dev.yaml --variation fast --set LOG_LEVEL=debug')).toBeInTheDocument()
+    await user.click(within(structuredDialog).getByRole('button', { name: 'Confirm and run' }))
+    await waitFor(() => expect(execute).toHaveBeenCalledWith('dev plan', structuredPreview, false))
+
+    await user.click(within(screen.getByRole('navigation', { name: 'Main views' })).getByRole('button', { name: 'run actions' }))
+    await user.click(await screen.findByRole('button', { name: 'Preview and run shell action' }))
+    const shellDialog = await screen.findByRole('dialog', { name: 'Confirm run action · shell status' })
+    expect(within(shellDialog).getByText('Shell command')).toBeInTheDocument()
+    expect(within(shellDialog).getByText('git status --short')).toBeInTheDocument()
+    expect(within(shellDialog).getByText(/Shell execution acknowledgement/)).toBeInTheDocument()
+    await user.click(within(shellDialog).getByRole('button', { name: 'Acknowledge and run' }))
+    await waitFor(() => expect(execute).toHaveBeenCalledWith('shell status', shellPreview, true))
   })
 
   it('loads durable operations and keeps cancellation for active records', async () => {

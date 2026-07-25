@@ -15,6 +15,7 @@ members = [
     "crates/switchyard-profiles",
     "crates/switchyard-router",
     "crates/switchyard-router-admin",
+    "crates/switchyard-run-actions",
     "crates/switchyard-sources",
     "crates/switchyard-state",
     "crates/switchyard-tui",

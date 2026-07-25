@@ -78,6 +78,11 @@ optional `context` fields. Framework types are not part of the public Rust contr
 | `POST` | `/api/v1/profiles/{name}/validate` | Validate a selected profile against a registered checkout |
 | `POST` | `/api/v1/profiles/{name}/import` | Import or re-import exactly the source manifest content previously reviewed |
 | `DELETE` | `/api/v1/profiles/{name}` | Remove an imported profile without changing source or project definitions |
+| `GET` | `/api/v1/run-actions` | List project run actions and project-local shell acknowledgement state |
+| `POST` | `/api/v1/run-actions` | Create a structured project run action |
+| `PUT` | `/api/v1/run-actions/{name}` | Replace a structured project run action |
+| `DELETE` | `/api/v1/run-actions/{name}` | Delete a structured project run action |
+| `POST` | `/api/v1/run-actions/{name}/execute` | Preview, then hash-confirm and execute an existing action |
 | `GET` | `/api/v1/sources` | List registrations with live source identity |
 | `POST` | `/api/v1/sources` | Register an existing path as unmanaged |
 | `DELETE` | `/api/v1/sources/{name}` | Forget a registration without deleting files |
@@ -215,6 +220,45 @@ profile receives HTTP 409 `profile_import_not_required`. Successful initial impo
 re-imports return HTTP 201 with the fresh `imported` profile row. Deletion returns HTTP 204,
 applies only to an imported profile, and leaves both the source manifest and authored
 project definitions unchanged.
+
+## Project run actions
+
+`GET /api/v1/run-actions` returns `{ "apiVersion": "v1", "actions": [...],
+"shellNoticeAcknowledged": false }`. Every action carries `name`, nullable
+`description`, and a tagged definition. A structured definition has
+`"type": "structured"`, `command` (`up`, `down`, `plan`, or `status`), optional
+`overlays`, optional `variation`, and optional `set` (`KEY=VALUE` entries). A shell
+definition has `"type": "shell"` and its verbatim `command`. The action file is
+`.switchyard/run-scripts.yaml`; malformed or duplicate entries return HTTP 422
+`run_actions_invalid` rather than exposing a partial list.
+
+`POST /api/v1/run-actions` and `PUT /api/v1/run-actions/{name}` accept the structured
+shape above; POST returns HTTP 201 and PUT returns HTTP 200 with the complete refreshed
+listing. `DELETE /api/v1/run-actions/{name}` returns HTTP 204. Names and structured
+fields use the shared run-action validation; absent actions return HTTP 404
+`run_action_not_found`, duplicate creates return HTTP 409 `run_action_exists`, and
+invalid fields return HTTP 422 `run_action_invalid`. Browser clients cannot create,
+edit, or delete shell actions: any shell payload and every mutation targeting an
+existing shell action returns HTTP 403 `shell_run_action_authoring_forbidden`. Shell
+authoring remains a CLI/TUI-only capability.
+
+Execution is an explicit two-step `POST /api/v1/run-actions/{name}/execute`. An initial
+request sends `{ "bundle": "..." }` for a structured action (required) or `{}` for a
+shell action, and returns a `RunActionPreviewV1`: exact structured `argv` or exact shell
+`command`, the deployment bundle or project shell context, acknowledgement state, and a
+`previewHash`. The browser must display that preview. To start the operation it resends
+the same target with `"confirmed": true` and the unchanged `previewHash`; success is
+HTTP 202 with the normal operation record. Missing or stale confirmation returns HTTP
+409 `run_action_confirmation_required` or `run_action_preview_changed`, so changed
+content cannot execute under a prior preview.
+
+Shell execution runs in the project directory and requires the project-local
+`.switchyard/shell-run-notice-acknowledged` marker. When it is absent, the preview sets
+`"shellAcknowledgementRequired": true`; execution must additionally send
+`"acknowledgeShellWarning": true`. Omitting it returns HTTP 409
+`shell_run_acknowledgement_required`. On the acknowledged confirmed request, the daemon
+writes that marker before starting the operation. This is a server-side guard, not a
+browser-only affordance.
 
 Source registration accepts `{ "name": "app", "path": "/code/app" }` and always
 records the path as `unmanaged`. Worktree creation accepts `repository`, `ref`, and

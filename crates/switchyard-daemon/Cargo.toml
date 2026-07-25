@@ -26,6 +26,7 @@ switchyard-docker-ssh = { path = "../switchyard-docker-ssh" }
 switchyard-planner = { path = "../switchyard-planner" }
 switchyard-profiles = { path = "../switchyard-profiles" }
 switchyard-router-admin = { path = "../switchyard-router-admin" }
+switchyard-run-actions = { path = "../switchyard-run-actions" }
 switchyard-sources = { path = "../switchyard-sources" }
 tokio = { version = "1.45.1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 

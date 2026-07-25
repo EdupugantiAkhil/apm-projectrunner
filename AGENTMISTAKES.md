@@ -618,3 +618,10 @@ broken shell-startup reference. Correction: remove the exact generated line and 
 empty file, and verify a fresh remote shell starts without a warning. Lesson: temporary
 toolchain installers must use their no-profile-modification option, and cleanup must
 audit shell startup files as well as the requested cache directories.
+
+## 2026-07-25 — Web verification must start in the package directory
+
+- The Part 9 focused web test was first invoked from the Rust workspace root, where npm
+  cannot find `package.json`, despite existing project guidance. Correction: rerun it from
+  `packages/web`; it passed. Lesson: treat the required package working directory as part
+  of every npm command, including focused tests.

@@ -1,5 +1,5 @@
 export type OperationStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled'
-export type CommandKind = 'validate' | 'plan' | 'apply' | 'bind' | 'status' | 'routes' | 'logs' | 'open' | 'down' | 'cleanup'
+export type CommandKind = 'validate' | 'plan' | 'apply' | 'bind' | 'status' | 'routes' | 'logs' | 'open' | 'down' | 'cleanup' | 'run-action'
 
 export interface ApiErrorBody { code: string; message: string; context?: unknown }
 export class ApiError extends Error {
@@ -150,6 +150,16 @@ export interface ProfileDefinition { apiVersion: string; name: string; deploymen
 export interface ProfileManifestReview { apiVersion: string; source: string; manifest: string; reviewHash: string }
 export interface ProfileValidation { apiVersion: string; name: string; deployment: string; checkout: string; valid: boolean; expandedServices: string[]; services: Array<{ name: string; ports: number[]; volumes: Array<{ name: string; target: string; readOnly: boolean }> }>; diagnostics: Array<{ code: string; path: string; message: string }>; error: string | null; draft: string | null }
 export interface ProfileValidationInput { targetDeployment?: string; instanceName?: string; device?: string; parameters?: Record<string, string> }
+export type StructuredRunCommand = 'up' | 'down' | 'plan' | 'status'
+export type RunAction = { name: string; description: string | null; type: 'structured'; command: StructuredRunCommand; overlays?: string[]; variation?: string; set?: string[] } | { name: string; description: string | null; type: 'shell'; command: string }
+export interface RunActionsResponse { apiVersion: string; actions: RunAction[]; shellNoticeAcknowledged: boolean }
+export interface StructuredRunActionInput { name: string; description?: string; type: 'structured'; command: StructuredRunCommand; overlays?: string[]; variation?: string; set?: string[] }
+export type RunActionPreview = {
+  apiVersion: string; name: string; description: string
+  target: { kind: 'deployment'; name: string; bundle: string } | { kind: 'project-shell-context'; root: string }
+  execution: { type: 'structured'; argv: string[] } | { type: 'shell'; command: string }
+  shellNoticeAcknowledged: boolean; shellAcknowledgementRequired: boolean; previewHash: string
+}
 export interface JsonSchema { type?: string | string[]; title?: string; description?: string; enum?: unknown[]; properties?: Record<string, JsonSchema>; required?: string[]; items?: JsonSchema; default?: unknown; oneOf?: unknown[]; anyOf?: unknown[]; allOf?: unknown[]; [key: string]: unknown }
 
 let memoryToken = ''
@@ -198,6 +208,15 @@ export class ApiClient {
   validateProfile(profile: ProfileRecord, checkout: string, input: ProfileValidationInput = {}) { return this.request<ProfileValidation>(`/profiles/${encodeURIComponent(profile.name)}/validate`, { method: 'POST', body: JSON.stringify({ deployment: profile.deployment, origin: profile.origin, checkout, ...input }) }) }
   importProfile(name: string, source: string, reviewedManifestHash: string) { return this.request<ProfileRecord>(`/profiles/${encodeURIComponent(name)}/import`, { method: 'POST', body: JSON.stringify({ source, reviewedManifestHash }) }) }
   removeProfile(name: string) { return this.request<void>(`/profiles/${encodeURIComponent(name)}`, { method: 'DELETE' }) }
+  runActions() { return this.request<RunActionsResponse>('/run-actions') }
+  createRunAction(action: StructuredRunActionInput) { return this.request<RunActionsResponse>('/run-actions', { method: 'POST', body: JSON.stringify(action) }) }
+  updateRunAction(existingName: string, action: StructuredRunActionInput) { return this.request<RunActionsResponse>(`/run-actions/${encodeURIComponent(existingName)}`, { method: 'PUT', body: JSON.stringify(action) }) }
+  deleteRunAction(name: string) { return this.request<void>(`/run-actions/${encodeURIComponent(name)}`, { method: 'DELETE' }) }
+  previewRunAction(name: string, bundle?: string) { return this.request<RunActionPreview>(`/run-actions/${encodeURIComponent(name)}/execute`, { method: 'POST', body: JSON.stringify(bundle ? { bundle } : {}) }) }
+  executeRunAction(name: string, preview: RunActionPreview, acknowledgeShellWarning = false) {
+    const bundle = preview.target.kind === 'deployment' ? preview.target.bundle : undefined
+    return this.request<Operation>(`/run-actions/${encodeURIComponent(name)}/execute`, { method: 'POST', body: JSON.stringify({ ...(bundle ? { bundle } : {}), confirmed: true, previewHash: preview.previewHash, acknowledgeShellWarning }) })
+  }
   definition(name: string) { return this.request<DeploymentDefinition>(`/deployments/${encodeURIComponent(name)}/definition`) }
   validateDeployment(name: string, yaml: string) { return this.request<DeploymentValidation>('/deployments', { method: 'POST', body: JSON.stringify({ name, yaml, validateOnly: true }) }) }
   createDeployment(name: string, yaml: string) { return this.request<DeploymentDefinition>('/deployments', { method: 'POST', body: JSON.stringify({ name, yaml }) }) }

@@ -29,6 +29,7 @@ pub enum CommandKind {
     Open,
     Down,
     Cleanup,
+    RunAction,
 }
 
 impl CommandKind {
@@ -45,6 +46,7 @@ impl CommandKind {
             Self::Open => "open",
             Self::Down => "down",
             Self::Cleanup => "cleanup",
+            Self::RunAction => "run-action",
         }
     }
 
@@ -157,6 +159,12 @@ impl CommandRequestV1 {
                 }
                 args
             }
+            CommandKind::RunAction => {
+                return Err(ApiErrorV1::new(
+                    "invalid_request",
+                    "run actions use the dedicated run-action endpoint",
+                ));
+            }
         };
         Ok(arguments)
     }
@@ -255,6 +263,128 @@ pub struct ProjectV1 {
     pub name: String,
     pub root: PathBuf,
     pub registered: bool,
+}
+
+/// Structured or shell body of one project run action.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum RunActionDefinitionV1 {
+    Structured {
+        command: switchyard_run_actions::StructuredCommand,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        overlays: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        variation: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        set: Vec<String>,
+    },
+    Shell {
+        command: String,
+    },
+}
+
+/// One named project run action.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunActionV1 {
+    pub name: String,
+    pub description: Option<String>,
+    #[serde(flatten)]
+    pub definition: RunActionDefinitionV1,
+}
+
+/// Project run-action listing and project-local shell acknowledgement state.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunActionsV1 {
+    pub api_version: String,
+    pub actions: Vec<RunActionV1>,
+    pub shell_notice_acknowledged: bool,
+}
+
+/// Create or replacement payload. Shell-shaped payloads are represented so the server can
+/// reject browser shell authoring with a stable domain error rather than a JSON parse error.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum PutRunActionRequestV1 {
+    Structured {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        command: switchyard_run_actions::StructuredCommand,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        overlays: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        variation: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        set: Vec<String>,
+    },
+    Shell {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        command: String,
+    },
+}
+
+/// Preview-or-execute request for one existing run action.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExecuteRunActionRequestV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<PathBuf>,
+    #[serde(default)]
+    pub confirmed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_hash: Option<String>,
+    #[serde(default)]
+    pub acknowledge_shell_warning: bool,
+}
+
+/// Target context displayed before a run action executes.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum RunActionTargetV1 {
+    Deployment { name: String, bundle: PathBuf },
+    ProjectShellContext { root: PathBuf },
+}
+
+/// Exact process payload displayed before a run action executes.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum RunActionExecutionV1 {
+    Structured { argv: Vec<String> },
+    Shell { command: String },
+}
+
+/// Hash-bound confirmation preview. The hash must be returned unchanged to execute.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunActionPreviewV1 {
+    pub api_version: String,
+    pub name: String,
+    pub description: String,
+    pub target: RunActionTargetV1,
+    pub execution: RunActionExecutionV1,
+    pub shell_notice_acknowledged: bool,
+    pub shell_acknowledgement_required: bool,
+    pub preview_hash: String,
 }
 
 /// Latest operation fields shown beside a deployment list entry.
