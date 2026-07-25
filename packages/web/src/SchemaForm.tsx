@@ -1,7 +1,7 @@
 import { useEffect, useId, useState } from 'react'
 import type { JsonSchema } from './api'
 
-export interface SchemaFormProps { schema: JsonSchema; value?: Record<string, unknown>; onChange?: (value: Record<string, unknown>, valid: boolean) => void; readOnly?: boolean }
+export interface SchemaFormProps { schema: JsonSchema; value?: Record<string, unknown>; onChange?: (value: Record<string, unknown>, valid: boolean) => void; readOnly?: boolean; errors?: Record<string, string> }
 const EMPTY_VALUE: Record<string, unknown> = {}
 
 const supported = (schema: JsonSchema): boolean => {
@@ -20,26 +20,26 @@ function validity(schema: JsonSchema, value: unknown): boolean {
   return true
 }
 
-export default function SchemaForm({ schema, value = EMPTY_VALUE, onChange, readOnly = false }: SchemaFormProps) {
+export default function SchemaForm({ schema, value = EMPTY_VALUE, onChange, readOnly = false, errors = {} }: SchemaFormProps) {
   const [draft, setDraft] = useState<Record<string, unknown>>(value)
   useEffect(() => setDraft(value), [value])
   const update = (next: Record<string, unknown>) => { setDraft(next); onChange?.(next, validity(schema, next)) }
   if (!supported(schema)) return <Fallback schema={schema} value={draft} readOnly={readOnly} onChange={(next) => { setDraft(next); onChange?.(next, true) }} />
-  return <fieldset className="schema-form" disabled={readOnly}><legend>{schema.title ?? 'Configuration'}</legend>{schema.description && <p className="help">{schema.description}</p>}<ObjectFields schema={schema} value={draft} path="schema" update={update} required={schema.required ?? []} /></fieldset>
+  return <fieldset className="schema-form" disabled={readOnly}><legend>{schema.title ?? 'Configuration'}</legend>{schema.description && <p className="help">{schema.description}</p>}<ObjectFields schema={schema} value={draft} path="schema" update={update} required={schema.required ?? []} errors={errors} /></fieldset>
 }
 
-function ObjectFields({ schema, value, path, update, required }: { schema: JsonSchema; value: Record<string, unknown>; path: string; update: (value: Record<string, unknown>) => void; required: string[] }) {
-  return <>{Object.entries(schema.properties ?? {}).map(([name, child]) => <Field key={name} name={name} schema={child} value={value[name]} path={`${path}-${name}`} required={required.includes(name)} update={(next) => update({ ...value, [name]: next })} />)}</>
+function ObjectFields({ schema, value, path, update, required, errors }: { schema: JsonSchema; value: Record<string, unknown>; path: string; update: (value: Record<string, unknown>) => void; required: string[]; errors: Record<string, string> }) {
+  return <>{Object.entries(schema.properties ?? {}).map(([name, child]) => <Field key={name} name={name} schema={child} value={value[name]} path={`${path}-${name}`} required={required.includes(name)} error={errors[name]} update={(next) => update({ ...value, [name]: next })} />)}</>
 }
 
-function Field({ name, schema, value, path, required, update }: { name: string; schema: JsonSchema; value: unknown; path: string; required: boolean; update: (value: unknown) => void }) {
-  const generated = useId(); const id = `${path}-${generated}`; const label = schema.title ?? name
-  if (schema.type === 'object') return <fieldset><legend>{label}{required ? ' *' : ''}</legend>{schema.description && <p className="help">{schema.description}</p>}<ObjectFields schema={schema} value={(value as Record<string, unknown>) ?? {}} path={path} required={schema.required ?? []} update={update} /></fieldset>
-  if (schema.type === 'boolean') return <label className="check"><input id={id} type="checkbox" checked={Boolean(value ?? schema.default)} onChange={(event) => update(event.target.checked)} />{label}{required ? ' *' : ''}<Help schema={schema} /></label>
-  if (schema.enum) return <label htmlFor={id}>{label}{required ? ' *' : ''}<select id={id} required={required} value={String(value ?? schema.default ?? '')} onChange={(event) => update(event.target.value)}><option value="">Choose</option>{schema.enum.map((option) => <option key={String(option)} value={String(option)}>{String(option)}</option>)}</select><Help schema={schema} /></label>
-  if (schema.type === 'array') return <label htmlFor={id}>{label}{required ? ' *' : ''}<textarea id={id} value={Array.isArray(value) ? value.join('\n') : ''} onChange={(event) => update(event.target.value.split('\n').filter(Boolean))} /><span className="help">One value per line. {schema.description}</span></label>
+function Field({ name, schema, value, path, required, error, update }: { name: string; schema: JsonSchema; value: unknown; path: string; required: boolean; error?: string; update: (value: unknown) => void }) {
+  const generated = useId(); const id = `${path}-${generated}`; const errorId = `${id}-error`; const label = schema.title ?? name
+  if (schema.type === 'object') return <fieldset><legend>{label}{required ? ' *' : ''}</legend>{schema.description && <p className="help">{schema.description}</p>}<ObjectFields schema={schema} value={(value as Record<string, unknown>) ?? {}} path={path} required={schema.required ?? []} update={update} errors={{}} /></fieldset>
+  if (schema.type === 'boolean') return <label className="check"><input id={id} type="checkbox" checked={Boolean(value ?? schema.default)} aria-invalid={Boolean(error)} aria-describedby={error ? errorId : undefined} onChange={(event) => update(event.target.checked)} />{label}{required ? ' *' : ''}<Help schema={schema} />{error && <span className="field-error" id={errorId} role="alert">{error}</span>}</label>
+  if (schema.enum) return <label htmlFor={id}>{label}{required ? ' *' : ''}<select id={id} required={required} value={String(value ?? schema.default ?? '')} aria-invalid={Boolean(error)} aria-describedby={error ? errorId : undefined} onChange={(event) => update(event.target.value)}><option value="">Choose</option>{schema.enum.map((option) => <option key={String(option)} value={String(option)}>{String(option)}</option>)}</select><Help schema={schema} />{error && <span className="field-error" id={errorId} role="alert">{error}</span>}</label>
+  if (schema.type === 'array') return <label htmlFor={id}>{label}{required ? ' *' : ''}<textarea id={id} value={Array.isArray(value) ? value.join('\n') : ''} aria-invalid={Boolean(error)} aria-describedby={error ? errorId : undefined} onChange={(event) => update(event.target.value.split('\n').filter(Boolean))} /><span className="help">One value per line. {schema.description}</span>{error && <span className="field-error" id={errorId} role="alert">{error}</span>}</label>
   const numeric = schema.type === 'number' || schema.type === 'integer'
-  return <label htmlFor={id}>{label}{required ? ' *' : ''}<input id={id} required={required} type={numeric ? 'number' : 'text'} step={schema.type === 'integer' ? 1 : numeric ? 'any' : undefined} value={String(value ?? schema.default ?? '')} onChange={(event) => update(numeric && event.target.value !== '' ? Number(event.target.value) : event.target.value)} /><Help schema={schema} /></label>
+  return <label htmlFor={id}>{label}{required ? ' *' : ''}<input id={id} required={required} type={numeric ? 'number' : 'text'} step={schema.type === 'integer' ? 1 : numeric ? 'any' : undefined} value={String(value ?? schema.default ?? '')} aria-invalid={Boolean(error)} aria-describedby={error ? errorId : undefined} onChange={(event) => update(numeric && event.target.value !== '' ? Number(event.target.value) : event.target.value)} /><Help schema={schema} />{error && <span className="field-error" id={errorId} role="alert">{error}</span>}</label>
 }
 
 function Help({ schema }: { schema: JsonSchema }) { return schema.description ? <span className="help">{schema.description}</span> : null }

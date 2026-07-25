@@ -47,11 +47,12 @@ use crate::contract::{
     DeviceReachabilityV1, DeviceV1, DiscoveryV1, EventKindV1, EventV1, GatewayExposureV1,
     ImportProfileRequestV1, MdnsCheckV1, MdnsPublicationV1, MdnsPublishedNameV1, OperationStatusV1,
     OperationV1, OperationsV1, ProfileAdapterKindV1, ProfileDefinitionV1, ProfileManifestReviewV1,
-    ProfileOriginKindV1, ProfileOriginV1, ProfileSelectorV1, ProfileServiceV1,
-    ProfileSourceErrorV1, ProfileTrustV1, ProfileV1, ProfileValidationV1, ProfilesV1, ProjectV1,
-    RegisterDeviceRequestV1, RegisterSourceRequestV1, RemoveWorktreeRequestV1, RouteHistoryV1,
-    RouterBindingV1, TailscalePublicationV1, TransitionPolicyV1,
-    UpdateDeploymentDefinitionRequestV1, ValidateProfileRequestV1,
+    ProfileOriginKindV1, ProfileOriginV1, ProfileSelectorV1, ProfileServicePreviewV1,
+    ProfileServiceV1, ProfileSourceErrorV1, ProfileTrustV1, ProfileV1, ProfileValidationV1,
+    ProfileVolumePreviewV1, ProfilesV1, ProjectV1, RegisterDeviceRequestV1,
+    RegisterSourceRequestV1, RemoveWorktreeRequestV1, RouteHistoryV1, RouterBindingV1,
+    TailscalePublicationV1, TransitionPolicyV1, UpdateDeploymentDefinitionRequestV1,
+    ValidateProfileRequestV1,
 };
 
 const LOCK_TTL_MILLIS: i64 = 15_000;
@@ -1770,15 +1771,65 @@ fn validate_profile_blocking(
         Ok(record) => record,
         Err(response) => return response,
     };
+    if request.target_deployment.is_some()
+        && !matches!(
+            record.row.trust,
+            switchyard_profiles::ProfileTrust::Trusted
+                | switchyard_profiles::ProfileTrust::Imported
+        )
+    {
+        return api_error(
+            StatusCode::CONFLICT,
+            "profile_not_trusted",
+            "startup profile must be reviewed/imported before instance authoring",
+        );
+    }
+    let target_deployment = request
+        .target_deployment
+        .clone()
+        .unwrap_or_else(|| record.deployment.clone());
+    if !valid_deployment_name(&target_deployment) {
+        return api_error(
+            StatusCode::NOT_FOUND,
+            "deployment_definition_not_found",
+            "deployment definition not found",
+        );
+    }
+    let target_definition = if request
+        .target_deployment
+        .as_deref()
+        .is_some_and(|target| target != record.deployment)
+    {
+        definition_path(inner, &target_deployment)
+    } else {
+        record.definition.clone()
+    };
     let block = match switchyard_profiles::load_profile_block(
         &inner.config.project_root,
-        &record.definition,
+        &target_definition,
         name,
         &record.row.origin,
     ) {
         Ok(block) => block,
         Err(error) => return profile_error_response(error),
     };
+    let services = block
+        .services
+        .iter()
+        .map(|(service_name, service)| ProfileServicePreviewV1 {
+            name: service_name.clone(),
+            ports: service.publish.clone(),
+            volumes: service
+                .volumes
+                .iter()
+                .map(|volume| ProfileVolumePreviewV1 {
+                    name: volume.name.clone(),
+                    target: volume.target.clone(),
+                    read_only: volume.read_only,
+                })
+                .collect(),
+        })
+        .collect::<Vec<_>>();
     let store = inner
         .store
         .lock()
@@ -1801,18 +1852,20 @@ fn validate_profile_blocking(
         }
     };
     drop(store);
-    let input = match fs::read_to_string(&record.definition) {
+    let input = match fs::read_to_string(&target_definition) {
         Ok(input) => input,
         Err(error) => {
             return Json(ProfileValidationV1 {
                 api_version: API_VERSION.into(),
                 name: name.into(),
-                deployment: record.deployment,
+                deployment: target_deployment,
                 checkout: request.checkout,
                 valid: false,
                 expanded_services: Vec::new(),
+                services,
                 diagnostics: Vec::new(),
                 error: Some(error.to_string()),
+                draft: None,
             })
             .into_response();
         }
@@ -1823,12 +1876,14 @@ fn validate_profile_blocking(
             return Json(ProfileValidationV1 {
                 api_version: API_VERSION.into(),
                 name: name.into(),
-                deployment: record.deployment,
+                deployment: target_deployment,
                 checkout: request.checkout,
                 valid: false,
                 expanded_services: Vec::new(),
+                services,
                 diagnostics: Vec::new(),
                 error: Some(error.to_string()),
+                draft: None,
             })
             .into_response();
         }
@@ -1844,49 +1899,63 @@ fn validate_profile_blocking(
             "deployment definition has no spec mapping",
         );
     };
+    let mut source_definition = serde_json::Map::from_iter([(
+        "path".into(),
+        Value::String(checkout.path.display().to_string()),
+    )]);
+    if let Some(repository) = checkout.repository_path {
+        source_definition.insert("type".into(), Value::String("worktree".into()));
+        source_definition.insert(
+            "repository".into(),
+            Value::String(repository.display().to_string()),
+        );
+        if let Some(reference) = checkout.requested_ref {
+            source_definition.insert("ref".into(), Value::String(reference));
+        }
+    }
     let sources = spec
         .entry(serde_yaml::Value::String("sources".into()))
         .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
     if let Some(sources) = sources.as_mapping_mut() {
-        sources.insert(
-            serde_yaml::Value::String(request.checkout.clone()),
-            serde_yaml::to_value(json!({"path": checkout.path})).unwrap_or_default(),
-        );
+        sources
+            .entry(serde_yaml::Value::String(request.checkout.clone()))
+            .or_insert_with(|| {
+                serde_yaml::to_value(Value::Object(source_definition)).unwrap_or_default()
+            });
     }
     let blocks = spec
         .entry(serde_yaml::Value::String("blocks".into()))
         .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
     if let Some(blocks) = blocks.as_mapping_mut() {
-        blocks.insert(
-            serde_yaml::Value::String(name.into()),
-            serde_yaml::to_value(&block).unwrap_or_default(),
-        );
+        blocks
+            .entry(serde_yaml::Value::String(name.into()))
+            .or_insert_with(|| serde_yaml::to_value(&block).unwrap_or_default());
     }
-    let parameters = serde_json::to_value(&block)
-        .ok()
-        .and_then(|value| value.get("parameters").cloned())
-        .and_then(|value| value.as_object().cloned())
-        .map(|items| {
-            items
-                .into_iter()
-                .filter_map(|(parameter, spec)| {
-                    spec.get("default")
-                        .and_then(Value::as_str)
-                        .map(|value| (parameter, value.to_owned()))
-                })
-                .collect::<BTreeMap<_, _>>()
-        })
-        .unwrap_or_default();
+    let parameters = request.parameters.unwrap_or_else(|| {
+        block
+            .parameters
+            .iter()
+            .filter_map(|(parameter, spec)| {
+                spec.default
+                    .as_ref()
+                    .map(|value| (parameter.clone(), value.clone()))
+            })
+            .collect()
+    });
+    let instance_name = request
+        .instance_name
+        .unwrap_or_else(|| "profile-validation-preview".into());
+    let device = request.device.unwrap_or_else(|| "local".into());
     let instances = spec
         .entry(serde_yaml::Value::String("instances".into()))
         .or_insert_with(|| serde_yaml::Value::Sequence(Vec::new()));
     if let Some(instances) = instances.as_sequence_mut() {
         instances.push(
             serde_yaml::to_value(json!({
-                "name": "profile-validation-preview",
+                "name": instance_name.clone(),
                 "block": name,
-                "source": request.checkout,
-                "device": "local",
+                "source": request.checkout.clone(),
+                "device": device,
                 "parameters": parameters,
             }))
             .unwrap_or_default(),
@@ -1902,44 +1971,64 @@ fn validate_profile_blocking(
             );
         }
     };
-    let bundle = match switchyard_planner::load_bundle_from_str(&draft, &record.definition) {
+    let bundle = match switchyard_planner::load_bundle_from_str(&draft, &target_definition) {
         Ok(bundle) => bundle,
         Err(error) => {
             return Json(ProfileValidationV1 {
                 api_version: API_VERSION.into(),
                 name: name.into(),
-                deployment: record.deployment,
+                deployment: target_deployment,
                 checkout: request.checkout,
                 valid: false,
                 expanded_services: Vec::new(),
+                services,
                 diagnostics: Vec::new(),
                 error: Some(error.to_string()),
+                draft: Some(draft),
             })
             .into_response();
         }
     };
-    let expanded_services = block
+    let expanded_block = bundle.spec.blocks.get(name).unwrap_or(&block);
+    let services = expanded_block
+        .services
+        .iter()
+        .map(|(service_name, service)| ProfileServicePreviewV1 {
+            name: service_name.clone(),
+            ports: service.publish.clone(),
+            volumes: service
+                .volumes
+                .iter()
+                .map(|volume| ProfileVolumePreviewV1 {
+                    name: volume.name.clone(),
+                    target: volume.target.clone(),
+                    read_only: volume.read_only,
+                })
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    let expanded_services = expanded_block
         .services
         .keys()
-        .map(|service| {
-            format!(
-                "{}--profile-validation-preview--{service}",
-                bundle.metadata.name
-            )
-        })
+        .map(|service| format!("{}--{}--{service}", bundle.metadata.name, instance_name))
         .collect();
-    let diagnostics = switchyard_planner::plan_with_devices(&bundle, &BTreeMap::new())
-        .err()
-        .unwrap_or_default();
+    let diagnostics = switchyard_planner::plan_with_devices(
+        &bundle,
+        &planner_devices(&inner.config.project_root).unwrap_or_default(),
+    )
+    .err()
+    .unwrap_or_default();
     Json(ProfileValidationV1 {
         api_version: API_VERSION.into(),
         name: name.into(),
-        deployment: record.deployment,
+        deployment: target_deployment,
         checkout: request.checkout,
         valid: diagnostics.is_empty(),
         expanded_services,
+        services,
         diagnostics,
         error: None,
+        draft: Some(draft),
     })
     .into_response()
 }

@@ -183,10 +183,16 @@ shape, and names a registered checkout:
 }
 ```
 
-The validation response contains `valid`, `expandedServices`, structured planner
-`diagnostics`, and nullable `error`. It uses string parameter defaults, the local device,
-and the synthetic instance name `profile-validation-preview`, matching the TUI expansion
-report; validation never starts a service or mutates a definition.
+The validation response contains `valid`, `expandedServices`, per-service `services`
+(topology with published `ports` and `volumes`), structured planner `diagnostics`, nullable
+`error`, and the complete validated `draft`. With no extra request fields it uses string
+parameter defaults, the local device, and the synthetic instance name
+`profile-validation-preview`, matching the TUI expansion report. Guided instance authoring
+may additionally send `targetDeployment`, `instanceName`, `device`, and string
+`parameters`; the daemon expands the selected trusted/imported profile against that target
+and registered checkout, plans with registered devices, and returns the non-mutating draft.
+The client may then persist that exact draft through the existing optimistic definition PUT;
+validation itself never starts a service or mutates a definition.
 
 Source-local trust requires a separate manifest review. First request
 `GET /api/v1/profiles/{name}/manifest?source=checkout`; it returns the verbatim

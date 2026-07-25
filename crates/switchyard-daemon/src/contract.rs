@@ -1,6 +1,7 @@
 //! Framework-neutral version 1 control-plane API contract.
 
 use std::{
+    collections::BTreeMap,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
 };
@@ -597,6 +598,32 @@ pub struct ValidateProfileRequestV1 {
     pub deployment: String,
     pub origin: ProfileOriginV1,
     pub checkout: String,
+    #[serde(default)]
+    pub target_deployment: Option<String>,
+    #[serde(default)]
+    pub instance_name: Option<String>,
+    #[serde(default)]
+    pub device: Option<String>,
+    #[serde(default)]
+    pub parameters: Option<BTreeMap<String, String>>,
+}
+
+/// Profile service topology shown before an instance is authored.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileServicePreviewV1 {
+    pub name: String,
+    pub ports: Vec<u16>,
+    pub volumes: Vec<ProfileVolumePreviewV1>,
+}
+
+/// Profile volume topology shown before an instance is authored.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileVolumePreviewV1 {
+    pub name: String,
+    pub target: PathBuf,
+    pub read_only: bool,
 }
 
 /// Planner-derived expansion report for profile/checkout validation.
@@ -609,8 +636,10 @@ pub struct ProfileValidationV1 {
     pub checkout: String,
     pub valid: bool,
     pub expanded_services: Vec<String>,
+    pub services: Vec<ProfileServicePreviewV1>,
     pub diagnostics: Vec<switchyard_planner::Diagnostic>,
     pub error: Option<String>,
+    pub draft: Option<String>,
 }
 
 /// Import request proving which verbatim source manifest the user reviewed.

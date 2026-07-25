@@ -1,5 +1,15 @@
 # Agent mistakes and lessons
 
+## 2026-07-25 — Additive API modes must preserve the original lookup path
+
+- The first guided-authoring extension always resolved the requested deployment through the
+  general deployment-definition lookup, including legacy profile-validation calls with no
+  target override. A project using root `deployment.yaml` then returned a false missing-file
+  validation result. Correction: retain the profile record's exact definition path for the
+  original mode and same-deployment previews, using target lookup only for a genuinely
+  different deployment. Lesson: when extending a read/validate endpoint with an optional
+  target, keep the no-option path byte-for-byte equivalent before adding cross-target logic.
+
 ## 2026-07-25 — Package verification must set the package directory
 
 - The first Part 4 web-test command ran `npm test` from the Rust workspace root, despite

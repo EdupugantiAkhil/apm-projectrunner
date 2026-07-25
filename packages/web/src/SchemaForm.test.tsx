@@ -14,6 +14,11 @@ describe('SchemaForm', () => {
     expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'worker', count: 2, enabled: true, mode: 'fast', tags: ['one', 'two'], nested: { path: '/ready' } }), true)
   })
 
+  it('attaches supplied planner errors to generated parameter fields', () => {
+    render(<SchemaForm schema={{ type: 'object', title: 'Profile parameters', properties: { TOKEN: { type: 'string' } } }} errors={{ TOKEN: 'Token is rejected.' }} />)
+    expect(screen.getByLabelText(/^TOKEN/)).toHaveAttribute('aria-invalid', 'true'); expect(screen.getByRole('alert')).toHaveTextContent('Token is rejected.')
+  })
+
   it('degrades unsupported constructs to a labeled JSON editor with syntax validation', () => {
     const changed = vi.fn()
     render(<SchemaForm schema={{ title: 'Choice adapter', oneOf: [{ type: 'string' }, { type: 'number' }] }} onChange={changed} />)

@@ -473,10 +473,17 @@ async fn profile_library_enforces_reviewed_import_reimport_validation_and_remova
     .await;
     assert_eq!(status, 200);
     let validation: Value = json_body(&body);
-    assert_eq!(validation["valid"], true);
+    assert_eq!(validation["valid"], true, "{validation:#}");
     assert_eq!(
         validation["expandedServices"][0],
         "demo--profile-validation-preview--web"
+    );
+    assert_eq!(validation["services"][0]["name"], "web");
+    assert_eq!(validation["services"][0]["ports"], json!([]));
+    assert!(
+        validation["draft"]
+            .as_str()
+            .is_some_and(|draft| draft.contains("profile-validation-preview"))
     );
 
     let (_, body) = request(
@@ -530,6 +537,33 @@ async fn profile_library_enforces_reviewed_import_reimport_validation_and_remova
     .await;
     assert_eq!(status, 201);
     assert_eq!(json_body::<Value>(&body)["trust"], "imported");
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/profiles/api/validate",
+        Some(json!({
+            "deployment": "demo",
+            "origin": {"kind": "imported-from-source", "source": "checkout", "commit": null},
+            "checkout": "checkout",
+            "targetDeployment": "demo",
+            "instanceName": "worker",
+            "device": "local",
+            "parameters": {"LOG_LEVEL": "debug"}
+        })),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let authored_preview: Value = json_body(&body);
+    assert_eq!(authored_preview["valid"], true, "{authored_preview:#}");
+    assert_eq!(authored_preview["expandedServices"][0], "demo--worker--web");
+    assert!(
+        authored_preview["draft"].as_str().is_some_and(
+            |draft| draft.contains("name: worker") && draft.contains("LOG_LEVEL: debug")
+        )
+    );
 
     fs::write(
         checkout.join("switchyard-profiles.yaml"),

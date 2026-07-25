@@ -119,7 +119,8 @@ export interface ProfileRecord { apiVersion: string; name: string; deployment: s
 export interface ProfilesResponse { apiVersion: string; profiles: ProfileRecord[]; sourceErrors: Array<{ source: string; message: string }> }
 export interface ProfileDefinition { apiVersion: string; name: string; deployment: string; origin: ProfileOrigin; trust: ProfileTrust; definition: Record<string, unknown> }
 export interface ProfileManifestReview { apiVersion: string; source: string; manifest: string; reviewHash: string }
-export interface ProfileValidation { apiVersion: string; name: string; deployment: string; checkout: string; valid: boolean; expandedServices: string[]; diagnostics: Array<{ code: string; path: string; message: string }>; error: string | null }
+export interface ProfileValidation { apiVersion: string; name: string; deployment: string; checkout: string; valid: boolean; expandedServices: string[]; services: Array<{ name: string; ports: number[]; volumes: Array<{ name: string; target: string; readOnly: boolean }> }>; diagnostics: Array<{ code: string; path: string; message: string }>; error: string | null; draft: string | null }
+export interface ProfileValidationInput { targetDeployment?: string; instanceName?: string; device?: string; parameters?: Record<string, string> }
 export interface JsonSchema { type?: string | string[]; title?: string; description?: string; enum?: unknown[]; properties?: Record<string, JsonSchema>; required?: string[]; items?: JsonSchema; default?: unknown; oneOf?: unknown[]; anyOf?: unknown[]; allOf?: unknown[]; [key: string]: unknown }
 
 let memoryToken = ''
@@ -165,7 +166,7 @@ export class ApiClient {
     return this.request<ProfileDefinition>(`/profiles/${encodeURIComponent(name)}?${query}`)
   }
   profileManifest(name: string, source: string) { return this.request<ProfileManifestReview>(`/profiles/${encodeURIComponent(name)}/manifest?source=${encodeURIComponent(source)}`) }
-  validateProfile(profile: ProfileRecord, checkout: string) { return this.request<ProfileValidation>(`/profiles/${encodeURIComponent(profile.name)}/validate`, { method: 'POST', body: JSON.stringify({ deployment: profile.deployment, origin: profile.origin, checkout }) }) }
+  validateProfile(profile: ProfileRecord, checkout: string, input: ProfileValidationInput = {}) { return this.request<ProfileValidation>(`/profiles/${encodeURIComponent(profile.name)}/validate`, { method: 'POST', body: JSON.stringify({ deployment: profile.deployment, origin: profile.origin, checkout, ...input }) }) }
   importProfile(name: string, source: string, reviewedManifestHash: string) { return this.request<ProfileRecord>(`/profiles/${encodeURIComponent(name)}/import`, { method: 'POST', body: JSON.stringify({ source, reviewedManifestHash }) }) }
   removeProfile(name: string) { return this.request<void>(`/profiles/${encodeURIComponent(name)}`, { method: 'DELETE' }) }
   definition(name: string) { return this.request<DeploymentDefinition>(`/deployments/${encodeURIComponent(name)}/definition`) }

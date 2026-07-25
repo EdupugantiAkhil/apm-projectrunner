@@ -18,6 +18,7 @@ const dirtyText = (source: SourceRecord) => {
 
 export default function App({ client = new ApiClient() }: { client?: ApiClient }) {
   const [view, setView] = useState<View>('deployments')
+  const [builderDeployment, setBuilderDeployment] = useState('')
   const [project, setProject] = useState<ProjectInfo | null>(null)
   const [deployments, setDeployments] = useState<DeploymentSummary[]>([])
   const [selected, setSelected] = useState('')
@@ -121,16 +122,16 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
           </button>
         })}
       </div>
-      <button className="new-deployment" onClick={() => setView('builder')}>+ New deployment</button>
+      <button className="new-deployment" onClick={() => { setBuilderDeployment(''); setView('builder') }}>+ New deployment</button>
     </aside>
     <main className="canvas" id="main-content">
       {error && <div className="error" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError('')}>×</button></div>}
-      {view === 'deployments' && <DeploymentView client={client} detail={detail} routes={routes} onCommand={runCommand} observe={observe} refresh={async () => { await loadSelected(); await loadDeployments() }} report={report} />}
+      {view === 'deployments' && <DeploymentView client={client} detail={detail} routes={routes} onAddInstance={(deployment) => { setBuilderDeployment(deployment); setView('builder') }} onCommand={runCommand} observe={observe} refresh={async () => { await loadSelected(); await loadDeployments() }} report={report} />}
       {view === 'sources' && <SourcesView client={client} sources={sources} reload={loadSources} report={report} />}
       {view === 'devices' && <DevicesView client={client} devices={devices} loading={devicesLoading} reload={loadDevices} report={report} />}
       {view === 'profiles' && <ProfilesView client={client} profiles={profiles} sourceErrors={profileSourceErrors} sources={sources} reload={loadProfiles} report={report} />}
       {view === 'operations' && <OperationsView operations={operations} onCancel={async (id) => { if (!window.confirm('Cancel this running operation?')) return; try { const cancelled = await client.cancel(id); setOperations((current) => current.map((item) => item.id === id ? cancelled : item)) } catch (value) { report(value) } }} />}
-      {view === 'builder' && <DeploymentBuilder client={client} sources={sources} close={() => setView('deployments')} onOperation={observe} report={report} saved={async (name) => { await loadDeployments(); setSelected(name); setView('deployments'); setNotice(`Deployment ${name} saved; use Up when ready`) }} />}
+      {view === 'builder' && <DeploymentBuilder client={client} sources={sources} profiles={profiles} devices={devices} deployment={builderDeployment || undefined} close={() => setView('deployments')} onOperation={observe} report={report} saved={async (name) => { await loadDeployments(); setSelected(name); setView('deployments'); setNotice(builderDeployment ? `Instance appended to ${name}; use Up when ready` : `Deployment ${name} saved; use Up when ready`); setBuilderDeployment('') }} />}
       {view === 'library' && <BlockLibrary adapters={adapters} />}
     </main>
     <aside className="inspector" aria-label="Inspector">
@@ -145,12 +146,12 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
   </div>
 }
 
-function DeploymentView({ client, detail, routes, onCommand, observe, refresh, report }: { client: ApiClient; detail: DeploymentDetail | null; routes: RouteState | null; onCommand: (kind: 'validate' | 'plan' | 'status' | 'logs' | 'open' | 'apply' | 'down' | 'cleanup', target?: string) => void; observe: (operation: Operation) => void; refresh: () => Promise<void>; report: (error: unknown) => void }) {
+function DeploymentView({ client, detail, routes, onAddInstance, onCommand, observe, refresh, report }: { client: ApiClient; detail: DeploymentDetail | null; routes: RouteState | null; onAddInstance: (deployment: string) => void; onCommand: (kind: 'validate' | 'plan' | 'status' | 'logs' | 'open' | 'apply' | 'down' | 'cleanup', target?: string) => void; observe: (operation: Operation) => void; refresh: () => Promise<void>; report: (error: unknown) => void }) {
   if (!detail) return <section><h1>Deployments</h1><p>No applied deployment selected.</p></section>
   const instances = detail.snapshot?.spec?.instances ?? Object.keys(detail.sourceIdentities).map((name) => ({ name, device: undefined }))
   const stopped = stoppedDiagnostic(detail)
   return <section><div className="title-row"><div><p className="eyebrow">Deployment</p><h1>{detail.deployment}</h1></div><span className={`state-label ${stopped ? 'state-stopped' : ''}`}>● {stopped ? 'Stopped / cleaned up' : detail.reconciliation.diagnostics.length ? 'Needs attention' : 'Reconciled'}</span></div>
-    <div className="command-bar" aria-label="Deployment commands"><button onClick={() => onCommand('validate')}>Validate</button><button onClick={() => onCommand('plan')}>Plan</button><button onClick={() => onCommand('status')}>Status</button><button disabled={Boolean(stopped)} title={stopped ? 'Start the deployment to view runtime logs' : undefined} onClick={() => onCommand('logs')}>Logs</button><button className="primary" onClick={() => onCommand('apply')}>Up</button><button className="danger" disabled={Boolean(stopped)} onClick={() => onCommand('down')}>Down</button><button className="danger" disabled={Boolean(stopped)} onClick={() => onCommand('cleanup')}>Cleanup</button></div>
+    <div className="command-bar" aria-label="Deployment commands"><button className="primary" onClick={() => onAddInstance(detail.deployment)}>Add instance</button><button onClick={() => onCommand('validate')}>Validate</button><button onClick={() => onCommand('plan')}>Plan</button><button onClick={() => onCommand('status')}>Status</button><button disabled={Boolean(stopped)} title={stopped ? 'Start the deployment to view runtime logs' : undefined} onClick={() => onCommand('logs')}>Logs</button><button className="primary" onClick={() => onCommand('apply')}>Up</button><button className="danger" disabled={Boolean(stopped)} onClick={() => onCommand('down')}>Down</button><button className="danger" disabled={Boolean(stopped)} onClick={() => onCommand('cleanup')}>Cleanup</button></div>
     {stopped && <section className="stopped-callout" role="status"><div><h2>Deployment is stopped or cleaned up</h2><p>There is no running endpoint or live route topology for this deployment.</p><p><strong>Reconciliation:</strong> {stopped.message}</p></div><button className="primary" onClick={() => onCommand('apply')}>Run Up</button></section>}
     <h2>Instances</h2><div className="instance-grid">{instances.map((instance) => { const identity = detail.sourceIdentities[instance.name]; const resources = detail.resources.filter((item) => item.labels['dev.switchyard.instance'] === instance.name || item.name.includes(instance.name)); const resource = resources[0]; const observedDevices = [...new Set(resources.map((item) => item.device))]; return <article className="instance-card" key={instance.name}><header><h3>{instance.name}</h3><span>{stopped ? 'not running' : resource?.state ?? 'state unknown'}</span><button disabled={Boolean(stopped)} aria-label={`Logs for ${instance.name}`} onClick={() => onCommand('logs', instance.name)}>Logs</button>{detail.snapshot?.spec?.managedProfiles?.[instance.name] && <button disabled={Boolean(stopped)} aria-label={`Open ${instance.name} in a managed browser profile`} onClick={() => onCommand('open', instance.name)}>Open</button>}</header><dl><dt>Authored placement</dt><dd className="mono">{instance.device ?? 'local'}</dd><dt>Observed placement</dt><dd className="mono">{observedDevices.length ? observedDevices.join(', ') : 'not observed'}</dd>{identity && <><dt>Path</dt><dd className="mono">{identity.path}</dd><dt>Ref</dt><dd className="mono">{identity.ref ?? 'detached'}</dd><dt>Commit</dt><dd className="mono">{short(identity.commit)} {identity.dirty ? <span className="dirty">● modified</span> : 'clean'}</dd></>}</dl>{!identity && <p>Source identity unavailable</p>}</article> })}</div>
     {stopped ? <section className="runtime-unavailable"><h2>Live patch bay unavailable</h2><p>The saved topology will become interactive after Up starts the deployment.</p></section> : <DeploymentWorkspace client={client} detail={detail} routes={routes} onOperation={observe} refresh={refresh} report={report} />}

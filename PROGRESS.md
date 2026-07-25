@@ -7,7 +7,35 @@ Updated: 2026-07-25
 - Routing proof (Phases 0–4): complete.
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
-- Web UI plan (`docs/web-ui-plan.md`): Parts 1, 2, 3, 4, and 6 complete.
+- Web UI plan (`docs/web-ui-plan.md`): Parts 1, 2, 3, 4, 5, and 6 complete.
+
+## 2026-07-25 web UI Part 5 — guided instance authoring
+
+- Added an `Add instance` entry point on existing deployments while retaining the existing
+  whole-deployment builder. The new path is one progressively revealed form for registered
+  checkout, trusted/valid profile, eligible device, instance identity, and schema-rendered
+  profile parameters.
+- Checkout changes validate only trusted/imported profile records against the selected
+  registered source and target deployment. Untrusted or invalid profiles remain visible as
+  unavailable explanations but cannot be selected. Ineligible devices are disabled in the
+  selector and their server-provided eligibility reason is shown inline.
+- Extended the existing profile validation endpoint with optional instance-authoring inputs
+  and a non-mutating validated draft. Its planner-derived response now includes expanded
+  service names plus per-service published ports and volumes. The browser persists that exact
+  draft through the existing optimistic definition PUT, avoiding YAML parsing or expansion
+  reimplementation in the client.
+- `SchemaForm` now accepts field errors so planner diagnostics can be attached to generated
+  parameter inputs. Profile, device, and parameter diagnostics are mapped to their respective
+  controls; no new global validation banner was added.
+- Added web coverage for the existing-deployment append path, checkout/profile trust and
+  validity filtering, disabled ineligible devices with visible reasons, SchemaForm profile
+  parameters, services/ports/volumes preview, and field-level diagnostics. Extended daemon API
+  coverage for the richer default report and named instance/device/parameter draft preview.
+- Verification: all 28 web tests passed; `npx tsc -b` passed with no output; `npm run lint`
+  exited zero with the four pre-existing exhaustive-dependencies warnings; `cargo fmt --all --
+  --check` passed with no output; workspace Clippy with all targets/features and warnings denied
+  passed; `cargo test --workspace --all-features` passed across all unit, integration, and doc
+  test binaries with only the repository's declared ignored reliability tests.
 
 ## 2026-07-25 web UI Part 4 — device eligibility and placement visibility
 
