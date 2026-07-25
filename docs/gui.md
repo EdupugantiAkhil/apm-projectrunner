@@ -52,6 +52,37 @@ already-running routers remain manageable. An explicitly supplied
 `SWITCHYARD_ROUTER_TOKEN` seeds a missing credential file and must match an existing
 one, preventing an accidental credential rotation while routers may still be running.
 
+Git clone keeps the same loopback-only bearer boundary: `/api/v1/sources/clone` is an
+authenticated API route and no additional listener or unauthenticated credential route
+exists. The browser first starts a non-interactive operation that uses the daemon user's
+Git credential helper, SSH configuration, and agent. If HTTPS authentication is still
+required, the UI displays an in-browser username/password-or-token form for one retry.
+The password field is uncontrolled React form state, is cleared immediately after the
+request body is created, and submitted material is never rendered back into the page.
+The API contract is deserialize-only for these fields and never echoes them.
+
+Credentials pass through memory only: browser form/fetch memory, the daemon request and
+clone-task values, Git's child environment, and the one-attempt askpass process. They are
+not written to SQLite, `.switchyard/`, operation results, SSE events, or logs. Each
+attempt creates an owner-only private temporary directory and an executable owner-only
+`GIT_ASKPASS` shell helper containing only environment-variable lookups, never secret
+material. Configured Git credential helpers are disabled for the submitted-credential
+retry so Git cannot ask one to persist the value; the directory is removed when Git exits. An approved SSH public host key may
+briefly be written there as a mode-0600 `known_hosts` file. Clone Git output is not
+streamed: the normal operation timeline receives only fixed start/completion messages,
+so submitted values cannot become event lines. The general
+`switchyard_planner::redact_event_line` filter remains useful for ordinary commands but
+cannot guarantee removal of an arbitrary password or token; this clone path therefore
+does not rely on it.
+
+An unknown SSH host is never silently accepted. After the ambient clone fails host-key
+verification, the daemon obtains the public key with `ssh-keyscan`, derives its SHA-256
+fingerprint with `ssh-keygen`, and returns only the host and fingerprint as a secret-free
+operation challenge. The UI requires explicit approval and advises verification through
+a trusted channel. The retry rescans and requires the exact approved host/fingerprint,
+then uses `StrictHostKeyChecking=yes` with the isolated known-hosts file. It never uses
+`StrictHostKeyChecking=no` or `accept-new` for clone.
+
 ## Deployment workspace
 
 The shell provides keyboard-accessible Deployments, Sources, Devices, Operations, and Block

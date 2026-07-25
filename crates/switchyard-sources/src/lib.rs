@@ -2,10 +2,13 @@
 
 use std::{
     fmt, fs, io,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Output},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+use std::io::Write as _;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -18,6 +21,30 @@ use switchyard_state::{RegisteredSource, RegisteredSourceKind, StateError, State
 pub struct SourceError {
     code: &'static str,
     message: String,
+    challenge: Option<CloneChallenge>,
+}
+
+/// A secret-free browser action required before a managed clone can be retried.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CloneChallenge {
+    /// Git needs an HTTPS username and password or personal access token.
+    Credentials,
+    /// The SSH host is unknown and its scanned key requires explicit approval.
+    HostKey { host: String, fingerprint: String },
+}
+
+/// In-memory HTTPS credentials supplied to a single Git attempt.
+pub struct CloneCredentials {
+    pub username: String,
+    pub password: String,
+}
+
+/// Browser approval for one exact SSH host-key fingerprint.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApprovedHostKey {
+    pub host: String,
+    pub fingerprint: String,
 }
 
 impl SourceError {
@@ -26,10 +53,28 @@ impl SourceError {
         self.code
     }
 
+    /// Returns a secret-free browser action for retryable authentication failures.
+    pub fn challenge(&self) -> Option<&CloneChallenge> {
+        self.challenge.as_ref()
+    }
+
     fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
+            challenge: None,
+        }
+    }
+
+    fn with_challenge(
+        code: &'static str,
+        message: impl Into<String>,
+        challenge: CloneChallenge,
+    ) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            challenge: Some(challenge),
         }
     }
 }
@@ -457,6 +502,49 @@ impl SourceManager {
         self.clone_repository(store, repository_url, name, options, false)
     }
 
+    /// Creates one browser-authenticated managed URL clone attempt.
+    ///
+    /// Credentials are passed only through the child environment to a temporary askpass
+    /// helper that contains no secret material. The helper and any approved public host key
+    /// are removed when this call returns.
+    pub fn create_clone_from_url_browser(
+        &self,
+        store: &StateStore,
+        repository_url: &str,
+        name: &str,
+        options: &GitCloneOptions,
+        credentials: Option<&CloneCredentials>,
+        approved_host_key: Option<&ApprovedHostKey>,
+    ) -> Result<RegisteredSource, SourceError> {
+        validate_source_name(name)?;
+        if repository_url.trim().is_empty() || repository_url.starts_with('-') {
+            return Err(SourceError::new(
+                "invalid_repository_url",
+                "repository URL must be non-empty and may not start with '-'",
+            ));
+        }
+        if has_embedded_http_credentials(repository_url) {
+            return Err(SourceError::new(
+                "repository_credentials_unsupported",
+                "repository URL must not contain credentials; submit them separately",
+            ));
+        }
+        if let Some(reference) = options.requested_ref.as_deref() {
+            validate_clone_ref(reference)?;
+        }
+        if let Some(identity) = &options.ssh_identity_file {
+            validate_ssh_identity(identity)?;
+        }
+        self.clone_repository_browser(
+            store,
+            repository_url,
+            name,
+            options,
+            credentials,
+            approved_host_key,
+        )
+    }
+
     /// Creates a managed URL clone with Git attached to the caller's terminal.
     ///
     /// This preserves native Git credential-helper and OpenSSH key-selection/prompt
@@ -526,6 +614,49 @@ impl SourceManager {
             remove_failed_clone_target(&target);
             return Err(error);
         }
+        self.register_clone(store, name, options, &target)
+    }
+
+    fn clone_repository_browser(
+        &self,
+        store: &StateStore,
+        repository: &str,
+        name: &str,
+        options: &GitCloneOptions,
+        credentials: Option<&CloneCredentials>,
+        approved_host_key: Option<&ApprovedHostKey>,
+    ) -> Result<RegisteredSource, SourceError> {
+        let target = self.clone_root.join(name);
+        self.guard_mutation(None, &target, Mutation::Create, false, &self.clone_root)?;
+        fs::create_dir_all(&self.clone_root)?;
+        let mut args = vec!["clone"];
+        if let Some(reference) = options.requested_ref.as_deref() {
+            args.extend(["--branch", reference]);
+        }
+        let target_text = target.to_string_lossy();
+        args.extend(["--", repository, target_text.as_ref()]);
+        let result = run_git_clone_browser(
+            &self.workspace_root,
+            &args,
+            repository,
+            options.ssh_identity_file.as_deref(),
+            credentials,
+            approved_host_key,
+        );
+        if let Err(error) = result {
+            remove_failed_clone_target(&target);
+            return Err(error);
+        }
+        self.register_clone(store, name, options, &target)
+    }
+
+    fn register_clone(
+        &self,
+        store: &StateStore,
+        name: &str,
+        options: &GitCloneOptions,
+        target: &Path,
+    ) -> Result<RegisteredSource, SourceError> {
         let path = target.canonicalize()?;
         let source = RegisteredSource {
             name: name.into(),
@@ -828,6 +959,249 @@ fn run_git_clone(
             )
         })?;
     output_text(output, "clone_create_failed")
+}
+
+fn run_git_clone_browser(
+    path: &Path,
+    args: &[&str],
+    repository: &str,
+    ssh_identity_file: Option<&Path>,
+    credentials: Option<&CloneCredentials>,
+    approved_host_key: Option<&ApprovedHostKey>,
+) -> Result<String, SourceError> {
+    run_git_clone_browser_with_program(
+        Path::new("git"),
+        path,
+        args,
+        repository,
+        ssh_identity_file,
+        credentials,
+        approved_host_key,
+    )
+}
+
+fn run_git_clone_browser_with_program(
+    git_program: &Path,
+    path: &Path,
+    args: &[&str],
+    repository: &str,
+    ssh_identity_file: Option<&Path>,
+    credentials: Option<&CloneCredentials>,
+    approved_host_key: Option<&ApprovedHostKey>,
+) -> Result<String, SourceError> {
+    let private = tempfile::Builder::new()
+        .prefix("switchyard-clone-")
+        .tempdir()
+        .map_err(SourceError::from)?;
+    fs::set_permissions(private.path(), fs::Permissions::from_mode(0o700))?;
+    let mut ssh_command = ssh_clone_command(ssh_identity_file)?;
+    if let Some(approval) = approved_host_key {
+        let scanned = scan_ssh_host(repository)?;
+        if scanned.host != approval.host || scanned.fingerprint != approval.fingerprint {
+            return Err(SourceError::new(
+                "host_key_changed",
+                "the SSH host key no longer matches the approved fingerprint",
+            ));
+        }
+        let known_hosts = private.path().join("known_hosts");
+        fs::write(&known_hosts, &scanned.keys)?;
+        fs::set_permissions(&known_hosts, fs::Permissions::from_mode(0o600))?;
+        ssh_command.push_str(" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=");
+        ssh_command.push_str(&posix_quote(known_hosts.to_string_lossy().as_ref()));
+    }
+    let mut command = Command::new(git_program);
+    if credentials.is_some() {
+        // Submitted one-shot credentials must not be offered to configured helpers,
+        // which could persist them after a successful authentication.
+        command.args(["-c", "credential.helper="]);
+    }
+    command
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_SSH_COMMAND", ssh_command);
+    if let Some(credentials) = credentials {
+        let helper = private.path().join("askpass");
+        fs::write(
+            &helper,
+            "#!/bin/sh\ncase \"$1\" in\n  *sername*) printf '%s\\n' \"$SWITCHYARD_ASKPASS_USERNAME\" ;;\n  *) printf '%s\\n' \"$SWITCHYARD_ASKPASS_PASSWORD\" ;;\nesac\n",
+        )?;
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))?;
+        command
+            .env("GIT_ASKPASS", &helper)
+            .env("SSH_ASKPASS", &helper)
+            .env("SWITCHYARD_ASKPASS_USERNAME", &credentials.username)
+            .env("SWITCHYARD_ASKPASS_PASSWORD", &credentials.password);
+    }
+    let output = command.output().map_err(|error| {
+        SourceError::new(
+            if error.kind() == io::ErrorKind::NotFound {
+                "git_unavailable"
+            } else {
+                "clone_create_failed"
+            },
+            error.to_string(),
+        )
+    })?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().into());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if is_http_repository(repository) && is_auth_failure(&stderr) {
+        return Err(SourceError::with_challenge(
+            "clone_credentials_required",
+            "Git authentication is required",
+            CloneChallenge::Credentials,
+        ));
+    }
+    if approved_host_key.is_none() && is_unknown_host_failure(&stderr) {
+        let scanned = scan_ssh_host(repository)?;
+        return Err(SourceError::with_challenge(
+            "clone_host_key_approval_required",
+            "the SSH host key requires explicit approval",
+            CloneChallenge::HostKey {
+                host: scanned.host,
+                fingerprint: scanned.fingerprint,
+            },
+        ));
+    }
+    let message = if credentials.is_some() {
+        "Git rejected the submitted credentials"
+    } else {
+        "Git clone failed"
+    };
+    Err(SourceError::new("clone_create_failed", message))
+}
+
+struct ScannedHostKey {
+    host: String,
+    fingerprint: String,
+    keys: Vec<u8>,
+}
+
+fn scan_ssh_host(repository: &str) -> Result<ScannedHostKey, SourceError> {
+    scan_ssh_host_with_programs(
+        repository,
+        Path::new("ssh-keyscan"),
+        Path::new("ssh-keygen"),
+    )
+}
+
+fn scan_ssh_host_with_programs(
+    repository: &str,
+    keyscan_program: &Path,
+    keygen_program: &Path,
+) -> Result<ScannedHostKey, SourceError> {
+    let (host, port) = ssh_host(repository).ok_or_else(|| {
+        SourceError::new(
+            "clone_host_key_unavailable",
+            "could not determine the SSH host from the repository URL",
+        )
+    })?;
+    let mut scan = Command::new(keyscan_program);
+    if let Some(port) = port {
+        scan.args(["-p", &port.to_string()]);
+    }
+    let output = scan.arg(&host).output().map_err(|error| {
+        SourceError::new(
+            "ssh_keyscan_unavailable",
+            format!("could not scan SSH host key: {error}"),
+        )
+    })?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return Err(SourceError::new(
+            "clone_host_key_unavailable",
+            "could not retrieve the SSH host key",
+        ));
+    }
+    let mut fingerprint = Command::new(keygen_program)
+        .args(["-lf", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| SourceError::new("ssh_keygen_unavailable", error.to_string()))?;
+    fingerprint
+        .stdin
+        .as_mut()
+        .expect("fingerprint stdin is piped")
+        .write_all(&output.stdout)?;
+    let result = fingerprint
+        .wait_with_output()
+        .map_err(|error| SourceError::new("ssh_keygen_failed", error.to_string()))?;
+    if !result.status.success() {
+        return Err(SourceError::new(
+            "ssh_keygen_failed",
+            "could not fingerprint the scanned SSH host key",
+        ));
+    }
+    let line = String::from_utf8_lossy(&result.stdout);
+    let value = line.split_whitespace().nth(1).ok_or_else(|| {
+        SourceError::new(
+            "ssh_keygen_failed",
+            "SSH host fingerprint output was invalid",
+        )
+    })?;
+    let approved_line = output
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .find(|line| !line.is_empty() && !line.starts_with(b"#"))
+        .ok_or_else(|| {
+            SourceError::new(
+                "clone_host_key_unavailable",
+                "the SSH host scan returned no public key",
+            )
+        })?;
+    let mut keys = approved_line.to_vec();
+    keys.push(b'\n');
+    Ok(ScannedHostKey {
+        host,
+        fingerprint: value.into(),
+        keys,
+    })
+}
+
+fn ssh_host(repository: &str) -> Option<(String, Option<u16>)> {
+    if let Some(remainder) = repository.strip_prefix("ssh://") {
+        let authority = remainder.split('/').next()?;
+        let host_port = authority.rsplit('@').next()?;
+        if let Some(bracketed) = host_port.strip_prefix('[') {
+            let (host, rest) = bracketed.split_once(']')?;
+            let port = rest.strip_prefix(':').and_then(|value| value.parse().ok());
+            return Some((host.into(), port));
+        }
+        let (host, port) = host_port
+            .rsplit_once(':')
+            .map_or((host_port, None), |(host, port)| (host, port.parse().ok()));
+        return Some((host.into(), port));
+    }
+    let authority = repository.split(':').next()?;
+    let host = authority.rsplit('@').next()?;
+    (!host.contains('/') && !host.is_empty()).then(|| (host.into(), None))
+}
+
+fn is_http_repository(repository: &str) -> bool {
+    let lowercase = repository.to_ascii_lowercase();
+    lowercase.starts_with("https://") || lowercase.starts_with("http://")
+}
+
+fn is_auth_failure(stderr: &str) -> bool {
+    let lowercase = stderr.to_ascii_lowercase();
+    [
+        "authentication failed",
+        "could not read username",
+        "could not read password",
+        "terminal prompts disabled",
+        "invalid username or password",
+    ]
+    .iter()
+    .any(|needle| lowercase.contains(needle))
+}
+
+fn is_unknown_host_failure(stderr: &str) -> bool {
+    let lowercase = stderr.to_ascii_lowercase();
+    lowercase.contains("host key verification failed")
+        || lowercase.contains("the authenticity of host")
 }
 
 fn run_git_clone_interactive(path: &Path, args: &[&str]) -> Result<String, SourceError> {
@@ -1367,6 +1741,97 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code(), "clone_create_failed");
         assert!(!temp.path().join(".switchyard/clones/retry").exists());
+    }
+
+    #[test]
+    fn browser_clone_uses_secret_free_one_shot_askpass_and_disables_helpers() {
+        let temp = TempDir::new().unwrap();
+        let fake_git = temp.path().join("git");
+        fs::write(
+            &fake_git,
+            "#!/bin/sh\n[ \"$1\" = -c ] || exit 21\n[ \"$2\" = credential.helper= ] || exit 22\n[ -x \"$GIT_ASKPASS\" ] || exit 23\nif grep -F \"$SWITCHYARD_ASKPASS_PASSWORD\" \"$GIT_ASKPASS\" >/dev/null; then exit 24; fi\n[ \"$SWITCHYARD_ASKPASS_PASSWORD\" = one-attempt-secret ] || exit 25\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o700)).unwrap();
+        run_git_clone_browser_with_program(
+            &fake_git,
+            temp.path(),
+            &["clone", "--", "https://example.invalid/repo.git", "target"],
+            "https://example.invalid/repo.git",
+            None,
+            Some(&CloneCredentials {
+                username: "user".into(),
+                password: "one-attempt-secret".into(),
+            }),
+            None,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn browser_clone_failures_do_not_echo_submitted_credentials() {
+        let temp = TempDir::new().unwrap();
+        let manager = SourceManager::new(temp.path());
+        let store = store(&temp);
+        let secret = "one-attempt-secret";
+        let error = manager
+            .create_clone_from_url_browser(
+                &store,
+                temp.path().join("missing").to_str().unwrap(),
+                "retry",
+                &GitCloneOptions::default(),
+                Some(&CloneCredentials {
+                    username: "user".into(),
+                    password: secret.into(),
+                }),
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "clone_create_failed");
+        assert!(!error.to_string().contains(secret));
+        assert!(store.source("retry").unwrap().is_none());
+        assert!(!temp.path().join(".switchyard/clones/retry").exists());
+    }
+
+    #[test]
+    fn browser_clone_classifies_auth_and_unknown_host_failures() {
+        assert!(is_auth_failure(
+            "fatal: could not read Username for 'https://example.invalid': terminal prompts disabled"
+        ));
+        assert!(is_unknown_host_failure("Host key verification failed."));
+        assert_eq!(
+            ssh_host("git@example.invalid:team/repo.git"),
+            Some(("example.invalid".into(), None))
+        );
+        assert_eq!(
+            ssh_host("ssh://git@example.invalid:2222/team/repo.git"),
+            Some(("example.invalid".into(), Some(2222)))
+        );
+
+        let temp = TempDir::new().unwrap();
+        let keyscan = temp.path().join("ssh-keyscan");
+        let keygen = temp.path().join("ssh-keygen");
+        fs::write(
+            &keyscan,
+            "#!/bin/sh\nprintf '%s\\n' 'example.invalid ssh-ed25519 AAAATEST'\n",
+        )
+        .unwrap();
+        fs::write(
+            &keygen,
+            "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '256 SHA256:test-fingerprint example.invalid (ED25519)'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&keyscan, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&keygen, fs::Permissions::from_mode(0o700)).unwrap();
+        let scanned =
+            scan_ssh_host_with_programs("git@example.invalid:team/repo.git", &keyscan, &keygen)
+                .unwrap();
+        assert_eq!(scanned.host, "example.invalid");
+        assert_eq!(scanned.fingerprint, "SHA256:test-fingerprint");
+        assert_eq!(
+            String::from_utf8(scanned.keys).unwrap(),
+            "example.invalid ssh-ed25519 AAAATEST\n"
+        );
     }
 
     #[test]

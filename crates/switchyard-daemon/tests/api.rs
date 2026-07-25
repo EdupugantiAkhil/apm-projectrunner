@@ -2507,3 +2507,94 @@ async fn source_and_worktree_endpoints_enforce_auth_validation_and_non_destructi
     let worktrees: Vec<switchyard_daemon::contract::WorktreeV1> = json_body(&body);
     assert_eq!(worktrees.len(), 1);
 }
+
+#[tokio::test]
+async fn clone_operation_registers_source_without_persisting_or_streaming_credentials() {
+    let temp = TempDir::new().unwrap();
+    let repository = temp.path().join("repository");
+    init_git_repository(&repository);
+    let daemon = start_api(&temp, Arc::new(StubBackend), 2);
+    let secret = "browser-token-must-not-survive";
+    let (status, body) = request(
+        &daemon,
+        Some(&daemon.token),
+        "POST",
+        "/api/v1/sources/clone",
+        Some(json!({
+            "name": "cloned",
+            "repository": repository,
+            "ref": "main",
+            "credentials": {"username": "unused", "password": secret}
+        })),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 202, "{}", String::from_utf8_lossy(&body));
+    let started: OperationV1 = json_body(&body);
+    assert_eq!(started.kind, CommandKind::Clone);
+    let terminal = wait_terminal(&daemon, &started.id).await;
+    assert_eq!(
+        terminal.status,
+        OperationStatusV1::Succeeded,
+        "{terminal:?}"
+    );
+    let encoded = serde_json::to_vec(&terminal).unwrap();
+    assert!(
+        !encoded
+            .windows(secret.len())
+            .any(|window| window == secret.as_bytes())
+    );
+
+    let (status, events) = request(
+        &daemon,
+        Some(&daemon.token),
+        "GET",
+        &format!("/api/v1/operations/{}/events", started.id),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(
+        !events
+            .windows(secret.len())
+            .any(|window| window == secret.as_bytes())
+    );
+    let sqlite = fs::read(temp.path().join(".switchyard/state.sqlite3")).unwrap();
+    assert!(
+        !sqlite
+            .windows(secret.len())
+            .any(|window| window == secret.as_bytes())
+    );
+
+    let (_, sources) = request(
+        &daemon,
+        Some(&daemon.token),
+        "GET",
+        "/api/v1/sources",
+        None,
+        &[],
+    )
+    .await;
+    let sources: Vec<switchyard_daemon::contract::SourceV1> = json_body(&sources);
+    assert!(sources.iter().any(|source| source.source.name == "cloned"));
+
+    let (_, body) = request(
+        &daemon,
+        Some(&daemon.token),
+        "POST",
+        "/api/v1/sources/clone",
+        Some(json!({
+            "name": "embedded",
+            "repository": "https://user:secret@example.invalid/repo.git"
+        })),
+        &[],
+    )
+    .await;
+    let started: OperationV1 = json_body(&body);
+    let terminal = wait_terminal(&daemon, &started.id).await;
+    assert_eq!(
+        terminal.error.as_ref().map(|error| error.code.as_str()),
+        Some("repository_credentials_unsupported")
+    );
+}

@@ -30,6 +30,7 @@ pub enum CommandKind {
     Down,
     Cleanup,
     RunAction,
+    Clone,
 }
 
 impl CommandKind {
@@ -47,6 +48,7 @@ impl CommandKind {
             Self::Down => "down",
             Self::Cleanup => "cleanup",
             Self::RunAction => "run-action",
+            Self::Clone => "clone",
         }
     }
 
@@ -54,13 +56,13 @@ impl CommandKind {
     pub const fn mutating(self) -> bool {
         matches!(
             self,
-            Self::Apply | Self::Bind | Self::Open | Self::Down | Self::Cleanup
+            Self::Apply | Self::Bind | Self::Open | Self::Down | Self::Cleanup | Self::Clone
         )
     }
 
     /// Whether the command consumes a global heavy-operation permit.
     pub const fn heavy(self) -> bool {
-        matches!(self, Self::Apply)
+        matches!(self, Self::Apply | Self::Clone)
     }
 }
 
@@ -163,6 +165,12 @@ impl CommandRequestV1 {
                 return Err(ApiErrorV1::new(
                     "invalid_request",
                     "run actions use the dedicated run-action endpoint",
+                ));
+            }
+            CommandKind::Clone => {
+                return Err(ApiErrorV1::new(
+                    "invalid_request",
+                    "clone operations use the sources clone endpoint",
                 ));
             }
         };
@@ -789,6 +797,38 @@ pub struct ImportProfileRequestV1 {
 pub struct RegisterSourceRequestV1 {
     pub name: String,
     pub path: PathBuf,
+}
+
+/// One managed URL-clone attempt. Secret fields are deserialize-only and never returned.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CloneSourceRequestV1 {
+    pub name: String,
+    pub repository: String,
+    #[serde(default)]
+    pub r#ref: Option<String>,
+    #[serde(default)]
+    pub ssh_identity_file: Option<PathBuf>,
+    #[serde(default)]
+    pub credentials: Option<CloneCredentialsV1>,
+    #[serde(default)]
+    pub approved_host_key: Option<ApprovedHostKeyV1>,
+}
+
+/// HTTPS credentials retained only for one clone subprocess lifetime.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CloneCredentialsV1 {
+    pub username: String,
+    pub password: String,
+}
+
+/// Explicit approval for one exact SSH host fingerprint.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApprovedHostKeyV1 {
+    pub host: String,
+    pub fingerprint: String,
 }
 
 /// Request to register a remote machine reachable through the user's SSH configuration.

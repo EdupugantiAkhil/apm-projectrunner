@@ -7,7 +7,33 @@ Updated: 2026-07-25
 - Routing proof (Phases 0–4): complete.
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
-- Web UI plan (`docs/web-ui-plan.md`): Parts 1 through 11 and follow-up Parts 11a–11c complete.
+- Web UI plan (`docs/web-ui-plan.md`): complete. Parts 1 through 13, including follow-up
+  Parts 11a–11c.
+
+## 2026-07-25 web UI Part 13 — merge onto current main
+
+- Part 13 was authored in an isolated worktree that had branched from `5ed8139`, 25 commits
+  behind `main`, so it predated Parts 10, 11, 11a, 11b, and 12. Its own verification run was
+  therefore not evidence about the current tree: `cargo test --workspace` aborted with a
+  SIGABRT in a `router-pingora` websocket test that passes on `main`. Rebasing the change onto
+  current `main` removed that abort entirely, confirming it was a stale-baseline artifact and
+  not caused by the clone work.
+- Conflicts resolved by keeping `main` and layering the clone additions on top, rather than
+  taking either side wholesale. Notably `SourcesView` had to keep Part 1's unmanaged
+  deregistration (`kind === 'managed'` branch and `deregisterSource`), which the stale branch
+  would have reverted to managed-only worktree removal. `CommandKind` needed both `RunAction`
+  (Part 9) and `Clone` in the enum, its `segment()` match, its rejection arm, and the web
+  union.
+- Two semantic gaps closed by hand after the merge built: the clone operation predated the
+  `destructive` field (Part 2) and the `instance` field (Part 11b). Clone is registered as
+  non-destructive via the existing `operation_is_destructive` predicate and carries
+  `instance: None`, since it is a source-scoped operation with no authored instance.
+- The unrelated `crates/router-tcp/tests/tcp_proxy.rs` edit in the stale branch was dropped; it
+  was baseline drift, not Part 13 work.
+- Verification on the merged tree: `cargo fmt --all --check` clean; workspace clippy clean with
+  `-D warnings`; 280 Rust tests passed, 0 failed, 5 pre-declared reliability ignores; `npx tsc -b`
+  clean; `npm run lint` exited zero with exactly the four pre-existing exhaustive-dependencies
+  warnings; 48 web tests passed across four files.
 
 ## 2026-07-25 web UI Part 11c — startup-profile provenance
 
@@ -1841,3 +1867,37 @@ implemented shape and the evidence used to close a phase.
 - Verification: `npx tsc -b` passed with no output; `npm run lint` exited zero with exactly the four
   pre-existing `react-hooks(exhaustive-deps)` warnings (two in `App.tsx`, two in
   `DeploymentBuilder.tsx`); `npm test` passed all 46 tests across three files.
+## 2026-07-25 — Web UI Part 13 Git clone with in-browser credentials
+
+- Added authenticated `POST /api/v1/sources/clone` as a normal heavy `clone`
+  operation with pending/running/terminal state, SSE timeline messages, cancellation
+  observation, source-scoped mutation locking, and managed source registration. The
+  first attempt preserves the existing non-interactive Git posture:
+  `GIT_TERMINAL_PROMPT=0`, ambient credential helpers, SSH agent/config, and
+  `ssh -o BatchMode=yes`; URL credentials, malformed refs, and invalid identity paths
+  remain rejected before Git runs.
+- HTTPS authentication failures return only a secret-free credentials challenge. The
+  browser retries with an uncontrolled password/token form that is reset immediately
+  after request construction and never renders the submitted value. The daemon DTO is
+  deserialize-only; credentials live only in request/task values and the Git/helper
+  child environment for one attempt. A private owner-only temp directory holds an
+  owner-only askpass script containing no secret material and is removed on return;
+  configured credential helpers are disabled for that submitted-credential retry so
+  Git cannot ask one to persist the value. No credential reaches SQLite, `.switchyard/`, operation results/errors, SSE events,
+  logs, or API responses. Clone events are fixed lifecycle messages rather than raw Git
+  output because the general planner line redactor cannot guarantee removal of an
+  arbitrary submitted token.
+- Unknown SSH hosts produce a challenge containing the scanned SHA-256 fingerprint.
+  Approval is explicit in the UI; retry rescans and requires the exact host/fingerprint,
+  then writes only the public key to a temporary mode-0600 isolated `known_hosts` file
+  and uses `StrictHostKeyChecking=yes`. No `no`/`accept-new` shortcut is used.
+- Added a new `CloneSource.test.tsx` for credential prompting, explicit host-key
+  approval, and no secret rendering; daemon coverage checks clone registration plus
+  absence of a submitted sentinel from operation JSON, SSE payloads, and SQLite, and
+  retains the embedded-URL credential rejection. Documentation records the endpoint,
+  loopback bearer posture, memory/disk lifetimes, redaction boundary, and host approval.
+- Caveats: `ssh-keyscan` supplies an unauthenticated candidate key, so the UI explicitly
+  tells the user to verify its fingerprint through a trusted channel. The clone path
+  deliberately does not expose raw Git progress text; progress is the normal operation
+  lifecycle plus fixed start/completion messages. Final full-workspace and web
+  verification output is recorded in the implementation report.

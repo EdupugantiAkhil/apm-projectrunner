@@ -85,6 +85,7 @@ optional `context` fields. Framework types are not part of the public Rust contr
 | `POST` | `/api/v1/run-actions/{name}/execute` | Preview, then hash-confirm and execute an existing action |
 | `GET` | `/api/v1/sources` | List registrations with live source identity |
 | `POST` | `/api/v1/sources` | Register an existing path as unmanaged |
+| `POST` | `/api/v1/sources/clone` | Start a managed Git clone operation, optionally retrying one credential or host-key challenge |
 | `DELETE` | `/api/v1/sources/{name}` | Forget a registration without deleting files |
 | `GET` | `/api/v1/worktrees?repository={source}` | Inspect every Git worktree for a registered repository |
 | `POST` | `/api/v1/worktrees` | Create a managed linked worktree |
@@ -269,8 +270,34 @@ writes that marker before starting the operation. This is a server-side guard, n
 browser-only affordance.
 
 Source registration accepts `{ "name": "app", "path": "/code/app" }` and always
-records the path as `unmanaged`. Worktree creation accepts `repository`, `ref`, and
-optional `name` and `path`; any explicit path must remain under the project's
+records the path as `unmanaged`. URL clone creation accepts `name`, `repository`, and
+optional `ref` and `sshIdentityFile`, returns HTTP 202, and runs through the normal
+operation/SSE lifecycle with kind `clone`. The first attempt always uses Git's ambient
+credential helper and SSH agent/config in non-interactive batch mode. An HTTPS auth
+failure ends with `clone_credentials_required` and secret-free context
+`{ "kind": "credentials" }`; a retry may include a `credentials` object. An unknown SSH
+host ends with `clone_host_key_approval_required` and context containing `kind:
+"host_key"`, `host`, and the scanned SHA-256 `fingerprint`; a retry may include the exact
+`approvedHostKey`. Switchyard rescans and requires an exact host/fingerprint match before
+using that public key in an isolated known-hosts file. It never silently uses
+`StrictHostKeyChecking=no` or `accept-new`.
+
+Submitted usernames, passwords, and tokens are deserialize-only request fields. They
+exist in browser/daemon/Git/helper process memory for one attempt, are never included in
+an API response, operation result, error context, SSE record, or SQLite row, and are
+dropped after the child exits. Git receives them through a per-attempt `GIT_ASKPASS`
+helper with configured credential helpers disabled for that retry, preventing Git from
+asking a helper to persist the submitted value. The owner-only temporary helper script contains no secret; credentials are child
+environment values, and the private temporary directory is removed when the attempt
+returns. An approved public host key may also occupy that directory briefly as a mode
+0600 `known_hosts` file. Git stderr is not forwarded for this workflow, so arbitrary
+submitted values cannot enter events; only fixed clone lifecycle messages are emitted.
+The existing embedded-URL credential rejection, ref validation, identity-path
+validation, direct argument vector, bearer authentication, and loopback-only listener
+remain in force.
+
+Worktree creation accepts `repository`, `ref`, and optional `name` and `path`; any
+explicit path must remain under the project's
 `.switchyard/worktrees` root. Worktree removal requires a JSON body containing
 `allowDirty`. Omitting it or setting it to false returns `source_dirty` with staged,
 unstaged, and untracked counts. Setting it to true is the distinct destructive

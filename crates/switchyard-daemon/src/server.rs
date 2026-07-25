@@ -25,7 +25,9 @@ use axum::{
 use futures_util::{Stream, stream};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use switchyard_sources::{SourceError, SourceManager};
+use switchyard_sources::{
+    ApprovedHostKey, CloneCredentials, GitCloneOptions, SourceError, SourceManager,
+};
 use switchyard_state::{
     AppliedSnapshot, DeviceCheckStatus, GeneratedManifest, LockRequest, OperationKind,
     OperationQuery, OperationRecord, OperationStatus, ReconciliationInput, ReconciliationReport,
@@ -40,7 +42,7 @@ use tokio::{
 };
 
 use crate::contract::{
-    API_VERSION, ApiErrorV1, CommandKind, CommandRequestV1, CommandResultV1,
+    API_VERSION, ApiErrorV1, CloneSourceRequestV1, CommandKind, CommandRequestV1, CommandResultV1,
     CreateDeploymentRequestV1, CreateWorktreeRequestV1, DaemonStatusV1, DeploymentDefinitionV1,
     DeploymentDetailV1, DeploymentOperationSummaryV1, DeploymentRoutesV1, DeploymentSummaryV1,
     DeploymentValidationV1, DeploymentsV1, DeviceEligibilityV1, DeviceKindV1, DevicePlacementV1,
@@ -1439,6 +1441,7 @@ fn routes(inner: Arc<Inner>) -> Router {
         .route("/api/v1/profiles/{name}/validate", post(validate_profile))
         .route("/api/v1/profiles/{name}/import", post(import_profile))
         .route("/api/v1/sources", get(list_sources).post(register_source))
+        .route("/api/v1/sources/clone", post(clone_source))
         .route("/api/v1/sources/{name}", delete(deregister_source))
         .route("/api/v1/devices", get(list_devices).post(register_device))
         .route("/api/v1/devices/{name}", delete(deregister_device))
@@ -3303,6 +3306,37 @@ async fn register_source(
     .await
 }
 
+async fn clone_source(
+    State(inner): State<Arc<Inner>>,
+    payload: Result<Json<CloneSourceRequestV1>, JsonRejection>,
+) -> Response {
+    let Json(request) = match payload {
+        Ok(payload) => payload,
+        Err(_) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                "invalid clone request",
+            );
+        }
+    };
+    if request
+        .credentials
+        .as_ref()
+        .is_some_and(|value| value.username.is_empty() || value.password.is_empty())
+    {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_clone_credentials",
+            "username and password or token must both be non-empty",
+        );
+    }
+    match begin_clone_operation(inner, request).await {
+        Ok(operation) => (StatusCode::ACCEPTED, Json(operation)).into_response(),
+        Err((status, error)) => (status, Json(error)).into_response(),
+    }
+}
+
 async fn deregister_source(
     State(inner): State<Arc<Inner>>,
     AxumPath(name): AxumPath<String>,
@@ -4078,6 +4112,237 @@ impl OperationInvocation {
     }
 }
 
+async fn begin_clone_operation(
+    inner: Arc<Inner>,
+    request: CloneSourceRequestV1,
+) -> Result<OperationV1, (StatusCode, ApiErrorV1)> {
+    let kind = CommandKind::Clone;
+    let deployment = format!("source:{}", request.name);
+    let id = format!(
+        "op-{}-{}",
+        now_millis(),
+        random_hex(8).map_err(internal_error)?
+    );
+    let lock_token = random_hex(16).map_err(internal_error)?;
+    let started_at = now_millis();
+    let lock_request = LockRequest {
+        deployment: &deployment,
+        owner: &inner.instance_id,
+        pid: std::process::id(),
+        process_started_at: started_at,
+        token: &lock_token,
+        now: started_at,
+        ttl_millis: LOCK_TTL_MILLIS,
+    };
+    let lock = match inner
+        .store
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .acquire_lock(&lock_request)
+    {
+        Ok(lock) => lock,
+        Err(StateError::LockContended { .. }) => {
+            return Err((
+                StatusCode::CONFLICT,
+                ApiErrorV1::new(
+                    "operation_lock_contended",
+                    format!("source `{}` already has a clone in progress", request.name),
+                ),
+            ));
+        }
+        Err(error) => return Err(internal_error(error)),
+    };
+    let operation = OperationV1 {
+        api_version: API_VERSION.into(),
+        id: id.clone(),
+        deployment: deployment.clone(),
+        instance: None,
+        kind,
+        destructive: operation_is_destructive(kind),
+        status: OperationStatusV1::Pending,
+        started_at,
+        finished_at: None,
+        error: None,
+        result: None,
+    };
+    if let Err(error) = inner
+        .store
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .start_operation(&OperationRecord {
+            id: id.clone(),
+            deployment,
+            instance: None,
+            kind: state_kind(kind),
+            status: OperationStatus::Pending,
+            started_at,
+            finished_at: None,
+            error: None,
+        })
+    {
+        let _ = inner
+            .store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .release_lock(lock);
+        return Err(internal_error(error));
+    }
+    let (cancellation, cancellation_rx) = watch::channel(false);
+    let events = Arc::new(EventLog::new());
+    events.emit(&id, EventKindV1::Operation, json!({"status": "pending"}));
+    inner
+        .operations
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(
+            id.clone(),
+            RuntimeOperation {
+                operation: operation.clone(),
+                cancellation,
+                events: events.clone(),
+            },
+        );
+    tokio::spawn(execute_clone_operation(
+        inner,
+        id,
+        request,
+        cancellation_rx,
+        events,
+        lock,
+    ));
+    Ok(operation)
+}
+
+async fn execute_clone_operation(
+    inner: Arc<Inner>,
+    id: String,
+    request: CloneSourceRequestV1,
+    cancellation: watch::Receiver<bool>,
+    events: Arc<EventLog>,
+    lock: switchyard_state::OperationLock,
+) {
+    let permit = tokio::select! {
+        permit = inner.heavy.acquire() => permit.ok(),
+        _ = cancellation_wait(cancellation.clone()) => None,
+    };
+    if permit.is_none() {
+        finish_operation(
+            &inner,
+            &id,
+            OperationStatusV1::Cancelled,
+            None,
+            Some(ApiErrorV1::new(
+                "operation_cancelled",
+                "operation was cancelled",
+            )),
+            &events,
+            Some(lock),
+        );
+        return;
+    }
+    set_running(&inner, &id, &events);
+    events.emit(
+        &id,
+        EventKindV1::Log,
+        json!({"line": "Starting non-interactive Git clone", "stderr": false}),
+    );
+    let project_root = inner.config.project_root.clone();
+    let state_path = project_root.join(".switchyard/state.sqlite3");
+    let blocking_cancellation = cancellation.clone();
+    let work = tokio::task::spawn_blocking(move || {
+        let (store, _) = StateStore::open(state_path).map_err(SourceError::from)?;
+        let manager = SourceManager::new(&project_root);
+        let credentials = request.credentials.map(|value| CloneCredentials {
+            username: value.username,
+            password: value.password,
+        });
+        let approval = request.approved_host_key.map(|value| ApprovedHostKey {
+            host: value.host,
+            fingerprint: value.fingerprint,
+        });
+        let name = request.name;
+        let result = manager.create_clone_from_url_browser(
+            &store,
+            &request.repository,
+            &name,
+            &GitCloneOptions {
+                requested_ref: request.r#ref,
+                ssh_identity_file: request.ssh_identity_file,
+            },
+            credentials.as_ref(),
+            approval.as_ref(),
+        );
+        if *blocking_cancellation.borrow() && result.is_ok() {
+            let _ = manager.remove(&store, &name, true);
+            let _ = manager.deregister(&store, &name);
+        }
+        result
+    })
+    .await;
+    drop(permit);
+    if *cancellation.borrow() {
+        finish_operation(
+            &inner,
+            &id,
+            OperationStatusV1::Cancelled,
+            None,
+            Some(ApiErrorV1::new(
+                "operation_cancelled",
+                "operation was cancelled",
+            )),
+            &events,
+            Some(lock),
+        );
+        return;
+    }
+    match work {
+        Ok(Ok(_)) => {
+            events.emit(
+                &id,
+                EventKindV1::Log,
+                json!({"line": "Clone completed and source registered", "stderr": false}),
+            );
+            finish_operation(
+                &inner,
+                &id,
+                OperationStatusV1::Succeeded,
+                Some(CommandResultV1 {
+                    exit_code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                }),
+                None,
+                &events,
+                Some(lock),
+            );
+        }
+        Ok(Err(error)) => {
+            let mut api_error = ApiErrorV1::new(error.code(), error.to_string());
+            api_error.context = error
+                .challenge()
+                .and_then(|challenge| serde_json::to_value(challenge).ok());
+            finish_operation(
+                &inner,
+                &id,
+                OperationStatusV1::Failed,
+                None,
+                Some(api_error),
+                &events,
+                Some(lock),
+            );
+        }
+        Err(_) => finish_operation(
+            &inner,
+            &id,
+            OperationStatusV1::Failed,
+            None,
+            Some(ApiErrorV1::new("source_task_failed", "clone worker failed")),
+            &events,
+            Some(lock),
+        ),
+    }
+}
+
 async fn begin_operation(
     inner: Arc<Inner>,
     kind: CommandKind,
@@ -4795,6 +5060,7 @@ fn parse_kind(value: &str) -> Option<CommandKind> {
         CommandKind::Down,
         CommandKind::Cleanup,
         CommandKind::RunAction,
+        CommandKind::Clone,
     ]
     .into_iter()
     .find(|kind| kind.segment() == value)

@@ -1,5 +1,5 @@
 export type OperationStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled'
-export type CommandKind = 'validate' | 'plan' | 'apply' | 'bind' | 'status' | 'routes' | 'logs' | 'open' | 'down' | 'cleanup' | 'run-action'
+export type CommandKind = 'validate' | 'plan' | 'apply' | 'bind' | 'status' | 'routes' | 'logs' | 'open' | 'down' | 'cleanup' | 'run-action' | 'clone'
 
 export interface ApiErrorBody { code: string; message: string; context?: unknown }
 export class ApiError extends Error {
@@ -74,6 +74,15 @@ export interface DeploymentSnapshot { spec?: {
   hostRouter?: Record<string, unknown>
 } }
 export interface SourceIdentity { path: string; repository?: string | null; ref?: string | null; commit?: string | null; dirty?: boolean | null }
+export interface CloneSourceRequest {
+  name: string
+  repository: string
+  ref?: string
+  sshIdentityFile?: string
+  credentials?: { username: string; password: string }
+  approvedHostKey?: { host: string; fingerprint: string }
+}
+export interface CloneChallenge { kind: 'credentials' | 'host_key'; host?: string; fingerprint?: string }
 export interface SourceRecord {
   source: { name: string; kind: 'managed' | 'unmanaged'; path: string; requestedRef?: string | null }
   inspection: {
@@ -230,6 +239,7 @@ export class ApiClient {
   checkDevice(name: string) { return this.request<DeviceRecord>(`/devices/${encodeURIComponent(name)}/check`, { method: 'POST' }) }
   registerSource(name: string, path: string) { return this.request<SourceRecord>('/sources', { method: 'POST', body: JSON.stringify({ name, path }) }) }
   deregisterSource(name: string) { return this.request<void>(`/sources/${encodeURIComponent(name)}`, { method: 'DELETE' }) }
+  cloneSource(request: CloneSourceRequest) { return this.request<Operation>('/sources/clone', { method: 'POST', body: JSON.stringify(request) }) }
   createWorktree(repository: string, ref: string, name?: string, path?: string) {
     return this.request<SourceRecord>('/worktrees', { method: 'POST', body: JSON.stringify({ repository, ref, name: name || undefined, path: path || undefined }) })
   }

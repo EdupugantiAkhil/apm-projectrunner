@@ -1,5 +1,20 @@
 # Agent mistakes and lessons
 
+## 2026-07-25 — Isolated worktrees do not branch from current HEAD
+
+- Part 13 was delegated with worktree isolation to stop two concurrent agents from racing on one
+  checkout. The worktree branched from `5ed8139`, an old merge commit 25 commits behind `main`,
+  not from current `HEAD`. The agent therefore built against a tree predating Parts 10, 11,
+  11a, 11b, and 12, and its green verification run described that stale tree: `cargo test
+  --workspace` aborted on a `router-pingora` SIGABRT that does not reproduce on `main`, and its
+  `SourcesView` would have reverted Part 1's unmanaged deregistration had the diff been taken
+  wholesale.
+- Correction: back the diff up, apply it to a branch off current `main` with `git apply --3way`,
+  resolve each conflict by keeping `main` and layering the new work on top, then re-verify.
+- Lesson: verify a delegated worktree's base commit at launch, not at review. A subagent's
+  verification output is only evidence about the tree it ran in, so confirm that tree is the one
+  you intend to merge into before trusting any of its numbers.
+
 ## 2026-07-25 — Empty label fixtures need an explicit record type
 
 - The first Part 11a web fixture mixed a labeled resource object with a bare `labels: {}` legacy
@@ -660,3 +675,21 @@ audit shell startup files as well as the requested cache directories.
   the shared fixtures as `SourceRecord` and `DeviceRecord`. Lesson: fixtures used only behind JSON
   helpers may tolerate widened literals, but reusing them at a typed mock boundary requires the API
   record type at declaration time.
+## 2026-07-25 — Browser clone test harness reused consumed responses
+
+- The first clone-flow mock stored one `Response` object per operation. Both the normal
+  operation observer and the clone challenge controller poll the same operation, so the
+  second reader failed with `Body is unusable`. Correction: retain plain terminal JSON
+  and construct a fresh `Response` for every GET. Lesson: mocks for pollable resources
+  must model repeatable reads rather than one-shot fetch bodies.
+- The new EventSource test stub initially used a TypeScript parameter property, which
+  this package rejects under `erasableSyntaxOnly`. Correction: declare and assign the
+  field explicitly. Lesson: compile new test scaffolding against the repository's exact
+  TypeScript restrictions before treating a concise syntax form as available.
+- The first askpass retry left configured Git credential helpers enabled. Even though
+  Switchyard itself wrote no secret, Git could have called a persistent helper after a
+  successful retry, contradicting the memory-only contract. Correction: add the
+  per-command `-c credential.helper=` override only on submitted-credential attempts.
+  Lesson: a one-shot input channel also has to disable downstream credential-store
+  callbacks; controlling where a secret enters is not enough to control where Git sends
+  it after authentication.
