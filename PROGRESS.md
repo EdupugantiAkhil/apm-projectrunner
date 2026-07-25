@@ -7,7 +7,23 @@ Updated: 2026-07-25
 - Routing proof (Phases 0–4): complete.
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
-- Web UI plan (`docs/web-ui-plan.md`): Part 1 complete.
+- Web UI plan (`docs/web-ui-plan.md`): Parts 1 and 6 complete.
+
+## 2026-07-25 web UI Part 6 — initial connection authoring
+
+- `DeploymentWorkspace` now derives each consumer's consumed slots from the deployment
+  spec's blocks and instances rather than from existing routes alone, mirroring the
+  TUI's semantics in `crates/switchyard-tui/src/tabs/connections.rs:191-223` and
+  `crates/switchyard-ops/src/connections.rs:76-118`. Consumers with required slots and
+  no binding are listed as unbound instead of omitted.
+- The provider-group selector renders for any consumer with required slots, offering an
+  explicit unbound placeholder, and reuses the existing compatibility filter, preview,
+  and bind command rather than a parallel path. A first bind states that there is no
+  current provider group instead of leaving the old-provider column blank.
+- Scope note: the workspace reads the applied snapshot, so this covers binding after
+  the first `Up`. Authoring connections while stopped remains Part 7.
+- Verification: 19 GUI tests pass (1 new), `tsc -b` clean, `oxlint` clean apart from the
+  pre-existing exhaustive-deps warnings.
 
 ## 2026-07-25 web UI Part 1 — unmanaged source deregistration
 

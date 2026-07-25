@@ -163,6 +163,17 @@ describe('Switchyard GUI', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/commands/bind', expect.objectContaining({ body: JSON.stringify({ bundle: '.switchyard/generated/comparison/resolved-deployment.yaml', consumer: 'ui-feature', group: 'base', transition: { strategy: 'close' } }) })))
   })
 
+  it('lists an authored unbound consumer and binds it through the complete change preview', async () => {
+    const user = userEvent.setup(); const client = new ApiClient('test'); const fetchMock = vi.mocked(fetch); const spec = deployment.snapshot.spec
+    vi.spyOn(client, 'deployment').mockResolvedValue({ ...deployment, snapshot: { spec: { ...spec, instances: [...spec.instances, { name: 'ui-unbound', block: 'web-ui' }], blocks: { 'web-ui': { services: { web: { consumes: { java: { protocol: 'tcp' }, python: { protocol: 'grpc' }, database: { protocol: 'tcp' } } } } } } } } })
+    render(<App client={client} />); await screen.findByRole('heading', { name: 'comparison', level: 1 })
+    const lane = screen.getByRole('heading', { name: 'UI consumers' }).parentElement!; const consumer = within(lane).getByRole('button', { name: /ui-unbound.*unbound/ }); expect(consumer).toBeInTheDocument(); expect(screen.getAllByRole('cell', { name: 'Unbound — no current provider' })).toHaveLength(3); await user.click(consumer)
+    expect(screen.getByText(/Currently unbound/)).toBeInTheDocument(); const select = screen.getByLabelText('Provider group for ui-unbound'); expect(within(select).getByRole('option', { name: 'Unbound — choose a provider group' })).toBeInTheDocument(); await user.selectOptions(select, 'base')
+    const dialog = screen.getByRole('dialog', { name: 'Preview complete route replacement' }); expect(within(dialog).getByText(/There is no current provider group/)).toBeInTheDocument(); expect(within(dialog).getAllByText('There is no current provider')).toHaveLength(3); expect(within(dialog).getByText('backend-b')).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Apply complete change' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/commands/bind', expect.objectContaining({ body: JSON.stringify({ bundle: '.switchyard/generated/comparison/resolved-deployment.yaml', consumer: 'ui-unbound', group: 'base', transition: { strategy: 'close' } }) })))
+  })
+
   it('builder validates a schema-driven draft and saves it', async () => {
     const user = userEvent.setup(); const fetchMock = vi.mocked(fetch); render(<App client={new ApiClient('test')} />)
     await user.click(screen.getByRole('button', { name: /New deployment/ })); await user.type(screen.getByLabelText(/^Name/), 'demo'); await user.type(screen.getByLabelText('Instance name'), 'worker'); await user.type(screen.getByLabelText('Block name'), 'service'); await user.selectOptions(screen.getByLabelText('Source'), 'feature-ui')
