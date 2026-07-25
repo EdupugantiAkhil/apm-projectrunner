@@ -7,7 +7,27 @@ Updated: 2026-07-25
 - Routing proof (Phases 0–4): complete.
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
-- Web UI plan (`docs/web-ui-plan.md`): Parts 1 through 11 and follow-up Parts 11a–11b complete.
+- Web UI plan (`docs/web-ui-plan.md`): Parts 1 through 11 and follow-up Parts 11a–11c complete.
+
+## 2026-07-25 web UI Part 11c — startup-profile provenance
+
+- Closed the last Part 11 caveat. Startup profiles are blocks: `project_profile_rows`
+  (`crates/switchyard-profiles/src/lib.rs:285-296`) maps every entry of `spec.blocks` to a profile
+  of the same name, so an instance's `block` is its profile identity. The inspector now joins the
+  already-loaded profile library on `(name, deployment)` and names the profile with its origin and
+  trust rather than reporting provenance as unavailable.
+- The join is by exact name and deployment, not inference. A block with no matching library entry
+  is named and marked `not listed in the profile library` rather than being given invented origin
+  or trust.
+- Moved `originLabel`/`trustLabel` into a new `packages/web/src/profileModel.ts` shared by
+  `ProfilesView` and the inspector, following the `connectionModel.ts` precedent. Exporting them
+  from `ProfilesView.tsx` directly would have added two `react(only-export-components)` lint
+  warnings; the shared module keeps the count at the four pre-existing warnings.
+- Added web coverage for the resolved profile line and for the unlisted-profile branch.
+- Verification: `npx tsc -b` passed with no output; `npm run lint` exited zero with exactly the
+  four pre-existing exhaustive-dependencies warnings; 41 web tests passed across three files;
+  `cargo fmt --all --check`, workspace clippy with `-D warnings`, and 276 Rust tests (0 failed,
+  5 pre-declared ignores) all passed.
 
 ## 2026-07-25 web UI Part 11b — instance-scoped operations
 
@@ -69,9 +89,10 @@ Updated: 2026-07-25
 - The selected instance view shows authored and observed placement, source identity, expanded
   block services, active incoming and outgoing connections through the shared
   `connectionModel.ts`, and the existing complete-provider-group editor and switch report.
-- Scope caveat: `DeploymentSnapshot.spec.instances` records an expanded block but no startup-
-  profile provenance. The inspector therefore renders Startup profile as unavailable and names
-  the expanded block separately rather than assuming every block name is a profile name.
+- Closed by Part 11c: `DeploymentSnapshot.spec.instances` records an expanded block, and blocks are
+  profiles, so the inspector joins the profile library on `(name, deployment)` and names the
+  startup profile with its origin and trust. Blocks absent from the library are named and marked
+  as not listed rather than given invented provenance.
 - Closed by Part 11a: planner-emitted instance and service ownership labels now survive resource
   persistence, and the inspector uses them for per-service state, health, and placement without
   matching resource names. Legacy resource rows recorded before Part 11a remain explicitly

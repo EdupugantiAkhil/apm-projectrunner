@@ -1,9 +1,8 @@
 import { useState } from 'react'
 import type { ApiClient, ProfileDefinition, ProfileManifestReview, ProfileRecord, ProfileValidation, SourceRecord } from './api'
+import { originLabel, trustLabel } from './profileModel'
 
 const sourceName = (profile: ProfileRecord) => 'source' in profile.origin ? profile.origin.source : null
-const originLabel = (profile: ProfileRecord) => profile.origin.kind === 'project' ? `Project · ${profile.deployment}` : profile.origin.kind === 'imported-from-source' ? `Imported from ${profile.origin.source}` : `Source · ${profile.origin.source}`
-const trustLabel = (trust: ProfileRecord['trust']) => trust === 'changed' ? 'changed — review again' : trust.replace('-', ' ')
 
 export default function ProfilesView({ client, profiles, sourceErrors, sources, reload, report }: { client: ApiClient; profiles: ProfileRecord[]; sourceErrors: Array<{ source: string; message: string }>; sources: SourceRecord[]; reload: () => Promise<void>; report: (error: unknown) => void }) {
   const [selected, setSelected] = useState<ProfileRecord | null>(null)
