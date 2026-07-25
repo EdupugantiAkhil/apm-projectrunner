@@ -1,6 +1,7 @@
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     convert::Infallible,
+    ffi::{OsStr, OsString},
     fs::{self, OpenOptions},
     future::Future,
     io::{self, Read, Write},
@@ -42,7 +43,8 @@ use crate::contract::{
     API_VERSION, ApiErrorV1, CommandKind, CommandRequestV1, CommandResultV1,
     CreateDeploymentRequestV1, CreateWorktreeRequestV1, DaemonStatusV1, DeploymentDefinitionV1,
     DeploymentDetailV1, DeploymentOperationSummaryV1, DeploymentRoutesV1, DeploymentSummaryV1,
-    DeploymentValidationV1, DeploymentsV1, DiscoveryV1, EventKindV1, EventV1, GatewayExposureV1,
+    DeploymentValidationV1, DeploymentsV1, DeviceEligibilityV1, DeviceKindV1, DevicePlacementV1,
+    DeviceReachabilityV1, DeviceV1, DiscoveryV1, EventKindV1, EventV1, GatewayExposureV1,
     ImportProfileRequestV1, MdnsCheckV1, MdnsPublicationV1, MdnsPublishedNameV1, OperationStatusV1,
     OperationV1, OperationsV1, ProfileAdapterKindV1, ProfileDefinitionV1, ProfileManifestReviewV1,
     ProfileOriginKindV1, ProfileOriginV1, ProfileSelectorV1, ProfileServiceV1,
@@ -2725,10 +2727,20 @@ async fn list_devices(State(inner): State<Arc<Inner>>) -> Response {
             .store
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        match store.devices() {
-            Ok(devices) => Json(devices).into_response(),
-            Err(error) => device_state_api_error(error),
-        }
+        let devices = match store.devices() {
+            Ok(devices) => devices,
+            Err(error) => return device_state_api_error(error),
+        };
+        let placements = device_placements(&inner.config.project_root, &store);
+        let rows = std::iter::once(local_device_v1(
+            placements.get("local").cloned().unwrap_or_default(),
+        ))
+        .chain(devices.into_iter().map(|device| {
+            let placed_instances = placements.get(&device.name).cloned().unwrap_or_default();
+            registered_device_v1(device, placed_instances)
+        }))
+        .collect::<Vec<_>>();
+        Json(rows).into_response()
     })
     .await
 }
@@ -2760,7 +2772,16 @@ async fn register_device(
             last_check_detail: None,
         };
         match store.register_device(&device) {
-            Ok(()) => (StatusCode::CREATED, Json(device)).into_response(),
+            Ok(()) => {
+                let placements = device_placements(&inner.config.project_root, &store)
+                    .remove(&device.name)
+                    .unwrap_or_default();
+                (
+                    StatusCode::CREATED,
+                    Json(registered_device_v1(device, placements)),
+                )
+                    .into_response()
+            }
             Err(error) => device_state_api_error(error),
         }
     })
@@ -2772,10 +2793,28 @@ async fn deregister_device(
     AxumPath(name): AxumPath<String>,
 ) -> Response {
     blocking_source_response(move || {
+        if name == "local" {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "implicit_device",
+                "the implicit local device cannot be removed",
+            );
+        }
         let store = inner
             .store
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let placements = device_placements(&inner.config.project_root, &store)
+            .remove(&name)
+            .unwrap_or_default();
+        if !placements.is_empty() {
+            let mut error = ApiErrorV1::new(
+                "device_has_placements",
+                format!("device `{name}` has authored instance placements"),
+            );
+            error.context = Some(json!({"placedInstances": placements}));
+            return (StatusCode::CONFLICT, Json(error)).into_response();
+        }
         match store.deregister_device(&name) {
             Ok(()) => StatusCode::NO_CONTENT.into_response(),
             Err(error) => device_state_api_error(error),
@@ -2808,27 +2847,189 @@ async fn check_device(
                 Err(error) => return device_state_api_error(error),
             }
         };
+        let executor = DaemonDeviceCheckExecutor {
+            ssh_program: inner.config.ssh_program.clone(),
+        };
         let (status, detail) =
-            match crate::device::check_with_program(&inner.config.ssh_program, &device) {
-                Ok(result) => result,
-                Err(error) => {
-                    return api_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        error.code(),
-                        &error.to_string(),
-                    );
-                }
-            };
+            switchyard_devices::check_device_eligibility_with(&executor, &device);
         let store = inner
             .store
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         match store.record_device_check(&name, now_millis(), status, Some(&detail)) {
-            Ok(updated) => Json(updated).into_response(),
+            Ok(updated) => {
+                let placements = device_placements(&inner.config.project_root, &store)
+                    .remove(&name)
+                    .unwrap_or_default();
+                Json(registered_device_v1(updated, placements)).into_response()
+            }
             Err(error) => device_state_api_error(error),
         }
     })
     .await
+}
+
+struct DaemonDeviceCheckExecutor {
+    ssh_program: PathBuf,
+}
+
+impl switchyard_devices::DeviceCheckExecutor for DaemonDeviceCheckExecutor {
+    fn run(
+        &self,
+        program: &OsStr,
+        arguments: &[OsString],
+        environment: &BTreeMap<OsString, OsString>,
+    ) -> io::Result<switchyard_devices::CheckOutput> {
+        let executable = if program == OsStr::new("ssh") {
+            self.ssh_program.as_os_str()
+        } else {
+            program
+        };
+        let output = std::process::Command::new(executable)
+            .args(arguments)
+            .envs(environment)
+            .output()?;
+        Ok(switchyard_devices::CheckOutput {
+            success: output.status.success(),
+            exit_code: output.status.code(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
+}
+
+fn local_device_v1(placed_instances: Vec<DevicePlacementV1>) -> DeviceV1 {
+    DeviceV1 {
+        name: "local".into(),
+        kind: DeviceKindV1::Local,
+        host: None,
+        port: None,
+        user: None,
+        identity_file: None,
+        created_at: None,
+        last_checked_at: None,
+        last_check_status: DeviceCheckStatus::Eligible,
+        last_check_detail: None,
+        reachability: DeviceReachabilityV1::Reachable,
+        eligibility: DeviceEligibilityV1::Eligible,
+        eligibility_reason: "local execution is always eligible".into(),
+        placed_instances,
+    }
+}
+
+fn registered_device_v1(
+    device: RegisteredDevice,
+    placed_instances: Vec<DevicePlacementV1>,
+) -> DeviceV1 {
+    let reachability = match device.last_check_status {
+        DeviceCheckStatus::Never => DeviceReachabilityV1::Unchecked,
+        DeviceCheckStatus::Unreachable => DeviceReachabilityV1::Unreachable,
+        DeviceCheckStatus::AuthFailed => DeviceReachabilityV1::AuthFailed,
+        DeviceCheckStatus::Ok | DeviceCheckStatus::Eligible | DeviceCheckStatus::Ineligible => {
+            DeviceReachabilityV1::Reachable
+        }
+    };
+    let eligibility = if device.last_check_status == DeviceCheckStatus::Eligible {
+        DeviceEligibilityV1::Eligible
+    } else {
+        DeviceEligibilityV1::Ineligible
+    };
+    let eligibility_reason = if eligibility == DeviceEligibilityV1::Eligible {
+        device
+            .last_check_detail
+            .clone()
+            .unwrap_or_else(|| "eligible for remote container execution".into())
+    } else {
+        switchyard_devices::eligibility_label(&device)
+    };
+    DeviceV1 {
+        name: device.name,
+        kind: DeviceKindV1::Ssh,
+        host: Some(device.host),
+        port: Some(device.port),
+        user: Some(device.user),
+        identity_file: device.identity_file,
+        created_at: Some(device.created_at),
+        last_checked_at: device.last_checked_at,
+        last_check_status: device.last_check_status,
+        last_check_detail: device.last_check_detail,
+        reachability,
+        eligibility,
+        eligibility_reason,
+        placed_instances,
+    }
+}
+
+fn device_definition_paths(root: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let primary = root.join("deployment.yaml");
+    if primary.is_file() {
+        paths.push(primary);
+    }
+    for directory in [root.to_path_buf(), root.join("deployments")] {
+        if let Ok(entries) = fs::read_dir(directory) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file()
+                    && matches!(
+                        path.extension().and_then(|value| value.to_str()),
+                        Some("yaml" | "yml")
+                    )
+                    && !paths.contains(&path)
+                {
+                    paths.push(path);
+                }
+            }
+        }
+    }
+    paths.sort();
+    paths
+}
+
+fn add_bundle_placements(
+    placements: &mut BTreeMap<String, Vec<DevicePlacementV1>>,
+    bundle: &switchyard_planner::Bundle,
+) {
+    for instance in &bundle.spec.instances {
+        placements
+            .entry(instance.device.clone().unwrap_or_else(|| "local".into()))
+            .or_default()
+            .push(DevicePlacementV1 {
+                deployment: bundle.metadata.name.clone(),
+                instance: instance.name.clone(),
+            });
+    }
+}
+
+fn device_placements(root: &Path, store: &StateStore) -> BTreeMap<String, Vec<DevicePlacementV1>> {
+    let mut placements = BTreeMap::new();
+    let mut authored = BTreeSet::new();
+    for path in device_definition_paths(root) {
+        if let Ok(bundle) = switchyard_planner::load_bundle(&path) {
+            authored.insert(bundle.metadata.name.clone());
+            add_bundle_placements(&mut placements, &bundle);
+        }
+    }
+    if let Ok(deployments) = store.deployments() {
+        for deployment in deployments {
+            if authored.contains(&deployment.deployment) {
+                continue;
+            }
+            let resolved = root
+                .join(".switchyard/generated")
+                .join(&deployment.deployment)
+                .join("resolved-deployment.yaml");
+            if let Ok(bundle) = switchyard_planner::load_bundle(&resolved) {
+                add_bundle_placements(&mut placements, &bundle);
+            }
+        }
+    }
+    for values in placements.values_mut() {
+        values.sort_by(|left, right| {
+            (&left.deployment, &left.instance).cmp(&(&right.deployment, &right.instance))
+        });
+    }
+    placements
 }
 
 fn device_state_api_error(error: StateError) -> Response {

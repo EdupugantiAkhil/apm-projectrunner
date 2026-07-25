@@ -1,0 +1,14 @@
+[package]
+name = "switchyard-devices"
+description = "Shared remote-device eligibility domain for Switchyard clients"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+switchyard-docker-ssh = { path = "../switchyard-docker-ssh" }
+switchyard-state = { path = "../switchyard-state" }
+
+[lints]
+workspace = true

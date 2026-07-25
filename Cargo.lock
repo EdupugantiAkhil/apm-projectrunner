@@ -3348,6 +3348,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "switchyard-adapters",
+ "switchyard-devices",
  "switchyard-docker-ssh",
  "switchyard-planner",
  "switchyard-profiles",
@@ -3358,6 +3359,14 @@ dependencies = [
  "tokio",
  "tower",
  "yaml_serde",
+]
+
+[[package]]
+name = "switchyard-devices"
+version = "0.1.0"
+dependencies = [
+ "switchyard-docker-ssh",
+ "switchyard-state",
 ]
 
 [[package]]
@@ -3375,7 +3384,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "switchyard-daemon",
- "switchyard-docker-ssh",
+ "switchyard-devices",
  "switchyard-planner",
  "switchyard-profiles",
  "switchyard-sources",

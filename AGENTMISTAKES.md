@@ -1,5 +1,13 @@
 # Agent mistakes and lessons
 
+## 2026-07-25 — Package verification must set the package directory
+
+- The first Part 4 web-test command ran `npm test` from the Rust workspace root, despite
+  the earlier recorded correction for this exact mistake, and failed because no root
+  `package.json` exists. Correction: run npm with `--prefix packages/web` and run `npx`
+  from `packages/web`. Lesson: consult existing mistake records as executable preflight
+  constraints, not merely historical notes.
+
 ## 2026-07-25 — Shared domains need a real leaf crate
 
 - A cross-crate `#[path]` include compiled the profile domain into the daemon a second time

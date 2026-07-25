@@ -12,7 +12,7 @@ serde_json = "1.0.140"
 serde_yaml = { package = "yaml_serde", version = "0.10.4" }
 sha2 = "0.10.8"
 switchyard-daemon = { path = "../switchyard-daemon" }
-switchyard-docker-ssh = { path = "../switchyard-docker-ssh" }
+switchyard-devices = { path = "../switchyard-devices" }
 switchyard-planner = { path = "../switchyard-planner" }
 switchyard-profiles = { path = "../switchyard-profiles" }
 switchyard-sources = { path = "../switchyard-sources" }

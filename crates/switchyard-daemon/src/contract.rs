@@ -646,8 +646,59 @@ const fn default_ssh_port() -> u16 {
     22
 }
 
-/// Registered device and its most recent persisted connectivity result.
-pub type DeviceV1 = switchyard_state::RegisteredDevice;
+/// Device origin. `local` is implicit and cannot be removed.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeviceKindV1 {
+    Local,
+    Ssh,
+}
+
+/// SSH reachability derived independently from runtime eligibility.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeviceReachabilityV1 {
+    Unchecked,
+    Reachable,
+    Unreachable,
+    AuthFailed,
+}
+
+/// Whether Switchyard can execute containers on a device.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeviceEligibilityV1 {
+    Eligible,
+    Ineligible,
+}
+
+/// One authored instance currently placed on a device.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DevicePlacementV1 {
+    pub deployment: String,
+    pub instance: String,
+}
+
+/// Device registration, separate reachability and eligibility, and authored placements.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceV1 {
+    pub name: String,
+    pub kind: DeviceKindV1,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub user: Option<String>,
+    pub identity_file: Option<PathBuf>,
+    pub created_at: Option<i64>,
+    pub last_checked_at: Option<i64>,
+    pub last_check_status: switchyard_state::DeviceCheckStatus,
+    pub last_check_detail: Option<String>,
+    pub reachability: DeviceReachabilityV1,
+    pub eligibility: DeviceEligibilityV1,
+    pub eligibility_reason: String,
+    pub placed_instances: Vec<DevicePlacementV1>,
+}
 
 /// Request to create a managed linked worktree.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

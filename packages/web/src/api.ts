@@ -48,12 +48,12 @@ export interface DeploymentDetail {
   manifest: Record<string, unknown> | null
   sourceIdentities: Record<string, SourceIdentity>
   reconciliation: { deployment: string; diagnostics: Array<{ code: string; path: string; message: string }> }
-  resources: Array<{ kind: string; id: string; name: string; labels: Record<string, string>; state: string | null }>
+  resources: Array<{ kind: string; id: string; name: string; labels: Record<string, string>; state: string | null; device: string }>
   customDomains: string[]
   bindings: Record<string, string>
 }
 export interface DeploymentSnapshot { spec?: {
-  instances?: Array<{ name: string; block?: string; source?: string; parameters?: Record<string, string> }>
+  instances?: Array<{ name: string; block?: string; source?: string; device?: string; parameters?: Record<string, string> }>
   blocks?: Record<string, {
     parameters?: Record<string, { required?: boolean; default?: string }>
     services?: Record<string, {
@@ -84,17 +84,25 @@ export interface SourceRecord {
     unknownCode: string | null
   }
 }
-export type DeviceStatus = 'never' | 'ok' | 'unreachable' | 'auth-failed'
+export type DeviceStatus = 'never' | 'ok' | 'eligible' | 'ineligible' | 'unreachable' | 'auth-failed'
+export type DeviceReachability = 'unchecked' | 'reachable' | 'unreachable' | 'auth-failed'
+export type DeviceEligibility = 'eligible' | 'ineligible'
+export interface DevicePlacement { deployment: string; instance: string }
 export interface DeviceRecord {
   name: string
-  host: string
-  port: number
-  user: string
+  kind: 'local' | 'ssh'
+  host: string | null
+  port: number | null
+  user: string | null
   identityFile: string | null
-  createdAt: number
+  createdAt: number | null
   lastCheckedAt: number | null
   lastCheckStatus: DeviceStatus
   lastCheckDetail: string | null
+  reachability: DeviceReachability
+  eligibility: DeviceEligibility
+  eligibilityReason: string
+  placedInstances: DevicePlacement[]
 }
 export interface RouteState {
   deployment: string

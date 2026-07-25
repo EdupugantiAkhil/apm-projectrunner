@@ -6,14 +6,16 @@ import { ApiClient, type OperationEvent } from './api'
 
 const deployment = {
   apiVersion: 'v1', deployment: 'comparison', definitionHash: 'definition123', resourceHash: 'resource123', appliedAt: 1,
-  snapshot: { spec: { instances: [{ name: 'ui-feature' }, { name: 'backend-a' }, { name: 'backend-b' }, { name: 'python-a' }, { name: 'python-b' }, { name: 'shared-db' }], bindings: { 'ui-feature': 'feature' }, routes: { 'ui-feature': { java: 'backend-a', python: 'python-a', database: 'shared-db' } }, groups: { base: { providers: { java: 'backend-b', python: 'python-b', database: 'shared-db' } }, feature: { providers: { java: 'backend-a', python: 'python-a', database: 'shared-db' } } }, uiRoutes: { browser: { origin: 'https://ui.comparison.localhost', backend: 'backend-a', downstreamGroup: 'feature' } } } }, manifest: {},
+  snapshot: { spec: { instances: [{ name: 'ui-feature', device: 'build-host' }, { name: 'backend-a' }, { name: 'backend-b' }, { name: 'python-a' }, { name: 'python-b' }, { name: 'shared-db' }], bindings: { 'ui-feature': 'feature' }, routes: { 'ui-feature': { java: 'backend-a', python: 'python-a', database: 'shared-db' } }, groups: { base: { providers: { java: 'backend-b', python: 'python-b', database: 'shared-db' } }, feature: { providers: { java: 'backend-a', python: 'python-a', database: 'shared-db' } } }, uiRoutes: { browser: { origin: 'https://ui.comparison.localhost', backend: 'backend-a', downstreamGroup: 'feature' } } } }, manifest: {},
   sourceIdentities: { 'ui-feature': { path: '/worktrees/ui-a', ref: 'feature/ui-redesign', commit: '35ad2abcdef', dirty: true } },
-  reconciliation: { deployment: 'comparison', diagnostics: [] }, resources: [{ kind: 'container', id: 'one', name: 'comparison-ui-feature', labels: { 'dev.switchyard.instance': 'ui-feature' }, state: 'healthy' }],
+  reconciliation: { deployment: 'comparison', diagnostics: [] }, resources: [{ kind: 'container', id: 'one', name: 'comparison-ui-feature', labels: { 'dev.switchyard.instance': 'ui-feature' }, state: 'healthy', device: 'build-host' }],
   customDomains: ['ui.comparison.localhost'], bindings: { 'ui-feature': 'feature' },
 }
 const source = { source: { name: 'feature-ui', kind: 'managed', path: '/worktrees/ui-a' }, inspection: { identity: { path: '/worktrees/ui-a', ref: 'feature/ui-redesign', commit: '35ad2abcdef', dirty: true }, branch: 'feature/ui-redesign', changes: { staged: 1, unstaged: 2, untracked: 3 }, ahead: 2, behind: 0, unknownCode: null } }
 const unmanagedSource = { source: { name: 'shared-app', kind: 'unmanaged' as const, path: '/code/shared-app' }, inspection: { identity: { path: '/code/shared-app', ref: 'main', commit: '123456789ab', dirty: true }, branch: 'main', changes: { staged: 4, unstaged: 5, untracked: 6 }, ahead: 0, behind: 0, unknownCode: null } }
 const sourceProfile = { apiVersion: 'v1', name: 'api', deployment: 'comparison', origin: { kind: 'discovered-in-source' as const, source: 'feature-ui', commit: '35ad2abcdef' }, trust: 'not-imported' as const, shadowed: false, services: [{ name: 'web', adapterKind: 'container' as const }] }
+const localDevice = { name: 'local', kind: 'local', host: null, port: null, user: null, identityFile: null, createdAt: null, lastCheckedAt: null, lastCheckStatus: 'eligible', lastCheckDetail: null, reachability: 'reachable', eligibility: 'eligible', eligibilityReason: 'local execution is always eligible', placedInstances: [] }
+const remoteDevice = { name: 'build-host', kind: 'ssh', host: 'host.test', port: 22, user: 'dev', identityFile: null, createdAt: 1, lastCheckedAt: null, lastCheckStatus: 'never', lastCheckDetail: null, reachability: 'unchecked', eligibility: 'ineligible', eligibilityReason: 'unchecked', placedInstances: [{ deployment: 'comparison', instance: 'ui-feature' }] }
 
 class MockEventSource extends EventTarget {
   static instances: MockEventSource[] = []
@@ -35,9 +37,9 @@ function installFetch() {
     if (url.endsWith('/deployments/comparison/routes')) return json({ deployment: 'comparison', bindings: [{ router: 'host', binding: 'ui-feature', currentVersion: 4, desiredVersion: 4, status: 'active', lastErrorCode: null }], history: [] })
     if (url.endsWith('/deployments/comparison')) return json(deployment)
     if (url.endsWith('/sources')) return json([source])
-    if (url.endsWith('/devices/build-host/check') && init?.method === 'POST') { deviceStatus = 'ok'; return json({ name: 'build-host', host: 'host.test', port: 22, user: 'dev', identityFile: null, createdAt: 1, lastCheckedAt: 1000, lastCheckStatus: 'ok', lastCheckDetail: 'SSH connection succeeded' }) }
-    if (url.endsWith('/devices') && init?.method === 'POST') return json({ ...JSON.parse(String(init.body)), identityFile: null, createdAt: 1, lastCheckedAt: null, lastCheckStatus: 'never', lastCheckDetail: null }, 201)
-    if (url.endsWith('/devices')) return json([{ name: 'build-host', host: 'host.test', port: 22, user: 'dev', identityFile: null, createdAt: 1, lastCheckedAt: deviceStatus === 'ok' ? 1000 : null, lastCheckStatus: deviceStatus, lastCheckDetail: deviceStatus === 'ok' ? 'SSH connection succeeded' : null }])
+    if (url.endsWith('/devices/build-host/check') && init?.method === 'POST') { deviceStatus = 'eligible'; return json({ ...remoteDevice, lastCheckedAt: 1000, lastCheckStatus: 'eligible', lastCheckDetail: 'eligible for remote container execution (docker 28.5.1)', reachability: 'reachable', eligibility: 'eligible', eligibilityReason: 'eligible for remote container execution (docker 28.5.1)' }) }
+    if (url.endsWith('/devices') && init?.method === 'POST') return json({ ...remoteDevice, ...JSON.parse(String(init.body)), placedInstances: [] }, 201)
+    if (url.endsWith('/devices')) return json([localDevice, deviceStatus === 'eligible' ? { ...remoteDevice, lastCheckedAt: 1000, lastCheckStatus: 'eligible', lastCheckDetail: 'eligible for remote container execution (docker 28.5.1)', reachability: 'reachable', eligibility: 'eligible', eligibilityReason: 'eligible for remote container execution (docker 28.5.1)' } : remoteDevice])
     if (url.endsWith('/adapters')) return json([{ kind: 'execution', declaration: { id: 'container', version: '1', capabilities: ['container'] }, configurationSchema: { type: 'object', properties: { type: { type: 'string', enum: ['container'], default: 'container' }, image: { type: 'string' } } } }])
     if (url.endsWith('/profiles')) return json({ apiVersion: 'v1', profiles: [sourceProfile], sourceErrors: [] })
     if (url.includes('/profiles/api?')) return json({ ...sourceProfile, definition: { parameters: { LOG_LEVEL: { default: 'info' } }, services: { web: { execution: { type: 'container', image: 'busybox' } } } } })
@@ -70,6 +72,9 @@ describe('Switchyard GUI', () => {
     expect(screen.getByText('/worktrees/ui-a')).toBeInTheDocument()
     expect(screen.getByText(/35ad2abcd/)).toBeInTheDocument()
     expect(screen.getByText('healthy')).toBeInTheDocument()
+    expect(screen.getAllByText('Authored placement')).toHaveLength(6)
+    expect(screen.getAllByText('Observed placement')).toHaveLength(6)
+    expect(screen.getAllByText('build-host')).toHaveLength(2)
     expect(screen.getByText('ui.comparison.localhost')).toBeInTheDocument()
     expect(screen.getByRole('cell', { name: 'v4' })).toBeInTheDocument()
   })
@@ -186,13 +191,29 @@ describe('Switchyard GUI', () => {
     expect(await screen.findByRole('heading', { name: 'Sources', level: 1 })).toBeInTheDocument()
   })
 
-  it('renders devices and refreshes a row after a connection check', async () => {
+  it('renders reachability and eligibility separately and refreshes both after a check', async () => {
     const user = userEvent.setup(); render(<App client={new ApiClient('test')} />)
     await user.click(within(screen.getByRole('navigation', { name: 'Main views' })).getByRole('button', { name: 'devices' }))
     expect(await screen.findByRole('cell', { name: 'dev@host.test:22' })).toBeInTheDocument()
-    expect(screen.getByText('never')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Check connection' }))
-    expect(await screen.findByText('ok')).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Reachability' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Eligibility' })).toBeInTheDocument()
+    expect(screen.getAllByText('unchecked')).toHaveLength(2)
+    expect(screen.getByText('ineligible')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Check eligibility' }))
+    expect((await screen.findAllByText('eligible')).length).toBeGreaterThan(0)
+    expect(screen.getAllByText('reachable').length).toBeGreaterThan(0)
+  })
+
+  it('shows placements and blocks removal of an occupied device', async () => {
+    const user = userEvent.setup(); const client = new ApiClient('test'); const removeDevice = vi.spyOn(client, 'removeDevice').mockResolvedValue()
+    render(<App client={client} />)
+    await user.click(within(screen.getByRole('navigation', { name: 'Main views' })).getByRole('button', { name: 'devices' }))
+    const row = (await screen.findByRole('cell', { name: 'dev@host.test:22' })).closest('tr')!
+    await user.click(within(row).getByRole('button', { name: 'Remove' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText('comparison / ui-feature')).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Confirm removal' })).toBeDisabled()
+    expect(removeDevice).not.toHaveBeenCalled()
   })
 
   it('shows inline add-device validation and submits a valid device', async () => {

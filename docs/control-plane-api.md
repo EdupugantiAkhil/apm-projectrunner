@@ -84,10 +84,10 @@ optional `context` fields. Framework types are not part of the public Rust contr
 | `GET` | `/api/v1/worktrees?repository={source}` | Inspect every Git worktree for a registered repository |
 | `POST` | `/api/v1/worktrees` | Create a managed linked worktree |
 | `DELETE` | `/api/v1/worktrees/{name}` | Remove a managed worktree after the dirty-state guard |
-| `GET` | `/api/v1/devices` | List registered SSH devices and their last check result |
+| `GET` | `/api/v1/devices` | List the implicit local device and registered SSH devices with reachability, eligibility, and authored placements |
 | `POST` | `/api/v1/devices` | Register a device |
-| `DELETE` | `/api/v1/devices/{name}` | Remove a device registration |
-| `POST` | `/api/v1/devices/{name}/check` | Run and persist an SSH connectivity check |
+| `DELETE` | `/api/v1/devices/{name}` | Remove an unoccupied SSH device registration |
+| `POST` | `/api/v1/devices/{name}/check` | Run and persist SSH reachability plus Docker eligibility checks |
 
 A command request always contains `bundle`. Command-specific fields are `consumer` and
 `group` for bind, `routes` for status, `target` for logs, `ui` for open, and `confirmed`
@@ -222,14 +222,50 @@ validation failures use stable codes including `source_path_not_found`,
 `source_unmanaged`, `source_dirty`, and `source_outside_managed_root`.
 
 Device creation accepts `name`, `host`, `user`, optional `port` (default 22), and
-optional `identityFile`. Checks invoke the system `ssh` executable without a shell,
-using batch mode, a five-second connection timeout, host-key `accept-new`, and the
-registered identity path when present. Results are `never`, `ok`, `unreachable`, or
-`auth-failed`; the timestamp and bounded SSH diagnostic are retained in SQLite. A
-missing executable returns `ssh_unavailable` without changing the previous result.
-Switchyard never accepts or stores passwords, private-key material, or agent secrets:
-authentication relies on the invoking user's SSH agent, SSH configuration, and key
-files, and only an identity file path is stored.
+optional `identityFile`. `GET /api/v1/devices` includes the implicit `local` device as
+the first row rather than requiring every client to synthesize it. This keeps placement,
+eligibility, and removal behavior identical across clients; `local` has null SSH and
+creation/check fields, is always reachable and eligible, and cannot be removed.
+
+Each device row has this shape:
+
+```json
+{
+  "name": "build-host",
+  "kind": "ssh",
+  "host": "host.test",
+  "port": 22,
+  "user": "dev",
+  "identityFile": "keys/id_ed25519",
+  "createdAt": 1710000000000,
+  "lastCheckedAt": 1710000001000,
+  "lastCheckStatus": "ineligible",
+  "lastCheckDetail": "no docker over SSH: docker: command not found",
+  "reachability": "reachable",
+  "eligibility": "ineligible",
+  "eligibilityReason": "no docker over SSH: docker: command not found",
+  "placedInstances": [
+    { "deployment": "demo", "instance": "api" }
+  ]
+}
+```
+
+`lastCheckStatus` is the persisted raw result and accepts `never`, the legacy SSH-only
+`ok`, `eligible`, `ineligible`, `unreachable`, or `auth-failed`. `reachability` is a
+separate projection (`unchecked`, `reachable`, `unreachable`, or `auth-failed`), while
+`eligibility` is independently `eligible` or `ineligible` and always has an
+`eligibilityReason`. A reachable SSH target can therefore remain ineligible when Docker
+is unavailable. Checks invoke `ssh` and then Docker without a shell, using batch mode, a
+five-second connection timeout, host-key `accept-new`, and the registered identity path
+when present. The timestamp and bounded diagnostic are retained in SQLite.
+
+`placedInstances` is derived from authored definitions (falling back to the last resolved
+bundle only when an applied deployment's authored file is unavailable). A non-empty list
+blocks `DELETE /api/v1/devices/{name}` with HTTP 409 `device_has_placements`; the same
+list is returned in `context.placedInstances`. Clients should show it before removal, but
+the server guard is authoritative. Switchyard never accepts or stores passwords,
+private-key material, or agent secrets: authentication relies on the invoking user's SSH
+agent, SSH configuration, and key files, and only an identity file path is stored.
 
 The daemon keeps the 64 most recent terminal operations in memory, including their raw
 output and resumable event logs. Older terminal operations are evicted from memory;

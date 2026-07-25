@@ -776,7 +776,12 @@ async fn device_crud_and_check_status_are_persisted() {
         "name": "build-host", "host": "host.test", "user": "dev", "identityFile": "keys/id_ed25519"
     })), &[]).await;
     assert_eq!(status, 201);
-    assert_eq!(json_body::<Value>(&body)["port"], 22);
+    let created: Value = json_body(&body);
+    assert_eq!(created["port"], 22);
+    assert_eq!(created["kind"], "ssh");
+    assert_eq!(created["reachability"], "unchecked");
+    assert_eq!(created["eligibility"], "ineligible");
+    assert_eq!(created["eligibilityReason"], "unchecked");
 
     let (status, _) = request(
         &api,
@@ -803,14 +808,25 @@ async fn device_crud_and_check_status_are_persisted() {
     assert_eq!(status, 200);
     let checked: Value = json_body(&body);
     assert_eq!(checked["lastCheckStatus"], "auth-failed");
+    assert_eq!(checked["reachability"], "auth-failed");
+    assert_eq!(checked["eligibility"], "ineligible");
+    assert!(
+        checked["eligibilityReason"]
+            .as_str()
+            .unwrap()
+            .contains("Permission denied")
+    );
     assert!(checked["lastCheckedAt"].as_i64().is_some());
 
     let (status, body) = request(&api, Some(&api.token), "GET", "/api/v1/devices", None, &[]).await;
     assert_eq!(status, 200);
-    assert_eq!(
-        json_body::<Value>(&body)[0]["lastCheckStatus"],
-        "auth-failed"
-    );
+    let listed: Value = json_body(&body);
+    assert_eq!(listed[0]["name"], "local");
+    assert_eq!(listed[0]["kind"], "local");
+    assert_eq!(listed[0]["reachability"], "reachable");
+    assert_eq!(listed[0]["eligibility"], "eligible");
+    assert_eq!(listed[1]["name"], "build-host");
+    assert_eq!(listed[1]["lastCheckStatus"], "auth-failed");
 
     let (status, _) = request(
         &api,
@@ -825,7 +841,7 @@ async fn device_crud_and_check_status_are_persisted() {
 }
 
 #[tokio::test]
-async fn device_check_reports_missing_ssh_distinctly() {
+async fn device_check_maps_missing_ssh_to_unreachable_eligibility() {
     let temp = TempDir::new().unwrap();
     let mut config = DaemonConfig::new(temp.path().into(), "unused".into());
     config.ssh_program = temp.path().join("missing-ssh");
@@ -856,8 +872,84 @@ async fn device_check_reports_missing_ssh_distinctly() {
         &[],
     )
     .await;
-    assert_eq!(status, 500);
-    assert_eq!(json_body::<Value>(&body)["code"], "ssh_unavailable");
+    assert_eq!(status, 200);
+    let checked: Value = json_body(&body);
+    assert_eq!(checked["lastCheckStatus"], "unreachable");
+    assert_eq!(checked["reachability"], "unreachable");
+    assert_eq!(checked["eligibility"], "ineligible");
+    assert!(
+        checked["eligibilityReason"]
+            .as_str()
+            .unwrap()
+            .contains("SSH probe could not start")
+    );
+}
+
+#[tokio::test]
+async fn device_listing_returns_authored_placements_and_removal_guard_blocks_them() {
+    let temp = TempDir::new().unwrap();
+    let definitions = temp.path().join("deployments");
+    fs::create_dir_all(&definitions).unwrap();
+    let authored = fs::read_to_string(fixture()).unwrap().replace(
+        "- { name: provider-main, block: provider, source: app }",
+        "- { name: provider-main, block: provider, source: app, device: build-host }",
+    );
+    fs::write(definitions.join("comparison.yaml"), authored).unwrap();
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../switchyard-planner/tests/fixtures/process-compose.yaml"),
+        definitions.join("process-compose.yaml"),
+    )
+    .unwrap();
+    let api = start_api(&temp, Arc::new(ImmediateBackend), 1);
+
+    let (status, _) = request(
+        &api,
+        Some(&api.token),
+        "POST",
+        "/api/v1/devices",
+        Some(json!({
+            "name": "build-host", "host": "host.test", "user": "dev"
+        })),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 201);
+
+    let (status, body) = request(&api, Some(&api.token), "GET", "/api/v1/devices", None, &[]).await;
+    assert_eq!(status, 200);
+    let listed: Value = json_body(&body);
+    assert!(
+        listed[0]["placedInstances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|placement| placement
+                == &json!({
+                    "deployment": "comparison", "instance": "consumer-a"
+                }))
+    );
+    assert_eq!(
+        listed[1]["placedInstances"],
+        json!([{"deployment": "comparison", "instance": "provider-main"}])
+    );
+
+    let (status, body) = request(
+        &api,
+        Some(&api.token),
+        "DELETE",
+        "/api/v1/devices/build-host",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 409);
+    let error: Value = json_body(&body);
+    assert_eq!(error["code"], "device_has_placements");
+    assert_eq!(
+        error["context"]["placedInstances"],
+        json!([{"deployment": "comparison", "instance": "provider-main"}])
+    );
 }
 
 fn named_fixture(temp: &TempDir, name: &str) -> PathBuf {

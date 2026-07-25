@@ -7,7 +7,33 @@ Updated: 2026-07-25
 - Routing proof (Phases 0–4): complete.
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
-- Web UI plan (`docs/web-ui-plan.md`): Parts 1, 2, 3, and 6 complete.
+- Web UI plan (`docs/web-ui-plan.md`): Parts 1, 2, 3, 4, and 6 complete.
+
+## 2026-07-25 web UI Part 4 — device eligibility and placement visibility
+
+- The device API now returns the implicit `local` device server-side, followed by
+  registered SSH devices. Each row separates raw persisted check status, SSH reachability,
+  and runtime eligibility with an explicit reason, and includes authored
+  `{deployment, instance}` placements.
+- Device checks now use the same SSH-plus-Docker eligibility semantics as the TUI and CLI.
+  The shared domain was extracted from `switchyard-ops` into the new leaf
+  `switchyard-devices` crate; ops re-exports it and the daemon depends on the leaf directly,
+  avoiding the existing ops-to-daemon dependency cycle.
+- The daemon rejects removal of `local` and returns HTTP 409 `device_has_placements` with
+  the blocking placements when an SSH device is still referenced. The Devices view shows
+  reachability and eligibility in distinct columns, explains the eligibility reason,
+  lists placements in the removal dialog, and disables occupied-device removal.
+- Instance cards now show authored placement from the applied snapshot separately from
+  observed placement on reconciled resources.
+- Added daemon API coverage for eligibility projection, server-side local inclusion,
+  placement listing, and the authoritative removal guard, plus web coverage for the two
+  device columns, blocked removal, and authored/observed instance placement.
+- Verification: `cargo fmt --all -- --check` passed with no output; workspace Clippy
+  with all targets/features and warnings denied passed; `cargo test --workspace
+  --all-features` passed across 51 test binaries/doc-test suites with 272 passed and the
+  five declared reliability ignores; all 25 web tests passed; `npx tsc -b` passed with no
+  output; `npm run lint` exited zero with the four pre-existing exhaustive-dependencies
+  warnings in `App.tsx` and `DeploymentBuilder.tsx`.
 
 ## 2026-07-25 web UI Part 3 — startup-profile library and trust workflow
 

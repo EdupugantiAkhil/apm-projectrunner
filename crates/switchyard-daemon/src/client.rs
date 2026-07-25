@@ -9,6 +9,7 @@ use std::{
 };
 
 use serde::{Serialize, de::DeserializeOwned};
+use switchyard_state::RegisteredDevice;
 
 use crate::contract::{
     API_VERSION, ApiErrorV1, CommandKind, CommandRequestV1, CreateWorktreeRequestV1,
@@ -17,21 +18,28 @@ use crate::contract::{
     SourceV1,
 };
 
-pub fn devices(project_root: &Path) -> Result<Option<Vec<DeviceV1>>, ClientError> {
+pub fn devices(project_root: &Path) -> Result<Option<Vec<RegisteredDevice>>, ClientError> {
     let Some(discovery) = load_discovery(project_root)? else {
         return Ok(None);
     };
-    json_request::<(), _>(&discovery, "GET", "/api/v1/devices", None).map(Some)
+    let devices: Vec<DeviceV1> = json_request(&discovery, "GET", "/api/v1/devices", None::<&()>)?;
+    devices
+        .into_iter()
+        .filter(|device| device.kind == crate::contract::DeviceKindV1::Ssh)
+        .map(registered_device_from_v1)
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
 }
 
 pub fn register_device(
     project_root: &Path,
     request: &RegisterDeviceRequestV1,
-) -> Result<Option<DeviceV1>, ClientError> {
+) -> Result<Option<RegisteredDevice>, ClientError> {
     let Some(discovery) = load_discovery(project_root)? else {
         return Ok(None);
     };
-    json_request(&discovery, "POST", "/api/v1/devices", Some(request)).map(Some)
+    let device: DeviceV1 = json_request(&discovery, "POST", "/api/v1/devices", Some(request))?;
+    registered_device_from_v1(device).map(Some)
 }
 
 pub fn deregister_device(project_root: &Path, name: &str) -> Result<Option<()>, ClientError> {
@@ -47,17 +55,38 @@ pub fn deregister_device(project_root: &Path, name: &str) -> Result<Option<()>, 
     .map(|_| Some(()))
 }
 
-pub fn check_device(project_root: &Path, name: &str) -> Result<Option<DeviceV1>, ClientError> {
+pub fn check_device(
+    project_root: &Path,
+    name: &str,
+) -> Result<Option<RegisteredDevice>, ClientError> {
     let Some(discovery) = load_discovery(project_root)? else {
         return Ok(None);
     };
-    json_request::<(), _>(
+    let device: DeviceV1 = json_request::<(), _>(
         &discovery,
         "POST",
         &format!("/api/v1/devices/{name}/check"),
         None,
-    )
-    .map(Some)
+    )?;
+    registered_device_from_v1(device).map(Some)
+}
+
+fn registered_device_from_v1(device: DeviceV1) -> Result<RegisteredDevice, ClientError> {
+    let device_name = device.name.clone();
+    let invalid = |field: &str| {
+        ClientError::InvalidResponse(format!("SSH device `{device_name}` is missing `{field}`"))
+    };
+    Ok(RegisteredDevice {
+        name: device.name,
+        host: device.host.ok_or_else(|| invalid("host"))?,
+        port: device.port.ok_or_else(|| invalid("port"))?,
+        user: device.user.ok_or_else(|| invalid("user"))?,
+        identity_file: device.identity_file,
+        created_at: device.created_at.ok_or_else(|| invalid("createdAt"))?,
+        last_checked_at: device.last_checked_at,
+        last_check_status: device.last_check_status,
+        last_check_detail: device.last_check_detail,
+    })
 }
 
 /// Lists sources through a discovered daemon, or returns `None` for one-shot fallback.
