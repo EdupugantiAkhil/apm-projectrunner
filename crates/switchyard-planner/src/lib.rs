@@ -24,6 +24,9 @@ use switchyard_adapter_sdk::{
 use switchyard_adapters::built_in_registry;
 use switchyard_sources::SourceManager;
 
+const INSTANCE_LABEL: &str = "dev.switchyard.instance";
+const SERVICE_LABEL: &str = "dev.switchyard.service";
+
 #[derive(Debug)]
 pub enum PlannerError {
     Io(io::Error),
@@ -1538,7 +1541,7 @@ fn generate(
 
     for instance in &bundle.spec.instances {
         let mut instance_labels = labels.clone();
-        instance_labels.insert("dev.switchyard.instance".into(), instance.name.clone());
+        instance_labels.insert(INSTANCE_LABEL.into(), instance.name.clone());
         let remote_device = instance
             .device
             .as_deref()
@@ -1562,6 +1565,8 @@ fn generate(
             .find(|(_, service)| !service.consumes.is_empty())
             .map(|(name, _)| name.as_str());
         for (service_name, service) in &block.services {
+            let mut service_labels = instance_labels.clone();
+            service_labels.insert(SERVICE_LABEL.into(), service_name.clone());
             let base_name = service_name_for(deployment, &instance.name, service_name);
             if let Some(device) = remote_device {
                 let remote_network = remote_network_name(deployment, device);
@@ -1570,7 +1575,7 @@ fn generate(
                     instance,
                     &source,
                     &remote_network,
-                    &instance_labels,
+                    &service_labels,
                     bundle,
                     block,
                 );
@@ -1592,13 +1597,13 @@ fn generate(
                     "component": service_name,
                     "service": base_name,
                     "device": device,
-                    "labels": instance_labels,
+                    "labels": service_labels,
                 }));
                 for mount in &service.volumes {
                     let volume_name = resource_name(&[deployment, &instance.name, &mount.name]);
                     remote_volumes.entry(device.to_owned()).or_default().insert(
                         volume_name,
-                        json!({ "labels": instance_labels, "name": resource_name(&["sy", deployment, &instance.name, &mount.name]) }),
+                        json!({ "labels": service_labels, "name": resource_name(&["sy", deployment, &instance.name, &mount.name]) }),
                     );
                 }
                 continue;
@@ -1606,7 +1611,7 @@ fn generate(
             let is_consumer = consumer_service == Some(service_name.as_str());
             if is_consumer {
                 let mut namespace =
-                    compose_namespace_service(&base_name, &network, &instance_labels);
+                    compose_namespace_service(&base_name, &network, &service_labels);
                 if !service.publish.is_empty() {
                     namespace
                         .as_object_mut()
@@ -1621,7 +1626,7 @@ fn generate(
                     instance,
                     &source,
                     &network,
-                    &instance_labels,
+                    &service_labels,
                     bundle,
                     block,
                 );
@@ -1663,7 +1668,7 @@ fn generate(
                         .join("routes")
                         .join(format!("{}.json", instance.name)),
                     &provider_dependencies,
-                    &instance_labels,
+                    &service_labels,
                 );
                 services.insert(sidecar_name.clone(), sidecar);
                 route_configs.insert(
@@ -1684,7 +1689,7 @@ fn generate(
                     "service": app_name,
                     "namespaceService": base_name,
                     "sidecar": sidecar_name,
-                    "labels": instance_labels,
+                    "labels": service_labels,
                 }));
             } else {
                 let mut app = compose_application(
@@ -1692,7 +1697,7 @@ fn generate(
                     instance,
                     &source,
                     &network,
-                    &instance_labels,
+                    &service_labels,
                     bundle,
                     block,
                 );
@@ -1709,14 +1714,14 @@ fn generate(
                     "instance": instance.name,
                     "component": service_name,
                     "service": base_name,
-                    "labels": instance_labels,
+                    "labels": service_labels,
                 }));
             }
             for mount in &service.volumes {
                 let volume_name = resource_name(&[deployment, &instance.name, &mount.name]);
                 volumes.insert(
                     volume_name,
-                    json!({ "labels": instance_labels, "name": resource_name(&["sy", deployment, &instance.name, &mount.name]) }),
+                    json!({ "labels": service_labels, "name": resource_name(&["sy", deployment, &instance.name, &mount.name]) }),
                 );
             }
         }

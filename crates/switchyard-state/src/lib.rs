@@ -36,7 +36,7 @@
 //! state without rewriting that history. `operation_locks` is the only replace-in-place
 //! coordination table. Arbitrary
 //! diagnostic JSON is admitted only through [`StructuredContext`]; observed Docker
-//! labels are reduced to the three Switchyard ownership fields before storage.
+//! labels are reduced to the six trusted Switchyard ownership fields before storage.
 //!
 //! Migration SQL lives in numbered, embedded files. Versions are recorded only after
 //! their SQL succeeds inside the migration transaction. Backups never overwrite an
@@ -64,6 +64,11 @@ pub const MANAGED_LABEL: &str = "dev.switchyard.managed";
 pub const DEPLOYMENT_LABEL: &str = "dev.switchyard.deployment";
 /// Resource topology hash label used by the existing Docker runtime.
 pub const RESOURCE_HASH_LABEL: &str = "dev.switchyard.resource-hash";
+/// Instance ownership label used by the existing Docker runtime.
+pub const INSTANCE_LABEL: &str = "dev.switchyard.instance";
+/// Service ownership label used by the existing Docker runtime.
+pub const SERVICE_LABEL: &str = "dev.switchyard.service";
+/// Device placement label used by the existing Docker runtime.
 pub const DEVICE_LABEL: &str = "dev.switchyard.device";
 /// Project-local marker created when an existing folder is adopted by Switchyard.
 pub const PROJECT_MARKER_PATH: &str = ".switchyard/project.json";
@@ -1473,7 +1478,12 @@ fn ownership_labels_json(labels: &BTreeMap<String, String>) -> Result<String, St
         .filter(|(key, _)| {
             matches!(
                 key.as_str(),
-                MANAGED_LABEL | DEPLOYMENT_LABEL | RESOURCE_HASH_LABEL | DEVICE_LABEL
+                MANAGED_LABEL
+                    | DEPLOYMENT_LABEL
+                    | RESOURCE_HASH_LABEL
+                    | INSTANCE_LABEL
+                    | SERVICE_LABEL
+                    | DEVICE_LABEL
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -2777,6 +2787,13 @@ mod tests {
         let mut observed = resource(Some("resource-a"));
         observed
             .labels
+            .insert(INSTANCE_LABEL.into(), "api-one".into());
+        observed.labels.insert(SERVICE_LABEL.into(), "web".into());
+        observed
+            .labels
+            .insert(DEVICE_LABEL.into(), "builder".into());
+        observed
+            .labels
             .insert("example.secret".into(), "must-not-persist".into());
         store
             .reconcile(
@@ -2793,6 +2810,50 @@ mod tests {
             .query_row("SELECT labels_json FROM resources", [], |row| row.get(0))
             .unwrap();
         assert!(!labels.contains("must-not-persist"));
+        let active = store.active_resources("demo").unwrap();
+        assert_eq!(
+            active[0].labels.get(INSTANCE_LABEL).map(String::as_str),
+            Some("api-one")
+        );
+        assert_eq!(
+            active[0].labels.get(SERVICE_LABEL).map(String::as_str),
+            Some("web")
+        );
+        assert_eq!(active[0].device, "builder");
+    }
+
+    #[test]
+    fn current_schema_legacy_resource_rows_remain_readable_without_attribution() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("state.sqlite3");
+        let (store, _) = StateStore::open(&path).unwrap();
+        store
+            .connection
+            .execute(
+                "INSERT INTO deployments(id,last_observed_at) VALUES ('demo',1)",
+                [],
+            )
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "INSERT INTO resources(deployment_id,kind,runtime_id,name,state,labels_json,observed_at,active) VALUES ('demo','container','legacy-id','demo-api','running',?1,1,1)",
+                [serde_json::to_string(&BTreeMap::from([
+                    (MANAGED_LABEL.to_owned(), "true".to_owned()),
+                    (DEPLOYMENT_LABEL.to_owned(), "demo".to_owned()),
+                ]))
+                .unwrap()],
+            )
+            .unwrap();
+        drop(store);
+
+        let (store, report) = StateStore::open(&path).unwrap();
+        assert!(report.applied_migrations.is_empty());
+        assert!(report.backup_path.is_none());
+        let resources = store.active_resources("demo").unwrap();
+        assert_eq!(resources.len(), 1);
+        assert!(!resources[0].labels.contains_key(INSTANCE_LABEL));
+        assert!(!resources[0].labels.contains_key(SERVICE_LABEL));
     }
 
     #[test]

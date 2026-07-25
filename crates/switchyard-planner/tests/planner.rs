@@ -121,10 +121,20 @@ fn remote_provider_is_partitioned_and_routed_by_device_host() {
     let service = "comparison--provider-main--api";
     assert_eq!(remote_compose["services"][service]["networks"][0], network);
     assert_eq!(remote_compose["services"][service]["ports"][0], "8080:8080");
+    assert_eq!(
+        remote_compose["services"][service]["labels"]["dev.switchyard.instance"],
+        "provider-main"
+    );
+    assert_eq!(
+        remote_compose["services"][service]["labels"]["dev.switchyard.service"],
+        "api"
+    );
     let volume = &remote_compose["volumes"]["comparison--provider-main--data"];
     assert_eq!(volume["labels"]["dev.switchyard.managed"], "true");
     assert_eq!(volume["labels"]["dev.switchyard.deployment"], "comparison");
     assert_eq!(volume["labels"]["dev.switchyard.device"], "builder");
+    assert_eq!(volume["labels"]["dev.switchyard.instance"], "provider-main");
+    assert_eq!(volume["labels"]["dev.switchyard.service"], "api");
     assert_eq!(
         volume["labels"]["dev.switchyard.resource-hash"],
         generated.resource_hash
@@ -508,6 +518,25 @@ fn compose_and_manifest_are_deterministic_and_owned() {
             ["condition"],
         "service_healthy"
     );
+    for service in [
+        "comparison--consumer-a--api",
+        "comparison--consumer-a--api--app",
+        "comparison--consumer-a--api--router",
+        "comparison--provider-main--api",
+    ] {
+        assert_eq!(
+            compose["services"][service]["labels"]["dev.switchyard.instance"],
+            if service.contains("consumer-a") {
+                "consumer-a"
+            } else {
+                "provider-main"
+            }
+        );
+        assert_eq!(
+            compose["services"][service]["labels"]["dev.switchyard.service"],
+            "api"
+        );
+    }
     assert_eq!(first.sidecars.len(), 2);
     assert_eq!(first.route_configs.len(), 2);
     assert_ne!(first.definition_hash, "");

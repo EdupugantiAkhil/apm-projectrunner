@@ -1,5 +1,13 @@
 # Agent mistakes and lessons
 
+## 2026-07-25 — Empty label fixtures need an explicit record type
+
+- The first Part 11a web fixture mixed a labeled resource object with a bare `labels: {}` legacy
+  resource. TypeScript inferred optional ownership-label properties with `undefined` values for the
+  union, which is not assignable to `Record<string, string>`. Correction: type the empty legacy map
+  explicitly as `Record<string, string>`. Lesson: when a fixture deliberately contrasts typed and
+  absent map entries, annotate the empty map at the boundary instead of relying on union inference.
+
 ## 2026-07-25 — Instance inspectors must not manufacture missing relationships
 
 - The first Part 11 draft treated an expanded block name as startup-profile provenance, matched

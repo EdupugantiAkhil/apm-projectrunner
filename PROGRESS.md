@@ -7,7 +7,32 @@ Updated: 2026-07-25
 - Routing proof (Phases 0–4): complete.
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
-- Web UI plan (`docs/web-ui-plan.md`): Parts 1 through 11 complete.
+- Web UI plan (`docs/web-ui-plan.md`): Parts 1 through 11 and follow-up Part 11a complete.
+
+## 2026-07-25 web UI Part 11a — per-service resource attribution
+
+- Added the typed `dev.switchyard.service` ownership label beside the existing instance label and
+  apply both to every planned service path: plain containers, remote containers, and the namespace,
+  application, and router services emitted for sidecar-routed consumers. Service-owned volumes
+  retain the same attribution.
+- Expanded the state persistence allowlist only for the specific instance and service ownership
+  labels. Round-trip coverage proves those labels survive while unrelated observed labels are still
+  discarded at the trusted persistence boundary.
+- Replaced browser-side resource-name substring matching with exact persisted ownership-label
+  matching. Instance placement and service state, health, and resource placement now use those
+  labels; a service without a matching observation explicitly renders `not observed`.
+- No schema migration or version bump was added because `labels_json` already stores the trusted
+  label map and the schema shape is unchanged. Existing version-7 resource rows cannot be honestly
+  backfilled from names, remain readable without a backup or migration, and stay unattributed in
+  the UI until a later reconciliation replaces them with newly labeled observations.
+- Added planner coverage across plain, remote, and sidecar emission, state coverage for ownership-
+  label retention and legacy current-schema rows, and web coverage for labeled service rendering
+  plus the honest unavailable fallback for an old unlabeled resource whose name happens to match.
+- Verification: `cargo fmt --all --check` passed with no output; workspace Clippy with all targets
+  and warnings denied passed; `cargo test --workspace` passed across 53 test/doc-test binaries with
+  274 tests passing and the five declared reliability tests ignored; `npx tsc -b` passed with no
+  output; `npm run lint` exited zero with exactly the four pre-existing exhaustive-dependencies
+  warnings; all 39 web tests passed across three files.
 
 ## 2026-07-25 web UI Part 11 — per-instance inspector
 
@@ -20,11 +45,10 @@ Updated: 2026-07-25
 - Scope caveat: `DeploymentSnapshot.spec.instances` records an expanded block but no startup-
   profile provenance. The inspector therefore renders Startup profile as unavailable and names
   the expanded block separately rather than assuming every block name is a profile name.
-- Scope caveat: the deployment-detail API returns resources without a typed instance/service
-  relationship; persisted ownership labels exclude the planner's instance label and there is no
-  service label. The inspector lists the genuine expanded service inventory, but renders each
-  service's state, health, and resource placement as unavailable instead of matching resource
-  names. A daemon contract change is required to satisfy those fields literally.
+- Closed by Part 11a: planner-emitted instance and service ownership labels now survive resource
+  persistence, and the inspector uses them for per-service state, health, and placement without
+  matching resource names. Legacy resource rows recorded before Part 11a remain explicitly
+  unavailable until observed again because their missing attribution cannot be honestly backfilled.
 - Scope caveat: persisted operation records have no instance field and the daemon rejects an
   `instance` filter. The inspector explicitly shows the five most recent loaded deployment-
   scoped operations as an approximation; it neither sends the rejected filter nor infers scope
