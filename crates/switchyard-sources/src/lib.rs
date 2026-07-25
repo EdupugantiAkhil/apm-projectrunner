@@ -529,6 +529,12 @@ impl SourceManager {
                 "repository URL must not contain credentials; submit them separately",
             ));
         }
+        if credentials.is_some() && is_cleartext_remote(repository_url) {
+            return Err(SourceError::new(
+                "insecure_credential_transport",
+                "credentials cannot be sent over plain http:// to a remote host, because Git transmits them unencrypted; use https:// or an SSH URL",
+            ));
+        }
         if let Some(reference) = options.requested_ref.as_deref() {
             validate_clone_ref(reference)?;
         }
@@ -997,7 +1003,7 @@ fn run_git_clone_browser_with_program(
     let mut ssh_command = ssh_clone_command(ssh_identity_file)?;
     if let Some(approval) = approved_host_key {
         let scanned = scan_ssh_host(repository)?;
-        if scanned.host != approval.host || scanned.fingerprint != approval.fingerprint {
+        if !scanned.matches(approval) {
             return Err(SourceError::new(
                 "host_key_changed",
                 "the SSH host key no longer matches the approved fingerprint",
@@ -1049,6 +1055,13 @@ fn run_git_clone_browser_with_program(
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     if is_http_repository(repository) && is_auth_failure(&stderr) {
+        // Asking for a secret that may not be sent would prompt only to reject the answer.
+        if is_cleartext_remote(repository) {
+            return Err(SourceError::new(
+                "insecure_credential_transport",
+                "this repository needs authentication, but credentials cannot be sent over plain http:// to a remote host; use https:// or an SSH URL",
+            ));
+        }
         return Err(SourceError::with_challenge(
             "clone_credentials_required",
             "Git authentication is required",
@@ -1061,8 +1074,8 @@ fn run_git_clone_browser_with_program(
             "clone_host_key_approval_required",
             "the SSH host key requires explicit approval",
             CloneChallenge::HostKey {
+                fingerprint: scanned.primary_fingerprint().to_owned(),
                 host: scanned.host,
-                fingerprint: scanned.fingerprint,
             },
         ));
     }
@@ -1076,8 +1089,26 @@ fn run_git_clone_browser_with_program(
 
 struct ScannedHostKey {
     host: String,
-    fingerprint: String,
+    /// Every fingerprint the host offered, sorted for a stable display order.
+    ///
+    /// A host commonly serves several key types and `ssh-keyscan` does not return them in a
+    /// stable order, so an approval is matched against the whole set rather than one entry.
+    fingerprints: Vec<String>,
     keys: Vec<u8>,
+}
+
+impl ScannedHostKey {
+    /// Returns the fingerprint shown to the user when approving this host.
+    fn primary_fingerprint(&self) -> &str {
+        self.fingerprints
+            .first()
+            .map_or("", |fingerprint| fingerprint.as_str())
+    }
+
+    /// Reports whether an earlier approval matches any key this host currently offers.
+    fn matches(&self, approval: &ApprovedHostKey) -> bool {
+        self.host == approval.host && self.fingerprints.contains(&approval.fingerprint)
+    }
 }
 
 fn scan_ssh_host(repository: &str) -> Result<ScannedHostKey, SourceError> {
@@ -1135,28 +1166,40 @@ fn scan_ssh_host_with_programs(
             "could not fingerprint the scanned SSH host key",
         ));
     }
-    let line = String::from_utf8_lossy(&result.stdout);
-    let value = line.split_whitespace().nth(1).ok_or_else(|| {
-        SourceError::new(
+    let listing = String::from_utf8_lossy(&result.stdout);
+    let mut fingerprints = listing
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(1))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if fingerprints.is_empty() {
+        return Err(SourceError::new(
             "ssh_keygen_failed",
             "SSH host fingerprint output was invalid",
-        )
-    })?;
-    let approved_line = output
+        ));
+    }
+    // `ssh-keyscan` order varies between runs, so sort to keep the approved fingerprint
+    // stable across a scan-approve-retry cycle.
+    fingerprints.sort_unstable();
+    fingerprints.dedup();
+    let mut keys = Vec::new();
+    for line in output
         .stdout
         .split(|byte| *byte == b'\n')
-        .find(|line| !line.is_empty() && !line.starts_with(b"#"))
-        .ok_or_else(|| {
-            SourceError::new(
-                "clone_host_key_unavailable",
-                "the SSH host scan returned no public key",
-            )
-        })?;
-    let mut keys = approved_line.to_vec();
-    keys.push(b'\n');
+        .filter(|line| !line.is_empty() && !line.starts_with(b"#"))
+    {
+        keys.extend_from_slice(line);
+        keys.push(b'\n');
+    }
+    if keys.is_empty() {
+        return Err(SourceError::new(
+            "clone_host_key_unavailable",
+            "the SSH host scan returned no public key",
+        ));
+    }
     Ok(ScannedHostKey {
         host,
-        fingerprint: value.into(),
+        fingerprints,
         keys,
     })
 }
@@ -1183,6 +1226,47 @@ fn ssh_host(repository: &str) -> Option<(String, Option<u16>)> {
 fn is_http_repository(repository: &str) -> bool {
     let lowercase = repository.to_ascii_lowercase();
     lowercase.starts_with("https://") || lowercase.starts_with("http://")
+}
+
+/// Reports whether submitted credentials would travel unencrypted to a non-loopback host.
+///
+/// Git sends a password or token as an `Authorization: Basic` header, which is readable by
+/// anything on the path when the scheme is `http://`. Loopback is exempt because the request
+/// never leaves the machine, which keeps local registries and test servers usable.
+fn is_cleartext_remote(repository: &str) -> bool {
+    let lowercase = repository.to_ascii_lowercase();
+    let Some(remainder) = lowercase.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = remainder
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .rsplit('@')
+        .next()
+        .unwrap_or_default();
+    !is_loopback_authority(authority)
+}
+
+/// Reports whether an HTTP authority names this machine and nothing else.
+fn is_loopback_authority(authority: &str) -> bool {
+    let host = if let Some(bracketed) = authority.strip_prefix('[') {
+        bracketed
+            .split_once(']')
+            .map_or(authority, |(host, _)| host)
+    } else {
+        authority
+            .rsplit_once(':')
+            .map_or(authority, |(host, _)| host)
+    };
+    if host == "localhost" || host.ends_with(".localhost") {
+        return true;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(address) => address.is_loopback(),
+        // A bare name that is not an address could resolve anywhere, so treat it as remote.
+        Err(_) => false,
+    }
 }
 
 fn is_auth_failure(stderr: &str) -> bool {
@@ -1827,11 +1911,127 @@ mod tests {
             scan_ssh_host_with_programs("git@example.invalid:team/repo.git", &keyscan, &keygen)
                 .unwrap();
         assert_eq!(scanned.host, "example.invalid");
-        assert_eq!(scanned.fingerprint, "SHA256:test-fingerprint");
+        assert_eq!(scanned.fingerprints, vec!["SHA256:test-fingerprint"]);
         assert_eq!(
             String::from_utf8(scanned.keys).unwrap(),
             "example.invalid ssh-ed25519 AAAATEST\n"
         );
+    }
+
+    #[test]
+    fn host_key_approval_survives_multi_key_scan_order() {
+        // `ssh-keyscan` returns a multi-key host's entries in an unstable order, so an
+        // approval taken from one scan must still match a later scan that leads with a
+        // different key type.
+        let temp = TempDir::new().unwrap();
+        let keygen = temp.path().join("ssh-keygen");
+        // Real `ssh-keygen -lf -` fingerprints its input in the order it arrives, so the
+        // stub must echo scan order too — a fixed-order stub cannot reproduce this bug.
+        fs::write(
+            &keygen,
+            "#!/bin/sh\nwhile read -r host type _rest; do\n  case \"$type\" in\n    ssh-rsa) printf '%s\\n' \"3072 SHA256:rsa-print $host (RSA)\" ;;\n    *) printf '%s\\n' \"256 SHA256:ed25519-print $host (ED25519)\" ;;\n  esac\ndone\n",
+        )
+        .unwrap();
+        fs::set_permissions(&keygen, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let mut scans = Vec::new();
+        for (index, order) in [
+            "'example.invalid ssh-rsa AAAARSA' 'example.invalid ssh-ed25519 AAAAED'",
+            "'example.invalid ssh-ed25519 AAAAED' 'example.invalid ssh-rsa AAAARSA'",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let keyscan = temp.path().join(format!("ssh-keyscan-{index}"));
+            fs::write(&keyscan, format!("#!/bin/sh\nprintf '%s\\n' {order}\n")).unwrap();
+            fs::set_permissions(&keyscan, fs::Permissions::from_mode(0o700)).unwrap();
+            scans.push(
+                scan_ssh_host_with_programs("git@example.invalid:team/repo.git", &keyscan, &keygen)
+                    .unwrap(),
+            );
+        }
+
+        // Sorting makes the fingerprint the user approves independent of scan order.
+        assert_eq!(scans[0].fingerprints, scans[1].fingerprints);
+        assert_eq!(
+            scans[0].primary_fingerprint(),
+            scans[1].primary_fingerprint()
+        );
+
+        // Both keys are pinned, so either one satisfies a retry.
+        let approval = ApprovedHostKey {
+            host: "example.invalid".into(),
+            fingerprint: "SHA256:rsa-print".into(),
+        };
+        assert!(scans[0].matches(&approval));
+        assert!(scans[1].matches(&approval));
+        assert!(scans[1].matches(&ApprovedHostKey {
+            host: "example.invalid".into(),
+            fingerprint: "SHA256:ed25519-print".into(),
+        }));
+        assert_eq!(
+            String::from_utf8(scans[0].keys.clone())
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
+
+        // A genuinely different key, and a matching key on another host, are still rejected.
+        assert!(!scans[0].matches(&ApprovedHostKey {
+            host: "example.invalid".into(),
+            fingerprint: "SHA256:attacker-print".into(),
+        }));
+        assert!(!scans[0].matches(&ApprovedHostKey {
+            host: "other.invalid".into(),
+            fingerprint: "SHA256:rsa-print".into(),
+        }));
+    }
+
+    #[test]
+    fn credentials_are_refused_for_cleartext_remotes_but_allowed_on_loopback() {
+        for remote in [
+            "http://example.invalid/team/repo.git",
+            "http://example.invalid:8080/team/repo.git",
+            "HTTP://EXAMPLE.INVALID/team/repo.git",
+            "http://notlocalhost.example.invalid/repo.git",
+            "http://192.168.1.10/repo.git",
+            "http://[2001:db8::1]/repo.git",
+        ] {
+            assert!(is_cleartext_remote(remote), "{remote} should be remote");
+        }
+        for local in [
+            "http://localhost/repo.git",
+            "http://localhost:8080/repo.git",
+            "http://registry.localhost/repo.git",
+            "http://127.0.0.1:3000/repo.git",
+            "http://127.4.5.6/repo.git",
+            "http://[::1]:8080/repo.git",
+            "https://example.invalid/repo.git",
+            "git@example.invalid:team/repo.git",
+        ] {
+            assert!(!is_cleartext_remote(local), "{local} should be allowed");
+        }
+
+        let temp = TempDir::new().unwrap();
+        let manager = SourceManager::new(temp.path());
+        let store = store(&temp);
+        let error = manager
+            .create_clone_from_url_browser(
+                &store,
+                "http://example.invalid/team/repo.git",
+                "cleartext",
+                &GitCloneOptions::default(),
+                Some(&CloneCredentials {
+                    username: "user".into(),
+                    password: "one-attempt-secret".into(),
+                }),
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "insecure_credential_transport");
+        assert!(!error.to_string().contains("one-attempt-secret"));
+        assert!(store.source("cleartext").unwrap().is_none());
     }
 
     #[test]

@@ -1,5 +1,36 @@
 # Agent mistakes and lessons
 
+## 2026-07-25 — A green test proves nothing until you watch it fail
+
+- The first regression test for order-dependent host-key pinning passed against the unfixed
+  code. The `ssh-keygen` stub printed a fixed fingerprint order regardless of its input, so
+  the scenario it described — a scan whose key order varies — never actually occurred. Real
+  `ssh-keygen -lf -` fingerprints its input in arrival order; once the stub did too, the test
+  failed on the old code as intended.
+- Correction: mutation-check every security regression test by reverting the fix and
+  confirming the test fails. Both fixes in that review were checked this way.
+- Lesson: a passing test is evidence only after it has been seen to fail for the right
+  reason. This matters most for security fixes, where an over-obliging stub turns a real
+  vulnerability into a permanently green suite.
+
+## 2026-07-25 — Security claims need an experiment, not a careful reading
+
+- An earlier audit of the browser clone path reported it clean on six properties, all of
+  which held. It missed that credentials reach a plain `http://` remote in cleartext, because
+  every check asked "is the secret handled correctly?" and none asked "where does it go?" A
+  ten-line probe against a local listener captured `Authorization: Basic dXNlcjpTRUNSRVQxMjM=`
+  in seconds. Reading the same code a third time would not have found it.
+- The same audit accepted host-key pinning as correct. Running `ssh-keyscan` three times
+  showed the key order changing between runs, which the pinning logic assumed was stable.
+- Lesson: for a security property, run the thing. Send the request to a listener you control,
+  invoke the tool twice and diff, revert the fix and watch the test fail. Prefer a cheap
+  experiment over another read of the source, and be most suspicious of the properties an
+  earlier pass already declared fine.
+- Repeat of the 2026-07-15 Phase 6 JAS fixture lesson ("never take an exit code from the
+  far end of a pipeline"): `cargo fmt --all --check | head` printed a reassuring "FMT OK"
+  during this same review while fmt had actually failed, because `head` masked the exit
+  code. Check `$?` or `PIPESTATUS`, not whether the output looked fine.
+
 ## 2026-07-25 — A plan's checkboxes drift unless ticked in the same commit as the work
 
 - Every one of `docs/web-ui-plan.md`'s 65 acceptance boxes was still unticked after all 13

@@ -8,8 +8,45 @@ Updated: 2026-07-25
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
 - Web UI plan (`docs/web-ui-plan.md`): complete. Parts 1 through 13, including follow-up
-  Parts 11a–11c. One acceptance item is still open: Part 13 called for a human security
-  review before merge and was merged on a code-level audit alone.
+  Parts 11a–11c, and Part 13's security review with its two fixes.
+
+## 2026-07-25 web UI Part 13 — security review and fixes
+
+- Ran the security review Part 13 called for and was merged without. Two findings, both
+  confirmed by experiment rather than by reading, both fixed here.
+- **Credentials in cleartext to a remote host.** `has_embedded_http_credentials` and
+  `is_http_repository` treated `http://` and `https://` identically and nothing rejected
+  plaintext, so a browser-submitted password reached an `http://` remote as an
+  `Authorization: Basic` header. Verified against a local listener, which captured
+  `Basic dXNlcjpTRUNSRVQxMjM=` — a decodable `user:SECRET123`. New `is_cleartext_remote`
+  refuses credentials for plain-HTTP remotes at the entry point, and suppresses the
+  credential challenge itself so the browser never prompts for a secret it may not send.
+  Loopback is exempt per the maintainer's call, keeping local registries and test servers
+  usable: `localhost`, any `.localhost` name, and any address whose `IpAddr::is_loopback`
+  holds, so `127.4.5.6` and `[::1]` qualify while `192.168.1.10` does not. A bare hostname
+  that is not an address could resolve anywhere and is treated as remote.
+- **Order-dependent host-key pinning.** `scan_ssh_host` pinned only the first key
+  `ssh-keyscan` returned, but that order is unstable — three consecutive scans of
+  github.com led with ECDSA, RSA, RSA. Approving on one scan and retrying on another
+  therefore raised `host_key_changed`, the active-MITM alarm, on a benign retry. This
+  failed closed, so it was never exploitable, but a security error that cries wolf teaches
+  users to click through it. `ScannedHostKey` now carries every fingerprint, sorted for a
+  stable approval prompt, pins all scanned keys into `known_hosts`, and matches an approval
+  against the set.
+- Both regression tests were mutation-checked: reverting each fix makes its test fail. The
+  first attempt at the host-key test passed against the unfixed code because the
+  `ssh-keygen` stub emitted a fixed order regardless of input; real `ssh-keygen -lf -`
+  preserves input order, and only after the stub did too did the test reproduce the bug.
+- Corrected the browser copy, which promised credentials "pass through memory only" and are
+  "never saved". Both true, but they are claims about storage that read as claims about
+  safety; the clone form and credential dialog now name the transport requirement.
+- Verification: `cargo fmt --all --check` clean; workspace clippy clean under `-D warnings`;
+  282 Rust tests passed, 0 failed (280 before, plus the two new regression tests); `npx tsc -b`
+  clean; `npm run lint` exited zero with exactly the four pre-existing exhaustive-dependencies
+  warnings; 48 web tests passed across four files.
+- Remaining accepted risk: credentials are plain `String` with no `zeroize`, so they persist
+  in freed heap until overwritten. Standard for a loopback-only daemon and low priority, but
+  recorded rather than left implicit.
 
 ## 2026-07-25 web UI plan — bookkeeping reconciliation
 

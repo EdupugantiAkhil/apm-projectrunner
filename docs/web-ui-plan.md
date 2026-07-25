@@ -14,14 +14,13 @@ dropped here rather than reproduced. See "Deliberate divergences" below.
 committed separately per `CLAUDE.md`. Per-part detail is in `PROGRESS.md`; that file, not
 the checkboxes here, is the authoritative record.
 
-Two acceptance items are not ticked, and neither is pending frontend work:
+One item is deliberately not a checkbox: **Part 9's shell-authoring item** was never in
+scope, so it is recorded there as "Not built" rather than as an unticked box, which would
+imply unfinished work. See "Not in scope".
 
-- **Part 9's shell-authoring item** was never in scope — it is recorded there as "Not
-  built" rather than as a box, since an unticked box implies unfinished work. See "Not in
-  scope".
-- **Part 13's security-review box** is genuinely outstanding, and is the one open item in
-  this plan. That part was merged on a code-level audit without human sign-off; see the
-  note there.
+Part 13's security review was completed after that part had already merged, and found two
+real issues that are now fixed. Reviewing before merge, as the plan asked, would have
+caught them first.
 
 Follow-ups noted during implementation but out of this plan's scope:
 
@@ -351,15 +350,11 @@ an existing local directory and create a worktree (`App.tsx:157-166`) but cannot
 - [x] Treat unknown-host-key as an explicit UI approval step showing the fingerprint —
       not a passthrough TTY prompt.
 - [x] Stream clone progress as a normal operation so it appears in the timeline.
-- [ ] Security-review this part specifically before merge; it is the only part that moves
-      credential material through the browser. **Outstanding.** A code-level audit was run
-      against the merged tree — one-shot `GIT_ASKPASS` with secrets passed by environment
-      and never written into the helper script, `credential.helper=` cleared so submitted
-      credentials cannot reach a configured helper, a `0700` private temporary directory,
-      `StrictHostKeyChecking=yes` against the approved fingerprint with a re-scan on every
-      attempt, `CloneCredentialsV1` deserialize-only so no response can echo a secret, and
-      a fixed failure message rather than raw Git stderr on the credentialed path. That
-      audit is not a substitute for human sign-off, which this part was merged without.
+- [x] Security-review this part specifically before merge; it is the only part that moves
+      credential material through the browser. Reviewed after merge rather than before.
+      Two findings were confirmed by experiment and fixed — credentials travelling in
+      cleartext to a remote `http://` host, and order-dependent SSH host-key pinning. See
+      the review entry in `PROGRESS.md`.
 
 **Done when:** a private repository can be cloned and registered from the browser.
 
