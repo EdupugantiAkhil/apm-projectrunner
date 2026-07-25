@@ -104,10 +104,39 @@ export interface DeviceRecord {
   eligibilityReason: string
   placedInstances: DevicePlacement[]
 }
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
+export interface RouterBinding {
+  router: string
+  binding: string
+  desiredVersion: number | null
+  desiredChecksum: string | null
+  currentVersion: number | null
+  currentChecksum: string | null
+  previousVersion: number | null
+  previousChecksum: string | null
+  observedVersion: number | null
+  observedChecksum: string | null
+  status: string
+  transition: JsonValue
+  lastErrorCode: string | null
+  updatedAt: number
+}
+export interface RouteHistory {
+  sequence: number
+  router: string | null
+  binding: string | null
+  operationId: string | null
+  version: number
+  checksum: string
+  activationStatus: string
+  recordedAt: number
+  context: JsonValue
+}
 export interface RouteState {
+  apiVersion: string
   deployment: string
-  bindings: Array<{ router: string; binding: string; currentVersion: number | null; desiredVersion: number | null; status: string; lastErrorCode: string | null }>
-  history: unknown[]
+  bindings: RouterBinding[]
+  history: RouteHistory[]
 }
 export interface OperationEvent { id: number; operationId: string; kind: 'operation' | 'build' | 'health' | 'route' | 'log'; timestamp: number; data: Record<string, unknown> }
 export interface DeploymentDefinition { apiVersion: string; name: string; path: string; yaml: string; hash: string }

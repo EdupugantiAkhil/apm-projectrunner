@@ -1,15 +1,36 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ApiClient, DeploymentDefinition, DeploymentDetail, Operation, RouteState } from './api'
+import type { ApiClient, DeploymentDefinition, DeploymentDetail, JsonValue, Operation, RouteHistory, RouterBinding, RouteState } from './api'
 import { connectionConsumers, consumedSlots, definitionSpec, resolvedGroups, updateBindingYaml, type ConnectionSpec } from './connectionModel'
 
 type Pending = { consumer: string; oldGroup: string | null; newGroup: string; oldRoutes: Record<string, string>; newRoutes: Record<string, string>; version: number | null }
 type Transition = 'close' | 'drain' | 'pin'
+type SwitchReport = { consumer: string; succeeded: boolean; detail: string; routes: RouteState | null }
 const colors: Record<string, string> = { java: '#2457D6', backend: '#2457D6', python: '#7651C9', suite: '#7651C9', database: '#B25C32' }
 const cableColor = (slot: string, protocol = '') => Object.entries(colors).find(([name]) => slot.toLowerCase().includes(name))?.[1] ?? ({ tcp: '#B25C32', grpc: '#7651C9' }[protocol] ?? '#2457D6')
 const short = (value?: string | null) => value ? value.slice(0, 9) : 'unknown'
+const version = (value: number | null) => value === null ? '—' : `v${value}`
+const transitionState = (value: JsonValue) => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    for (const key of ['state', 'status', 'strategy']) if (typeof value[key] === 'string') return value[key]
+    if (Object.keys(value).length === 0) return 'none'
+  }
+  return JSON.stringify(value) ?? String(value)
+}
+const historyFor = (routes: RouteState, binding: RouterBinding) => routes.history.filter((entry) => entry.binding === binding.binding && entry.router === binding.router).slice(-5)
+const rollback = (binding: RouterBinding, history: RouteHistory[]) => {
+  const recorded = [...history].reverse().find((entry) => entry.activationStatus === 'rolled_back')
+  if (recorded) return `rollback recorded at v${recorded.version} (timestamp ${recorded.recordedAt})`
+  return binding.previousVersion === null ? 'no rollback recorded' : `previous version v${binding.previousVersion} available for rollback`
+}
+const operationDetail = (operation: Operation | null) => {
+  if (!operation) return 'Operation status unavailable after the switch request.'
+  if (operation.error) return `${operation.error.code}: ${operation.error.message}`
+  if (operation.result) return `Exit code ${operation.result.exitCode}. ${operation.result.stderr.trim() || operation.result.stdout.trim() || 'No command output.'}`
+  return `${operation.kind} ${operation.status}.`
+}
 
-export default function DeploymentWorkspace({ client, detail, routes, onOperation, refresh, report }: { client: ApiClient; detail: DeploymentDetail; routes: RouteState | null; onOperation: (operation: Operation) => void; refresh: () => Promise<void>; report: (error: unknown) => void }) {
-  const [table, setTable] = useState(false); const [selected, setSelected] = useState(''); const [pending, setPending] = useState<Pending | null>(null); const [transition, setTransition] = useState<Transition>('close'); const [timeout, setTimeoutValue] = useState(30000)
+export default function DeploymentWorkspace({ client, detail, routes, onOperation, refresh, report }: { client: ApiClient; detail: DeploymentDetail; routes: RouteState | null; onOperation: (operation: Operation) => Promise<Operation | null>; refresh: () => Promise<void>; report: (error: unknown) => void }) {
+  const [table, setTable] = useState(false); const [selected, setSelected] = useState(''); const [pending, setPending] = useState<Pending | null>(null); const [switchReport, setSwitchReport] = useState<SwitchReport | null>(null); const [transition, setTransition] = useState<Transition>('close'); const [timeout, setTimeoutValue] = useState(30000)
   const spec = detail.snapshot?.spec ?? {}; const groups = useMemo(() => resolvedGroups(spec.groups), [spec.groups]); const bindings = spec.bindings ?? detail.bindings; const direct = spec.routes ?? {}
   const consumed = consumedSlots(spec)
   const routesFor = (consumer: string, group = bindings[consumer]) => group && groups[group] ? groups[group] : direct[consumer] ?? {}
@@ -17,7 +38,7 @@ export default function DeploymentWorkspace({ client, detail, routes, onOperatio
   for (const consumer of consumers) for (const target of Object.values(routesFor(consumer))) providers.add(target.split('/')[0])
   const compatible = (consumer: string) => { const slots = requiredSlotsFor(consumer); return Object.entries(groups).filter(([, providers]) => slots.every((slot) => slot in providers)).map(([name]) => name) }
   const prepare = (consumer: string, newGroup: string) => { const oldRoutes = routesFor(consumer); setPending({ consumer, oldGroup: bindings[consumer] ?? (Object.keys(oldRoutes).length ? 'direct routes' : null), newGroup, oldRoutes, newRoutes: routesFor(consumer, newGroup), version: routes?.bindings.find((route) => route.binding === consumer)?.currentVersion ?? null }) }
-  const apply = async () => { if (!pending) return; try { const extra: Record<string, unknown> = { consumer: pending.consumer, group: pending.newGroup, transition: transition === 'drain' ? { strategy: 'drain', timeoutMs: timeout } : { strategy: transition } }; const operation = await client.command('bind', `.switchyard/generated/${detail.deployment}/resolved-deployment.yaml`, extra); onOperation(operation); setPending(null); await refresh() } catch (error) { report(error) } }
+  const apply = async () => { if (!pending) return; const consumer = pending.consumer; try { const extra: Record<string, unknown> = { consumer, group: pending.newGroup, transition: transition === 'drain' ? { strategy: 'drain', timeoutMs: timeout } : { strategy: transition } }; const operation = await client.command('bind', `.switchyard/generated/${detail.deployment}/resolved-deployment.yaml`, extra); setPending(null); const finished = await onOperation(operation); let latest = routes; try { latest = await client.routes(detail.deployment) } catch (error) { report(error) } await refresh().catch(report); setSwitchReport({ consumer, succeeded: finished?.status === 'succeeded', detail: operationDetail(finished), routes: latest }) } catch (error) { setPending(null); report(error); setSwitchReport({ consumer, succeeded: false, detail: error instanceof Error ? error.message : String(error), routes }) } }
   const identity = selected ? detail.sourceIdentities[selected] : undefined; const selectedRoutes = selected ? routesFor(selected) : {}
   return <>
     <div className="patch-toolbar"><div><h2>Observed runtime patch bay</h2><p className="muted">Observed/runtime state from the applied snapshot.</p></div><label className="check"><input type="checkbox" checked={table} onChange={(event) => setTable(event.target.checked)} />Route matrix table</label></div>
@@ -30,7 +51,13 @@ export default function DeploymentWorkspace({ client, detail, routes, onOperatio
     </div>
     <section className="node-inspector" aria-label="Instance inspector"><h2>Instance inspector</h2>{selected ? <><h3>{selected}</h3>{identity && <dl><dt>Source</dt><dd className="mono">{identity.path}</dd><dt>Commit</dt><dd className="mono">{short(identity.commit)}</dd><dt>Health</dt><dd>{detail.resources.find((resource) => resource.name.includes(selected))?.state ?? 'unknown'}</dd></dl>}<h3>Active routes</h3>{Object.keys(selectedRoutes).length ? <dl>{Object.entries(selectedRoutes).map(([slot, provider]) => <div key={slot}><dt>{slot}</dt><dd>{provider}</dd></div>)}</dl> : <p className="muted">No consumer routes.</p>}{requiredSlotsFor(selected).length > 0 && <label>Complete provider group<select aria-label={`Provider group for ${selected}`} value={bindings[selected] ?? ''} onChange={(event) => event.target.value && prepare(selected, event.target.value)}>{!bindings[selected] && <option value="">Unbound — choose a provider group</option>}{compatible(selected).map((group) => <option key={group}>{group}</option>)}</select><span className="help">{bindings[selected] ? `Currently bound to ${bindings[selected]}. ` : 'Currently unbound. '}Only groups providing every required capability are listed. {Object.keys(groups).length - compatible(selected).length} incompatible groups omitted.</span></label>}</> : <p>Select a node to inspect source, health, resources, and routes.</p>}</section>
     {pending && <ChangePreview pending={pending} transition={transition} setTransition={setTransition} timeout={timeout} setTimeout={setTimeoutValue} apply={apply} cancel={() => setPending(null)} />}
+    {switchReport && <SwitchResult report={switchReport} close={() => setSwitchReport(null)} />}
   </>
+}
+
+function SwitchResult({ report, close }: { report: SwitchReport; close: () => void }) {
+  const matching = report.routes?.bindings.filter((binding) => binding.binding === report.consumer) ?? []
+  return <div className="modal-backdrop"><div className="modal change-preview" role="dialog" aria-modal="true" aria-labelledby="switch-result-title"><h2 id="switch-result-title">Connection switch result</h2><p><strong>{report.succeeded ? 'Atomic binding operation succeeded.' : 'Atomic binding operation failed.'}</strong></p><p className="mono">{report.detail}</p>{matching.length === 0 ? <><p>Route status: no durable router observation is available yet.</p>{!report.succeeded && <p>Rollback information: unavailable from route status.</p>}</> : <><h3>Router observations</h3><ul>{matching.map((binding) => { const history = report.routes ? historyFor(report.routes, binding) : []; return <li key={`${binding.router}-${binding.binding}`}><span className="mono">{binding.router}</span> — desired {version(binding.desiredVersion)}; observed {version(binding.observedVersion)}; status {binding.status}; transition {transitionState(binding.transition)}; error {binding.lastErrorCode ?? 'none'}; {rollback(binding, history)}</li> })}</ul></>}<div><button className="primary" onClick={close}>Close report</button></div></div></div>
 }
 
 function ChangePreview({ pending, transition, setTransition, timeout, setTimeout, apply, cancel }: { pending: Pending; transition: Transition; setTransition: (value: Transition) => void; timeout: number; setTimeout: (value: number) => void; apply: () => void; cancel: () => void }) {

@@ -7,7 +7,28 @@ Updated: 2026-07-25
 - Routing proof (Phases 0–4): complete.
 - Product MVP (Phases 5–6): complete.
 - Team release (Phase 7): in progress.
-- Web UI plan (`docs/web-ui-plan.md`): Parts 1, 2, 3, 4, 5, 6, and 7 complete.
+- Web UI plan (`docs/web-ui-plan.md`): Parts 1 through 8 complete.
+
+## 2026-07-25 web UI Part 8 — connection transition and rollback details
+
+- Typed the complete existing deployment-routes response in the web client, including every
+  desired/current/previous/observed checksum and version field, transition JSON, timestamps,
+  and append-only route-history fields. The daemon already exposed everything required, so no
+  Rust or API-documentation change was needed.
+- Replaced the collapsed route version with separate desired, observed, and previous columns,
+  plus explicit transition state, apply status/error, and rollback availability. The browser
+  shows the latest five activation records per router/binding, matching the TUI projection and
+  rollback wording.
+- Binding observation now returns the terminal operation to the workspace. After a complete
+  switch, a result dialog reports atomic success or failure, command/error detail, durable
+  desired/observed/status/transition/error observations, and recorded or available rollback
+  information.
+- Added web coverage for the exact typed history shape, separate route versions, transition and
+  previous-version rendering, rollback history, and post-switch reports for both successful and
+  failed terminal operations.
+- Verification: all 30 web tests passed; `npx tsc -b` passed with no output; `npm run lint`
+  exited zero with the four pre-existing exhaustive-dependencies warnings in `App.tsx` and
+  `DeploymentBuilder.tsx`.
 
 ## 2026-07-25 web UI Part 7 — authored connection view while stopped
 

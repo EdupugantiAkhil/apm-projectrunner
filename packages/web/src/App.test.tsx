@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
-import { ApiClient, type OperationEvent } from './api'
+import { ApiClient, type OperationEvent, type RouteState } from './api'
 
 const deployment = {
   apiVersion: 'v1', deployment: 'comparison', definitionHash: 'definition123', resourceHash: 'resource123', appliedAt: 1,
@@ -20,6 +20,10 @@ const remoteDevice = { name: 'build-host', kind: 'ssh', host: 'host.test', port:
 const authoredSpec = { instances: [{ name: 'ui-feature', block: 'web-ui' }, { name: 'ui-unbound', block: 'web-ui' }, { name: 'backend-a' }, { name: 'backend-b' }, { name: 'python-a' }, { name: 'python-b' }, { name: 'shared-db' }], blocks: { 'web-ui': { services: { web: { consumes: { java: { protocol: 'tcp' }, python: { protocol: 'grpc' }, database: { protocol: 'tcp' } } } } } }, groups: { base: { providers: { java: 'backend-b', python: 'python-b', database: 'shared-db' } }, feature: { providers: { java: 'backend-a', python: 'python-a', database: 'shared-db' } } }, bindings: { 'ui-feature': 'feature' } }
 const authoredYaml = 'apiVersion: switchyard.dev/v1alpha1\nkind: Deployment\nmetadata:\n  name: comparison\nspec:\n  instances: []\n  blocks: {}\n  groups: {}\n  bindings:\n    ui-feature: feature\n'
 const authoredDefinition = { apiVersion: 'v1', name: 'comparison', path: '/project/deployments/comparison.yaml', hash: 'hash-one', yaml: authoredYaml }
+const routeState: RouteState = {
+  apiVersion: 'v1', deployment: 'comparison', bindings: [{ router: 'host', binding: 'ui-feature', desiredVersion: 5, desiredChecksum: 'desired-five', currentVersion: 4, currentChecksum: 'current-four', previousVersion: 3, previousChecksum: 'previous-three', observedVersion: 4, observedChecksum: 'observed-four', status: 'pending', transition: { state: 'draining', strategy: 'drain', timeoutMs: 2500 }, lastErrorCode: null, updatedAt: 1700000000300 }],
+  history: [{ sequence: 1, router: 'host', binding: 'ui-feature', operationId: 'op-old', version: 3, checksum: 'previous-three', activationStatus: 'active', recordedAt: 1700000000100, context: {} }, { sequence: 2, router: 'host', binding: 'ui-feature', operationId: 'op-rollback', version: 4, checksum: 'current-four', activationStatus: 'rolled_back', recordedAt: 1700000000200, context: { errorCode: 'provider_unhealthy' } }],
+}
 
 class MockEventSource extends EventTarget {
   static instances: MockEventSource[] = []
@@ -38,7 +42,7 @@ function installFetch() {
     const url = String(input)
     if (url.endsWith('/project')) return json({ apiVersion: 'v1', name: 'payments-lab', root: '/project', registered: true })
     if (url.endsWith('/deployments') && (!init?.method || init.method === 'GET')) return json({ apiVersion: 'v1', deployments: [{ name: 'comparison', definitionHash: 'definition123', resourceHash: 'resource123', appliedAt: 1, lastOperation: { id: 'old', kind: 'apply', status: 'succeeded', startedAt: 1, finishedAt: 2 }, customDomains: [], bindings: {} }] })
-    if (url.endsWith('/deployments/comparison/routes')) return json({ deployment: 'comparison', bindings: [{ router: 'host', binding: 'ui-feature', currentVersion: 4, desiredVersion: 4, status: 'active', lastErrorCode: null }], history: [] })
+    if (url.endsWith('/deployments/comparison/routes')) return json(routeState)
     if (url.endsWith('/deployments/comparison')) return json(deployment)
     if (url.endsWith('/sources')) return json([source])
     if (url.endsWith('/devices/build-host/check') && init?.method === 'POST') { deviceStatus = 'eligible'; return json({ ...remoteDevice, lastCheckedAt: 1000, lastCheckStatus: 'eligible', lastCheckDetail: 'eligible for remote container execution (docker 28.5.1)', reachability: 'reachable', eligibility: 'eligible', eligibilityReason: 'eligible for remote container execution (docker 28.5.1)' }) }
@@ -69,7 +73,7 @@ describe('Switchyard GUI', () => {
   beforeEach(() => { MockEventSource.instances = []; vi.stubGlobal('EventSource', MockEventSource); installFetch() })
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
-  it('renders deployment identity, state, routes, domains, and bindings', async () => {
+  it('renders separate route versions, transition state, previous version, and typed rollback history', async () => {
     render(<App client={new ApiClient('test')} />)
     expect(await screen.findByRole('heading', { name: 'comparison', level: 1 })).toBeInTheDocument()
     expect(screen.getByText('payments-lab')).toBeInTheDocument()
@@ -80,7 +84,9 @@ describe('Switchyard GUI', () => {
     expect(screen.getAllByText('Observed placement')).toHaveLength(6)
     expect(screen.getAllByText('build-host')).toHaveLength(2)
     expect(screen.getByText('ui.comparison.localhost')).toBeInTheDocument()
-    expect(screen.getByRole('cell', { name: 'v4' })).toBeInTheDocument()
+    const activeRoutes = screen.getByRole('columnheader', { name: 'Desired' }).closest('table')!; const activeRow = within(activeRoutes).getByRole('cell', { name: 'ui-feature' }).closest('tr')!
+    expect(within(activeRow).getByRole('cell', { name: 'v5' })).toBeInTheDocument(); expect(within(activeRow).getByRole('cell', { name: 'v4' })).toBeInTheDocument(); expect(within(activeRow).getByRole('cell', { name: 'v3' })).toBeInTheDocument(); expect(within(activeRow).getByRole('cell', { name: 'draining' })).toBeInTheDocument(); expect(within(activeRow).getByText('rollback recorded at v4 (timestamp 1700000000200)')).toBeInTheDocument()
+    const history = screen.getByRole('columnheader', { name: 'Activation' }).closest('table')!; expect(within(history).getByRole('cell', { name: 'rolled_back' })).toBeInTheDocument(); expect(within(history).getByRole('cell', { name: '1700000000200' })).toBeInTheDocument(); expect(within(history).getByRole('cell', { name: 'op-rollback' })).toBeInTheDocument()
   })
 
   it('renders authored desired connections including unbound consumers while stopped', async () => {
@@ -236,6 +242,14 @@ describe('Switchyard GUI', () => {
     const dialog = screen.getByRole('dialog', { name: 'Preview complete route replacement' }); expect(within(dialog).getByText(/Snapshot v4/)).toBeInTheDocument(); expect(within(dialog).getAllByRole('row')).toHaveLength(4); expect(within(dialog).getByText('backend-b')).toBeInTheDocument()
     await user.click(within(dialog).getByRole('button', { name: 'Apply complete change' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/commands/bind', expect.objectContaining({ body: JSON.stringify({ bundle: '.switchyard/generated/comparison/resolved-deployment.yaml', consumer: 'ui-feature', group: 'base', transition: { strategy: 'close' } }) })))
+    const result = await screen.findByRole('dialog', { name: 'Connection switch result' }); expect(within(result).getByText('Atomic binding operation succeeded.')).toBeInTheDocument(); expect(within(result).getByText(/Exit code 0\. applied v5/)).toBeInTheDocument(); expect(within(result).getByText(/desired v5; observed v4; status pending; transition draining; error none; rollback recorded at v4/)).toBeInTheDocument()
+  })
+
+  it('shows a failed post-switch report with durable error and rollback observations', async () => {
+    const user = userEvent.setup(); const client = new ApiClient('test'); const failedRoutes: RouteState = { ...routeState, bindings: [{ ...routeState.bindings[0], status: 'failed', transition: { state: 'rolled_back' }, lastErrorCode: 'provider_unhealthy' }] }
+    vi.spyOn(client, 'pollOperation').mockResolvedValue({ apiVersion: 'v1', id: 'op-bind', deployment: 'comparison', kind: 'bind', destructive: false, status: 'failed', startedAt: 10, finishedAt: 11, error: { code: 'route_apply_failed', message: 'provider health check rejected the candidate' }, result: { exitCode: 1, stdout: '', stderr: 'provider unhealthy' } }); vi.spyOn(client, 'routes').mockResolvedValue(failedRoutes)
+    render(<App client={client} />); await screen.findByRole('heading', { name: 'comparison', level: 1 }); const lane = screen.getByRole('heading', { name: 'UI consumers' }).parentElement!; await user.click(within(lane).getByRole('button', { name: /ui-feature/ })); await user.selectOptions(screen.getByLabelText('Provider group for ui-feature'), 'base'); await user.click(within(screen.getByRole('dialog', { name: 'Preview complete route replacement' })).getByRole('button', { name: 'Apply complete change' }))
+    const result = await screen.findByRole('dialog', { name: 'Connection switch result' }); expect(within(result).getByText('Atomic binding operation failed.')).toBeInTheDocument(); expect(within(result).getByText('route_apply_failed: provider health check rejected the candidate')).toBeInTheDocument(); expect(within(result).getByText(/status failed; transition rolled_back; error provider_unhealthy; rollback recorded at v4/)).toBeInTheDocument()
   })
 
   it('lists an authored unbound consumer and binds it through the complete change preview', async () => {

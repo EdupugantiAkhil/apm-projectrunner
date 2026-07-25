@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { ApiClient, ApiError, type AdapterRecord, type DeploymentDetail, type DeploymentSummary, type DeviceRecord, type Operation, type OperationEvent, type ProfileRecord, type ProjectInfo, type RouteState, type SourceRecord } from './api'
+import { ApiClient, ApiError, type AdapterRecord, type DeploymentDetail, type DeploymentSummary, type DeviceRecord, type JsonValue, type Operation, type OperationEvent, type ProfileRecord, type ProjectInfo, type RouteHistory, type RouterBinding, type RouteState, type SourceRecord } from './api'
 import DeploymentWorkspace, { AuthoredConnections, RoutingEditor } from './DeploymentWorkspace'
 import DeploymentBuilder, { BlockLibrary } from './DeploymentBuilder'
 import ProfilesView from './ProfilesView'
@@ -14,6 +14,20 @@ const stoppedDiagnostic = (detail: DeploymentDetail) => detail.resources.length 
 const dirtyText = (source: SourceRecord) => {
   const changes = source.inspection.changes
   return changes ? `${changes.staged} staged, ${changes.unstaged} unstaged, ${changes.untracked} untracked` : 'dirty details unavailable'
+}
+const routeVersion = (value: number | null) => value === null ? '—' : `v${value}`
+const routeTransition = (value: JsonValue) => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    for (const key of ['state', 'status', 'strategy']) if (typeof value[key] === 'string') return value[key]
+    if (Object.keys(value).length === 0) return 'none'
+  }
+  return JSON.stringify(value) ?? String(value)
+}
+const bindingHistory = (routes: RouteState, binding: RouterBinding) => routes.history.filter((entry) => entry.router === binding.router && entry.binding === binding.binding).slice(-5)
+const rollbackDetail = (binding: RouterBinding, history: RouteHistory[]) => {
+  const rollback = [...history].reverse().find((entry) => entry.activationStatus === 'rolled_back')
+  if (rollback) return `rollback recorded at v${rollback.version} (timestamp ${rollback.recordedAt})`
+  return binding.previousVersion === null ? 'no rollback recorded' : `previous version v${binding.previousVersion} available for rollback`
 }
 
 export default function App({ client = new ApiClient() }: { client?: ApiClient }) {
@@ -64,7 +78,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
   }, [selected])
   useEffect(() => () => { for (const subscription of subscriptions.current.values()) subscription.close() }, [])
 
-  const observe = (started: Operation) => {
+  const observe = (started: Operation): Promise<Operation | null> => {
     setOperations((current) => [started, ...current.filter((item) => item.id !== started.id)])
     setNotice(`${started.kind} ${started.status}`)
     const subscription = client.subscribe(started.id, (event) => {
@@ -72,13 +86,14 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
       if (event.kind !== 'log') setNotice(`${event.kind} transition`)
     }, () => setNotice(`event stream reconnecting for ${started.id}`))
     subscriptions.current.set(started.id, subscription)
-    void client.pollOperation(started.id).then((finished) => {
+    return client.pollOperation(started.id).then((finished) => {
       setOperations((current) => current.map((item) => item.id === finished.id ? finished : item))
       setNotice(`${finished.kind} ${finished.status}`)
       subscription.close()
       subscriptions.current.delete(finished.id)
       void Promise.all([loadDeployments(), loadSelected()]).catch(report)
-    }).catch(report)
+      return finished
+    }).catch((value) => { subscription.close(); subscriptions.current.delete(started.id); report(value); return null })
   }
   const runCommand = async (kind: 'validate' | 'plan' | 'status' | 'logs' | 'open' | 'apply' | 'down' | 'cleanup', target?: string) => {
     if (!selected) return
@@ -146,7 +161,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
   </div>
 }
 
-function DeploymentView({ client, detail, routes, onAddInstance, onCommand, observe, refresh, report }: { client: ApiClient; detail: DeploymentDetail | null; routes: RouteState | null; onAddInstance: (deployment: string) => void; onCommand: (kind: 'validate' | 'plan' | 'status' | 'logs' | 'open' | 'apply' | 'down' | 'cleanup', target?: string) => void; observe: (operation: Operation) => void; refresh: () => Promise<void>; report: (error: unknown) => void }) {
+function DeploymentView({ client, detail, routes, onAddInstance, onCommand, observe, refresh, report }: { client: ApiClient; detail: DeploymentDetail | null; routes: RouteState | null; onAddInstance: (deployment: string) => void; onCommand: (kind: 'validate' | 'plan' | 'status' | 'logs' | 'open' | 'apply' | 'down' | 'cleanup', target?: string) => void; observe: (operation: Operation) => Promise<Operation | null>; refresh: () => Promise<void>; report: (error: unknown) => void }) {
   if (!detail) return <section><h1>Deployments</h1><p>No applied deployment selected.</p></section>
   const instances = detail.snapshot?.spec?.instances ?? Object.keys(detail.sourceIdentities).map((name) => ({ name, device: undefined }))
   const stopped = stoppedDiagnostic(detail)
@@ -155,7 +170,7 @@ function DeploymentView({ client, detail, routes, onAddInstance, onCommand, obse
     {stopped && <section className="stopped-callout" role="status"><div><h2>Deployment is stopped or cleaned up</h2><p>There is no running endpoint or live route topology for this deployment.</p><p><strong>Reconciliation:</strong> {stopped.message}</p></div><button className="primary" onClick={() => onCommand('apply')}>Run Up</button></section>}
     <h2>Instances</h2><div className="instance-grid">{instances.map((instance) => { const identity = detail.sourceIdentities[instance.name]; const resources = detail.resources.filter((item) => item.labels['dev.switchyard.instance'] === instance.name || item.name.includes(instance.name)); const resource = resources[0]; const observedDevices = [...new Set(resources.map((item) => item.device))]; return <article className="instance-card" key={instance.name}><header><h3>{instance.name}</h3><span>{stopped ? 'not running' : resource?.state ?? 'state unknown'}</span><button disabled={Boolean(stopped)} aria-label={`Logs for ${instance.name}`} onClick={() => onCommand('logs', instance.name)}>Logs</button>{detail.snapshot?.spec?.managedProfiles?.[instance.name] && <button disabled={Boolean(stopped)} aria-label={`Open ${instance.name} in a managed browser profile`} onClick={() => onCommand('open', instance.name)}>Open</button>}</header><dl><dt>Authored placement</dt><dd className="mono">{instance.device ?? 'local'}</dd><dt>Observed placement</dt><dd className="mono">{observedDevices.length ? observedDevices.join(', ') : 'not observed'}</dd>{identity && <><dt>Path</dt><dd className="mono">{identity.path}</dd><dt>Ref</dt><dd className="mono">{identity.ref ?? 'detached'}</dd><dt>Commit</dt><dd className="mono">{short(identity.commit)} {identity.dirty ? <span className="dirty">● modified</span> : 'clean'}</dd></>}</dl>{!identity && <p>Source identity unavailable</p>}</article> })}</div>
     {stopped ? <AuthoredConnections client={client} deployment={detail.deployment} onSaved={refresh} report={report} /> : <DeploymentWorkspace client={client} detail={detail} routes={routes} onOperation={observe} refresh={refresh} report={report} />}
-    <h2>Active routes</h2>{stopped ? <p className="muted">No routes are active while the deployment is stopped.</p> : routes?.bindings.length ? <table><thead><tr><th>Consumer</th><th>Router</th><th>Version</th><th>Status</th></tr></thead><tbody>{routes.bindings.map((route) => <tr key={`${route.router}-${route.binding}`}><td className="mono">{route.binding}</td><td className="mono">{route.router}</td><td className="mono">v{route.currentVersion ?? route.desiredVersion ?? '—'}</td><td>{route.status}{route.lastErrorCode ? ` · ${route.lastErrorCode}` : ''}</td></tr>)}</tbody></table> : <p className="muted">No active route versions recorded.</p>}
+    <h2>Active routes</h2>{stopped ? <p className="muted">No routes are active while the deployment is stopped.</p> : routes?.bindings.length ? <><table><thead><tr><th>Consumer</th><th>Router</th><th>Desired</th><th>Observed</th><th>Previous</th><th>Transition</th><th>Status</th><th>Rollback</th></tr></thead><tbody>{routes.bindings.map((route) => { const history = bindingHistory(routes, route); return <tr key={`${route.router}-${route.binding}`}><td className="mono">{route.binding}</td><td className="mono">{route.router}</td><td className="mono">{routeVersion(route.desiredVersion)}</td><td className="mono">{routeVersion(route.observedVersion)}</td><td className="mono">{routeVersion(route.previousVersion)}</td><td>{routeTransition(route.transition)}</td><td>{route.status}{route.lastErrorCode ? ` · ${route.lastErrorCode}` : ''}</td><td>{rollbackDetail(route, history)}</td></tr> })}</tbody></table><h3>Route activation and rollback history</h3>{routes.bindings.some((route) => bindingHistory(routes, route).length) ? <table><thead><tr><th>Consumer</th><th>Router</th><th>Version</th><th>Activation</th><th>Recorded timestamp</th><th>Operation</th></tr></thead><tbody>{routes.bindings.flatMap((route) => bindingHistory(routes, route).map((entry) => <tr key={entry.sequence}><td className="mono">{route.binding}</td><td className="mono">{route.router}</td><td className="mono">v{entry.version}</td><td>{entry.activationStatus}</td><td className="mono">{entry.recordedAt}</td><td className="mono">{entry.operationId ?? '—'}</td></tr>))}</tbody></table> : <p className="muted">No route activation or rollback history recorded.</p>}</> : <p className="muted">No active route versions recorded.</p>}
     <RoutingEditor client={client} deployment={detail.deployment} onSaved={refresh} onOperation={observe} report={report} />
   </section>
 }
