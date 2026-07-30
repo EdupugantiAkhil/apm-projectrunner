@@ -363,14 +363,6 @@ pub fn plan_with_binding_and_devices(
         .spec
         .bindings
         .insert(consumer.to_owned(), group.to_owned());
-    for route in updated
-        .spec
-        .ui_routes
-        .values_mut()
-        .filter(|route| route.backend == consumer)
-    {
-        route.downstream_group = group.to_owned();
-    }
     plan_with_devices(&updated, devices)
 }
 
@@ -644,7 +636,27 @@ fn validate(
     let resolved_groups = resolve_groups(bundle, &instances, &mut errors);
     validate_expanded_dependencies(bundle, &instances, &mut errors);
     validate_routes(bundle, &instances, &resolved_groups, &adapters, &mut errors);
-    validate_ui_routes(bundle, &instances, &resolved_groups, &mut errors);
+    validate_address_claims(bundle, &mut errors);
+    let has_addresses = bundle
+        .spec
+        .instances
+        .iter()
+        .any(|instance| instance.address.is_some())
+        || bundle
+            .spec
+            .groups
+            .values()
+            .any(|group| group.address.is_some());
+    let mut effective_host_router = bundle.spec.host_router.clone();
+    match &mut effective_host_router {
+        Some(config) => apply_addresses(bundle, &instances, config, &mut errors),
+        None if has_addresses => errors.push(Diagnostic::new(
+            DiagnosticCode::MissingReference,
+            "spec.hostRouter",
+            "group and instance addresses require spec.hostRouter",
+        )),
+        None => {}
+    }
     for (ui, profile) in &bundle.spec.managed_profiles {
         let path = format!("spec.managedProfiles.{ui}");
         validate_name(ui, &path, &mut errors);
@@ -664,7 +676,7 @@ fn validate(
                 "managed profiles currently require a local http:// URL (localhost, loopback, or *.localhost); use Origin or explicit-header routing for HTTPS",
             ));
         }
-        let Some(host_router) = &bundle.spec.host_router else {
+        let Some(host_router) = &effective_host_router else {
             errors.push(Diagnostic::new(
                 DiagnosticCode::MissingReference,
                 &path,
@@ -684,7 +696,7 @@ fn validate(
             }
         }
     }
-    if let Some(host_router) = &bundle.spec.host_router {
+    if let Some(host_router) = &effective_host_router {
         if host_router.metadata.deployment.as_str() != bundle.metadata.name {
             errors.push(Diagnostic::new(
                 DiagnosticCode::MissingReference,
@@ -1367,133 +1379,461 @@ fn adapter_protocol(protocol: Protocol) -> AdapterProtocol {
     }
 }
 
-fn validate_ui_routes(
+fn plausible_hostname(value: &str) -> bool {
+    let value = value.strip_suffix('.').unwrap_or(value);
+    !value.is_empty()
+        && value.len() <= 253
+        && value.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && label
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+        })
+}
+
+fn normalized_hostname(value: &str) -> String {
+    value.trim_end_matches('.').to_ascii_lowercase()
+}
+
+fn group_capability_candidates(
     bundle: &Bundle,
     instances: &BTreeMap<&str, &Instance>,
-    groups: &BTreeMap<String, BTreeMap<String, String>>,
+    group_name: &str,
+    capability: &str,
+    visiting: &mut BTreeSet<String>,
+) -> Vec<String> {
+    if !visiting.insert(group_name.to_owned()) {
+        return Vec::new();
+    }
+    let Some(group) = bundle.spec.groups.get(group_name) else {
+        visiting.remove(group_name);
+        return Vec::new();
+    };
+    let direct = group
+        .instances
+        .iter()
+        .filter(|member| provider_for(bundle, instances, member, capability).is_ok())
+        .cloned()
+        .collect::<Vec<_>>();
+    let candidates = if direct.is_empty() {
+        group.extends.as_deref().map_or_else(Vec::new, |parent| {
+            group_capability_candidates(bundle, instances, parent, capability, visiting)
+        })
+    } else {
+        direct
+    };
+    visiting.remove(group_name);
+    candidates
+}
+
+fn host_provider_for_instance_service<'a>(
+    bundle: &'a Bundle,
+    instance: &str,
+    service: &str,
+) -> Vec<&'a str> {
+    bundle
+        .spec
+        .host_upstreams
+        .iter()
+        .filter(|(_, upstream)| upstream.instance == instance && upstream.service == service)
+        .map(|(provider, _)| provider.as_str())
+        .collect()
+}
+
+fn addressed_instance_provider<'a>(
+    bundle: &'a Bundle,
+    instance: &'a Instance,
+) -> Result<(&'a str, &'a str), String> {
+    let Some(block) = bundle.spec.blocks.get(&instance.block) else {
+        return Err(format!(
+            "instance `{}` has no resolvable block",
+            instance.name
+        ));
+    };
+    let ui_services = block
+        .services
+        .iter()
+        .filter(|(_, service)| service.provides.contains_key("ui"))
+        .map(|(service, _)| service.as_str())
+        .collect::<Vec<_>>();
+    let services = if ui_services.is_empty() {
+        bundle
+            .spec
+            .host_upstreams
+            .values()
+            .filter(|upstream| upstream.instance == instance.name)
+            .map(|upstream| upstream.service.as_str())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+    } else {
+        ui_services
+    };
+    if services.len() != 1 {
+        return Err(format!(
+            "instance `{}` address needs exactly one reachable service{}; candidates: {}",
+            instance.name,
+            if block
+                .services
+                .values()
+                .any(|service| service.provides.contains_key("ui"))
+            {
+                " providing `ui`"
+            } else {
+                ""
+            },
+            if services.is_empty() {
+                "none".into()
+            } else {
+                services.join(", ")
+            }
+        ));
+    }
+    let service = services[0];
+    let providers = host_provider_for_instance_service(bundle, &instance.name, service);
+    if providers.len() != 1 {
+        return Err(format!(
+            "instance `{}` service `{service}` maps to {} host-router providers; expected exactly one",
+            instance.name,
+            providers.len()
+        ));
+    }
+    Ok((service, providers[0]))
+}
+
+fn address_origin(listener: &router_config::Listener, address: &str) -> Result<String, String> {
+    let (scheme, default_port) = match listener.protocol {
+        router_config::Protocol::Http => ("http", 80),
+        router_config::Protocol::Https => ("https", 443),
+        _ => return Err("address listeners must use HTTP or HTTPS".into()),
+    };
+    Ok(if listener.bind.port == default_port {
+        format!("{scheme}://{address}")
+    } else {
+        format!("{scheme}://{address}:{}", listener.bind.port)
+    })
+}
+
+fn add_address_route(
+    bundle: &Bundle,
+    config: &mut router_config::RouterConfig,
+    address: &str,
+    ui: &str,
+    provider: &str,
+    path: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Vec<(String, String)> {
+    let normalized = normalized_hostname(address);
+    let mut existing = Vec::new();
+    for (listener_index, listener) in config.spec.listeners.iter().enumerate() {
+        for destination in &listener.destinations {
+            if let router_config::ListenerDestination::CustomDomain { slot, domain } = destination {
+                if normalized_hostname(domain) == normalized {
+                    existing.push((listener_index, slot.clone()));
+                }
+            }
+        }
+    }
+    let candidates = config
+        .spec
+        .routes
+        .iter()
+        .filter(|route| route.provider.as_str() == provider)
+        .flat_map(|route| {
+            config
+                .spec
+                .listeners
+                .iter()
+                .enumerate()
+                .filter(move |(_, listener)| {
+                    listener.proxy_identity.is_none()
+                        && listener.consumer.as_ref() == Some(&route.consumer)
+                        && matches!(
+                            listener.protocol,
+                            router_config::Protocol::Http | router_config::Protocol::Https
+                        )
+                })
+                .map(move |(listener_index, _)| (listener_index, route.slot.clone()))
+        })
+        .collect::<BTreeSet<_>>();
+    let selected = if existing.is_empty() {
+        if candidates.len() != 1 {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::MissingReference,
+                path,
+                format!(
+                    "address `{address}` for `{ui}` maps to {} host-router listener routes; expected exactly one",
+                    candidates.len()
+                ),
+            ));
+            return Vec::new();
+        }
+        candidates.iter().next().cloned().expect("one candidate")
+    } else {
+        let first = existing[0].clone();
+        if existing.iter().any(|candidate| candidate != &first) {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::ListenerConflict,
+                path,
+                format!("custom domain `{address}` is declared for multiple route slots"),
+            ));
+            return Vec::new();
+        }
+        if !candidates.contains(&first) {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::ListenerConflict,
+                path,
+                format!(
+                    "custom domain `{address}` is authored for slot `{}`, which does not route to `{provider}`",
+                    first.1
+                ),
+            ));
+            return Vec::new();
+        }
+        first
+    };
+    if existing.is_empty() {
+        config.spec.listeners[selected.0].destinations.push(
+            router_config::ListenerDestination::CustomDomain {
+                slot: selected.1.clone(),
+                domain: address.to_owned(),
+            },
+        );
+    }
+    let origin = match address_origin(&config.spec.listeners[selected.0], address) {
+        Ok(origin) => origin,
+        Err(message) => {
+            errors.push(Diagnostic::new(DiagnosticCode::InvalidPath, path, message));
+            return Vec::new();
+        }
+    };
+    let templates = config
+        .spec
+        .browser_routes
+        .iter()
+        .filter(|route| {
+            matches!(
+                &route.identity,
+                router_config::BrowserIdentity::ExplicitHeader { value } if value.as_str() == ui
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if templates.is_empty() {
+        errors.push(Diagnostic::new(
+            DiagnosticCode::MissingReference,
+            path,
+            format!(
+                "address `{address}` needs at least one explicit-header browser route for UI `{ui}`"
+            ),
+        ));
+        return Vec::new();
+    }
+    let mut backends = Vec::new();
+    for template in templates {
+        let generated = router_config::BrowserRoute {
+            identity: router_config::BrowserIdentity::Origin {
+                origin: origin.clone(),
+            },
+            destination: template.destination.clone(),
+            provider: template.provider.clone(),
+        };
+        let conflicting = config.spec.browser_routes.iter().find(|route| {
+            route.destination == generated.destination
+                && matches!(
+                    &route.identity,
+                    router_config::BrowserIdentity::Origin { origin: candidate } if candidate == &origin
+                )
+        });
+        match conflicting {
+            Some(route) if route.provider != generated.provider => errors.push(Diagnostic::new(
+                DiagnosticCode::ListenerConflict,
+                path,
+                format!(
+                    "origin `{origin}` already routes destination `{}` to `{}` instead of `{}`",
+                    generated.destination, route.provider, generated.provider
+                ),
+            )),
+            Some(_) => {}
+            None => config.spec.browser_routes.push(generated),
+        }
+        if let Some(upstream) = bundle.spec.host_upstreams.get(template.provider.as_str()) {
+            backends.push((upstream.instance.clone(), origin.clone()));
+        } else {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::MissingReference,
+                path,
+                format!(
+                    "browser provider `{}` has no spec.hostUpstreams mapping to a backend instance",
+                    template.provider
+                ),
+            ));
+        }
+    }
+    backends
+}
+
+fn validate_address_claims(bundle: &Bundle, errors: &mut Vec<Diagnostic>) {
+    let mut claimed = BTreeMap::<String, String>::new();
+    let addresses = bundle
+        .spec
+        .instances
+        .iter()
+        .enumerate()
+        .filter_map(|(index, instance)| {
+            instance
+                .address
+                .as_deref()
+                .map(|address| (format!("spec.instances[{index}].address"), address))
+        })
+        .chain(bundle.spec.groups.iter().filter_map(|(name, group)| {
+            group
+                .address
+                .as_deref()
+                .map(|address| (format!("spec.groups.{name}.address"), address))
+        }));
+    for (path, address) in addresses {
+        if !plausible_hostname(address) {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::InvalidPath,
+                &path,
+                "address must be a plausible hostname",
+            ));
+            continue;
+        }
+        if let Some(first) = claimed.insert(normalized_hostname(address), path.clone()) {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::DuplicateName,
+                path,
+                format!("address `{address}` is already claimed at {first}"),
+            ));
+        }
+    }
+}
+
+fn apply_addresses(
+    bundle: &Bundle,
+    instances: &BTreeMap<&str, &Instance>,
+    config: &mut router_config::RouterConfig,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let mut backend_requirements = BTreeMap::<&str, (&str, &str)>::new();
-    for (ui, route) in &bundle.spec.ui_routes {
-        let path = format!("spec.uiRoutes.{ui}");
-        validate_name(ui, &path, errors);
-        if !instances.contains_key(ui.as_str()) {
+    for (index, instance) in bundle.spec.instances.iter().enumerate() {
+        let Some(address) = instance.address.as_deref() else {
+            continue;
+        };
+        let path = format!("spec.instances[{index}].address");
+        match addressed_instance_provider(bundle, instance) {
+            Ok((_, provider)) => {
+                add_address_route(
+                    bundle,
+                    config,
+                    address,
+                    &instance.name,
+                    provider,
+                    &path,
+                    errors,
+                );
+            }
+            Err(message) => errors.push(Diagnostic::new(
+                DiagnosticCode::MissingReference,
+                &path,
+                message,
+            )),
+        }
+    }
+
+    let mut backend_requirements = BTreeMap::<String, (String, String)>::new();
+    for (group_name, group) in &bundle.spec.groups {
+        let Some(address) = group.address.as_deref() else {
+            continue;
+        };
+        let path = format!("spec.groups.{group_name}.address");
+        let candidates =
+            group_capability_candidates(bundle, instances, group_name, "ui", &mut BTreeSet::new());
+        if candidates.len() != 1 {
+            errors.push(Diagnostic::new(
+                if candidates.is_empty() {
+                    DiagnosticCode::MissingProvider
+                } else {
+                    DiagnosticCode::DuplicateProvider
+                },
+                &path,
+                format!(
+                    "group address needs exactly one member providing `ui`; candidates: {}",
+                    if candidates.is_empty() {
+                        group.instances.join(", ")
+                    } else {
+                        candidates.join(", ")
+                    }
+                ),
+            ));
+            continue;
+        }
+        let ui_reference = &candidates[0];
+        let (ui, _) = provider_reference(ui_reference);
+        let Ok((service, _)) = provider_for(bundle, instances, ui_reference, "ui") else {
+            continue;
+        };
+        let providers = host_provider_for_instance_service(bundle, ui, service);
+        if providers.len() != 1 {
             errors.push(Diagnostic::new(
                 DiagnosticCode::MissingReference,
                 &path,
-                "UI route names an unknown UI instance",
+                format!(
+                    "group UI `{ui_reference}` maps to {} host-router providers; expected exactly one",
+                    providers.len()
+                ),
             ));
+            continue;
         }
-        let backend = instances.get(route.backend.as_str());
-        if backend.is_none() {
-            errors.push(Diagnostic::new(
-                DiagnosticCode::MissingReference,
-                format!("{path}.backend"),
-                format!("backend instance {} does not exist", route.backend),
-            ));
-        }
-        if !groups.contains_key(&route.downstream_group) {
-            errors.push(Diagnostic::new(
-                DiagnosticCode::MissingReference,
-                format!("{path}.downstreamGroup"),
-                format!("service group {} does not exist", route.downstream_group),
-            ));
-        }
-
-        if let Some((first_ui, first_group)) =
-            backend_requirements.insert(&route.backend, (ui, &route.downstream_group))
-        {
-            if first_group != route.downstream_group {
+        let backends = add_address_route(bundle, config, address, ui, providers[0], &path, errors);
+        for (backend, _) in backends {
+            if !instances.contains_key(backend.as_str()) {
                 errors.push(Diagnostic::new(
-                    DiagnosticCode::BackendGroupInvariant,
-                    format!("{path}.downstreamGroup"),
-                    format!(
-                        "UI `{ui}` requests backend `{}` with group `{}`, but UI `{first_ui}` requests the same backend with group `{first_group}`; duplicate the backend instance (the copies may select the same source) because one backend cannot infer per-request downstream context",
-                        route.backend, route.downstream_group
-                    ),
+                    DiagnosticCode::MissingReference,
+                    &path,
+                    format!("backend instance `{backend}` does not exist"),
                 ));
+                continue;
             }
-        }
-
-        if backend.is_some() && groups.contains_key(&route.downstream_group) {
-            match bundle.spec.bindings.get(&route.backend) {
-                Some(selected) if selected == &route.downstream_group => {}
+            if let Some((first_group, first_path)) =
+                backend_requirements.insert(backend.clone(), (group_name.clone(), path.clone()))
+            {
+                if first_group != *group_name {
+                    errors.push(Diagnostic::new(
+                        DiagnosticCode::BackendGroupInvariant,
+                        &path,
+                        format!(
+                            "group `{group_name}` requests backend `{backend}`, but group `{first_group}` at {first_path} requests the same backend; duplicate the backend instance (the copies may select the same source) because one backend cannot infer per-request downstream context"
+                        ),
+                    ));
+                }
+            }
+            match bundle.spec.bindings.get(&backend) {
+                Some(selected) if selected == group_name => {}
                 Some(selected) => errors.push(Diagnostic::new(
                     DiagnosticCode::BackendGroupInvariant,
-                    format!("{path}.downstreamGroup"),
+                    &path,
                     format!(
-                        "UI `{ui}` requests backend `{}` with group `{}`, but that backend is bound to `{selected}`; duplicate the backend instance to select a different downstream group",
-                        route.backend, route.downstream_group
+                        "group `{group_name}` requests backend `{backend}`, but that backend is bound to `{selected}`; duplicate the backend instance to select a different downstream group"
                     ),
                 )),
                 None => errors.push(Diagnostic::new(
                     DiagnosticCode::BackendGroupInvariant,
-                    format!("{path}.backend"),
-                    format!(
-                        "backend `{}` has no complete downstream group binding",
-                        route.backend
-                    ),
+                    &path,
+                    format!("backend `{backend}` has no complete downstream group binding"),
                 )),
             }
         }
-
-        validate_ui_host_route(bundle, ui, route, &path, errors);
-    }
-}
-
-fn validate_ui_host_route(
-    bundle: &Bundle,
-    ui: &str,
-    route: &UiRoute,
-    path: &str,
-    errors: &mut Vec<Diagnostic>,
-) {
-    let Some(host_router) = &bundle.spec.host_router else {
-        errors.push(Diagnostic::new(
-            DiagnosticCode::MissingReference,
-            path,
-            "UI routes require spec.hostRouter browser routing",
-        ));
-        return;
-    };
-    let matching = host_router
-        .spec
-        .browser_routes
-        .iter()
-        .filter(|candidate| {
-            matches!(
-                &candidate.identity,
-                router_config::BrowserIdentity::Origin { origin } if origin == &route.origin
-            )
-        })
-        .collect::<Vec<_>>();
-    if matching.len() != 1 {
-        errors.push(Diagnostic::new(
-            DiagnosticCode::MissingReference,
-            format!("{path}.origin"),
-            format!(
-                "UI `{ui}` origin `{}` matches {} host-router browser routes; expected exactly one",
-                route.origin,
-                matching.len()
-            ),
-        ));
-        return;
-    }
-    let provider = matching[0].provider.as_str();
-    let mapped_backend = bundle
-        .spec
-        .host_upstreams
-        .get(provider)
-        .map(|upstream| upstream.instance.as_str());
-    if mapped_backend != Some(route.backend.as_str()) {
-        errors.push(Diagnostic::new(
-            DiagnosticCode::MissingReference,
-            format!("{path}.backend"),
-            format!(
-                "origin `{}` selects host provider `{provider}`, which does not map to backend `{}`",
-                route.origin, route.backend
-            ),
-        ));
     }
 }
 
@@ -1658,7 +1998,12 @@ fn generate(
     let mut resource_definition = bundle.clone();
     resource_definition.spec.bindings.clear();
     resource_definition.spec.routes.clear();
-    resource_definition.spec.ui_routes.clear();
+    for instance in &mut resource_definition.spec.instances {
+        instance.address = None;
+    }
+    for group in resource_definition.spec.groups.values_mut() {
+        group.address = None;
+    }
     resource_definition.spec.managed_profiles.clear();
     resource_definition.spec.host_router = None;
     resource_definition.spec.host_upstreams.clear();
@@ -2245,6 +2590,22 @@ fn generate_host_router_config(
         };
         provider.endpoint.host = device.host.clone();
         provider.endpoint.port = upstream.port;
+    }
+    let instances = bundle
+        .spec
+        .instances
+        .iter()
+        .map(|instance| (instance.name.as_str(), instance))
+        .collect();
+    let mut address_errors = Vec::new();
+    apply_addresses(bundle, &instances, &mut config, &mut address_errors);
+    if !address_errors.is_empty() {
+        return Err(address_errors
+            .into_iter()
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>()
+            .join("; ")
+            .into());
     }
     for profile in profiles.values() {
         let destinations =

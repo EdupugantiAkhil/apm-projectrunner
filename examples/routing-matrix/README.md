@@ -77,7 +77,9 @@ for both UIs. A single backend cannot infer which inbound browser request caused
 outbound `localhost:8001` connection; per-UI downstream selection would require the
 application to propagate request context, which this proof intentionally forbids.
 
-Deployment `uiRoutes` state makes this requirement explicit. Planning reports
-`BackendGroupInvariant` when two UIs request different groups from the same backend and
-instructs the user to create two backend instances. Those instances may select the same
-source; isolation, rather than a source-code fork, is what provides independent groups.
+The three UI instance addresses keep those peers symmetric and leave `backend-1`'s
+complete downstream group switchable by the proof above. Separately, planning reports
+`BackendGroupInvariant` when two addressed groups request different downstream groups
+from the same backend and instructs the user to create two backend instances. Those
+instances may select the same source; isolation, rather than a source-code fork, is what
+provides independent groups.

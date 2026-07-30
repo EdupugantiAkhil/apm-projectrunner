@@ -1041,21 +1041,6 @@ Portless was useful for the original hostname proof-of-concept but is not part o
 authoritative runtime. It cannot provide consumer-specific browser identity and
 container-local fixed-port routing under one configuration contract.
 
-Ingress names are desired state, not transient CLI output:
-
-```yaml
-ingress:
-  ui-a:
-    instance: ui-a
-    domain: ui-a.comparison.localhost
-  ui-b:
-    instance: ui-b
-    domain: feature-b.product.test
-```
-
-Phase 1 persists these declarations in deployment YAML and generated manifests. Phase 2
-also records their applied and observed state in SQLite for recovery and the GUI.
-
 Example:
 
 ```text

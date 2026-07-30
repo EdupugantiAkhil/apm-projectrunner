@@ -22,16 +22,16 @@ fn current_example_deployments_remain_schema_compatible_and_deterministic() {
         Golden {
             path: "tests/compat/routing-matrix-deployment.yaml",
             deployment: "routing-matrix",
-            definition_hash: "32966889e03a6b087e3cd13a819388737eb553d23a65dcd3cbb50d186c2f1ea6",
-            resource_hash: "fa0a1790d97fcfbaaea4fb0df41f03b16e8f13d7a53ced8ab24dde5b78749355",
+            definition_hash: "a09fe281c46524d20f47340b6d914fa9bcbf9350b5ebc9d08532d0b8725826e7",
+            resource_hash: "2ddbc912365d8126ee3cfe353e8bbb38c1643ba5e17a55a614842d626420de05",
             route_configs: 2,
             has_host_router: true,
         },
         Golden {
             path: "tests/compat/jas-base-deployment.yaml",
             deployment: "jas-base",
-            definition_hash: "31236b80068207b0b9933d90872b8e8dbdb37215b55d003769549dbeec016dc1",
-            resource_hash: "9a02afbfedb8fd57e1f0f84c7afbbc12d5db123524a9d954421ef914370d6c22",
+            definition_hash: "8c42f9d3ab55f6767e3450206ea898be0c4550f06d7e592682314adc31f1f86b",
+            resource_hash: "1f6e979ac8162d3480ac098ad9282b18ee36533fca273c6c57df674cbeba3e9e",
             route_configs: 4,
             has_host_router: true,
         },
@@ -51,6 +51,12 @@ fn current_example_deployments_remain_schema_compatible_and_deterministic() {
             first.resource_hash, golden.resource_hash,
             "{} resource hash changed to {}",
             golden.path, first.resource_hash
+        );
+        assert_eq!(
+            serde_json::to_vec(&first).unwrap(),
+            serde_json::to_vec(&second).unwrap(),
+            "{} full plan output changed across identical runs",
+            golden.path
         );
         assert_eq!(first.compose_yaml, second.compose_yaml);
         assert_eq!(first.route_configs, second.route_configs);

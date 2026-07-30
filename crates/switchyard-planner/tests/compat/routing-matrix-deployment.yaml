@@ -123,14 +123,17 @@ spec:
     - name: ui-1
       block: ui
       source: ui-one
+      address: ui-1.routing-matrix.localhost
       parameters: { FIXTURE_UI: ui-1 }
     - name: ui-2
       block: ui
       source: ui-two
+      address: ui-2.routing-matrix.localhost
       parameters: { FIXTURE_UI: ui-2 }
     - name: ui-3
       block: ui
       source: ui-three
+      address: ui-3.routing-matrix.localhost
       parameters: { FIXTURE_UI: ui-3 }
     - name: services-main-catalog
       block: catalog-provider
@@ -194,19 +197,6 @@ spec:
   bindings:
     backend-1: feature-services
     backend-2: main-services
-  uiRoutes:
-    ui-1:
-      origin: http://ui-1.routing-matrix.localhost:18080
-      backend: backend-1
-      downstreamGroup: feature-services
-    ui-2:
-      origin: http://ui-2.routing-matrix.localhost:18080
-      backend: backend-2
-      downstreamGroup: main-services
-    ui-3:
-      origin: http://ui-3.routing-matrix.localhost:18080
-      backend: backend-1
-      downstreamGroup: feature-services
   hostRouter:
     apiVersion: switchyard.dev/router/v1alpha1
     kind: RouterConfiguration
@@ -228,10 +218,7 @@ spec:
         - consumer: gateway
           bind: { host: 127.0.0.1, port: 18080 }
           protocol: http
-          destinations:
-            - { kind: custom_domain, slot: ui-1-domain, domain: ui-1.routing-matrix.localhost }
-            - { kind: custom_domain, slot: ui-2-domain, domain: ui-2.routing-matrix.localhost }
-            - { kind: custom_domain, slot: ui-3-domain, domain: ui-3.routing-matrix.localhost }
+          destinations: []
         - bind: { host: 127.0.0.1, port: 10081 }
           protocol: http
           destinations:
@@ -259,9 +246,6 @@ spec:
         - { consumer: gateway, slot: ui-2-domain, provider: ui-2 }
         - { consumer: gateway, slot: ui-3-domain, provider: ui-3 }
       browserRoutes:
-        - { identity: { source: origin, origin: "http://ui-1.routing-matrix.localhost:18080" }, destination: browser-backend, provider: backend-1 }
-        - { identity: { source: origin, origin: "http://ui-2.routing-matrix.localhost:18080" }, destination: browser-backend, provider: backend-2 }
-        - { identity: { source: origin, origin: "http://ui-3.routing-matrix.localhost:18080" }, destination: browser-backend, provider: backend-1 }
         - { identity: { source: explicit_header, value: ui-1 }, destination: browser-backend, provider: backend-1 }
         - { identity: { source: explicit_header, value: ui-2 }, destination: browser-backend, provider: backend-2 }
         - { identity: { source: explicit_header, value: ui-3 }, destination: browser-backend, provider: backend-1 }

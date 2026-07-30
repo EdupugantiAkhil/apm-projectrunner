@@ -104,7 +104,7 @@ function NewDeploymentBuilder({ client, sources, close, saved, onOperation, repo
 function buildYaml(name: string, instance: string, block: string, sourceName: string, sources: SourceRecord[], configuration: Record<string, unknown>) {
   const source = sources.find((item) => item.source.name === sourceName)
   const execution = Object.keys(configuration).length ? configuration : { type: 'container', image: 'replace-me:local' }
-  return JSON.stringify({ apiVersion: 'switchyard.dev/v1alpha2', kind: 'Deployment', metadata: { name }, spec: { sources: sourceName && source ? { [sourceName]: { path: source.source.path } } : {}, blocks: block ? { [block]: { services: { main: { execution } } } } : {}, instances: instance && block && sourceName ? [{ name: instance, block, source: sourceName, parameters: {} }] : [], groups: {}, bindings: {}, routes: {}, uiRoutes: {}, managedProfiles: {} } }, null, 2)
+  return JSON.stringify({ apiVersion: 'switchyard.dev/v1alpha2', kind: 'Deployment', metadata: { name }, spec: { sources: sourceName && source ? { [sourceName]: { path: source.source.path } } : {}, blocks: block ? { [block]: { services: { main: { execution } } } } : {}, instances: instance && block && sourceName ? [{ name: instance, block, source: sourceName, parameters: {} }] : [], groups: {}, bindings: {}, routes: {}, managedProfiles: {} } }, null, 2)
 }
 
 export function BlockLibrary({ adapters }: { adapters: AdapterRecord[] }) {

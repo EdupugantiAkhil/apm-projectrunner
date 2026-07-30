@@ -772,3 +772,21 @@ audit shell startup files as well as the requested cache directories.
   Lesson: a one-shot input channel also has to disable downstream credential-store
   callbacks; controlling where a secret enters is not enough to control where Git sends
   it after authentication.
+
+## 2026-07-31 — Part 2 address verification corrections
+
+- The first hand migration of the routing-matrix fixture gave one of two peer UIs a group address,
+  gave the other an instance address, and added UI/backend members to the downstream service
+  groups. Static planning passed, but the documented `backend-1` group switch then failed the new
+  group-address invariant, so the fixture no longer proved runtime switching. Correction: keep the
+  original downstream groups unchanged and put all three domains on their UI instances. Lesson:
+  verify a contract fixture's documented mutations as well as its initial generated artifacts, and
+  do not force a legacy route into a group address when it actually names one instance.
+- The migration initially removed every Origin browser route sharing a migrated origin, including
+  unrelated authored destinations. Correction: remove only routes that exactly match an explicit-
+  header template for that UI, and only remove custom-domain destinations whose listener slot
+  resolves to that UI's host provider. Lesson: cleanup of generated-looking configuration must be
+  provenance-safe; matching one field is not enough to prove an entry is redundant.
+- A throwaway zsh script assigned a temporary filename to `path`, which is a special array tied to
+  `PATH`; subsequent commands became unavailable. Correction: use a neutral variable such as
+  `file`. Lesson: avoid zsh special parameter names in verification scripts.

@@ -100,8 +100,8 @@ connection policies map directly to the `switchyard bind` CLI options. The resul
 operation acknowledgement or structured rollback failure appears in Operations and
 the event drawer.
 
-The Routing panel loads the authored YAML with its optimistic hash. Domain listener,
-`uiRoutes`, and managed-profile changes show a full line diff and planner diagnostics.
+The Routing panel loads the authored YAML with its optimistic hash. Group and instance
+`address`, host-listener, and managed-profile changes show a full line diff and planner diagnostics.
 Apply performs a dry-run validation before the definition PUT; an optional follow-up
 can plan or run Up. This is deliberately the same portable workflow available without
 the GUI: edit `deployments/<name>.yaml`, run `switchyard validate`, then plan or apply.

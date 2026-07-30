@@ -149,10 +149,12 @@ spec:
       parameters: { FIXTURE_SOURCE: repository-root/ui-b }
   groups:
     ai-main:
-      instances: [ai-main/suite]
+      address: ui-b.jas-base.localhost
+      instances: [ai-main/suite, jas-feature/service, ui-b/app]
     ai-feature:
       extends: ai-main
-      instances: [ai-feature/suite]
+      address: ui-a.jas-base.localhost
+      instances: [ai-feature/suite, jas-main/service, ui-a/app]
   bindings:
     ui-a: ai-feature
     ui-b: ai-main
@@ -165,15 +167,6 @@ spec:
       { database-kv: db-main/kv-store, database-document: db-main/document-store }
     jas-feature:
       { database-kv: db-main/kv-store, database-document: db-main/document-store }
-  uiRoutes:
-    ui-a:
-      origin: http://ui-a.jas-base.localhost:18081
-      backend: jas-main
-      downstreamGroup: ai-feature
-    ui-b:
-      origin: http://ui-b.jas-base.localhost:18081
-      backend: jas-feature
-      downstreamGroup: ai-main
   hostRouter:
     apiVersion: switchyard.dev/router/v1alpha1
     kind: RouterConfiguration
@@ -195,9 +188,7 @@ spec:
         - consumer: gateway
           bind: { host: 127.0.0.1, port: 18081 }
           protocol: http
-          destinations:
-            - { kind: custom_domain, slot: ui-a-domain, domain: ui-a.jas-base.localhost }
-            - { kind: custom_domain, slot: ui-b-domain, domain: ui-b.jas-base.localhost }
+          destinations: []
         - bind: { host: 127.0.0.1, port: 10081 }
           protocol: http
           destinations:
@@ -221,8 +212,6 @@ spec:
         - { consumer: gateway, slot: ui-a-domain, provider: ui-a }
         - { consumer: gateway, slot: ui-b-domain, provider: ui-b }
       browserRoutes:
-        - { identity: { source: origin, origin: "http://ui-a.jas-base.localhost:18081" }, destination: browser-java, provider: jas-main }
-        - { identity: { source: origin, origin: "http://ui-b.jas-base.localhost:18081" }, destination: browser-java, provider: jas-feature }
         - { identity: { source: explicit_header, value: ui-a }, destination: browser-java, provider: jas-main }
         - { identity: { source: explicit_header, value: ui-b }, destination: browser-java, provider: jas-feature }
   hostUpstreams:

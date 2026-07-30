@@ -2,8 +2,8 @@ use std::{fs, path::Path};
 
 use switchyard_planner::{
     ChangeImpact, DiagnosticCode, ManagedProfile, OverlayOptions, PlanningDevice,
-    PublishedUpstream, UiRoute, classify_changes, load_bundle, load_bundle_from_str, parse_dotenv,
-    plan, plan_with_binding, plan_with_devices, plan_with_overlays, write_plan,
+    PublishedUpstream, classify_changes, load_bundle, load_bundle_from_str, parse_dotenv, plan,
+    plan_with_binding, plan_with_devices, plan_with_overlays, write_plan,
 };
 
 fn bundle() -> switchyard_planner::Bundle {
@@ -668,99 +668,250 @@ fn binding_changes_routes_without_changing_resources() {
     assert_eq!(resolved["spec"]["bindings"]["consumer-a"], "feature");
 }
 
+fn routing_matrix_bundle() -> switchyard_planner::Bundle {
+    load_bundle(Path::new("tests/compat/routing-matrix-deployment.yaml"))
+        .expect("routing fixture should load")
+}
+
+fn jas_base_bundle() -> switchyard_planner::Bundle {
+    load_bundle(Path::new("tests/compat/jas-base-deployment.yaml"))
+        .expect("JAS fixture should load")
+}
+
+fn planned_host_router(deployment: &switchyard_planner::Bundle) -> router_config::RouterConfig {
+    let generated = plan(deployment).expect("addressed fixture should plan");
+    serde_json::from_str(generated.host_router_config.as_ref().unwrap()).unwrap()
+}
+
 #[test]
-fn backend_group_invariant_requires_duplicate_instances_for_different_groups() {
-    let mut bundle = bundle();
-    bundle
-        .spec
-        .blocks
-        .get_mut("consumer")
-        .unwrap()
-        .services
-        .get_mut("api")
-        .unwrap()
-        .publish = vec![3000];
-    bundle.spec.host_router = Some(
-        serde_json::from_value(serde_json::json!({
-            "apiVersion": "switchyard.dev/router/v1alpha1",
-            "kind": "RouterConfiguration",
-            "metadata": { "deployment": "comparison" },
-            "spec": {
-                "snapshot": {
-                    "id": "host-topology", "version": 1,
-                    "transitions": {
-                        "http": { "strategy": "close" }, "https": { "strategy": "close" },
-                        "websocket": { "strategy": "pin" }, "grpc": { "strategy": "drain", "timeoutMs": 1000 },
-                        "tcp": { "strategy": "close" }
-                    }
-                },
-                "listeners": [{
-                    "bind": { "host": "127.0.0.1", "port": 10081 }, "protocol": "http",
-                    "destinations": [{ "kind": "legacy_localhost", "slot": "backend", "host": "localhost" }]
-                }],
-                "providers": [
-                    { "id": "backend-a", "endpoint": { "protocol": "http", "host": "127.0.0.1", "port": 0 } },
-                    { "id": "backend-b", "endpoint": { "protocol": "http", "host": "127.0.0.1", "port": 0 } }
-                ],
-                "groups": [], "bindings": [], "routes": [],
-                "browserRoutes": [
-                    { "identity": { "source": "origin", "origin": "http://ui-a.localhost" }, "destination": "backend", "provider": "backend-a" },
-                    { "identity": { "source": "origin", "origin": "http://ui-b.localhost" }, "destination": "backend", "provider": "backend-b" }
-                ],
-                "identity": { "explicitHeader": "X-Switchyard-Route", "stripBeforeForwarding": true }
-            }
-        }))
-        .unwrap(),
-    );
-    bundle.spec.host_upstreams.insert(
-        "backend-a".into(),
-        PublishedUpstream {
-            instance: "consumer-a".into(),
-            service: "api".into(),
-            port: 3000,
-        },
-    );
-    bundle.spec.host_upstreams.insert(
-        "backend-b".into(),
-        PublishedUpstream {
-            instance: "consumer-b".into(),
-            service: "api".into(),
-            port: 3000,
-        },
-    );
-    bundle.spec.ui_routes.insert(
-        "provider-main".into(),
-        UiRoute {
-            origin: "http://ui-a.localhost".into(),
-            backend: "consumer-a".into(),
-            downstream_group: "base".into(),
-        },
-    );
-    bundle.spec.ui_routes.insert(
-        "suite-main".into(),
-        UiRoute {
-            origin: "http://ui-b.localhost".into(),
-            backend: "consumer-b".into(),
-            downstream_group: "feature".into(),
-        },
-    );
+fn group_address_generates_its_domain_destination_and_origin_route() {
+    let host = planned_host_router(&jas_base_bundle());
+    assert!(host.spec.listeners.iter().any(|listener| {
+        listener.destinations.iter().any(|destination| {
+            matches!(
+                destination,
+                router_config::ListenerDestination::CustomDomain { slot, domain }
+                    if slot.as_str() == "ui-b-domain" && domain == "ui-b.jas-base.localhost"
+            )
+        })
+    }));
+    assert!(host.spec.browser_routes.iter().any(|route| {
+        matches!(
+            &route.identity,
+            router_config::BrowserIdentity::Origin { origin }
+                if origin == "http://ui-b.jas-base.localhost:18081"
+        ) && route.destination.as_str() == "browser-java"
+            && route.provider.as_str() == "jas-feature"
+    }));
+}
 
-    plan(&bundle).expect("two backend instances from one source may select different groups");
+#[test]
+fn instance_address_generates_its_domain_destination_and_origin_route() {
+    let host = planned_host_router(&routing_matrix_bundle());
+    assert!(host.spec.listeners.iter().any(|listener| {
+        listener.destinations.iter().any(|destination| {
+            matches!(
+                destination,
+                router_config::ListenerDestination::CustomDomain { slot, domain }
+                    if slot.as_str() == "ui-3-domain"
+                        && domain == "ui-3.routing-matrix.localhost"
+            )
+        })
+    }));
+    assert!(host.spec.browser_routes.iter().any(|route| {
+        matches!(
+            &route.identity,
+            router_config::BrowserIdentity::Origin { origin }
+                if origin == "http://ui-3.routing-matrix.localhost:18080"
+        ) && route.destination.as_str() == "browser-backend"
+            && route.provider.as_str() == "backend-1"
+    }));
+}
 
-    bundle.spec.ui_routes.get_mut("suite-main").unwrap().backend = "consumer-a".into();
-    bundle
-        .spec
-        .host_upstreams
-        .get_mut("backend-b")
-        .unwrap()
-        .instance = "consumer-a".into();
-    let errors = plan(&bundle).expect_err("one backend cannot satisfy two group requirements");
+#[test]
+fn backend_group_invariant_keeps_address_path_and_duplicate_guidance() {
+    let mut deployment = jas_base_bundle();
+    let mut second = deployment.spec.groups["ai-main"].clone();
+    second.address = Some("ui-b-copy.jas-base.localhost".into());
+    deployment.spec.groups.insert("ai-copy".into(), second);
+
+    let errors = plan(&deployment).expect_err("one backend cannot serve two addressed groups");
     let invariant = errors
         .iter()
-        .find(|error| error.code == DiagnosticCode::BackendGroupInvariant)
-        .expect("invariant diagnostic should be explicit");
+        .find(|error| {
+            error.code == DiagnosticCode::BackendGroupInvariant
+                && error.message.contains("per-request downstream context")
+        })
+        .expect("shared-backend invariant diagnostic should be explicit");
+    assert_eq!(invariant.path, "spec.groups.ai-main.address");
     assert!(invariant.message.contains("duplicate the backend instance"));
-    assert!(invariant.message.contains("per-request downstream context"));
+}
+
+#[test]
+fn group_address_rejects_a_group_without_a_ui_member() {
+    let mut deployment = jas_base_bundle();
+    deployment
+        .spec
+        .groups
+        .get_mut("ai-main")
+        .unwrap()
+        .instances
+        .retain(|member| member != "ui-b/app");
+
+    let errors = plan(&deployment).expect_err("a group address needs a UI member");
+    assert!(errors.iter().any(|error| {
+        error.path == "spec.groups.ai-main.address"
+            && error.message.contains("exactly one member providing `ui`")
+            && error.message.contains("jas-feature/service")
+    }));
+}
+
+#[test]
+fn group_address_rejects_a_group_with_two_ui_members() {
+    let mut deployment = jas_base_bundle();
+    deployment
+        .spec
+        .groups
+        .get_mut("ai-main")
+        .unwrap()
+        .instances
+        .push("ui-a/app".into());
+
+    let errors = plan(&deployment).expect_err("a group address may not guess between UIs");
+    assert!(errors.iter().any(|error| {
+        error.path == "spec.groups.ai-main.address"
+            && error.message.contains("ui-a/app")
+            && error.message.contains("ui-b/app")
+    }));
+}
+
+#[test]
+fn duplicate_addresses_are_case_insensitive_and_ignore_a_trailing_dot() {
+    let mut deployment = jas_base_bundle();
+    let index = deployment
+        .spec
+        .instances
+        .iter()
+        .position(|instance| instance.name == "ui-a")
+        .unwrap();
+    deployment.spec.instances[index].address = Some("UI-B.JAS-BASE.LOCALHOST.".into());
+
+    let errors = plan(&deployment).expect_err("addresses are case-insensitively unique");
+    assert!(errors.iter().any(|error| {
+        error.code == DiagnosticCode::DuplicateName
+            && error.path == "spec.groups.ai-main.address"
+            && error
+                .message
+                .contains(&format!("spec.instances[{index}].address"))
+    }));
+}
+
+#[test]
+fn invalid_address_hostname_is_rejected_at_the_authored_field() {
+    let mut deployment = routing_matrix_bundle();
+    deployment.spec.instances[3].address = Some("not_a_hostname".into());
+
+    let errors = plan(&deployment).expect_err("addresses must be plausible hostnames");
+    assert!(errors.iter().any(|error| {
+        error.code == DiagnosticCode::InvalidPath
+            && error.path == "spec.instances[3].address"
+            && error.message == "address must be a plausible hostname"
+    }));
+}
+
+#[test]
+fn authored_domain_for_a_different_slot_conflicts_with_generated_address() {
+    let mut deployment = jas_base_bundle();
+    deployment.spec.host_router.as_mut().unwrap().spec.listeners[0]
+        .destinations
+        .push(router_config::ListenerDestination::CustomDomain {
+            slot: router_config::RouteSlotId::from("ui-a-domain"),
+            domain: "ui-b.jas-base.localhost".into(),
+        });
+
+    let errors = plan(&deployment).expect_err("authored and generated domain slots must agree");
+    assert!(errors.iter().any(|error| {
+        error.code == DiagnosticCode::ListenerConflict
+            && error.path == "spec.groups.ai-main.address"
+            && error.message.contains("does not route to `ui-b`")
+    }));
+}
+
+#[test]
+fn authored_origin_for_a_different_provider_conflicts_with_generated_address() {
+    let mut deployment = jas_base_bundle();
+    deployment
+        .spec
+        .host_router
+        .as_mut()
+        .unwrap()
+        .spec
+        .browser_routes
+        .push(router_config::BrowserRoute {
+            identity: router_config::BrowserIdentity::Origin {
+                origin: "http://ui-b.jas-base.localhost:18081".into(),
+            },
+            destination: router_config::RouteSlotId::from("browser-java"),
+            provider: router_config::ComponentId::from("jas-main"),
+        });
+
+    let errors = plan(&deployment).expect_err("authored and generated origins must agree");
+    assert!(errors.iter().any(|error| {
+        error.code == DiagnosticCode::ListenerConflict
+            && error.path == "spec.groups.ai-main.address"
+            && error
+                .message
+                .contains("routes destination `browser-java` to `jas-main`")
+            && error.message.contains("instead of `jas-feature`")
+    }));
+}
+
+#[test]
+fn identical_authored_domain_and_origin_merge_without_duplicates() {
+    let mut deployment = jas_base_bundle();
+    let router = &mut deployment.spec.host_router.as_mut().unwrap().spec;
+    router.listeners[0]
+        .destinations
+        .push(router_config::ListenerDestination::CustomDomain {
+            slot: router_config::RouteSlotId::from("ui-b-domain"),
+            domain: "ui-b.jas-base.localhost".into(),
+        });
+    router.browser_routes.push(router_config::BrowserRoute {
+        identity: router_config::BrowserIdentity::Origin {
+            origin: "http://ui-b.jas-base.localhost:18081".into(),
+        },
+        destination: router_config::RouteSlotId::from("browser-java"),
+        provider: router_config::ComponentId::from("jas-feature"),
+    });
+
+    let host = planned_host_router(&deployment);
+    let domains = host
+        .spec
+        .listeners
+        .iter()
+        .flat_map(|listener| &listener.destinations)
+        .filter(|destination| {
+            matches!(
+                destination,
+                router_config::ListenerDestination::CustomDomain { domain, .. }
+                    if domain == "ui-b.jas-base.localhost"
+            )
+        })
+        .count();
+    let origins = host
+        .spec
+        .browser_routes
+        .iter()
+        .filter(|route| {
+            matches!(
+                &route.identity,
+                router_config::BrowserIdentity::Origin { origin }
+                    if origin == "http://ui-b.jas-base.localhost:18081"
+            ) && route.destination.as_str() == "browser-java"
+        })
+        .count();
+    assert_eq!(domains, 1);
+    assert_eq!(origins, 1);
 }
 
 #[test]

@@ -3315,6 +3315,7 @@ name = "switchyard-cli"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "http",
  "http-body-util",
  "local-ip-address",
  "router-config",

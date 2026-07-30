@@ -58,8 +58,9 @@ on a disposable Git repository with Docker available.
 1. Copy `examples/jas-base/deployment.yaml` outside the repository fixture directory.
 2. Keep `db-main`, `ai-main`, and `ai-feature`; add `jas-third` from `jas-service`; add
    `ui-c`, `ui-d`, and `ui-e` from `ui`. Give each new instance a valid source and add
-   its direct Java route, complete AI-group binding, `uiRoutes` entry, custom-domain
-   destination, provider, host upstream, and browser route. Use distinct UI domains;
+   its direct Java route, complete AI-group binding, instance `address`, provider, host
+   upstream, and explicit-header browser route. The planner generates each custom-domain
+   destination and matching Origin browser route. Use distinct UI domains;
    Java instances stay private and may all consume the fixed namespace-local slots.
 3. Run `switchyard validate <copy>` and `switchyard plan <copy>`.
 4. Expected: validation succeeds; the preview contains one database instance (its two

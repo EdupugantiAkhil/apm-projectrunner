@@ -1,10 +1,9 @@
 export interface ConnectionSpec {
-  instances?: Array<{ name: string; block?: string }>
+  instances?: Array<{ name: string; block?: string; address?: string }>
   blocks?: Record<string, { services?: Record<string, { provides?: Record<string, unknown>; consumes?: Record<string, unknown> }> }>
-  groups?: Record<string, { extends?: string; instances?: string[] }>
+  groups?: Record<string, { extends?: string; instances?: string[]; address?: string }>
   bindings?: Record<string, string>
   routes?: Record<string, Record<string, string>>
-  uiRoutes?: Record<string, unknown>
 }
 
 export function resolvedGroups(spec: ConnectionSpec) {
@@ -21,7 +20,7 @@ export function consumedSlots(spec: ConnectionSpec) {
   return result
 }
 
-export function connectionConsumers(spec: ConnectionSpec, consumed = consumedSlots(spec)) { return Array.from(new Set([...Object.keys(consumed), ...Object.keys(spec.routes ?? {}), ...Object.keys(spec.bindings ?? {}), ...Object.keys(spec.uiRoutes ?? {})])) }
+export function connectionConsumers(spec: ConnectionSpec, consumed = consumedSlots(spec)) { return Array.from(new Set([...Object.keys(consumed), ...Object.keys(spec.routes ?? {}), ...Object.keys(spec.bindings ?? {})])) }
 
 export type ActiveConnection = { direction: 'consumes' | 'provides'; consumer: string; slot: string; provider: string }
 

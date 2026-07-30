@@ -2014,3 +2014,40 @@ implemented shape and the evidence used to close a phase.
   deliberately does not expose raw Git progress text; progress is the normal operation
   lifecycle plus fixed start/completion messages. Final full-workspace and web
   verification output is recorded in the implementation report.
+
+## 2026-07-31 — V2 Part 2 addresses on groups and instances
+
+- Replaced `spec.uiRoutes` with one optional singular `address` on each group and instance.
+  Planner validation accepts plausible DNS hostnames, compares claims case-insensitively with a
+  trailing-dot normalization, rejects duplicates across both object kinds, and retains the
+  loopback-only host-router default without changing `router-config` or its LAN acknowledgement.
+- Extended the existing host-router generation seam. An addressed group resolves its bare name to
+  the sole member providing `ui`; an addressed instance resolves its single reachable service. The
+  planner merges generated `custom_domain` destinations into authored listeners, derives Origin
+  browser routes from the UI's explicit-header routes, preserves identical authored entries, and
+  rejects same-domain/different-slot or same-origin/different-provider conflicts. Group-address
+  backend checks still emit `BackendGroupInvariant` at `spec.groups.<name>.address`, retain the
+  "duplicate the backend instance" guidance, and reject groups with zero or multiple UI candidates.
+- Extended `switchyard migrate` as a second transform in the Part 1 seam. It converts a legacy
+  `uiRoutes` origin to the downstream group's address, adds the named UI and backend to that group,
+  removes only custom-domain and Origin entries that can be proved redundant from the UI provider
+  and explicit-header template, preserves unrelated authored routes sharing the same Origin,
+  validates the Part 1 provider-map transform before adding the new capabilities, writes only after
+  the complete migrated bundle loads, and is byte-idempotent on a second run. Multiple legacy routes
+  naming one downstream group are refused because one object may carry only one address.
+- Hand-migrated both examples and compat fixtures without reserialization. `jas-base` now models its
+  two complete addressed combinations directly. `routing-matrix` keeps its downstream service groups
+  unchanged and gives all three peer UIs instance addresses, preserving the documented ability to
+  switch `backend-1` between complete downstream groups while generating the same three domains and
+  Origin routes. Compat hashes are pinned from full byte-identical planner outputs across two runs.
+- Updated ops projections and compatibility expectations, CLI resolved-state handling, web snapshot
+  types and routing help, acceptance/router documentation, and removed DESIGN.md's unimplemented
+  `ingress:` block. No router-pingora, router-core, router-tcp, router-config, vision, or roadmap
+  files were changed.
+- Verification: `cargo fmt --all -- --check` passed with no output; workspace clippy passed under
+  `-D warnings`; `cargo test --workspace --all-features` passed 303 tests with 0 failed and 5
+  ignored, up from the Part 1 baseline of 292. Address generation, each group-resolution error,
+  normalized uniqueness, both authored-router conflict forms, identical merge, the backend-group
+  invariant, migration round-trip/idempotence, and multi-route refusal now have independently
+  localizing coverage. Web `npx tsc -b` passed with no output; lint exited zero with exactly the four
+  pre-existing exhaustive-dependency warnings; all 48 web tests passed.

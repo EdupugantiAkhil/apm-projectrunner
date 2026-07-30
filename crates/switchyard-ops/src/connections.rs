@@ -232,7 +232,6 @@ fn effective_bundle(project_dir: &Path, definition: &Path) -> Result<Bundle, Str
         if applied.metadata.name == authored.metadata.name {
             authored.spec.bindings = applied.spec.bindings;
             authored.spec.routes = applied.spec.routes;
-            authored.spec.ui_routes = applied.spec.ui_routes;
         }
     }
     Ok(authored)

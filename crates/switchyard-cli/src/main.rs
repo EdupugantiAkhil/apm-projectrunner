@@ -1184,7 +1184,6 @@ fn load_bind_base(
     }
     authored.spec.bindings = resolved.spec.bindings;
     authored.spec.routes = resolved.spec.routes;
-    authored.spec.ui_routes = resolved.spec.ui_routes;
     Ok(authored)
 }
 

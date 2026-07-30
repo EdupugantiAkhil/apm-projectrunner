@@ -54,7 +54,7 @@ export interface DeploymentDetail {
   bindings: Record<string, string>
 }
 export interface DeploymentSnapshot { spec?: {
-  instances?: Array<{ name: string; block?: string; source?: string; device?: string; parameters?: Record<string, string> }>
+  instances?: Array<{ name: string; block?: string; source?: string; device?: string; address?: string; parameters?: Record<string, string> }>
   blocks?: Record<string, {
     parameters?: Record<string, { required?: boolean; default?: string }>
     services?: Record<string, {
@@ -66,10 +66,9 @@ export interface DeploymentSnapshot { spec?: {
       volumes?: unknown[]
     }>
   }>
-  groups?: Record<string, { extends?: string; instances?: string[] }>
+  groups?: Record<string, { extends?: string; instances?: string[]; address?: string }>
   bindings?: Record<string, string>
   routes?: Record<string, Record<string, string>>
-  uiRoutes?: Record<string, { origin: string; backend: string; downstreamGroup: string }>
   managedProfiles?: Record<string, { route: string; startUrl: string }>
   hostRouter?: Record<string, unknown>
 } }

@@ -454,7 +454,6 @@ fn load_bindings(root: &Path, deployment: &str, definition: &Path) -> Vec<Bindin
         if resolved.metadata.name == authored.metadata.name {
             authored.spec.bindings = resolved.spec.bindings;
             authored.spec.routes = resolved.spec.routes;
-            authored.spec.ui_routes = resolved.spec.ui_routes;
         }
     }
     let devices = planning_devices_for_bundle(root, &authored).unwrap_or_default();

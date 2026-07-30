@@ -62,9 +62,23 @@ fn legacy_workspace_fixture_expands_through_generic_planner_contracts() {
 
     let main_group = &bundle.spec.groups["ai-main"].instances;
     let feature_group = &bundle.spec.groups["ai-feature"];
-    assert_eq!(main_group, &["ai-main/suite"]);
+    assert_eq!(
+        main_group,
+        &["ai-main/suite", "jas-feature/service", "ui-b/app"]
+    );
+    assert_eq!(
+        bundle.spec.groups["ai-main"].address.as_deref(),
+        Some("ui-b.jas-base.localhost")
+    );
     assert_eq!(feature_group.extends.as_deref(), Some("ai-main"));
-    assert_eq!(feature_group.instances, ["ai-feature/suite"]);
+    assert_eq!(
+        feature_group.instances,
+        ["ai-feature/suite", "jas-main/service", "ui-a/app"]
+    );
+    assert_eq!(
+        feature_group.address.as_deref(),
+        Some("ui-a.jas-base.localhost")
+    );
     assert_eq!(bundle.spec.bindings["jas-main"], "ai-feature");
     assert_eq!(bundle.spec.bindings["jas-feature"], "ai-main");
     assert_eq!(bundle.spec.bindings["ui-a"], "ai-feature");
@@ -177,7 +191,12 @@ fn overlays_create_disjoint_deterministic_variation_plans() {
     // the test depend on plans already generated in the developer's workspace.
     bundle.spec.host_router = None;
     bundle.spec.host_upstreams.clear();
-    bundle.spec.ui_routes.clear();
+    for instance in &mut bundle.spec.instances {
+        instance.address = None;
+    }
+    for group in bundle.spec.groups.values_mut() {
+        group.address = None;
+    }
     let main_overlay = repository_path("examples/jas-base/overlays/main.yaml");
     let feature_overlay = repository_path("examples/jas-base/overlays/feature.yaml");
     let main = plan_with_overlays(

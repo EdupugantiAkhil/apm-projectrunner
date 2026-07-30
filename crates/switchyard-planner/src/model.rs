@@ -48,9 +48,6 @@ pub struct DeploymentSpec {
     pub bindings: BTreeMap<String, String>,
     #[serde(default)]
     pub routes: BTreeMap<String, BTreeMap<String, String>>,
-    /// Cross-layer browser-to-backend selections used to validate the backend-group invariant.
-    #[serde(default)]
-    pub ui_routes: BTreeMap<String, UiRoute>,
     #[serde(default)]
     pub managed_profiles: BTreeMap<String, ManagedProfile>,
     #[serde(default)]
@@ -286,6 +283,8 @@ pub struct Instance {
     /// Execution placement. `local` is the only supported device in this release.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
     #[serde(default)]
     pub parameters: BTreeMap<String, String>,
     /// Labels used by instance overlay selectors.
@@ -306,18 +305,8 @@ pub struct ServiceGroup {
     pub extends: Option<String>,
     #[serde(default)]
     pub instances: Vec<String>,
-}
-
-/// Declares the backend and downstream group expected by one browser UI.
-///
-/// The origin is repeated here intentionally: it lets the planner prove that the
-/// high-level topology agrees with the lower-level host-router configuration.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct UiRoute {
-    pub origin: String,
-    pub backend: String,
-    pub downstream_group: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
 }
 
 /// Declares a UI which may be opened in an isolated managed browser profile.
