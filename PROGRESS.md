@@ -10,6 +10,45 @@ Updated: 2026-07-30
 - Web UI plan (`docs/web-ui-plan.md`): complete. Parts 1 through 13, including follow-up
   Parts 11a–11c, and Part 13's security review with its two fixes.
 
+## 2026-07-30 V2 Part 1 — group membership becomes a list
+
+- Replaced authored service-group provider maps with `instances` lists. The planner now derives
+  capability-to-provider routing from each member's declared services, rejects duplicate providers
+  with the exact one-provider-per-capability diagnostic, applies inherited overrides by capability,
+  and retains explicit `instance/service` member references for multi-service instances.
+- Bumped deployment definitions to `switchyard.dev/v1alpha2`. The loader rejects v1alpha1
+  deployments with an actionable `switchyard migrate` error, and the new CLI transform converts
+  provider maps to deduplicated member lists while preserving the per-transform seam for later V2
+  schema changes. Independent review hardened the transform to compare resolved provider maps before
+  and after conversion and refuse without writing when the list model would change capabilities or
+  produce an invalid group.
+- Restored all six migrated repository YAML files from their original text and applied only the
+  version and group-schema edits. This removed serialization churn, restored the routing-matrix
+  anchors, and fixed the daemon placement test whose literal flow-style replacement had silently
+  stopped matching.
+- Kept migration as a validated parse/transform/serialize operation rather than adding a fragile
+  line-oriented YAML rewriter. Before any write the CLI now warns that comments, anchors, and hand
+  formatting are not preserved; after success it lists the API-version change and each converted
+  group with capability and unique-member counts. Tests prove the warning hook runs before the
+  destructive write, migration round-trips, a second run is idempotent, and an unrepresentable
+  provider map leaves the original file untouched.
+- Removed the connection-detail fallback that substituted a literal `service` name if provider
+  resolution failed; invariant failures now propagate. Updated the generated project-authoring skill
+  to teach `instances` lists and corrected the support policy to list Deployment v1alpha2 separately
+  from Overlay v1alpha1.
+- Compatibility hashes were regenerated from planner output and then checked by the determinism
+  test: routing matrix definition/resource hashes are `32966889…`/`fa0a1790…`; JAS base hashes are
+  `31236b80…`/`9a02afbf…`. The test still plans each fixture twice and compares Compose, routes, and
+  both hashes.
+- Verification: `cargo fmt --all -- --check` produced no output; workspace Clippy with all targets,
+  features, and warnings denied passed; `cargo test --workspace --all-features` passed 292 tests
+  with 0 failures and the five declared reliability ignores. The previous baseline was independently
+  confirmed at 282: the ten additions are four planner regressions (migration-required plus the
+  three group rules), one CLI parser test, four migration tests, and one ops invariant test. Web
+  TypeScript passed; lint exited zero with exactly the four baseline-confirmed
+  exhaustive-dependencies warnings in `App.tsx` and `DeploymentBuilder.tsx`; all 48 web tests passed
+  across four files.
+
 ## 2026-07-30 consolidated unfinished-work checklist
 
 - Added `docs/unfinished-work.md` as the consolidated index of unfinished work while

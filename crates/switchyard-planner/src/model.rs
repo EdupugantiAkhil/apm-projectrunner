@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-pub const API_VERSION: &str = "switchyard.dev/v1alpha1";
+pub const API_VERSION: &str = "switchyard.dev/v1alpha2";
 pub const KIND: &str = "Deployment";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -305,7 +305,7 @@ pub struct ServiceGroup {
     #[serde(default)]
     pub extends: Option<String>,
     #[serde(default)]
-    pub providers: BTreeMap<String, String>,
+    pub instances: Vec<String>,
 }
 
 /// Declares the backend and downstream group expected by one browser UI.

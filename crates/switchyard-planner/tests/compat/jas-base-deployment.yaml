@@ -1,4 +1,4 @@
-apiVersion: switchyard.dev/v1alpha1
+apiVersion: switchyard.dev/v1alpha2
 kind: Deployment
 metadata:
   name: jas-base
@@ -149,20 +149,10 @@ spec:
       parameters: { FIXTURE_SOURCE: repository-root/ui-b }
   groups:
     ai-main:
-      providers:
-        catalog: ai-main/suite
-        search: ai-main/suite
-        reports: ai-main/suite
-        scheduler: ai-main/suite
-        audit: ai-main/suite
+      instances: [ai-main/suite]
     ai-feature:
       extends: ai-main
-      providers:
-        catalog: ai-feature/suite
-        search: ai-feature/suite
-        reports: ai-feature/suite
-        scheduler: ai-feature/suite
-        audit: ai-feature/suite
+      instances: [ai-feature/suite]
   bindings:
     ui-a: ai-feature
     ui-b: ai-main

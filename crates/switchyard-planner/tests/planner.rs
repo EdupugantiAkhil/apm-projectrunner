@@ -2,8 +2,8 @@ use std::{fs, path::Path};
 
 use switchyard_planner::{
     ChangeImpact, DiagnosticCode, ManagedProfile, OverlayOptions, PlanningDevice,
-    PublishedUpstream, UiRoute, classify_changes, load_bundle, parse_dotenv, plan,
-    plan_with_binding, plan_with_devices, plan_with_overlays, write_plan,
+    PublishedUpstream, UiRoute, classify_changes, load_bundle, load_bundle_from_str, parse_dotenv,
+    plan, plan_with_binding, plan_with_devices, plan_with_overlays, write_plan,
 };
 
 fn bundle() -> switchyard_planner::Bundle {
@@ -20,6 +20,94 @@ fn devices() -> std::collections::BTreeMap<String, PlanningDevice> {
             identity_file: Some("/keys/build".into()),
         },
     )])
+}
+
+#[test]
+fn v1alpha1_loader_error_names_the_migration_command() {
+    let directory = tempfile::tempdir().unwrap();
+    let error = load_bundle_from_str(
+        "apiVersion: switchyard.dev/v1alpha1\nkind: Deployment\nmetadata: { name: demo }\nspec: {}\n",
+        &directory.path().join("deployment.yaml"),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("run `switchyard migrate`"));
+    assert!(error.contains("switchyard.dev/v1alpha2"));
+}
+
+#[test]
+fn group_rejects_two_members_providing_one_capability() {
+    let mut deployment = bundle();
+    let mut replica = deployment
+        .spec
+        .instances
+        .iter()
+        .find(|instance| instance.name == "provider-main")
+        .unwrap()
+        .clone();
+    replica.name = "provider-replica".into();
+    deployment.spec.instances.push(replica);
+    deployment
+        .spec
+        .groups
+        .get_mut("base")
+        .unwrap()
+        .instances
+        .push("provider-replica/api".into());
+
+    let diagnostics = plan(&deployment).unwrap_err();
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == DiagnosticCode::DuplicateProvider
+            && diagnostic.message
+                == "provider-main/api and provider-replica/api both provide `search`; a group may contain one provider per capability"
+    }));
+}
+
+#[test]
+fn group_extends_overrides_an_inherited_member_by_capability() {
+    let mut deployment = bundle();
+    let mut feature = deployment
+        .spec
+        .instances
+        .iter()
+        .find(|instance| instance.name == "provider-main")
+        .unwrap()
+        .clone();
+    feature.name = "provider-feature".into();
+    deployment.spec.instances.push(feature);
+    deployment.spec.groups.get_mut("feature").unwrap().instances =
+        vec!["provider-feature/api".into()];
+
+    let generated = plan(&deployment).unwrap();
+    let base: serde_json::Value =
+        serde_json::from_str(&generated.route_configs["consumer-a"]).unwrap();
+    let feature: serde_json::Value =
+        serde_json::from_str(&generated.route_configs["consumer-b"]).unwrap();
+    assert_eq!(
+        base["spec"]["routes"][0]["provider"],
+        "provider-main/api--search"
+    );
+    assert_eq!(
+        feature["spec"]["routes"][0]["provider"],
+        "provider-feature/api--search"
+    );
+}
+
+#[test]
+fn group_member_instance_service_reference_resolves_service_ambiguity() {
+    let mut deployment = bundle();
+    let provider = deployment.spec.blocks.get_mut("provider").unwrap();
+    provider
+        .services
+        .insert("alternate".into(), provider.services["api"].clone());
+
+    let generated = plan(&deployment).expect("explicit service should resolve the group member");
+    let routes: serde_json::Value =
+        serde_json::from_str(&generated.route_configs["consumer-a"]).unwrap();
+    assert_eq!(
+        routes["spec"]["routes"][0]["provider"],
+        "provider-main/api--search"
+    );
 }
 
 #[test]
@@ -859,8 +947,7 @@ fn reports_required_variables_cycles_conflicts_and_missing_providers_together() 
         .groups
         .get_mut("base")
         .expect("group exists")
-        .providers
-        .insert("search".into(), "missing/api".into());
+        .instances = vec!["missing/api".into()];
     let consumer_block = bundle
         .spec
         .blocks
@@ -876,7 +963,7 @@ fn reports_required_variables_cycles_conflicts_and_missing_providers_together() 
         DiagnosticCode::MissingVariable,
         DiagnosticCode::DependencyCycle,
         DiagnosticCode::ListenerConflict,
-        DiagnosticCode::MissingProvider,
+        DiagnosticCode::MissingReference,
     ] {
         assert!(
             errors.iter().any(|error| error.code == expected),

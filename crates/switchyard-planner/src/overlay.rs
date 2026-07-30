@@ -8,12 +8,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::{
-    API_VERSION, Bundle, Diagnostic, DiagnosticCode, Execution, PlannerError, generate, validate,
-};
+use crate::{Bundle, Diagnostic, DiagnosticCode, Execution, PlannerError, generate, validate};
 
 /// Overlay document kind.
 pub const OVERLAY_KIND: &str = "Overlay";
+const OVERLAY_API_VERSION: &str = "switchyard.dev/v1alpha1";
 
 /// A versioned overlay document.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -284,11 +283,11 @@ fn valid_environment_name(name: &str) -> bool {
 /// Validates the standalone overlay schema and context-free safety rules.
 pub fn validate_overlay(overlay: &Overlay) -> Result<(), Vec<Diagnostic>> {
     let mut errors = Vec::new();
-    if overlay.api_version != API_VERSION || overlay.kind != OVERLAY_KIND {
+    if overlay.api_version != OVERLAY_API_VERSION || overlay.kind != OVERLAY_KIND {
         errors.push(Diagnostic::new(
             DiagnosticCode::UnsupportedSchema,
             "apiVersion",
-            format!("expected {API_VERSION} kind {OVERLAY_KIND}"),
+            format!("expected {OVERLAY_API_VERSION} kind {OVERLAY_KIND}"),
         ));
     }
     if overlay.metadata.name.is_empty() {

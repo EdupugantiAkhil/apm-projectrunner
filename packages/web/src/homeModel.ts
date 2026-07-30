@@ -11,7 +11,7 @@ const trusted = (profile: ProfileRecord) => !profile.shadowed && (profile.trust 
 const stateFromSignals = (done: boolean, loading: boolean, unavailable: boolean): ChecklistState => done ? 'done' : loading || unavailable ? 'unknown' : 'todo'
 
 export function missingConnections(spec: ConnectionSpec) {
-  const consumed = consumedSlots(spec); const groups = resolvedGroups(spec.groups); const bindings = spec.bindings ?? {}; const direct = spec.routes ?? {}; const missing: Array<{ consumer: string; slots: string[] }> = []
+  const consumed = consumedSlots(spec); const groups = resolvedGroups(spec); const bindings = spec.bindings ?? {}; const direct = spec.routes ?? {}; const missing: Array<{ consumer: string; slots: string[] }> = []
   for (const [consumer, slots] of Object.entries(consumed)) { const group = bindings[consumer]; const routes = group && groups[group] ? groups[group] : direct[consumer] ?? {}; const absent = slots.filter((slot) => !routes[slot]); if (absent.length) missing.push({ consumer, slots: absent }) }
   return missing
 }

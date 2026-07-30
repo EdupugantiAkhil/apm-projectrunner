@@ -1,5 +1,36 @@
 # Agent mistakes and lessons
 
+## 2026-07-30 — A migrated document must preserve resolved semantics, not merely parse
+
+- The first migration validation stopped after the rewritten YAML deserialized as v1alpha2. A valid
+  v1alpha1 group could therefore be rewritten into an invalid or behaviorally broader v1alpha2
+  group when a listed instance provided capabilities that its old provider map did not select.
+- Correction: resolve the inherited v1alpha1 capability-to-provider maps before transforming,
+  resolve the derived v1alpha2 maps afterwards, and refuse without writing if resolution fails or
+  any capability mapping changes. A regression test covers an extra capability that would otherwise
+  appear silently.
+- The same review found a literal `"service"` fallback masking an impossible provider-resolution
+  failure in connection details, plus stale generated authoring guidance and schema support text.
+  Propagate invariant failures instead of manufacturing display data, and include templates and
+  support-policy prose in schema sweeps.
+
+## 2026-07-30 — Schema migration must not rewrite fixture text incidentally
+
+- Running the new deployment migration across repository fixtures used `serde_yaml` to
+  reserialize each complete document. The intended schema delta was small, but the rewrite changed
+  flow collections to block style, expanded anchors and aliases, and obscured the review under
+  hundreds of unrelated formatting lines.
+- One daemon test edited the shared fixture with a literal replacement of a deliberate flow-style
+  instance line. Reserialization made that replacement a silent no-op, so the test continued with
+  no device placement and failed much later as an empty API result.
+- Correction: restore every affected YAML file from its original text and hand-apply only the API
+  version and `providers`-to-`instances` changes. For the user-facing migration command, warn before
+  the validated parser rewrite that comments, anchors, and formatting will be lost, and list every
+  semantic change after it succeeds.
+- Lesson: a mechanical rewrite of files that tests or tools may consume textually is a behavioral
+  change even when parsed data is equivalent. Preserve original text for repository fixtures,
+  review schema migrations as focused diffs, and never assume parser round-tripping is harmless.
+
 ## 2026-07-25 — A green test proves nothing until you watch it fail
 
 - The first regression test for order-dependent host-key pinning passed against the unfixed

@@ -6,6 +6,7 @@ mod diagnostics;
 mod host_runtime;
 mod init;
 mod lan_preflight;
+mod migrate;
 mod project;
 mod runtime;
 mod tailscale_publication;
@@ -113,6 +114,29 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             "wrote diagnostics to {}; review the file before sharing",
             path.display()
         );
+        return Ok(ExitCode::SUCCESS);
+    }
+    if let CliCommand::Migrate { deployment } = &command {
+        let result = migrate::migrate(deployment, || {
+            eprintln!(
+                "warning: {}: {}",
+                deployment.display(),
+                migrate::FORMAT_WARNING
+            );
+        })?;
+        if result.changed {
+            println!(
+                "migrated {} to {}",
+                deployment.display(),
+                switchyard_planner::API_VERSION
+            );
+            println!("changes:");
+            for change in result.changes {
+                println!("  - {change}");
+            }
+        } else {
+            println!("{} is already up to date", deployment.display());
+        }
         return Ok(ExitCode::SUCCESS);
     }
     if let CliCommand::Tui { project_dir } = &command {
@@ -387,7 +411,8 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         | CliCommand::DeviceCheck { .. }
         | CliCommand::WorktreeCreate { .. }
         | CliCommand::WorktreeRemove { .. }
-        | CliCommand::Diagnostics { .. } => unreachable!("handled before command dispatch"),
+        | CliCommand::Diagnostics { .. }
+        | CliCommand::Migrate { .. } => unreachable!("handled before command dispatch"),
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -449,7 +474,7 @@ fn daemon_compatible(command: &CliCommand) -> bool {
         | CliCommand::OverlayDiff { .. }
         | CliCommand::BundleExport { .. }
         | CliCommand::BundleImport { .. } => false,
-        CliCommand::Diagnostics { .. } => false,
+        CliCommand::Diagnostics { .. } | CliCommand::Migrate { .. } => false,
         _ => true,
     }
 }
@@ -1042,6 +1067,7 @@ fn daemon_request(
         | CliCommand::BundleExport { .. }
         | CliCommand::BundleImport { .. }
         | CliCommand::Diagnostics { .. }
+        | CliCommand::Migrate { .. }
         | CliCommand::OverlayValidate { .. }
         | CliCommand::OverlayDiff { .. } => unreachable!("not delegated"),
     }

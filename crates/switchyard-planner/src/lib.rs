@@ -31,6 +31,7 @@ const SERVICE_LABEL: &str = "dev.switchyard.service";
 pub enum PlannerError {
     Io(io::Error),
     Yaml(serde_yaml::Error),
+    MigrationRequired(String),
     OverlayIo(io::Error),
     OverlayYaml(serde_yaml::Error),
 }
@@ -40,6 +41,10 @@ impl fmt::Display for PlannerError {
         match self {
             Self::Io(error) => write!(f, "could not read deployment: {error}"),
             Self::Yaml(error) => write!(f, "invalid deployment YAML: {error}"),
+            Self::MigrationRequired(version) => write!(
+                f,
+                "deployment uses apiVersion {version}; run `switchyard migrate` to update it to {API_VERSION}"
+            ),
             Self::OverlayIo(error) => write!(f, "could not read overlay: {error}"),
             Self::OverlayYaml(error) => write!(f, "invalid overlay YAML: {error}"),
         }
@@ -72,6 +77,7 @@ pub enum DiagnosticCode {
     DependencyCycle,
     ListenerConflict,
     MissingProvider,
+    DuplicateProvider,
     IncompatibleProtocol,
     IncompleteGroup,
     BackendGroupInvariant,
@@ -196,6 +202,12 @@ pub struct RemoteComposePlan {
     pub services: Vec<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DocumentVersion {
+    api_version: String,
+}
+
 /// Loads one self-contained deployment bundle without changing runtime state.
 pub fn load_bundle(path: &Path) -> Result<Bundle, PlannerError> {
     let input = fs::read_to_string(path)?;
@@ -204,6 +216,10 @@ pub fn load_bundle(path: &Path) -> Result<Bundle, PlannerError> {
 
 /// Loads one deployment bundle from an in-memory draft using `path` for relative paths.
 pub fn load_bundle_from_str(input: &str, path: &Path) -> Result<Bundle, PlannerError> {
+    let version: DocumentVersion = serde_yaml::from_str(input)?;
+    if version.api_version == "switchyard.dev/v1alpha1" {
+        return Err(PlannerError::MigrationRequired(version.api_version));
+    }
     let mut bundle: Bundle = serde_yaml::from_str(input)?;
     bundle.definition_dir = path
         .parent()
@@ -239,6 +255,39 @@ pub fn plan_with_devices(
             error.to_string(),
         )]
     })
+}
+
+pub fn resolve_service_groups(
+    bundle: &Bundle,
+) -> Result<BTreeMap<String, BTreeMap<String, String>>, Vec<Diagnostic>> {
+    let instances = bundle
+        .spec
+        .instances
+        .iter()
+        .map(|instance| (instance.name.as_str(), instance))
+        .collect();
+    let mut errors = Vec::new();
+    let groups = resolve_groups(bundle, &instances, &mut errors);
+    if errors.is_empty() {
+        Ok(groups)
+    } else {
+        Err(errors)
+    }
+}
+
+pub fn resolve_provider_service(
+    bundle: &Bundle,
+    provider_ref: &str,
+    capability: &str,
+) -> Result<String, String> {
+    let instances = bundle
+        .spec
+        .instances
+        .iter()
+        .map(|instance| (instance.name.as_str(), instance))
+        .collect();
+    provider_for(bundle, &instances, provider_ref, capability)
+        .map(|(service, _)| service.to_owned())
 }
 
 /// Validates a reusable block with the same contracts used by deployment planning.
@@ -592,7 +641,7 @@ fn validate(
         }
     }
 
-    let resolved_groups = resolve_groups(&bundle.spec.groups, &mut errors);
+    let resolved_groups = resolve_groups(bundle, &instances, &mut errors);
     validate_expanded_dependencies(bundle, &instances, &mut errors);
     validate_routes(bundle, &instances, &resolved_groups, &adapters, &mut errors);
     validate_ui_routes(bundle, &instances, &resolved_groups, &mut errors);
@@ -1054,16 +1103,78 @@ fn validate_listener_conflicts(instance: &Instance, block: &Block, errors: &mut 
 }
 
 fn resolve_groups(
-    groups: &BTreeMap<String, ServiceGroup>,
+    bundle: &Bundle,
+    instances: &BTreeMap<&str, &Instance>,
     errors: &mut Vec<Diagnostic>,
 ) -> BTreeMap<String, BTreeMap<String, String>> {
+    #[derive(Clone)]
+    struct ResolvedMember {
+        reference: String,
+        capabilities: BTreeSet<String>,
+    }
+
+    #[derive(Clone, Default)]
+    struct ResolvedGroup {
+        members: Vec<ResolvedMember>,
+        providers: BTreeMap<String, String>,
+    }
+
+    fn capabilities(
+        bundle: &Bundle,
+        instances: &BTreeMap<&str, &Instance>,
+        group: &str,
+        member: &str,
+        path: &str,
+        errors: &mut Vec<Diagnostic>,
+    ) -> Option<BTreeSet<String>> {
+        let (instance_name, requested_service) = provider_reference(member);
+        let Some(instance) = instances.get(instance_name) else {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::MissingReference,
+                path,
+                format!("`{member}` is not a member of group `{group}`"),
+            ));
+            return None;
+        };
+        // An unknown block is already reported against the instance declaration.
+        let block = bundle.spec.blocks.get(&instance.block)?;
+        if let Some(service) = requested_service {
+            if !block.services.contains_key(service) {
+                errors.push(Diagnostic::new(
+                    DiagnosticCode::MissingReference,
+                    path,
+                    format!("`{member}` does not name a service on group member `{instance_name}`"),
+                ));
+                return None;
+            }
+        }
+        let provided = block
+            .services
+            .iter()
+            .filter(|(service, _)| requested_service.is_none_or(|requested| requested == *service))
+            .flat_map(|(_, service)| service.provides.keys().cloned())
+            .collect::<BTreeSet<_>>();
+        for capability in &provided {
+            if let Err(message) = provider_for(bundle, instances, member, capability) {
+                errors.push(Diagnostic::new(
+                    DiagnosticCode::MissingProvider,
+                    path,
+                    message,
+                ));
+                return None;
+            }
+        }
+        Some(provided)
+    }
+
     fn resolve_one(
         name: &str,
-        groups: &BTreeMap<String, ServiceGroup>,
+        bundle: &Bundle,
+        instances: &BTreeMap<&str, &Instance>,
         stack: &mut BTreeSet<String>,
-        resolved: &mut BTreeMap<String, BTreeMap<String, String>>,
+        resolved: &mut BTreeMap<String, ResolvedGroup>,
         errors: &mut Vec<Diagnostic>,
-    ) -> BTreeMap<String, String> {
+    ) -> ResolvedGroup {
         if let Some(group) = resolved.get(name) {
             return group.clone();
         }
@@ -1073,33 +1184,76 @@ fn resolve_groups(
                 format!("spec.groups.{name}.extends"),
                 "service-group inheritance cycle detected",
             ));
-            return BTreeMap::new();
+            return ResolvedGroup::default();
         }
-        let Some(group) = groups.get(name) else {
+        let Some(group) = bundle.spec.groups.get(name) else {
             errors.push(Diagnostic::new(
                 DiagnosticCode::MissingReference,
                 format!("spec.groups.{name}"),
                 "unknown service group",
             ));
-            return BTreeMap::new();
+            stack.remove(name);
+            return ResolvedGroup::default();
         };
-        let mut providers = group
+        let mut members = group
             .extends
             .as_deref()
-            .map(|parent| resolve_one(parent, groups, stack, resolved, errors))
+            .map(|parent| resolve_one(parent, bundle, instances, stack, resolved, errors).members)
             .unwrap_or_default();
-        providers.extend(group.providers.clone());
+        let mut additions = Vec::new();
+        for (index, member) in group.instances.iter().enumerate() {
+            let path = format!("spec.groups.{name}.instances[{index}]");
+            let Some(provided) = capabilities(bundle, instances, name, member, &path, errors)
+            else {
+                continue;
+            };
+            members.retain(|inherited| inherited.capabilities.is_disjoint(&provided));
+            additions.push(ResolvedMember {
+                reference: member.clone(),
+                capabilities: provided,
+            });
+        }
+        members.extend(additions);
+
+        let mut providers = BTreeMap::new();
+        for member in &members {
+            for capability in &member.capabilities {
+                if let Some(first) = providers.get(capability) {
+                    errors.push(Diagnostic::new(
+                        DiagnosticCode::DuplicateProvider,
+                        format!("spec.groups.{name}.instances"),
+                        format!(
+                            "{first} and {} both provide `{capability}`; a group may contain one provider per capability",
+                            member.reference
+                        ),
+                    ));
+                } else {
+                    providers.insert(capability.clone(), member.reference.clone());
+                }
+            }
+        }
         stack.remove(name);
-        resolved.insert(name.to_owned(), providers.clone());
-        providers
+        let group = ResolvedGroup { members, providers };
+        resolved.insert(name.to_owned(), group.clone());
+        group
     }
 
     let mut resolved = BTreeMap::new();
-    for name in groups.keys() {
+    for name in bundle.spec.groups.keys() {
         validate_name(name, format!("spec.groups.{name}"), errors);
-        resolve_one(name, groups, &mut BTreeSet::new(), &mut resolved, errors);
+        resolve_one(
+            name,
+            bundle,
+            instances,
+            &mut BTreeSet::new(),
+            &mut resolved,
+            errors,
+        );
     }
     resolved
+        .into_iter()
+        .map(|(name, group)| (name, group.providers))
+        .collect()
 }
 
 fn validate_routes(
@@ -1419,21 +1573,29 @@ fn validate_expanded_dependencies(
     }
 }
 
+fn provider_reference(reference: &str) -> (&str, Option<&str>) {
+    reference
+        .split_once('/')
+        .map_or((reference, None), |(instance, service)| {
+            (instance, Some(service))
+        })
+}
+
 fn provider_for<'a>(
     bundle: &'a Bundle,
     instances: &BTreeMap<&str, &'a Instance>,
     provider_ref: &str,
     slot: &str,
 ) -> Result<(&'a str, &'a Capability), String> {
-    let (instance_name, requested_service) = provider_ref
-        .split_once('/')
-        .map_or((provider_ref, None), |(instance, service)| {
-            (instance, Some(service))
-        });
+    let (instance_name, requested_service) = provider_reference(provider_ref);
     let instance = instances
         .get(instance_name)
         .ok_or_else(|| format!("provider instance {instance_name} does not exist"))?;
-    let block = &bundle.spec.blocks[&instance.block];
+    let block = bundle
+        .spec
+        .blocks
+        .get(&instance.block)
+        .ok_or_else(|| format!("provider instance {instance_name} has an unknown block"))?;
     let mut matches = block.services.iter().filter(|(name, service)| {
         requested_service.is_none_or(|requested| requested == name.as_str())
             && service.provides.contains_key(slot)

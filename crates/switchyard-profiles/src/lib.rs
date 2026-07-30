@@ -848,7 +848,7 @@ services:
         let project = TempDir::new().unwrap();
         fs::write(
             project.path().join("deployment.yaml"),
-            "apiVersion: switchyard.dev/v1alpha1\nkind: Deployment\nmetadata:\n  name: demo\nspec: {}\n",
+            "apiVersion: switchyard.dev/v1alpha2\nkind: Deployment\nmetadata:\n  name: demo\nspec: {}\n",
         )
         .unwrap();
         let good = project.path().join("good");

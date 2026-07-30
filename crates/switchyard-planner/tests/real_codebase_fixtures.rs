@@ -60,11 +60,11 @@ fn legacy_workspace_fixture_expands_through_generic_planner_contracts() {
     );
     assert_eq!(compose["volumes"].as_object().unwrap().len(), 2);
 
-    let main_group = &bundle.spec.groups["ai-main"].providers;
+    let main_group = &bundle.spec.groups["ai-main"].instances;
     let feature_group = &bundle.spec.groups["ai-feature"];
-    assert_eq!(main_group.len(), 5);
+    assert_eq!(main_group, &["ai-main/suite"]);
     assert_eq!(feature_group.extends.as_deref(), Some("ai-main"));
-    assert_eq!(feature_group.providers.len(), 5);
+    assert_eq!(feature_group.instances, ["ai-feature/suite"]);
     assert_eq!(bundle.spec.bindings["jas-main"], "ai-feature");
     assert_eq!(bundle.spec.bindings["jas-feature"], "ai-main");
     assert_eq!(bundle.spec.bindings["ui-a"], "ai-feature");

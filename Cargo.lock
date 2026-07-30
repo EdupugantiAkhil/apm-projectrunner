@@ -3333,6 +3333,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower",
+ "yaml_serde",
 ]
 
 [[package]]

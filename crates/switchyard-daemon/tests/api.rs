@@ -451,7 +451,7 @@ async fn run_actions_list_structured_crud_reject_shell_authoring_and_gate_shell_
     .unwrap();
     fs::write(
         temp.path().join("deployment.yaml"),
-        "apiVersion: switchyard.dev/v1alpha1\nkind: Deployment\nmetadata:\n  name: demo\nspec: {}\n",
+        "apiVersion: switchyard.dev/v1alpha2\nkind: Deployment\nmetadata:\n  name: demo\nspec: {}\n",
     )
     .unwrap();
     let backend = Arc::new(RunActionBackend::default());
@@ -638,7 +638,7 @@ async fn profile_library_enforces_reviewed_import_reimport_validation_and_remova
     let temp = TempDir::new().unwrap();
     fs::write(
         temp.path().join("deployment.yaml"),
-        "apiVersion: switchyard.dev/v1alpha1\nkind: Deployment\nmetadata:\n  name: demo\nspec: {}\n",
+        "apiVersion: switchyard.dev/v1alpha2\nkind: Deployment\nmetadata:\n  name: demo\nspec: {}\n",
     )
     .unwrap();
     let checkout = temp.path().join("checkout");
@@ -1446,7 +1446,7 @@ async fn high_concurrency_api_respects_global_limit_deployment_locks_and_sqlite_
 
 fn definition_yaml(name: &str) -> String {
     format!(
-        "apiVersion: switchyard.dev/v1alpha1\nkind: Deployment\nmetadata:\n  name: {name}\nspec: {{}}\n"
+        "apiVersion: switchyard.dev/v1alpha2\nkind: Deployment\nmetadata:\n  name: {name}\nspec: {{}}\n"
     )
 }
 

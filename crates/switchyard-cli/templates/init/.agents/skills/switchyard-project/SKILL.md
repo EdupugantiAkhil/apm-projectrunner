@@ -106,8 +106,8 @@ For every routable service:
 
 - declare each `provides` capability with its real protocol and listen port;
 - declare each `consumes` slot with the fixed address the unchanged consumer calls;
-- define a group whose `providers` maps every required slot to an existing
-  `instance/service`; and
+- define a group whose `instances` list contains one member providing each required
+  capability (use `instance/service` only when one instance has an ambiguous provider); and
 - bind a consumer instance to one complete compatible group in `spec.bindings`.
 
 Example:
@@ -123,8 +123,7 @@ spec:
             query: { protocol: http, address: { host: 127.0.0.1, port: 8001 } }
   groups:
     main-services:
-      providers:
-        query: api-main/server
+      instances: [api-main/server]
   bindings:
     client-main: main-services
 ```

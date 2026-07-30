@@ -38,7 +38,8 @@ require all three records plus the security reason and safest available recovery
 
 The currently published schemas include:
 
-- `switchyard.dev/v1alpha1` for `Deployment` and `Overlay` documents;
+- `switchyard.dev/v1alpha2` for `Deployment` documents and `switchyard.dev/v1alpha1` for
+  `Overlay` documents;
 - `switchyard.dev/router/v1alpha1` for router snapshots;
 - `switchyard.dev/bundle/v1alpha1` for portable bundles;
 - local state/artifact formats including `switchyard.dev/host-process/v1alpha1`,

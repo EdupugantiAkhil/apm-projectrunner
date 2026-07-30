@@ -66,7 +66,7 @@ export interface DeploymentSnapshot { spec?: {
       volumes?: unknown[]
     }>
   }>
-  groups?: Record<string, { extends?: string; providers?: Record<string, string> }>
+  groups?: Record<string, { extends?: string; instances?: string[] }>
   bindings?: Record<string, string>
   routes?: Record<string, Record<string, string>>
   uiRoutes?: Record<string, { origin: string; backend: string; downstreamGroup: string }>

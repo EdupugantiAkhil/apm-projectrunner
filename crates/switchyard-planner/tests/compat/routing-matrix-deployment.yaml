@@ -1,4 +1,4 @@
-apiVersion: switchyard.dev/v1alpha1
+apiVersion: switchyard.dev/v1alpha2
 kind: Deployment
 metadata:
   name: routing-matrix
@@ -178,19 +178,19 @@ spec:
       parameters: { FIXTURE_BACKEND: backend-2 }
   groups:
     main-services:
-      providers:
-        catalog: services-main-catalog/app
-        search: services-main-search/app
-        reports: services-main-reports/app
-        scheduler: services-main-scheduler/app
-        audit: services-shared-audit/app
+      instances:
+        - services-main-catalog/app
+        - services-main-search/app
+        - services-main-reports/app
+        - services-main-scheduler/app
+        - services-shared-audit/app
     feature-services:
-      providers:
-        catalog: services-feature-catalog/app
-        search: services-feature-search/app
-        reports: services-feature-reports/app
-        scheduler: services-feature-scheduler/app
-        audit: services-shared-audit/app
+      instances:
+        - services-feature-catalog/app
+        - services-feature-search/app
+        - services-feature-reports/app
+        - services-feature-scheduler/app
+        - services-shared-audit/app
   bindings:
     backend-1: feature-services
     backend-2: main-services

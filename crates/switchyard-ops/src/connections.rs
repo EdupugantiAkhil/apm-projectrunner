@@ -105,7 +105,9 @@ pub fn connection_matrix(
         let current_group = bundle.spec.bindings.get(&instance.name).cloned();
         let providers = current_group
             .as_deref()
-            .map_or_else(Vec::new, |group| provider_details(&bundle, group, services));
+            .map(|group| provider_details(&bundle, group, services))
+            .transpose()?
+            .unwrap_or_default();
         for slot in slots {
             rows.push(ConnectionRow {
                 consumer: instance.name.clone(),
@@ -162,8 +164,8 @@ pub fn switch_preview(
         consumer: consumer.into(),
         old_group,
         new_group: new_group.into(),
-        old_providers: details_from_map(&old_map, &[]),
-        new_providers: details_from_map(&new_map, &[]),
+        old_providers: details_from_map(&bundle, &old_map, &[])?,
+        new_providers: details_from_map(&bundle, &new_map, &[])?,
         affected_services,
         diagnostics,
     })
@@ -237,55 +239,54 @@ fn effective_bundle(project_dir: &Path, definition: &Path) -> Result<Bundle, Str
 }
 
 fn resolved_group(bundle: &Bundle, group: &str) -> Result<BTreeMap<String, String>, String> {
-    resolved_group_inner(bundle, group, &mut std::collections::BTreeSet::new())
+    let groups = switchyard_planner::resolve_service_groups(bundle).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    groups
+        .get(group)
+        .cloned()
+        .ok_or_else(|| format!("provider group `{group}` does not exist"))
 }
 
-fn resolved_group_inner(
+fn provider_details(
     bundle: &Bundle,
     group: &str,
-    visiting: &mut std::collections::BTreeSet<String>,
-) -> Result<BTreeMap<String, String>, String> {
-    if !visiting.insert(group.into()) {
-        return Err(format!(
-            "provider group inheritance contains a cycle at `{group}`"
-        ));
-    }
-    let Some(value) = bundle.spec.groups.get(group) else {
-        return Err(format!("provider group `{group}` does not exist"));
-    };
-    let mut providers = if let Some(parent) = value.extends.as_deref() {
-        resolved_group_inner(bundle, parent, visiting)?
-    } else {
-        BTreeMap::new()
-    };
-    providers.extend(value.providers.clone());
-    visiting.remove(group);
-    Ok(providers)
-}
-
-fn provider_details(bundle: &Bundle, group: &str, services: &[ServiceRow]) -> Vec<ProviderDetail> {
-    resolved_group(bundle, group)
-        .map(|providers| details_from_map(&providers, services))
-        .unwrap_or_default()
+    services: &[ServiceRow],
+) -> Result<Vec<ProviderDetail>, String> {
+    let providers = resolved_group(bundle, group)?;
+    details_from_map(bundle, &providers, services)
 }
 
 fn details_from_map(
+    bundle: &Bundle,
     providers: &BTreeMap<String, String>,
     services: &[ServiceRow],
-) -> Vec<ProviderDetail> {
+) -> Result<Vec<ProviderDetail>, String> {
     providers
-        .values()
-        .map(|provider| {
-            let (instance, service) = provider.split_once('/').unwrap_or((provider, "service"));
+        .iter()
+        .map(|(capability, provider)| {
+            let (instance, explicit_service) = provider
+                .split_once('/')
+                .map_or((provider.as_str(), None), |(instance, service)| {
+                    (instance, Some(service))
+                });
+            let service = match explicit_service {
+                Some(service) => service.to_owned(),
+                None => switchyard_planner::resolve_provider_service(bundle, provider, capability)?,
+            };
             let health = services
                 .iter()
                 .find(|row| row.instance == instance && row.service == service)
                 .map_or("unknown", |row| row.health.as_str());
-            ProviderDetail {
+            Ok(ProviderDetail {
                 instance: instance.into(),
-                service: service.into(),
+                service,
                 health: health.into(),
-            }
+            })
         })
         .collect()
 }
@@ -341,6 +342,16 @@ mod tests {
         assert_eq!(preview.old_providers.len(), 5);
         assert_eq!(preview.new_providers.len(), 5);
         assert_eq!(preview.affected_services.len(), 4);
+    }
+
+    #[test]
+    fn provider_details_do_not_hide_resolution_failures() {
+        let bundle = switchyard_planner::load_bundle(&fixture()).unwrap();
+        let providers = BTreeMap::from([("catalog".into(), "missing-provider".into())]);
+
+        let error = details_from_map(&bundle, &providers, &[]).unwrap_err();
+
+        assert!(error.contains("provider instance missing-provider does not exist"));
     }
 
     #[test]

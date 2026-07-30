@@ -25,6 +25,9 @@ pub enum CliCommand {
         deployment: PathBuf,
         output: Option<PathBuf>,
     },
+    Migrate {
+        deployment: PathBuf,
+    },
     Validate {
         bundle: PathBuf,
     },
@@ -157,6 +160,7 @@ Usage:
   switchyard bundle export <deployment.yaml> [--with <overlay.yaml>]... [--output <file>]
   switchyard bundle import <bundle-file> --into <directory> [--force]
   switchyard diagnostics <deployment.yaml> [--output <path>]
+  switchyard migrate <deployment.yaml>
   switchyard overlay validate <overlay.yaml>
   switchyard overlay diff <deployment.yaml> --with <overlay.yaml> [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
   switchyard bind <deployment.yaml> <consumer> <group> [--transition close|drain|pin] [--drain-timeout-ms <ms>]
@@ -210,6 +214,9 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
         "bundle" if rest.len() >= 2 && rest[0] == "export" => parse_bundle_export(rest),
         "bundle" if rest.len() >= 3 && rest[0] == "import" => parse_bundle_import(rest),
         "diagnostics" if !rest.is_empty() => parse_diagnostics(rest),
+        "migrate" if rest.len() == 1 => Ok(CliCommand::Migrate {
+            deployment: PathBuf::from(&rest[0]),
+        }),
         "validate" if rest.len() == 1 => Ok(CliCommand::Validate { bundle: bundle()? }),
         "plan" if !rest.is_empty() => {
             let (bundle, options, _) = parse_deployment_options(rest, false)?;
@@ -652,6 +659,18 @@ mod tests {
             }
         );
         assert!(parse(args(&["diagnostics", "demo.yaml", "--output"])).is_err());
+    }
+
+    #[test]
+    fn parses_migrate_command() {
+        assert_eq!(
+            parse(args(&["migrate", "demo.yaml"])).unwrap(),
+            CliCommand::Migrate {
+                deployment: "demo.yaml".into()
+            }
+        );
+        assert!(parse(args(&["migrate"])).is_err());
+        assert!(parse(args(&["migrate", "one.yaml", "two.yaml"])).is_err());
     }
 
     #[test]

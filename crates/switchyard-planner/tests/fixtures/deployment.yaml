@@ -1,4 +1,4 @@
-apiVersion: switchyard.dev/v1alpha1
+apiVersion: switchyard.dev/v1alpha2
 kind: Deployment
 metadata:
   name: comparison
@@ -58,11 +58,10 @@ spec:
     - { name: suite-main, block: suite, source: app }
   groups:
     base:
-      providers:
-        search: provider-main/api
+      instances: [provider-main/api]
     feature:
       extends: base
-      providers: {}
+      instances: []
   bindings:
     consumer-a: base
     consumer-b: feature

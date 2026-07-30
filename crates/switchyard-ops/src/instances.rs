@@ -475,7 +475,7 @@ mod tests {
         fs::write(
             &path,
             format!(
-                r#"apiVersion: switchyard.dev/v1alpha1
+                r#"apiVersion: switchyard.dev/v1alpha2
 kind: Deployment
 metadata: {{ name: demo }}
 spec:
