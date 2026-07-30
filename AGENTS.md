@@ -5,9 +5,7 @@ do note edit docs/vision/*.md as they are the original source of truth and we sh
 ## Working model
 
 - Do not create or delegate work to subagents. Work directly in the current agent.
-- Treat `DESIGN.md` as the authoritative architecture and `IMPLEMENTATION_PLAN.md` as
-  the phased execution checklist. Mark work complete only after implementation,
-  verification, and relevant documentation are finished.
+- Treat `DESIGN.md` as the authoritative architecture and make updates to it to get closer tho the vision.
 - Maintain `PROGRESS.md` with the current implementation and verification status, and
   maintain `AGENTMISTAKES.md` with mistakes, corrections, and lessons that should guide
   future work. Update both files as relevant while completing each phase.
