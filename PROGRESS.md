@@ -1,6 +1,6 @@
 # Switchyard implementation progress
 
-Updated: 2026-07-25
+Updated: 2026-07-30
 
 ## Release status
 
@@ -9,6 +9,22 @@ Updated: 2026-07-25
 - Team release (Phase 7): in progress.
 - Web UI plan (`docs/web-ui-plan.md`): complete. Parts 1 through 13, including follow-up
   Parts 11a–11c, and Part 13's security review with its two fixes.
+
+## 2026-07-30 consolidated unfinished-work checklist
+
+- Added `docs/unfinished-work.md` as the consolidated index of unfinished work while
+  retaining `IMPLEMENTATION_PLAN.md` as the authoritative release checklist.
+- Separated team-release blockers from missing end-to-end acceptance, non-blocking
+  engineering follow-ups, deliberately deferred ideas, and explicit supported
+  boundaries. This prevents optional platform expansion from being mistaken for a
+  release blocker.
+- Expanded the seven open security-review findings into individually checkable tasks and
+  linked the existing MVP manual procedures rather than duplicating their instructions.
+- Recorded two newly identified Phase 7 tasks in `IMPLEMENTATION_PLAN.md`: normal
+  default-browser links for running custom domains, separate from managed-profile
+  routing, and a discoverable Node.js 24 pin with an early version check.
+- Reconciliation was documentation-only. Markdown links and checklist formatting were
+  verified; no implementation status was promoted to complete.
 
 ## 2026-07-25 web UI Part 13 — security review and fixes
 
