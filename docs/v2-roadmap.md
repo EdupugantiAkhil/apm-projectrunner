@@ -23,16 +23,44 @@ These were decided before the work started; parts below are written against them
 Because the rename lands last, Parts 1–7 are authored against the current `switchyard`
 names throughout. Part 8 renames them all at once.
 
-## The parts
+## Status at a glance
 
-Each part is one reviewable increment, run by one subagent, committed after review.
+Each part is one reviewable increment: written by one subagent, verified by a second,
+then committed. A part is only ticked once it is committed with verification evidence.
+
+| | Part | Commit |
+| --- | --- | --- |
+| ✅ | 1 — Group membership becomes a list | `bae84bf` |
+| ✅ | 2 — Addresses on the group and on the instance | `5d14720` |
+| ⬜ | 2a — Membership stops being policed by capability | spec in `2eca965` |
+| ⬜ | 3 — Serving a whole group from one address (router) | |
+| ⬜ | 4 — Run actions become a flat `scripts:` map | |
+| ⬜ | 5 — Vocabulary and documentation alignment | |
+| ⬜ | 6 — Daemon-as-service posture | |
+| ⬜ | 7 — Release usability items | |
+| ⬜ | 8 — Rename to APM ProjectRunner (`apmpr`) | |
+
+Baseline after Part 2: 303 Rust tests passing, 48 web tests passing, four known React
+`exhaustive-deps` lint warnings (cleared in Part 7).
+
+## The parts
 
 ---
 
-### Part 1 — Group membership becomes a list
+### Part 1 — Group membership becomes a list ✅
 
 Closes [DEVIATION §1b](../DEVIATION.md#1b-group-membership-is-a-mapping-where-a-list-would-do).
-Vision reference: user_flow step 8.
+Vision reference: user_flow step 8. Landed in `bae84bf`; 292 tests passing.
+
+- [x] `ServiceGroup.providers` map → `instances: Vec<String>`
+- [x] Slot→provider mapping derived from declared capabilities, not restated
+- [x] `extends:` overrides by capability, on the resolved group
+- [x] `instance/service` reference form still resolves inside the list
+- [x] Diagnostics say "group member", not "instance"
+- [x] `apiVersion` bump to `v1alpha2`, loader names `switchyard migrate`
+- [x] `switchyard migrate` with a per-transform seam for later parts
+- [x] In-repo definitions and compat fixtures migrated
+- [ ] ~~Two members providing one capability rejected~~ — reversed by Part 2a
 
 `ServiceGroup.providers: BTreeMap<slot, instanceRef>` becomes `instances: Vec<instanceRef>`.
 The slot→provider mapping is *derived* by the same `provider_for` search that already
@@ -41,50 +69,35 @@ declares a service `provides`ing that capability.
 
 - `provides`/`consumes` already carry everything needed, so the map restates a
   relationship the profiles declare. Deriving it removes the restatement.
-- Two members providing one capability was originally an **authoring error**. That was
-  reversed in Part 2a below; the rule is now a warning with first-listed-wins ordering.
-- `extends:` override is matched **by capability** — a member replaces the inherited
-  member providing the same capability rather than joining it.
-- `instance/service` reference syntax (`ai-main/ingest`) stays available inside the list;
-  it resolves a different ambiguity (one instance, several services providing one
-  capability).
-- Diagnostics referring to a list entry say **"group member"**, not "instance".
-
-Also lands the `apiVersion` bump to `v1alpha2` and the first transform in
-`switchyard migrate`. Subsequent schema parts extend the same transform, so a user
-migrates exactly once.
-
-Touches: `switchyard-planner` (model, `resolve_groups`, `validate_routes`, `provider_for`),
-`switchyard-ops/connections.rs`, `packages/web/src/connectionModel.ts`,
-`switchyard-cli` (new `migrate` command), examples, compat fixtures.
+The slot→provider mapping is derived by the same `provider_for` search run the other
+direction, so the map no longer restates what the profiles already declare. Touched
+`switchyard-planner`, `switchyard-ops/connections.rs`,
+`packages/web/src/connectionModel.ts`, `switchyard-cli`, examples, and compat fixtures.
 
 ---
 
-### Part 2 — Addresses on the group and on the instance (schema and planner)
+### Part 2 — Addresses on the group and on the instance ✅
 
 Closes [DEVIATION §1a](../DEVIATION.md#1a-addresses-on-the-group-and-on-the-instance).
-Vision reference: user_flow step 10.
+Vision reference: user_flow step 10. Landed in `5d14720`; 303 tests passing.
 
 One rule replaces two mechanisms: **anything addressable carries `address:`, declared on
 the thing it names.**
 
-- `address: <domain>` on a group in `groups:` — one name reaches the whole combination.
-- `address: <domain>` on an instance in `spec.instances` — optional, absent by default.
-- `spec.uiRoutes` is **removed**. Its planner invariants carry over unchanged as rules
-  about group addresses.
-- The domain folds inline. Today an address means editing two places that must agree
-  (`uiRoutes` plus a `custom_domain` destination on a `hostRouter` listener); after this
-  part the planner **generates** the `custom_domain` destinations and `browserRoutes`
-  from `address:`. Hand-authored `hostRouter` listeners remain valid for everything else.
-- `DESIGN.md`'s unimplemented `ingress:` block is dropped rather than built. An
-  `address:` on the instance cannot outlive its instance, so the dangling-reference class
-  disappears with it.
-- The one-backend-one-group invariant survives verbatim: two groups may not route through
-  one backend instance to different downstream groups; planning fails and tells you to
-  duplicate the backend.
-- **One address per object** for now (`address:` singular, not `addresses: [a, b]`).
-  Plural is additive later if it earns its keep; starting singular keeps resolution
-  unambiguous.
+- [x] `address:` on a group — one name reaches the whole combination
+- [x] `address:` on an instance — optional, absent by default
+- [x] `spec.uiRoutes` and `UiRoute` removed
+- [x] Planner generates `custom_domain` destinations and `browserRoutes` from `address:`
+- [x] Authored `hostRouter` content still merges; conflicts fail rather than overwrite
+- [x] One-backend-one-group invariant survives, with paths rewritten to the address field
+- [x] `DESIGN.md`'s unimplemented `ingress:` block dropped rather than built
+- [x] `uiRoutes` → address migration, all-or-nothing and idempotent
+- [x] **One address per object** (singular, not `addresses: [a, b]`)
+
+Two defects were caught in independent review: the `routing-matrix` migration had broken
+the group switch the fixture exists to prove, with an ops test changed to expect the
+failure; and the migration could delete an unrelated authored browser route sharing a
+migrated Origin.
 
 ---
 
@@ -103,26 +116,24 @@ was stated more broadly than the reason given for it.
 A group is a shared address space, and the only thing that matters is whether two members
 would answer at the same address:
 
-- **No rejection on capability.** Two members may provide the same capability.
-- **A warning, not an error**, when a consumer's slot has more than one candidate in the
-  group, naming the candidates and which one was chosen.
-- **First listed wins.** Order in `instances:` is meaningful when — and only when — there
-  is a collision. Reorder to change the winner.
-- A real listener conflict (one instance declaring two slots at the same `127.0.0.1:5432`)
-  is unaffected and still fails planning. That is a different thing.
+- [ ] Remove the rejection and `DiagnosticCode::DuplicateProvider`
+- [ ] Warn when a **consumer's slot** has several candidates, naming them and the winner
+- [ ] **First listed wins** — `instances:` order matters only where there is a collision
+- [ ] Two UIs in one group produce **no warning**; nothing consumes `ui`
+- [ ] A warning channel through the planner out to CLI, daemon API, and web UI
+- [ ] Deterministic ordering rule after `extends:`
+- [ ] A genuine listener conflict still fails planning — a different thing entirely
+- [ ] Fix the crossed `jas-base` group addresses (`ai-main` answers to `ui-b...`)
+- [ ] Remove Part 1's tests asserting the rejection
+- [ ] Decide whether `routing-matrix` should now use a group address
 
 `docs/vision/user_flow.md` step 8 was edited for this — the "One provider per capability"
 section is now "Address collisions, and who wins". This is the one deliberate exception to
 treating the vision as immutable, made with the owner's explicit approval, because the
 rule was an oversight rather than an intent.
 
-Validation currently returns errors only; this needs a warning channel through the planner
-and out to every client. `BundleWarning` in `switchyard-planner/src/bundle.rs` is the
-existing shape to follow.
-
-Also fixes the `jas-base` group addresses, which the Part 2 migration left crossed and
-misnamed: group `ai-main` answers to `ui-b.jas-base.localhost`. A group address names a
-combination, so it should read as one.
+Validation currently returns errors only, so the warning channel is the design work.
+`BundleWarning` in `switchyard-planner/src/bundle.rs` is the existing shape to follow.
 
 ---
 
@@ -133,17 +144,14 @@ The substantial piece of step 10, and the reason Part 2 stops at the schema. Tod
 Reaching **any** member by one address means the host router resolving a member **per
 request**.
 
-- Resolution by subdomain (`backend.feature-test.comparison.localhost`), by path, or by
-  requested slot.
-- The bare group name needs a default, because opening it in a browser sends one request.
-  It resolves to the member providing the **UI capability**. With Part 2a a group may
-  legitimately hold several UI members, so the default follows the same rule as any other
-  collision: warn, and take the first listed. A group with no UI member is still an error
-  listing what it could have meant rather than a guess.
-- Must be checked against browser identity: an `Origin` of
-  `feature-test.comparison.localhost` is what currently identifies which combination a
-  request belongs to, so a domain serving several members must still identify the group
-  unambiguously.
+- [ ] Resolve a member per request: by subdomain
+      (`backend.feature-test.comparison.localhost`), by path, or by requested slot
+- [ ] Bare group name resolves to the **UI-capability** member. Part 2a allows several,
+      so it follows the same collision rule: warn, take the first listed
+- [ ] No UI member is still an error listing what it could have meant
+- [ ] Checked against browser identity — an `Origin` serving several members must still
+      identify the group unambiguously
+- [ ] A fixture that actually exercises a group address end to end
 
 Touches `router-pingora` and `router-config`, not only the schema.
 
@@ -163,12 +171,15 @@ scripts:
   smoke: ./scripts/smoke.sh --target feature-test
 ```
 
-The convenience is the **environment**, not the schema: the runner puts Switchyard's own
-binary directory on `PATH` and exports `$SWITCHYARD_PROJECT` and `$SWITCHYARD_BUNDLE`.
-
-Removes `StructuredCommand`, `OperationSpec::Structured`, `from_script`, and most of
-`validate()`. Browser authoring is **dropped, not widened** — the browser lists and runs;
-authoring is one line in one file.
+- [ ] Flat name→command map replaces the seven-field record
+- [ ] Runner puts the binary directory on `PATH`, exports `$SWITCHYARD_PROJECT` and
+      `$SWITCHYARD_BUNDLE` — the convenience is the environment, not the schema
+- [ ] Remove `StructuredCommand`, `OperationSpec::Structured`, `from_script`, most of
+      `validate()`
+- [ ] Browser authoring **dropped, not widened** — the browser lists and runs
+- [ ] The daemon's `run_action_backend_unsupported` rejection of shell actions must start
+      working; after this part every action is a shell action
+- [ ] Migration transform for existing `run-scripts.yaml`
 
 **On attribution** (the open question in DEVIATION §6): keep it, and recover it from the
 run rather than from the schema. The deployment target is already selected in the UI at
@@ -176,21 +187,17 @@ run time; the runner records that selection, so the operation stays tagged in th
 and still counts against the heavy-operation limit. That is the whole win the structured
 form was buying, and it survives without a second authoring format.
 
-Note the daemon currently *rejects* shell run actions at the operation backend
-(`run_action_backend_unsupported`). That path has to start working, since after this part
-every action is a shell action.
-
 ---
 
 ### Part 5 — Vocabulary and documentation alignment
 
 `DESIGN.md` is the authoritative architecture doc and still describes the pre-V2 shapes.
-Bring it to the vision: groups as lists, `address:` on both objects, the `ingress:` block
-removed, `scripts:` as a flat map. Reconcile the user_flow glossary against the terms the
-diagnostics and UI labels actually use, and update `DEVIATION.md` to record which sections
-V2 closed.
 
-`docs/vision/*.md` are not edited.
+- [ ] `DESIGN.md`: groups as lists, `address:` on both objects, `ingress:` gone,
+      `scripts:` as a flat map
+- [ ] Reconcile the user_flow glossary against the terms diagnostics and UI labels use
+- [ ] `DEVIATION.md` records which sections V2 closed
+- [ ] `AGENTS.md` reflects that the vision was edited once, deliberately, in Part 2a
 
 ---
 
@@ -200,9 +207,10 @@ user_flow step 2 states the intended split plainly: the daemon is a service, and
 `switchyard gui` only opens a window onto it. Today `gui` auto-starts the daemon as a
 fallback, and the doc itself calls that "a fallback, not the design".
 
-- Ship a launchd plist and a systemd unit, with a command that installs them.
-- Make `gui` against a stopped daemon an actionable error naming that command, rather
-  than silently starting one.
+- [ ] A launchd plist and a systemd unit
+- [ ] A command that installs them
+- [ ] `gui` against a stopped daemon becomes an actionable error naming that command,
+      rather than silently starting one
 
 ---
 
@@ -211,9 +219,11 @@ fallback, and the doc itself calls that "a fallback, not the design".
 Pulled from [docs/unfinished-work.md](unfinished-work.md) because the vision's flow reads
 wrong without them, not because they are security work:
 
-- Running custom domains in the dashboard become normal clickable links opening in the
-  default browser, kept distinct from the managed-profile fallback.
-- Root `README.md` status refreshed to match reality.
+- [ ] Running custom domains in the dashboard become normal clickable links opening in
+      the default browser
+- [ ] Normal link opening kept distinct from the managed-profile fallback
+- [ ] Root `README.md` status refreshed to match reality
+- [ ] Clear the four React `exhaustive-deps` warnings so web lint is warning-free
 
 ---
 
@@ -222,12 +232,14 @@ wrong without them, not because they are security work:
 Closes [DEVIATION §5](../DEVIATION.md#5-naming). One mechanical sweep over a settled tree,
 reviewed as a pure rename diff with no behaviour mixed in.
 
-`switchyard` → `apmpr` in: crate names and paths, the binary, `.switchyard/` → `.apmpr/`,
-`apiVersion: switchyard.dev/v1alpha2` → `apmpr.dev/v1alpha2`, `SWITCHYARD_*` →
-`APMPR_*`, `X-Switchyard-Route` → `X-Apmpr-Route`, the repo directory, and every doc.
-The product name in prose is "APM ProjectRunner".
+- [ ] Crate names and paths → `apmpr-*`
+- [ ] Binary → `apmpr`
+- [ ] `.switchyard/` → `.apmpr/`, with a migration step folded into `apmpr migrate`
+- [ ] `apiVersion: switchyard.dev/v1alpha2` → `apmpr.dev/v1alpha2`
+- [ ] `SWITCHYARD_*` → `APMPR_*`
+- [ ] `X-Switchyard-Route` → `X-Apmpr-Route`
+- [ ] The repo directory and every doc; product name in prose is "APM ProjectRunner"
 
-The state-directory rename needs its own migration step, folded into `apmpr migrate`.
 
 ---
 
