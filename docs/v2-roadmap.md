@@ -41,9 +41,8 @@ declares a service `provides`ing that capability.
 
 - `provides`/`consumes` already carry everything needed, so the map restates a
   relationship the profiles declare. Deriving it removes the restatement.
-- Two members providing one capability is an **authoring error**, not an ambiguity to
-  resolve. New diagnostic: ``db-main and db-replica both provide `database`; a group may
-  contain one provider per capability``.
+- Two members providing one capability was originally an **authoring error**. That was
+  reversed in Part 2a below; the rule is now a warning with first-listed-wins ordering.
 - `extends:` override is matched **by capability** — a member replaces the inherited
   member providing the same capability rather than joining it.
 - `instance/service` reference syntax (`ai-main/ingest`) stays available inside the list;
@@ -89,6 +88,44 @@ the thing it names.**
 
 ---
 
+### Part 2a — Group membership stops being policed by capability
+
+Reverses the rejection Part 1 built. Decided after Part 2, when the `routing-matrix`
+migration showed the rule blocking an ordinary topology: two UI branches sharing one
+backend and database could not be members of one group, because both provide `ui`.
+
+The vision's justification for the rule only ever argued about a **consumer's slot** —
+"a second database in the group would have nothing pointed at it". That reasoning holds
+for a consumed capability and comes apart for an unconsumed one. Nothing inside a
+deployment consumes `ui`; the browser reaches it from outside by `Origin`. So the rule
+was stated more broadly than the reason given for it.
+
+A group is a shared address space, and the only thing that matters is whether two members
+would answer at the same address:
+
+- **No rejection on capability.** Two members may provide the same capability.
+- **A warning, not an error**, when a consumer's slot has more than one candidate in the
+  group, naming the candidates and which one was chosen.
+- **First listed wins.** Order in `instances:` is meaningful when — and only when — there
+  is a collision. Reorder to change the winner.
+- A real listener conflict (one instance declaring two slots at the same `127.0.0.1:5432`)
+  is unaffected and still fails planning. That is a different thing.
+
+`docs/vision/user_flow.md` step 8 was edited for this — the "One provider per capability"
+section is now "Address collisions, and who wins". This is the one deliberate exception to
+treating the vision as immutable, made with the owner's explicit approval, because the
+rule was an oversight rather than an intent.
+
+Validation currently returns errors only; this needs a warning channel through the planner
+and out to every client. `BundleWarning` in `switchyard-planner/src/bundle.rs` is the
+existing shape to follow.
+
+Also fixes the `jas-base` group addresses, which the Part 2 migration left crossed and
+misnamed: group `ai-main` answers to `ui-b.jas-base.localhost`. A group address names a
+combination, so it should read as one.
+
+---
+
 ### Part 3 — Serving a whole group from one address (router)
 
 The substantial piece of step 10, and the reason Part 2 stops at the schema. Today a
@@ -99,8 +136,10 @@ request**.
 - Resolution by subdomain (`backend.feature-test.comparison.localhost`), by path, or by
   requested slot.
 - The bare group name needs a default, because opening it in a browser sends one request.
-  It resolves to the member providing the **UI capability**; no UI member, or more than
-  one, is an error listing what it could have meant rather than a guess.
+  It resolves to the member providing the **UI capability**. With Part 2a a group may
+  legitimately hold several UI members, so the default follows the same rule as any other
+  collision: warn, and take the first listed. A group with no UI member is still an error
+  listing what it could have meant rather than a guess.
 - Must be checked against browser identity: an `Origin` of
   `feature-test.comparison.localhost` is what currently identifies which combination a
   request belongs to, so a domain serving several members must still identify the group

@@ -319,32 +319,39 @@ not restate a relationship the profiles already declare.
 
 `extends:` inherits a group and overrides only what differs. Above, `ai-feature` is `ai-main`
 with a different analysis instance. The override is matched by capability: `ai-feature-analysis`
-provides the same capability as `ai-main-analysis`, so it replaces it rather than joining it —
-which is the same one-provider-per-capability rule below, applied to inheritance.
+provides the same capability as `ai-main-analysis`, so it replaces it rather than joining it.
 
 `instances:` is always a list. There is no second form, because there is nothing a mapping
 would resolve — see below.
 
-### One provider per capability
+### Address collisions, and who wins
 
-A group may not contain two instances providing the same capability. Two databases in one
-group is rejected at validation:
+A group is a shared address space. Membership is not policed by capability: nothing stops two
+members providing the same one, because a capability name is a label for wiring a consumer's
+slot to a provider, not a category that decides who may belong.
+
+What matters is whether two members would answer at the same address. When a consumer's slot
+has more than one candidate in the group, Switchyard **warns and routes to the first candidate
+in the list**:
 
 ```text
-db-main and db-replica both provide `database`; a group may contain one
-provider per capability
+warning: `database` slot on backend-1 has two candidates in group `dual-write`:
+db-main and db-replica; routing to db-main, the first listed
 ```
 
-That is not a limitation working around ambiguity — it follows from how consumers address
-their dependencies. A slot is the fixed address the unchanged application already calls, and
-an instance cannot declare two slots at the same address; `127.0.0.1:5432` twice is a listener
-conflict and fails planning. So a consumer with one `database` slot makes exactly one kind of
-database call, and there is only ever one provider to route it to. A second database in the
-group would have nothing pointed at it.
+Order in `instances:` is therefore meaningful when — and only when — there is a collision.
+Nothing is rejected, because the topology still runs and the warning tells you what was
+chosen. Reorder the list to change the winner, or remove the member you did not mean to
+include.
+
+This matters most for capabilities nothing inside the deployment consumes. Two UIs in one
+group have no consumer slot pointing at either, so they never collide; each is reachable by
+its own address (step 10). Constraining that would rule out an ordinary comparison — the same
+backend and database, two UI branches — for no benefit.
 
 **An app that genuinely talks to two databases already calls two addresses** — `:5432` and
 `:5433`, or two hostnames — so its profile declares two slots with distinct names, and each is
-filled by its own provider. That works with a plain list and needs no disambiguation:
+filled by its own provider. That needs no disambiguation and produces no warning:
 
 ```yaml
 groups:
@@ -355,6 +362,10 @@ groups:
 Switchyard cannot route a call the application never makes. If your code only ever opens
 `localhost:5432`, it has one database channel, and no amount of configuration creates a second
 one.
+
+A real address conflict — one instance declaring two slots at the same `127.0.0.1:5432` — is
+still a listener conflict and still fails planning. That is a different thing from two members
+of a group offering the same capability, and it remains an error.
 
 Groups are authored in the deployment definition. The Web UI resolves and displays them — the
 patch bay shows each group with its members — and both connection views only offer you groups
