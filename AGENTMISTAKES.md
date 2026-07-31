@@ -1,5 +1,46 @@
 # Agent mistakes and lessons
 
+## 2026-07-31 — A "vocabulary" audit must check schema surfaces, not just branching
+
+- Part 2b removed role inference from behavior, so the Part 4 audit could easily have
+  concluded the tree was clean: nothing branches on `"ui"`, `"backend"`, or `"database"`.
+  It was not clean. The managed-profile artifact and the `open` command still *named* a
+  generic instance with a field spelled `ui`, so authoring a managed profile for a non-UI
+  instance meant filling in a field that claimed otherwise.
+- Lesson: role inference has two forms. Behavior that reads a name is the dangerous one;
+  a field or command argument named after a role is the one that survives the first
+  cleanup, because removing the branch leaves the name behind and nothing fails.
+
+## 2026-07-31 — A compatibility shim needs a test at the boundary it protects, not at the helper
+
+- Part 4 renamed a `ui` field to `instance` in two versioned contracts and preserved both
+  with serde: `#[serde(rename = "ui")]` on the artifact, and keeping `ui` as an accepted
+  request alias. The test written for it constructed the struct directly and checked the
+  resolution helper. Review showed that deleting either serde attribute left every test
+  passing — while silently changing the on-disk artifact and rejecting existing clients.
+- Lesson: when the thing being preserved is a *serialized form*, the test has to cross
+  the serializer. Assert the actual JSON field names, and parse a realistic prior-version
+  document. A test that builds the Rust value by hand never exercises the shim at all.
+
+## 2026-07-31 — Removing a schema field can leave a live read that silently returns nothing
+
+- The TUI startup-profile inspector rendered "Capabilities" and "Consumed slots" from
+  `service.get("provides")` and `service.get("consumes")`. Part 2b deleted both keys, but
+  the reads are untyped `serde_json` lookups, so they kept compiling and printed `none`
+  for every service. No test failed; the panel just quietly stopped meaning anything.
+- Lesson: after removing a schema field, grep for untyped accessors by string key, not
+  just for the Rust type. A typed field removal fails the build; a `get("name")` does not.
+
+## 2026-07-31 — Check whether a doc drifted past vocabulary into being wrong
+
+- Part 4 was scoped as vocabulary alignment, which suggests word replacement. But
+  `DESIGN.md` documented an overlay `groups:` replacement and a `routes:` slot that the
+  parser rejects outright under `deny_unknown_fields`, and listed a `switchyard group`
+  command that has never existed. Following that document would have produced
+  configurations that fail to parse.
+- Lesson: when a doc is stale, verify its examples against the parser before rewording
+  them. Stale terminology is cosmetic; stale examples are instructions that do not work.
+
 ## 2026-07-31 — Review recommendations must preserve the vision as product truth
 
 - The Part 3 handoff recommended changing the vision sample from `container` to `script` because

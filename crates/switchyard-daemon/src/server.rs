@@ -4162,26 +4162,24 @@ impl OperationInvocation {
     fn instance(&self, kind: CommandKind, project_root: &Path) -> Option<String> {
         let (bundle, candidate, require_managed_profile) = match self {
             Self::Command { request, .. } => match kind {
-                CommandKind::Membership => (
-                    request.bundle.as_path(),
-                    request.instance.as_deref()?,
-                    false,
-                ),
+                CommandKind::Membership => {
+                    (request.bundle.as_path(), request.instance.clone()?, false)
+                }
                 CommandKind::Logs => {
                     let target = request.target.as_deref()?;
                     let instance = target
                         .split_once('/')
                         .map_or(target, |(instance, _)| instance);
-                    (request.bundle.as_path(), instance, false)
+                    (request.bundle.as_path(), instance.to_owned(), false)
                 }
-                CommandKind::Open => (request.bundle.as_path(), request.ui.as_deref()?, true),
+                CommandKind::Open => (request.bundle.as_path(), request.open_instance()?, true),
                 _ => return None,
             },
             Self::RunAction(switchyard_run_actions::OperationSpec::Membership {
                 bundle,
                 instance,
                 ..
-            }) => (bundle.as_path(), instance.as_str(), false),
+            }) => (bundle.as_path(), instance.clone(), false),
             Self::RunAction(
                 switchyard_run_actions::OperationSpec::Structured { .. }
                 | switchyard_run_actions::OperationSpec::Shell(_),
@@ -4193,7 +4191,7 @@ impl OperationInvocation {
             project_root.join(bundle)
         };
         let bundle = switchyard_planner::load_bundle(&bundle).ok()?;
-        if require_managed_profile && !bundle.spec.managed_profiles.contains_key(candidate) {
+        if require_managed_profile && !bundle.spec.managed_profiles.contains_key(&candidate) {
             return None;
         }
         bundle
@@ -4201,7 +4199,7 @@ impl OperationInvocation {
             .instances
             .iter()
             .any(|instance| instance.name == candidate)
-            .then(|| candidate.to_owned())
+            .then_some(candidate)
     }
 }
 

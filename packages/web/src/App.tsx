@@ -150,7 +150,7 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
       if (typed !== selected) { setNotice(`${kind} cancelled: confirmation did not match`); return }
     }
     const bundle = `.switchyard/generated/${selected}/resolved-deployment.yaml`
-    try { observe(await client.command(kind, bundle, { ...(kind === 'cleanup' ? { confirmed: true } : {}), ...(kind === 'logs' && target ? { target } : {}), ...(kind === 'open' && target ? { ui: target } : {}) })); setView('operations') } catch (value) { report(value) }
+    try { observe(await client.command(kind, bundle, { ...(kind === 'cleanup' ? { confirmed: true } : {}), ...(kind === 'logs' && target ? { target } : {}), ...(kind === 'open' && target ? { instance: target } : {}) })); setView('operations') } catch (value) { report(value) }
   }
   const navigateFromHome = (destination: HomeDestination) => { if (destination === 'builder') setBuilderDeployment(''); setView(destination); if (destination === 'operations') void loadOperations(); if (destination === 'profiles') void loadProfiles() }
   const navKeys = (event: KeyboardEvent<HTMLElement>) => {

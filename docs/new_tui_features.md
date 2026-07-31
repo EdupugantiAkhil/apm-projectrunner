@@ -3,6 +3,11 @@ milestone in `IMPLEMENTATION_PLAN.md` supersedes this document's TUI-primary and
 GUI-secondary client-priority decision; the feature contracts and completed checklist
 remain useful implementation history.
 
+This document predates V2 and describes capabilities, consumed slots, bindings, and
+direct routes as authored schema. They were removed: group membership is the only
+authored connection model, and routing is port-for-port over an ordered member list. Read
+the topology vocabulary below as history. `DESIGN.md` and `docs/vision` are current.
+
 it should have the following views
 
 1. Sources (git repo)

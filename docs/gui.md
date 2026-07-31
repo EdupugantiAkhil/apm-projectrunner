@@ -87,10 +87,10 @@ then uses `StrictHostKeyChecking=yes` with the isolated known-hosts file. It nev
 
 The shell provides keyboard-accessible Deployments, Sources, Devices, Operations, and Block
 library views, plus a collapsible event/log drawer. Deployment detail contains a live
-patch bay with UI-consumer, backend/provider, and provider-group lanes. Cables carry a
-direction arrow and a capability label as well as their capability color. The route
-matrix toggle exposes the identical topology as a table; viewports below 1280 pixels
-select that table automatically.
+patch bay with an instance lane and a group lane; instances are not sorted into typed
+lanes, because the schema has no service type to sort them by. The route matrix toggle
+exposes the identical topology as a table; viewports below 1280 pixels select that table
+automatically.
 
 Select an instance to move it to another group. Selection prepares a modal preview of
 the old and new complete ordered memberships and the route snapshots being superseded.

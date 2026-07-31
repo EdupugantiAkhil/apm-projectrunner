@@ -9,6 +9,11 @@ SWITCHYARD_ROUTER_TOKEN="$(openssl rand -hex 32)" \
   cargo run --package switchyard-router -- sidecar router.json /tmp/switchyard-router.sock
 ```
 
+This router configuration is a generated artifact, not authored topology. The planner
+derives it from addresses, ordered group membership, published services, and HTTP probes;
+the `slot` keys below label listener destinations inside it and are never asked of a
+developer. They are unrelated to the removed authored `provides:`/`consumes:` schema.
+
 The process assembles Pingora HTTP/WebSocket/gRPC listeners and Tokio raw-TCP
 listeners from one immutable route snapshot. HTTP requests pin the snapshot selected at
 request start. TCP reloads apply the configured `close`, `drain`, or `pin` policy to

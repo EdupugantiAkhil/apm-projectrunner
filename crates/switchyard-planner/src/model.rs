@@ -378,7 +378,8 @@ pub struct ServiceGroup {
     pub address: Option<String>,
 }
 
-/// Declares a UI which may be opened in an isolated managed browser profile.
+/// Declares an instance which may be opened in an isolated managed browser profile.
+/// Any authored instance may have one; nothing requires it to be a user interface.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedProfile {

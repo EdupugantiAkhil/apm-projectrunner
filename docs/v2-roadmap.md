@@ -50,7 +50,7 @@ verification evidence.
 | ✅ | 2d — `bindings:` is deleted; membership is the connection | `6616583` |
 | ✅ | 2e — External instances: things already running outside Switchyard | `d0fcdd0` |
 | ⬜ | 3 — Serving a whole group from one address (router) | |
-| ⬜ | 4 — Vocabulary and documentation alignment | |
+| ✅ | 4 — Vocabulary and documentation alignment | |
 | ⬜ | 5 — Daemon-as-service posture | |
 | ⬜ | 6 — Release usability items | |
 | ⬜ | 7 — Rename to APM ProjectRunner (`apmpr`) | |
@@ -520,18 +520,48 @@ host-gateway route. No new authored router schema is required.
 
 ---
 
-### Part 4 — Vocabulary and documentation alignment
+### Part 4 — Vocabulary and documentation alignment ✅
 
 `DESIGN.md` is the authoritative architecture doc and still describes the pre-V2 shapes.
 
-- [ ] `DESIGN.md`: groups as lists, `address:` on both objects, `ingress:` gone,
+- [x] `DESIGN.md`: groups as lists, `address:` on both objects, `ingress:` gone,
       capabilities/slots/bindings/routes/extends gone
-- [ ] Audit schema, planner, operations, daemon, CLI, TUI, Web UI, examples, and current
+- [x] Audit schema, planner, operations, daemon, CLI, TUI, Web UI, examples, and current
       docs for inferred `part`, `segment`, UI, backend, or database roles. Replace behavior
       with generic instance/service/address/membership/listener rules; retain role words
       only in clearly labeled examples
-- [ ] Reconcile the user_flow glossary against the terms diagnostics and UI labels use
-- [ ] Current documentation distinguishes shipped behavior from remaining V2 work
+- [x] Reconcile the user_flow glossary against the terms diagnostics and UI labels use
+- [x] Current documentation distinguishes shipped behavior from remaining V2 work
+
+The audit found no behavior branching on a role name — Part 2b had already removed that —
+but it did find role names in **schema and command surfaces**, which is the same defect one
+layer up. The managed-profile artifact and the `open` command both keyed a generic instance
+by a field spelled `ui`, so a non-UI instance with a managed profile was authored through a
+field claiming otherwise. Both are now `instance`. Two versioned contracts constrained how:
+the artifact keeps serializing `ui` under `switchyard.dev/managed-profile/v1alpha1`, and
+`/api/v1` may not remove a request field, so `ui` remains a deprecated accepted alias with
+`instance` taking precedence. A mutation-checked test pins that alias.
+
+The TUI's startup-profile inspector was reading `provides` and `consumes` off each service
+to render "Capabilities" and "Consumed slots". Those keys no longer exist, so both lines
+had been printing `none` unconditionally since Part 2b — stale labels over dead reads. They
+are replaced by published ports, which the schema does have.
+
+`DESIGN.md` had also drifted past vocabulary into being wrong: it documented an overlay
+`groups:` replacement and a `routes:` slot that the parser rejects under
+`deny_unknown_fields`, listed a `switchyard group` command that does not exist while
+omitting `move`, `migrate`, and `routes`, and never mentioned instance `address:` or
+`disabled:` at all. Those are corrected against the implementation rather than restated.
+
+The word *slot* survives in one place by design: the generated router configuration, where
+it labels a listener destination. `DESIGN.md` and `docs/router.md` now say so explicitly,
+because a reader who has just been told slots were removed will otherwise read the router
+contract as stale.
+
+Docs that predate V2 and describe the old schema as current — `new_tui_features.md`,
+`web-ui-plan.md`, `IMPLEMENTATION_PLAN.md` — get status banners rather than rewrites.
+Their ticked entries are an accurate record of work as it was done; editing them to match
+today's schema would falsify the log.
 
 ---
 

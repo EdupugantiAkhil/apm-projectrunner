@@ -14,6 +14,11 @@ dropped here rather than reproduced. See "Deliberate divergences" below.
 committed separately per `CLAUDE.md`. Per-part detail is in `PROGRESS.md`; that file, not
 the checkboxes here, is the authoritative record.
 
+This plan predates V2 and describes shipped work using the then-current schema:
+capabilities, consumed slots, and bindings. Those were removed — group membership is the
+only authored connection model — and the surfaces described here were migrated to
+membership editing in V2 Part 2d. Read the topology vocabulary as history.
+
 One item is deliberately not a checkbox: **Part 9's shell-authoring item** was never in
 scope, so it is recorded there as "Not built" rather than as an unticked box, which would
 imply unfinished work. See "Not in scope".

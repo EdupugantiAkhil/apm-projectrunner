@@ -186,15 +186,18 @@ switchyard source deregister feature-api
 switchyard source deregister product
 ```
 
-These commands use the authenticated daemon when it is running and the same synchronous
-state/source libraries as a one-shot fallback otherwise. Git absence and plain paths
-degrade to explicit unknown inspection fields; they do not block use of a plain-path
-deployment. Generated manifests and `switchyard status` append the source path,
+These commands manage the project-level registered-source catalog used for discovery and
+guided authoring. A deployment's own `sources:` are separate and are always
+`{ repository, ref, path }` worktrees; there is no plain-path source kind. They use the
+authenticated daemon when it is running and the same synchronous state/source libraries
+as a one-shot fallback otherwise. Git absence degrades to explicit unknown inspection
+fields. Generated manifests and `switchyard status` append the source path,
 repository, requested ref, commit, and dirty flag captured for each instance at plan
 time. Live commit and dirty observations are never persisted as registry truth.
 
-Registered SSH devices can host provider-only container instances. Set an instance's
-`device` to the registered name and publish every provided capability port explicitly.
+Registered SSH devices can host container instances that others reach but which do not
+themselves originate routed calls. Set an instance's `device` to the registered name and
+publish every port other members must reach explicitly.
 Planning emits `compose.<device>.yaml`; lifecycle and log commands use Docker's SSH
 transport with batch authentication. `switchyard status` includes each resource's
 device and reports an unreachable remote explicitly while retaining its last observed

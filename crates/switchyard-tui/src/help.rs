@@ -37,7 +37,7 @@ pub(crate) const TEXT: &str = r#"# Switchyard help
 ## Connections tab
 
 - **Enter** — choose a destination group, review the membership move, then apply it atomically.
-- Unbound slots remain **not connected** until you explicitly choose and apply a provider group.
+- An instance that is in no group has its own localhost only, and reaches no other member until you place it in one.
 
 ## Devices tab
 

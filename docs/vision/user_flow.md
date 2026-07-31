@@ -543,7 +543,10 @@ field name differ, both are given — the persisted YAML keeps the internal name
 | **Overlay** | — | A YAML file layered onto the deployment to vary it (`overlays/dev.yaml`) without duplicating the whole definition. |
 | **Service group** | **group** | A named, complete, ordered `instances:` list whose active members share one localhost. A `disabled:` list can temporarily exclude members without changing their priority. |
 | **Connection** | group membership | An instance's membership in a group. There is no separate `bindings:` or `routes:` section. |
-| **Transition** | — | What happens to existing network connections during a switch: **Close** (drop them), **Drain** (let them finish, with a timeout), **Pin** (keep them on the old provider while new ones use the new one). |
+| **Group member** | member | What diagnostics call one entry of a group's `instances:` list — "group member `x` does not exist". Not a separate object; it is an instance seen through the group that lists it. |
+| **External instance** | external member | A group member Switchyard routes to but never starts, declared as `{ name, external, ports }`. Reported as unreachable rather than as a failed start. |
+| **Port collision** | first listed wins | Two active members of one group listening on the same port. The router logs the port, every candidate, and the winner, then routes to the first listed. It is not an error. |
+| **Transition** | — | What happens to existing network connections during a switch: **Close** (drop them), **Drain** (let them finish, with a timeout), **Pin** (keep them on the old member while new ones use the new one). |
 | **Desired vs observed** | authored vs runtime | Desired is what you authored; observed is what is actually running. The UI keeps them in separate views and labels which you are looking at. |
 | **Group address** | `address` on a group | A group's own custom local name. Its bare form resolves when exactly one active member also has an instance address. |
 | **Instance address** | `address` on an instance | A stable custom local name for one instance, with no combination implied. Optional; most instances have none. |

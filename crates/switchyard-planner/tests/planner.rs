@@ -1090,7 +1090,13 @@ fn writes_deterministic_credential_free_managed_profile_metadata() {
     assert_eq!(first.managed_profiles, second.managed_profiles);
     let profile = &first.managed_profiles["consumer-a"];
     assert_eq!(profile.proxy_address.split(':').next(), Some("127.0.0.1"));
-    assert!(!serde_json::to_string(profile).unwrap().contains("token"));
+    let encoded = serde_json::to_value(profile).unwrap();
+    assert!(!encoded.to_string().contains("token"));
+    // `switchyard.dev/managed-profile/v1alpha1` spells the owning instance `ui`. The Rust
+    // field was renamed to `instance`, so this pins the on-disk name that existing
+    // artifacts and readers depend on.
+    assert_eq!(encoded["ui"], serde_json::json!("consumer-a"));
+    assert!(encoded.get("instance").is_none());
     let host_config: router_config::RouterConfig =
         serde_json::from_str(first.host_router_config.as_ref().unwrap()).unwrap();
     let proxy = host_config

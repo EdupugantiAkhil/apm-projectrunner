@@ -51,10 +51,12 @@ switchyard open deployment.yaml ui-1
 The applied host-gateway plan owns a loopback listener and writes:
 
 ```text
-.switchyard/generated/<deployment>/managed-profiles/<ui>.json
+.switchyard/generated/<deployment>/managed-profiles/<instance>.json
 ```
 
-The file identifies its deployment and UI, route, loopback proxy address, and start URL.
+The file identifies its deployment and instance, route, loopback proxy address, and start
+URL. Its instance field is spelled `ui` on disk, which is historical: any authored
+instance may have a managed profile, and nothing requires it to be a user interface.
 It contains no proxy credential or other secret. The host gateway creates a separate
 owner-only credential under `.switchyard/run/<deployment>/managed-profiles/`.
 `switchyard open` validates those
@@ -62,7 +64,7 @@ ownership fields, refuses non-loopback proxy addresses, verifies that the listen
 running, and then launches Chromium with a deployment-scoped directory:
 
 ```text
-.switchyard/profiles/<deployment>/<ui>/
+.switchyard/profiles/<deployment>/<instance>/
 ```
 
 The browser receives both `--proxy-server=http://127.0.0.1:<port>` and
@@ -89,7 +91,7 @@ Close every window using the profile before removing it. Profiles are disposable
 can be deleted explicitly:
 
 ```sh
-rm -rf .switchyard/profiles/<deployment>/<ui>
+rm -rf .switchyard/profiles/<deployment>/<instance>
 ```
 
 Deleting a managed browser profile does not delete Docker volumes or source worktrees.

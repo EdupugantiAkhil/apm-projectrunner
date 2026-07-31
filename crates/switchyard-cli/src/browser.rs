@@ -66,7 +66,11 @@ impl From<io::Error> for BrowserError {
 pub struct ManagedProfile {
     pub api_version: String,
     pub deployment: String,
-    pub ui: String,
+    /// Authored instance owning this profile. The persisted field is spelled `ui` in
+    /// `switchyard.dev/managed-profile/v1alpha1`; the name is historical and carries no
+    /// role meaning.
+    #[serde(rename = "ui")]
+    pub instance: String,
     pub route: String,
     pub proxy_address: SocketAddr,
     pub start_url: String,
@@ -76,9 +80,9 @@ pub fn load_managed_profile(
     workspace_root: &Path,
     artifact_dir: &Path,
     expected_deployment: &str,
-    ui: &str,
+    instance: &str,
 ) -> Result<ManagedProfile, BrowserError> {
-    validate_identifier(ui)?;
+    validate_identifier(instance)?;
     let canonical_workspace = fs::canonicalize(workspace_root)?;
     let generated_base = fs::canonicalize(workspace_root.join(".switchyard/generated"))?;
     require_contained(
@@ -98,7 +102,7 @@ pub fn load_managed_profile(
         &profiles_root,
         "managed profile directory escapes the deployment artifacts",
     )?;
-    let metadata_path = profiles_root.join(format!("{ui}.json"));
+    let metadata_path = profiles_root.join(format!("{instance}.json"));
     let file_type = fs::symlink_metadata(&metadata_path)?.file_type();
     if !file_type.is_file() || file_type.is_symlink() {
         return Err(BrowserError::InvalidMetadata(
@@ -113,7 +117,7 @@ pub fn load_managed_profile(
     )?;
     let metadata: ManagedProfile = serde_json::from_slice(&fs::read(&canonical_metadata)?)
         .map_err(|error| BrowserError::InvalidMetadata(error.to_string()))?;
-    validate_profile(metadata, expected_deployment, ui)
+    validate_profile(metadata, expected_deployment, instance)
 }
 
 fn require_contained(root: &Path, candidate: &Path, message: &str) -> Result<(), BrowserError> {
@@ -127,19 +131,19 @@ fn require_contained(root: &Path, candidate: &Path, message: &str) -> Result<(),
 fn validate_profile(
     metadata: ManagedProfile,
     expected_deployment: &str,
-    ui: &str,
+    instance: &str,
 ) -> Result<ManagedProfile, BrowserError> {
     validate_identifier(&metadata.deployment)?;
-    validate_identifier(&metadata.ui)?;
+    validate_identifier(&metadata.instance)?;
     validate_identifier(&metadata.route)?;
     if metadata.api_version != API_VERSION {
         return Err(BrowserError::InvalidMetadata(format!(
             "expected apiVersion {API_VERSION}"
         )));
     }
-    if metadata.deployment != expected_deployment || metadata.ui != ui {
+    if metadata.deployment != expected_deployment || metadata.instance != instance {
         return Err(BrowserError::InvalidMetadata(
-            "deployment or UI ownership does not match the requested profile".into(),
+            "deployment or instance ownership does not match the requested profile".into(),
         ));
     }
     if metadata.route.is_empty() {
@@ -174,7 +178,7 @@ fn validate_identifier(value: &str) -> Result<(), BrowserError> {
         Ok(())
     } else {
         Err(BrowserError::InvalidMetadata(format!(
-            "UI `{value}` is not a safe deployment identifier"
+            "`{value}` is not a safe deployment identifier"
         )))
     }
 }
@@ -195,7 +199,7 @@ pub fn open_managed_profile(
     profile: &ManagedProfile,
 ) -> Result<PathBuf, BrowserError> {
     validate_identifier(&profile.deployment)?;
-    validate_identifier(&profile.ui)?;
+    validate_identifier(&profile.instance)?;
     if TcpStream::connect_timeout(&profile.proxy_address, Duration::from_millis(500)).is_err() {
         return Err(BrowserError::ProxyUnavailable(profile.proxy_address));
     }
@@ -231,7 +235,7 @@ fn ensure_profile_directory(
         &current,
         "profile root escapes the workspace",
     )?;
-    for component in ["profiles", &profile.deployment, &profile.ui] {
+    for component in ["profiles", &profile.deployment, &profile.instance] {
         let next = current.join(component);
         match fs::symlink_metadata(&next) {
             Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
@@ -286,7 +290,7 @@ fn load_proxy_credential(
         &profiles_root,
         "managed credential directory escapes deployment runtime state",
     )?;
-    let credential_path = profiles_root.join(format!("{}.credential", profile.ui));
+    let credential_path = profiles_root.join(format!("{}.credential", profile.instance));
     let metadata = fs::symlink_metadata(&credential_path)?;
     if !metadata.file_type().is_file()
         || metadata.file_type().is_symlink()
@@ -502,11 +506,24 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
 
+    #[test]
+    fn existing_v1_metadata_spelling_the_instance_ui_still_parses() {
+        // `ManagedProfile` is `deny_unknown_fields`, so renaming the Rust field without
+        // keeping the serialized `ui` spelling would reject every artifact already on disk.
+        let parsed: ManagedProfile = serde_json::from_str(
+            r#"{"apiVersion":"switchyard.dev/managed-profile/v1alpha1","deployment":"comparison","ui":"backend-1","route":"backend-1","proxyAddress":"127.0.0.1:24001","startUrl":"http://backend-1.localhost/"}"#,
+        )
+        .expect("a v1 managed-profile artifact must still parse");
+        assert_eq!(parsed.instance, "backend-1");
+        validate_profile(parsed, "comparison", "backend-1")
+            .expect("ownership validation must accept the artifact's own instance");
+    }
+
     fn profile() -> ManagedProfile {
         ManagedProfile {
             api_version: API_VERSION.into(),
             deployment: "comparison".into(),
-            ui: "ui-1".into(),
+            instance: "ui-1".into(),
             route: "ui-1".into(),
             proxy_address: "127.0.0.1:24101".parse().unwrap(),
             start_url: "http://ui-1.comparison.localhost/".into(),

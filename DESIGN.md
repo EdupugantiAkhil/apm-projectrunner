@@ -1,8 +1,11 @@
 # Switchyard: composable development deployments
 
-Status: proposed design
+Status: authoritative implementation architecture. Where this document and
+[`docs/vision`](docs/vision) differ, the vision controls the intended product and
+[`docs/v2-roadmap.md`](docs/v2-roadmap.md) records the work to close the gap.
 
-Working name: **Switchyard**
+Working name: **Switchyard**. The intended product name is **APM ProjectRunner**
+(`apmpr`); V2 Part 7 renames the tree in one mechanical sweep.
 
 Audience: developers testing combinations of services from monorepo worktrees and
 independent Git repositories.
@@ -89,9 +92,11 @@ RouteAdapter      http | tcp | environment | rendered-config | future plugin
 ProbeAdapter      http | tcp | command | log-pattern | process | future plugin
 ```
 
-Adapters publish JSON Schema for configuration and capabilities. The CLI validates that
-schema, and the GUI renders controls from it. Adding an adapter must not require a custom
-GUI screen for basic operation.
+Adapters publish JSON Schema for their configuration, plus a declaration of which SDK
+operations they implement. The CLI validates that schema, and the GUI renders controls
+from it. Adding an adapter must not require a custom GUI screen for basic operation.
+These adapter declarations describe an implementation's own features; they are not the
+removed authored `provides:`/`consumes:` topology and take no part in routing.
 
 ### Delivery staging
 
@@ -553,8 +558,7 @@ services:
       lifecycle: task
       command: ["./initialize-jas-tenant.sh"]
     dependsOn:
-      databases: ready
-      "${routes.java}": ready
+      databases: healthy
 ```
 
 The first implementation may wrap the legacy script for a single instance, with a clear
@@ -600,6 +604,7 @@ instances:
     block: python-suite
     source: experimental-python
     device: local
+    address: python-feature.comparison.localhost
     parameters:
       LOG_LEVEL: debug
 
@@ -608,6 +613,18 @@ instances:
     ports: [9200, 9300]
     probe: { type: tcp, port: 9200 }
 ```
+
+#### Addresses
+
+One rule covers both addressable objects: **anything addressable carries `address:`,
+declared on the thing it names.** A group's address names the whole combination; an
+instance's address names that one instance. Both are optional, both are singular, and
+there is no separate `ingress:` or `uiRoutes:` section holding a reference to something
+that can be deleted out from under it.
+
+An instance `address:` is not a role marker. The planner resolves it from that instance's
+own browser-reachable service, and an instance with no address is simply not reachable by
+name, which is the default.
 
 Every expanded service name is namespaced:
 
@@ -627,11 +644,17 @@ be ambiguous. Each group states its complete membership.
 groups:
   feature-test:
     address: feature-test.comparison.localhost
-    instances: [ui-1, backend-1, db-feature-test]
+    instances: [ui-1, backend-1, backend-canary, db-feature-test]
+    disabled: [backend-canary]
   regression:
     address: regression.comparison.localhost
     instances: [ui-2, backend-2, db-regression]
 ```
+
+`disabled:` names members of that same group which stay running and keep their position
+in `instances:` but do not participate in that group's routing, address resolution, or
+collision warnings. Removing a name restores it at its authored priority without a
+restart. It is a per-group exclusion, not an instance-level stop.
 
 An outbound IPv4 or IPv6 loopback TCP connection is intercepted in the sender's namespace.
 The router preserves the destination port and tries active group members on that same port
@@ -719,8 +742,10 @@ spec:
 ### Overlay
 
 An overlay creates a product variation without copying its block or deployment
-definition. It may inject environment values and files, override declared parameters,
-and replace group membership.
+definition. It may inject environment values and files and override declared parameters.
+Overlays do not author topology: group membership, addresses, and external instances are
+stated once in the deployment. This keeps the connection model single-sourced, matching
+the removal of `bindings:` and `routes:` from the deployment schema.
 
 ```yaml
 apiVersion: switchyard.dev/v1alpha1
@@ -753,9 +778,8 @@ spec:
       mode: "0644"
   parameters:
     migrationPolicy: isolated-database
-  groups:
-    feature:
-      instances: [ui-feature, backend-feature, mongodb-main]
+  variables:
+    enableNewSearch: "true"
 ```
 
 Overlay selectors may target deployment labels, block instances, or expanded components.
@@ -775,9 +799,8 @@ adapter defaults
 ```
 
 Maps merge by key. `unset` removes an inherited environment key. File targets must be
-unique after resolution unless a later overlay explicitly declares `replace: true`.
-Group `instances:` lists are replace-only; lists do not merge implicitly unless their
-schema explicitly declares append or keyed semantics.
+unique after resolution unless a later overlay explicitly declares `replace: true`. Lists
+do not merge implicitly unless their schema explicitly declares append or keyed semantics.
 
 Switchyard must render and display the fully resolved deployment and an origin trace for
 every value:
@@ -1040,6 +1063,13 @@ semantics:
 3. **Forward proxy** gives a managed browser profile an explicit routing identity when
    neither a request header nor `Origin` is sufficient.
 
+The router's own configuration contract (`switchyard.dev/router/v1alpha1`) still names
+listener destinations with a `slot` key. That is an identifier inside a generated
+artifact, not authored topology: the planner derives it, and no deployment schema, client
+form, or diagnostic asks a developer for one. It survives the removal of authored
+capabilities and slots because it labels a listener destination rather than declaring
+what an instance provides or consumes.
+
 Route tables are validated as complete immutable snapshots and swapped atomically.
 Updates never expose a partially changed five-service group. HTTP connections can drain
 under the previous snapshot; new connections use the new snapshot. Raw TCP routes have
@@ -1110,7 +1140,7 @@ rejected with a diagnostic response instead of being routed arbitrarily.
 The extension can associate routing rules with tabs and attach the explicit header
 without application changes; see Chrome's
 [declarative request API](https://developer.chrome.com/docs/extensions/reference/api/declarativeNetRequest).
-For an extension-free guaranteed mode, `switchyard open <ui>` launches an isolated
+For an extension-free guaranteed mode, `switchyard open <deployment> <instance>` launches an isolated
 browser profile with `--proxy-server=<listener>` and
 `--proxy-bypass-list=<-loopback>`, as supported by
 [Chromium's proxy configuration](https://chromium.googlesource.com/chromium/src/+/HEAD/net/docs/proxy.md).
@@ -1176,10 +1206,14 @@ Color tokens:
 | Bench | `#E8E7E1` | Main work surface |
 | Panel | `#F7F6F1` | Cards and inspectors |
 | Ink | `#182027` | Primary text and structure |
-| Cobalt | `#2457D6` | Java routes and primary actions |
-| Violet | `#7651C9` | Python suite routes |
-| Copper | `#B25C32` | Database routes and destructive warnings |
+| Cobalt | `#2457D6` | Primary actions and selection |
+| Violet | `#7651C9` | Secondary emphasis |
+| Copper | `#B25C32` | Destructive warnings |
 | Signal | `#15805D` | Healthy and ready states |
+
+Colors carry state and emphasis, never an instance's supposed kind. There is no
+schema-visible service type to key a palette to, so a client that colored members by
+guessed role would be inventing one.
 
 Typography:
 
@@ -1307,43 +1341,45 @@ The full patch bay targets desktop widths of 1280 px and above. At smaller width
 
 ## 6. CLI and API
 
-Proposed CLI:
+The topology-facing CLI commands. `crates/switchyard-cli/src/cli.rs` holds the complete
+surface, including `init`, `bundle export`/`import`, `diagnostics`, `operation cancel`,
+and `worktree remove`:
 
 ```text
 switchyard validate <deployment>
 switchyard plan <deployment>
+switchyard migrate <deployment>
 switchyard overlay validate <overlay>
 switchyard overlay diff <deployment> --with <overlay...>
-switchyard build <deployment> [--instance <name>]
 switchyard up <deployment>
-switchyard status [deployment]
-switchyard group list <deployment>
-switchyard group set-members <deployment> <group> <instance...>
+switchyard status <deployment> [--routes]
+switchyard routes <deployment>
+switchyard move <deployment> <instance> <group> [--transition close|drain|pin]
 switchyard logs <deployment> [instance[/service]]
-switchyard open <instance>
-switchyard down <deployment> [--volumes]
-switchyard source list
-switchyard worktree create <repository> <ref> <path>
+switchyard open <deployment> <instance>
+switchyard down <deployment>
+switchyard cleanup <deployment> --yes
+switchyard source list | register | deregister
+switchyard worktree create <repository-source> <ref> [--path <path>] [--name <name>]
+switchyard device list | add | remove | check
 switchyard project register [<directory>] [--name <project-name>]
 switchyard gui [<project-directory>]
+switchyard tui [<project-directory>]
+switchyard daemon run | status | stop
 ```
+
+Group membership is changed with `move`, which names one instance and its destination
+group; there is no separate `group` command, because a group's complete ordered
+`instances:` list is authored in the deployment and edited there or through a client.
 
 The CLI calls the same API as the GUI. It must also support a one-shot mode for CI and
 recovery when the daemon is not running.
 
-Initial API groups:
-
-```text
-/api/deployments
-/api/deployments/:name/plan
-/api/deployments/:name/operations
-/api/deployments/:name/groups
-/api/deployments/:name/events
-/api/blocks
-/api/sources
-/api/worktrees
-/api/runtime
-```
+The control-plane contract is `/api/v1`, defined in
+[`contract.rs`](crates/switchyard-daemon/src/contract.rs) and documented in
+[`docs/control-plane-api.md`](docs/control-plane-api.md). Its groups are deployments,
+commands, operations, events, sources, repositories, devices, profiles, run actions,
+adapters, and project metadata.
 
 Mutating requests use operation IDs and idempotency keys. Long operations return
 immediately and stream progress separately.
@@ -1582,6 +1618,11 @@ Phase 1 is a technical proof, not the complete product MVP.
 
 ## 14. MVP acceptance criteria
 
+These criteria are written against the JAS reference fixture, so they name its example
+blocks and instances — database, UI, Java, Python. Those are that fixture's names, not
+product roles: criterion 17 requires the same criteria to hold after the fixture is
+replaced. Nothing in the planner, API, CLI, or GUI may branch on them.
+
 The first complete version is successful when a developer can:
 
 1. Register a monorepo and at least two existing worktrees.
@@ -1593,7 +1634,7 @@ The first complete version is successful when a developer can:
 5. Start the deployment and wait for health-based readiness.
 6. Open each UI at a stable hostname.
 7. See the source path, branch, and commit behind every running instance.
-8. Select which Java and Python instances each UI shares a group with.
+8. Select which instances share a group, by editing that group's ordered membership.
 9. Define named five-service groups assembled from one or several source variants.
 10. Run two consumers that both call the same `localhost:8001` while reaching different
     provider groups.

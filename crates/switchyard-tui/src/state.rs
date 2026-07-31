@@ -495,12 +495,8 @@ fn profile_detail(row: &ProfileRow, block: &serde_json::Value) -> String {
                 display_value(service.get("volumes"))
             ));
             lines.push(format!(
-                "  Capabilities: {}",
-                display_value(service.get("provides"))
-            ));
-            lines.push(format!(
-                "  Consumed slots: {}",
-                display_value(service.get("consumes"))
+                "  Published ports: {}",
+                display_value(service.get("publish"))
             ));
             lines.push(format!("  Probes: {}", display_value(service.get("probe"))));
             lines.push(format!(

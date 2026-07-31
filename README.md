@@ -3,25 +3,34 @@
 Switchyard is a local development topology orchestrator for running multiple instances
 of unchanged application components and selecting how they connect.
 
-The central use case is a topology such as:
+You declare a group as an ordered list of instances, and its members share one localhost:
 
 ```text
-ui-1 ──► backend-1 ──► feature service group
-ui-2 ──► backend-2 ──► main service group
-ui-3 ──► backend-1 ──► feature service group
+feature-test: [ui-1, backend-1, db-feature]
+regression:   [ui-2, backend-2, db-main]
 ```
 
-Applications may keep calling fixed addresses such as `localhost:8001`. Switchyard uses
-Docker network namespaces and a Rust router sidecar per consumer to intercept those
-addresses without source-code changes. A native host router handles custom local
-domains, TLS, and browser calls to legacy localhost ports using an explicit route
-header, the UI origin, or an isolated browser-profile proxy.
+That list is the whole configuration. Applications may keep calling fixed addresses such
+as `localhost:8001`; Switchyard uses Docker network namespaces and a Rust router sidecar
+per member to intercept those addresses without source-code changes, forwarding each call
+to the first active member of the caller's group listening on that same port. Every
+instance gets its own namespace, so alternatives can stay running on the same ports and a
+group switches between them by reordering or disabling a member. A native host router
+handles custom local domains, TLS, and browser calls to legacy localhost ports using an
+explicit route header, the request origin, or an isolated browser-profile proxy.
 
 ## Status
 
-The Phase 4 routing proof is complete. It demonstrates the full unchanged-application
-topology before the persistent control-plane work begins. Progress is tracked in
-[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) and [PROGRESS.md](PROGRESS.md).
+The routing proof, the product MVP, and the browser control plane are complete; the team
+release is in progress. Verified per-phase detail is in [PROGRESS.md](PROGRESS.md), which
+is the authoritative record, with the checklist in
+[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+
+Alignment with the product vision in [docs/vision](docs/vision) is tracked in
+[docs/v2-roadmap.md](docs/v2-roadmap.md). V2 replaced the original capability, slot,
+binding, and direct-route topology with one model: an ordered group membership list whose
+members share one localhost, routed port-for-port. The final V2 part renames the product
+to **APM ProjectRunner** (`apmpr`); until then the tree uses the `switchyard` name.
 
 The implementation target is:
 

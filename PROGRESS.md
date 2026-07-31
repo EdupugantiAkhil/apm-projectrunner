@@ -10,6 +10,60 @@ Updated: 2026-07-31
 - Web UI plan (`docs/web-ui-plan.md`): complete. Parts 1 through 13, including follow-up
   Parts 11a–11c, and Part 13's security review with its two fixes.
 
+## 2026-07-31 — V2 Part 4 vocabulary and documentation alignment
+
+- Renamed the role-named `ui` field on both surfaces that keyed a generic instance by it.
+  `ManagedProfilePlan`/`ManagedProfile` and `CliCommand::Open` now use `instance`. The
+  generated artifact still serializes the field as `ui` via `#[serde(rename)]`, so
+  `switchyard.dev/managed-profile/v1alpha1` is unchanged on disk and the compatibility
+  goldens pass untouched.
+- Kept `/api/v1` compatible rather than breaking it: `CommandRequestV1.ui` remains an
+  accepted deprecated alias for `open`, with the new `instance` field taking precedence
+  through `open_instance()`. The support policy forbids removing a v1 request field. A
+  contract test covers alias-only, instance-only, both, and neither; reverting the
+  fallback makes it fail, so it pins real behavior rather than restating the code.
+- Fixed a dead read in the TUI startup-profile inspector, which rendered "Capabilities"
+  and "Consumed slots" from `provides`/`consumes`. Those keys were removed in Part 2b, so
+  both lines had been printing `none` unconditionally; they now show published ports.
+- Corrected `DESIGN.md` where it had drifted from vocabulary into inaccuracy: it
+  documented an overlay `groups:` replacement and a `routes:` slot that the parser rejects
+  under `deny_unknown_fields`, listed a nonexistent `switchyard group` command while
+  omitting `move`/`migrate`/`routes`, and never documented instance `address:` or
+  `disabled:`. Also dropped the role-keyed GUI color tokens (Java/Python/database routes),
+  since no schema-visible service type exists to key a palette to.
+- Documented the one surviving use of *slot* — the generated router configuration's
+  listener destinations — in `DESIGN.md` and `docs/router.md`, so the router contract does
+  not read as stale to someone who has just been told slots were removed.
+- Aligned the current docs: `overlays.md` (removed the `routes:` section the parser
+  rejects), `adapters.md` (adapter feature metadata is not the removed authored topology),
+  `development.md` (no plain-path source kind), `mvp-acceptance.md`, `gui.md` (the patch
+  bay has instance and group lanes, not typed ones), and `control-plane-api.md`. Refreshed
+  the README, which still claimed Phase 4 as current status.
+- Added status banners to `new_tui_features.md`, `web-ui-plan.md`, and
+  `IMPLEMENTATION_PLAN.md` instead of rewriting their pre-V2 vocabulary. Their ticked
+  entries record work as it was actually done under the old schema; rewriting them would
+  make the log inaccurate.
+- Extended the vision glossary with the terms diagnostics actually emit — group member,
+  external instance, port collision — and corrected the Transition row's "old provider".
+- Independent review found four real gaps, all fixed here. Two were coverage: the alias
+  and artifact renames were pinned only at the resolution helper, so removing either
+  `#[serde(rename = "ui")]` or `skip_deserializing` on the request field left every test
+  green while breaking existing artifacts and clients. Added a wire-level deserialization
+  test, an artifact test asserting the serialized JSON still carries `ui` and no
+  `instance`, and a CLI test parsing a complete v1 artifact through `deny_unknown_fields`.
+  All three were mutation-checked and fail when their protection is removed.
+- The other two were missed audit surfaces: `DESIGN.md` still had a `"${routes.java}":
+  ready` dependency key — an authored route reference with no schema or planner support,
+  contradicting the same file's statement that authored routes do not exist — and
+  `docs/browser-routing.md`, `docs/mvp-acceptance.md`, and the `ManagedProfile` doc comment
+  still described the generic managed-profile instance as a UI. Also narrowed the DESIGN
+  CLI list's claim, which said "the implemented surface" while omitting six commands.
+- Verification passes: 329 workspace tests with all features, 0 failed; all-target,
+  all-feature Clippy with warnings denied; rustdoc with warnings denied; `cargo fmt
+  --check`; 49 Web tests; TypeScript build; Web lint at the four pre-existing
+  exhaustive-dependencies warnings. All relative Markdown links under the root and `docs/`
+  resolve.
+
 ## 2026-07-31 — V2 Part 3 group-address routing increment
 
 - Group addresses now select browser-reachable members per request. The planner generates

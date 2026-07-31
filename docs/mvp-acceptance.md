@@ -21,7 +21,7 @@ proof.
 | 7 | See source path, branch, and commit behind every running instance. | **Partial automation.** `examples/jas-base/smoke.sh` asserts planned source paths in `status`; `crates/switchyard-daemon/tests/api.rs::deployment_list_and_detail_include_applied_manifest_and_reconciliation` asserts commit identity in deployment detail; `crates/switchyard-sources/src/lib.rs::inspects_repository_linked_worktree_and_dirty_categories` checks branch/commit/dirty inspection. The live smoke does not assert branch and commit text for every running instance. Manually run `switchyard status examples/jas-base/deployment.smoke.yaml` while the smoke-derived deployment is up and verify every instance row has path/ref/commit fields. |
 | 8 | Select which Java and Python instances each UI uses. | **Automated topology, partial interactive coverage.** Group membership is the selection: the JAS fixture authors complete combinations, and the Web tests cover both live membership moves and stopped-definition membership editing. |
 | 9 | Define named five-service groups assembled from one or several variants. | **Automated.** `examples/routing-matrix/deployment.yaml` defines `main-services` and `feature-services`; each reuses the audit source and block through a separate audit instance. `crates/switchyard-planner/tests/planner.rs::membership_move_changes_routes_without_changing_resources` covers a live-compatible move. |
-| 10 | Two consumers call the same `localhost:8001` but reach different groups. | **Automated live.** `examples/routing-matrix/smoke.sh` observes backend-1 and backend-2 using the identical fixed slots with feature and main providers respectively. The fixed contract is in `examples/routing-matrix/contract.yaml`. |
+| 10 | Two consumers call the same `localhost:8001` but reach different groups. | **Automated live.** `examples/routing-matrix/smoke.sh` observes backend-1 and backend-2 calling identical fixed loopback ports and reaching their own group's members respectively. The fixed contract is in `examples/routing-matrix/contract.yaml`. |
 | 11 | Switch a complete consumer group without restarting its application container. | **Automated live.** The routing-matrix smoke captures application container IDs, invokes `switchyard move`, checks the new complete ordered membership, and asserts application IDs are unchanged. |
 | 12 | Assign and persist custom domains through the native router. | **Automated.** Both smoke scripts route their custom `.localhost` domains through the host gateway. `crates/switchyard-daemon/tests/api.rs::applied_domains_bindings_and_deleted_database_recovery_survive_daemon_restart` verifies the applied custom domains persist in SQLite across daemon reconstruction. |
 | 13 | Recover observed deployment and route state through SQLite and Docker labels after control-plane restart. | **Automated, split across layers.** `crates/switchyard-daemon/tests/api.rs::applied_domains_bindings_and_deleted_database_recovery_survive_daemon_restart` covers restart and manifest recovery; `failed_live_binding_versions_and_rollback_history_survive_restart` covers route state/history. `crates/switchyard-state/src/lib.rs::deleted_database_rebuilds_observed_state_without_inventing_applied_state` injects owned Docker-label observations and proves observation recovery without an invented apply. Docker-label collection by a restarted real daemon is an integration boundary, not exercised by the daemon test. |
@@ -57,11 +57,11 @@ on a disposable Git repository with Docker available.
 
 1. Copy `examples/jas-base/deployment.yaml` outside the repository fixture directory.
 2. Keep `db-main`, `ai-main`, and `ai-feature`; add `jas-third` from `jas-service`; add
-   `ui-c`, `ui-d`, and `ui-e` from `ui`. Give each new instance a valid source and add
-   its direct Java route, complete AI-group binding, instance `address`, provider, host
-   upstream, and explicit-header browser route. The planner generates each custom-domain
-   destination and matching Origin browser route. Use distinct UI domains;
-   Java instances stay private and may all consume the fixed namespace-local slots.
+   `ui-c`, `ui-d`, and `ui-e` from `ui`. Give each new instance a valid source, list it in
+   exactly one group's ordered `instances:`, and give the browser-facing ones an instance
+   `address`. The planner generates each custom-domain destination and matching Origin
+   browser route. Use distinct addresses; instances with no address stay private and still
+   reach their group's members on the same fixed loopback ports.
 3. Run `switchyard validate <copy>` and `switchyard plan <copy>`.
 4. Expected: validation succeeds; the preview contains one database instance (its two
    database services), five UI instances, two Python/Process Compose suite instances,
@@ -123,7 +123,7 @@ and browser opening. Command endpoints use `POST /api/v1/commands/<kind>` unless
 | Register/list source | `switchyard source register/list` | `GET`/`POST /api/v1/sources` | **Sources** -> **Register unmanaged** and source cards | Present. GUI has no deregister action; deregistration is not needed for the common deployment lifecycle but is a CLI/API-only maintenance action. |
 | Create/remove worktree | `switchyard worktree create/remove` | `POST`/`DELETE /api/v1/worktrees` | **Sources** -> **Create worktree**; managed source **Remove** with dirty second step | Present; GUI dirty-removal test exists. |
 | Cancel operation | `switchyard operation cancel OPERATION_ID` | `POST /api/v1/operations/{id}/cancel` | **Operations** -> **Cancel** | Present. CLI parsing test: `parses_operation_cancel`; daemon cancellation behavior is covered by the existing API cancellation tests. |
-| Open managed browser profile/UI | `switchyard open FILE UI` | `/api/v1/commands/open` | Instance card **Open** (shown for instances with a managed profile) | Present. The GUI button reuses the same `open` command; launching a real browser remains manual procedure D territory. |
+| Open managed browser profile | `switchyard open FILE INSTANCE` | `/api/v1/commands/open` | Instance card **Open** (shown for instances with a managed profile) | Present. The GUI button reuses the same `open` command; launching a real browser remains manual procedure D territory. |
 
 Both former criterion-16 gaps were closed during the exit-gate review: instance cards
 expose **Open** for managed-profile instances, and `switchyard operation cancel`

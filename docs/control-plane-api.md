@@ -96,8 +96,10 @@ optional `context` fields. Framework types are not part of the public Rust contr
 | `POST` | `/api/v1/devices/{name}/check` | Run and persist SSH reachability plus Docker eligibility checks |
 
 A command request always contains `bundle`. Command-specific fields are `instance` and
-`group` for membership, `routes` for status, `target` for logs, `ui` for open, and `confirmed`
-for cleanup. A membership move may also carry `transition` as `close`, `pin`, or `drain` with a
+`group` for membership, `routes` for status, `target` for logs, `instance` for open, and
+`confirmed` for cleanup. Open also still accepts the deprecated `ui` spelling of that same
+field, because `/api/v1` may not remove a field; `instance` wins when both are sent. The
+`ui` name is historical and never meant the instance had to be a user interface. A membership move may also carry `transition` as `close`, `pin`, or `drain` with a
 `timeoutMs`; the CLI exposes the same choice through `--transition` and
 `--drain-timeout-ms`. Creation returns HTTP 202 and a versioned operation document. Status is
 `pending`, `running`, `succeeded`, `failed`, or `cancelled`. Script-compatible stdout,
@@ -143,8 +145,8 @@ because stdout and stderr are intentionally memory-only.
 
 `instance` is populated only when one specific authored instance is genuinely identified:
 membership uses the moved instance; logs uses the instance portion of a validated
-`instance` or `instance/component` target; and open uses the managed-profile name only when
-that name is also an authored instance in the loaded bundle. Deployment-wide commands
+`instance` or `instance/component` target; and open uses its requested instance only when
+that name has a managed profile and is also an authored instance in the loaded bundle. Deployment-wide commands
 (validate, plan, apply, status, routes, down, and cleanup), structured or shell run actions,
 deployment-wide logs, invalid/unresolvable targets, and operation rows written before
 schema version 8 have `instance: null`. Null means "not attributed to one instance"; it is

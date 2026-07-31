@@ -59,7 +59,7 @@ pub enum CliCommand {
     },
     Open {
         bundle: PathBuf,
-        ui: String,
+        instance: String,
     },
     Down {
         bundle: PathBuf,
@@ -167,7 +167,7 @@ Usage:
   switchyard status <deployment.yaml> [--routes] [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
   switchyard routes <deployment.yaml>
   switchyard logs <deployment.yaml> [instance[/service]]
-  switchyard open <deployment.yaml> <ui>
+  switchyard open <deployment.yaml> <instance>
   switchyard down <deployment.yaml> [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
   switchyard cleanup <deployment.yaml> --yes
   switchyard daemon run
@@ -242,7 +242,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
         }),
         "open" if rest.len() == 2 => Ok(CliCommand::Open {
             bundle: bundle()?,
-            ui: rest[1].clone(),
+            instance: rest[1].clone(),
         }),
         "down" if !rest.is_empty() => {
             let (bundle, options, _) = parse_deployment_options(rest, false)?;
@@ -716,7 +716,7 @@ mod tests {
             parse(args(&["open", "demo.yaml", "ui-1"])).unwrap(),
             CliCommand::Open {
                 bundle: "demo.yaml".into(),
-                ui: "ui-1".into(),
+                instance: "ui-1".into(),
             }
         );
     }

@@ -142,7 +142,7 @@ Vertical stack (single `Panel`):
 - Left: `ListView`, grouped by origin (**Project** / **Source: <repo>** /
   **Imported**), columns: name, adapter, services, trust status.
 - Right: inspector — expanded services, adapter, command, workdir, mounts,
-  capabilities, consumed slots, probes, parameters, lifecycle, trust.
+  published ports, probes, parameters, lifecycle, trust.
 - Actions: `F4` validate against a chosen checkout (checkout picker modal →
   validation report modal), `F6` import a source-local profile (trust prompt shows
   the manifest verbatim), `F3` guided editor (schema-driven form rendered from the

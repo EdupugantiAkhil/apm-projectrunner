@@ -362,17 +362,17 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 .unwrap_or_default();
             runtime.logs(&runtime_plan(&workspace_root, &plan), &services)?;
         }
-        CliCommand::Open { bundle, ui } => {
+        CliCommand::Open { bundle, instance } => {
             let (_, plan) = load_and_plan(&bundle)?;
             let profile = browser::load_managed_profile(
                 &workspace_root,
                 &plan.artifact_dir,
                 &plan.deployment,
-                &ui,
+                &instance,
             )?;
             let profile_dir = browser::open_managed_profile(&workspace_root, &profile)?;
             println!(
-                "opened `{ui}` through route `{}` using profile {}",
+                "opened `{instance}` through route `{}` using profile {}",
                 profile.route,
                 profile_dir.display()
             );
@@ -1050,9 +1050,9 @@ fn daemon_request(
             request.target = target.clone();
             (CommandKind::Logs, request)
         }
-        CliCommand::Open { bundle, ui } => {
+        CliCommand::Open { bundle, instance } => {
             let mut request = empty(bundle.clone());
-            request.ui = Some(ui.clone());
+            request.instance = Some(instance.clone());
             (CommandKind::Open, request)
         }
         CliCommand::Down { bundle, .. } => (CommandKind::Down, empty(bundle.clone())),

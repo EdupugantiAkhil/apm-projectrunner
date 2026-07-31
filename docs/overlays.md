@@ -2,7 +2,11 @@
 
 An overlay is an ordered, portable change to a deployment. It can select deployment
 instances, set or unset environment variables, load strict dotenv files, override
-parameters and routes, and inject read-only files without modifying a source checkout.
+parameters, and inject read-only files without modifying a source checkout.
+
+Overlays do not author topology. Group membership, addresses, and external instances are
+stated once in the deployment, so a variation cannot quietly disagree with the connection
+model. Vary what a member *is*, not what it is connected to.
 
 ## Format
 
@@ -27,8 +31,6 @@ spec:
     unset: [LEGACY_DATABASE_URL]
   variables: { enableNewSearch: "true" }
   parameters: { migrationPolicy: isolated-database }
-  routes:
-    database: mongodb-main
   files:
     - source: config/application-mongodb.yml
       target: /runtime/config/application.yml
@@ -73,10 +75,9 @@ adapter/block defaults
 ```
 
 Maps merge by key, while `environment.unset` removes an inherited key. A second overlay
-which writes the same file target or route slot must explicitly opt into replacement.
-For files use `replace: true` on the file; routes accept
-`slot: { provider: name, replace: true }`. `spec.replace: true` applies to every keyed
-entry in that overlay. Lists do not merge implicitly.
+which writes the same file target must explicitly opt into replacement with `replace: true`
+on the file. `spec.replace: true` applies to every keyed entry in that overlay. Lists do
+not merge implicitly.
 
 `switchyard plan` and `switchyard overlay diff` print each final value with its source
 and warnings for shadowed layers. The generated manifest contains the same secret-safe

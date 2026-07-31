@@ -24,6 +24,10 @@ contains:
 - every SDK contract version it supports; and
 - protocol, live-update, recovery, and feature capability metadata.
 
+"Capability" here means a feature an adapter implementation supports. It is unrelated to
+the removed authored `provides:`/`consumes:` topology and takes no part in routing, which
+is port-for-port over ordered group membership.
+
 Registration is keyed by adapter kind, identifier, and implementation version. The
 registry rejects malformed identifiers, malformed semantic versions, duplicate exact
 registrations, and adapters which do not declare the current SDK contract. Each failure
@@ -63,8 +67,8 @@ The built-in registry contains:
 | Probe | `probe-health` | HTTP, TCP, or command healthcheck |
 
 The deployment YAML remains stable. `switchyard-planner` maps its existing source,
-execution, probe, capability, and route-slot model types to these adapter configurations
-during validation, then continues through the unchanged deterministic artifact generator.
+execution, probe, and group-membership model types to these adapter configurations during
+validation, then continues through the unchanged deterministic artifact generator.
 Filesystem existence, topology completeness, naming, collision, and ownership checks
 remain planner responsibilities.
 

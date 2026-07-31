@@ -183,7 +183,11 @@ pub struct SidecarPlan {
 pub struct ManagedProfilePlan {
     pub api_version: String,
     pub deployment: String,
-    pub ui: String,
+    /// Authored instance owning this profile. Serialized as `ui` for artifact
+    /// compatibility within `switchyard.dev/managed-profile/v1alpha1`; the name is
+    /// historical and carries no role meaning.
+    #[serde(rename = "ui")]
+    pub instance: String,
     pub route: String,
     pub proxy_address: String,
     pub start_url: String,
@@ -735,9 +739,12 @@ pub fn write_plan(workspace_root: &Path, plan: &Plan) -> io::Result<PathBuf> {
     }
     if !plan.managed_profiles.is_empty() {
         fs::create_dir_all(&managed_profiles_dir)?;
-        for (ui, profile) in &plan.managed_profiles {
+        for (instance, profile) in &plan.managed_profiles {
             let encoded = serde_json::to_vec_pretty(profile).map_err(io::Error::other)?;
-            write_atomic(&managed_profiles_dir.join(format!("{ui}.json")), &encoded)?;
+            write_atomic(
+                &managed_profiles_dir.join(format!("{instance}.json")),
+                &encoded,
+            )?;
         }
     }
     if let Some(config) = &plan.host_router_config {
@@ -2894,19 +2901,19 @@ fn managed_profiles(bundle: &Bundle) -> BTreeMap<String, ManagedProfilePlan> {
     const PORT_COUNT: u16 = 8_000;
     let mut used = BTreeSet::new();
     let mut result = BTreeMap::new();
-    for (ui, profile) in &bundle.spec.managed_profiles {
-        let digest = Sha256::digest(format!("{}\0{ui}", bundle.metadata.name));
+    for (instance, profile) in &bundle.spec.managed_profiles {
+        let digest = Sha256::digest(format!("{}\0{instance}", bundle.metadata.name));
         let offset = u16::from_be_bytes([digest[0], digest[1]]) % PORT_COUNT;
         let mut port = FIRST_PORT + offset;
         while !used.insert(port) {
             port = FIRST_PORT + ((port - FIRST_PORT + 1) % PORT_COUNT);
         }
         result.insert(
-            ui.clone(),
+            instance.clone(),
             ManagedProfilePlan {
                 api_version: "switchyard.dev/managed-profile/v1alpha1".into(),
                 deployment: bundle.metadata.name.clone(),
-                ui: ui.clone(),
+                instance: instance.clone(),
                 route: profile.route.clone(),
                 proxy_address: format!("127.0.0.1:{port}"),
                 start_url: profile.start_url.clone(),
@@ -3145,7 +3152,7 @@ fn generate_host_router_config(
             .join(".switchyard/run")
             .join(&bundle.metadata.name)
             .join("managed-profiles")
-            .join(format!("{}.credential", profile.ui));
+            .join(format!("{}.credential", profile.instance));
         config.spec.listeners.push(router_config::Listener {
             consumer: None,
             bind: router_config::SocketAddress {

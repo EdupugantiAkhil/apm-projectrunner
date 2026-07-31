@@ -13,6 +13,11 @@ when an open release item changes.
 
 - Mark a task `[x]` only after its code, tests, and relevant documentation are merged.
 - Keep partially completed tasks unchecked and add indented notes or links beneath them.
+- Ticked tasks are a record of work as it was done. Some pre-V2 entries name bindings,
+  route slots, and capability declarations, which V2 removed from the authored schema in
+  favor of ordered group membership. They are left as written rather than rewritten, so
+  the log stays accurate; `DESIGN.md` and [docs/v2-roadmap.md](docs/v2-roadmap.md)
+  describe the current model.
 - Do not start a phase whose entry gate is incomplete unless the work is an isolated
   experiment that will not constrain the public contracts.
 - Treat every exit gate as required. A phase is complete only when all of its tasks and

@@ -79,6 +79,9 @@ pub struct CommandRequestV1 {
     pub transition: Option<TransitionPolicyV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
+    /// Deprecated alias for `instance` on `open`. Retained because `/api/v1` may not
+    /// remove a field; new clients send `instance`, which takes precedence. The name is
+    /// historical and never implied that the instance was a user interface.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<String>,
     #[serde(default)]
@@ -101,6 +104,11 @@ pub enum TransitionPolicyV1 {
 }
 
 impl CommandRequestV1 {
+    /// Instance an `open` request names, preferring `instance` over the deprecated `ui`.
+    pub fn open_instance(&self) -> Option<String> {
+        self.instance.clone().or_else(|| self.ui.clone())
+    }
+
     /// Converts a typed request to the existing script-stable CLI argument surface.
     pub fn arguments(&self, kind: CommandKind) -> Result<Vec<String>, ApiErrorV1> {
         let bundle = self.bundle.to_string_lossy().into_owned();
@@ -152,7 +160,13 @@ impl CommandRequestV1 {
                 }
                 args
             }
-            CommandKind::Open => vec!["open".into(), bundle, required(&self.ui, "ui")?],
+            CommandKind::Open => {
+                vec![
+                    "open".into(),
+                    bundle,
+                    required(&self.open_instance(), "instance")?,
+                ]
+            }
             CommandKind::Down => vec!["down".into(), bundle],
             CommandKind::Cleanup => {
                 let mut args = vec!["cleanup".into(), bundle];
@@ -939,5 +953,68 @@ impl EventKindV1 {
             Self::Route => "route",
             Self::Log => "log",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn open_request(instance: Option<&str>, ui: Option<&str>) -> CommandRequestV1 {
+        CommandRequestV1 {
+            bundle: "demo.yaml".into(),
+            instance: instance.map(Into::into),
+            group: None,
+            transition: None,
+            target: None,
+            ui: ui.map(Into::into),
+            routes: false,
+            confirmed: false,
+        }
+    }
+
+    #[test]
+    fn an_existing_client_sending_only_ui_still_deserializes() {
+        // The alias has to survive the wire, not just the resolution helper: a v1 client
+        // that predates `instance` sends `{"bundle":...,"ui":...}` and must keep working.
+        let request: CommandRequestV1 =
+            serde_json::from_str(r#"{"bundle":"demo.yaml","ui":"backend-1"}"#)
+                .expect("a v1 open request must still deserialize");
+        assert_eq!(request.ui.as_deref(), Some("backend-1"));
+        assert_eq!(request.instance, None);
+        assert_eq!(
+            request.arguments(CommandKind::Open).unwrap(),
+            vec!["open".to_owned(), "demo.yaml".into(), "backend-1".into()]
+        );
+    }
+
+    #[test]
+    fn open_accepts_the_deprecated_ui_alias_and_prefers_instance() {
+        // `/api/v1` may not remove a field, so an existing client sending `ui` keeps working.
+        assert_eq!(
+            open_request(None, Some("ui-1"))
+                .arguments(CommandKind::Open)
+                .unwrap(),
+            vec!["open".to_owned(), "demo.yaml".into(), "ui-1".into()]
+        );
+        assert_eq!(
+            open_request(Some("backend-1"), None)
+                .arguments(CommandKind::Open)
+                .unwrap(),
+            vec!["open".to_owned(), "demo.yaml".into(), "backend-1".into()]
+        );
+        assert_eq!(
+            open_request(Some("backend-1"), Some("ui-1"))
+                .arguments(CommandKind::Open)
+                .unwrap(),
+            vec!["open".to_owned(), "demo.yaml".into(), "backend-1".into()]
+        );
+        assert_eq!(
+            open_request(None, None)
+                .arguments(CommandKind::Open)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
     }
 }
