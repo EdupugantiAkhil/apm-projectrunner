@@ -23,7 +23,7 @@ worth knowing before you start, because the UI uses them everywhere:
 2.  switchyard daemon run    →  the background service is running (usually already is)
 3.  switchyard gui           →  opens the browser window at the running service
 4.  Sources                  →  clone repositories, add worktrees
-5.  Startup profiles         →  the recipe for starting each part
+5.  Startup profiles         →  reusable recipes for starting instances
 6.  Run actions              →  project-level scripts (Up, Down, smoke tests)
 7.  Instances                →  live copies of each part, optionally on another device
 8.  Service groups           →  a named set of instances; membership is the connection
