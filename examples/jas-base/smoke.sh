@@ -106,7 +106,7 @@ plan_variation "$fixture_dir/overlays/feature.yaml" feature
 
 compose=(
   docker compose
-  --project-name sy--jas-base
+  --project-name apmpr--jas-base
   --project-directory "$root"
   --file "$artifact_dir/compose.yaml"
 )

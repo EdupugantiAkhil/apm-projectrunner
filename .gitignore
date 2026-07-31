@@ -2,6 +2,8 @@
 node_modules/
 npm-debug.log*
 .apmpr/
+# Pre-rename project state, left on disk by builds from before Part 7.
+.switchyard/
 target/
 /dist/
 .codex-refs/

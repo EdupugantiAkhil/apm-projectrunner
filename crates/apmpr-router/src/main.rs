@@ -62,6 +62,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Validate authentication before host preflight can create or renew any
     // managed certificate or proxy credential. Certificate maintenance commands
     // return above and intentionally remain tokenless.
+    if let Some(message) = router_config::stale_environment_error() {
+        return Err(message.into());
+    }
     let token = env::var("APMPR_ROUTER_TOKEN").map_err(|_| "APMPR_ROUTER_TOKEN must be set")?;
     let config = read_config(config_path).await?;
     let mut interception = if host_mode {

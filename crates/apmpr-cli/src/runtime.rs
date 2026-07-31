@@ -1104,7 +1104,7 @@ mod tests {
         RuntimePlan {
             local_service_count: 1,
             deployment: "demo".into(),
-            compose_project: "sy--demo".into(),
+            compose_project: "apmpr--demo".into(),
             project_directory: PathBuf::from("/tmp"),
             artifact_dir: PathBuf::from("/tmp/generated/demo"),
             requires_router_token: false,
@@ -1122,7 +1122,7 @@ mod tests {
             host: "example-host".into(),
             port: 22,
             identity_file: Some("/keys/build".into()),
-            compose_project: "sy--demo-builder".into(),
+            compose_project: "apmpr--demo-builder".into(),
             compose_file: "compose.builder.yaml".into(),
             services: vec!["demo--provider--api".into()],
         });
@@ -1198,7 +1198,7 @@ mod tests {
                 stdout: if remote_network_list {
                     "remote-network-id\n".into()
                 } else if remote_network_inspect {
-                    r#"[{"Id":"remote-network-id","Name":"sy--demo-builder--private","Labels":{}}]"#
+                    r#"[{"Id":"remote-network-id","Name":"apmpr--demo-builder--private","Labels":{}}]"#
                         .into()
                 } else if arguments.first().is_some_and(|arg| arg == "version") {
                     "27.0.0\n".into()
@@ -1304,7 +1304,7 @@ mod tests {
         let mut second = plan.remote_projects[0].clone();
         second.name = "tester".into();
         second.host = "second-host".into();
-        second.compose_project = "sy--demo-tester".into();
+        second.compose_project = "apmpr--demo-tester".into();
         second.compose_file = "compose.tester.yaml".into();
         plan.remote_projects.push(second);
         let runtime = DockerRuntime::new(EnvironmentExecutor {
@@ -1344,7 +1344,7 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("device `builder`"), "{message}");
         assert!(
-            message.contains("network `sy--demo-builder--private`"),
+            message.contains("network `apmpr--demo-builder--private`"),
             "{message}"
         );
     }

@@ -94,18 +94,31 @@ no supported-version window to honor. Nothing is silently reinterpreted:
 
 - a deployment whose `apiVersion` still carries the `switchyard.dev/` prefix is rejected
   with an error naming the replacement prefix, and `apmpr migrate` rewrites it;
-- any `SWITCHYARD_*` variable still set in the environment fails the command up front,
-  listing each stale name beside its `APMPR_*` replacement rather than ignoring it;
+- any `SWITCHYARD_*` variable still set in the environment fails `apmpr`, `apmpr-daemon`,
+  and `apmpr-router` up front, listing each stale name beside its `APMPR_*` replacement
+  rather than ignoring it. Only names are reported — one of these variables is a router
+  token — and values are never decoded;
 - Docker resources labeled `dev.switchyard.*` by a pre-rename build are **not** adopted.
   Discovery and cleanup filter on the new labels only, so containers, networks, and volumes
-  from a pre-rename build must be removed manually
-  (`docker ps -aq --filter label=dev.switchyard.managed=true`).
+  from a pre-rename build must be removed manually.
+
+To remove pre-rename resources, inspect each list before deleting. **The volume step
+destroys data**; a pre-rename database volume is gone once removed.
+
+```sh
+filter='label=dev.switchyard.managed=true'
+docker ps -aq  --filter "$filter" | xargs -r docker rm -f
+docker network ls -q --filter "$filter" | xargs -r docker network rm
+docker volume ls -q --filter "$filter" | xargs -r docker volume rm   # destroys data
+```
 
 The compatibility goldens in
 [`crates/apmpr-planner/tests/compat.rs`](../crates/apmpr-planner/tests/compat.rs) were
-regenerated for this change: the API group and ownership labels feed the definition and
-resource hashes, so all four hashes moved. The fixture diff was reviewed alongside them and
-contains only renamed strings.
+regenerated for this change. Both hashes are taken over the serialized deployment, so the
+renamed `apiVersion` moved them, as did the renamed router image and the host-router API
+group and header inside each fixture. Ownership labels are *derived from* the resource hash
+rather than hashed into it, so they are not a cause. The fixture diff was reviewed alongside
+the new hashes and contains only renamed strings.
 
 When a new configuration or state-file version supersedes an old one, the previous
 version remains readable for at least one subsequent minor release and at least 90 days

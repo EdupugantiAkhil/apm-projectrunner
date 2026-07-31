@@ -2423,8 +2423,8 @@ fn generate(
     devices: &BTreeMap<String, PlanningDevice>,
 ) -> Result<Plan, Box<dyn std::error::Error>> {
     let deployment = &bundle.metadata.name;
-    let project = resource_name(&["sy", deployment]);
-    let network = resource_name(&["sy", deployment, "private"]);
+    let project = resource_name(&["apmpr", deployment]);
+    let network = resource_name(&["apmpr", deployment, "private"]);
     let artifact_dir = PathBuf::from(".apmpr/generated").join(deployment);
     let artifact_bind_dir = bundle.workspace_root.join(&artifact_dir);
     let definition_bytes = serde_json::to_vec(bundle)?;
@@ -2648,7 +2648,7 @@ fn generate(
                     let volume_name = resource_name(&[deployment, &instance.name, &mount.name]);
                     remote_volumes.entry(device.to_owned()).or_default().insert(
                         volume_name,
-                        json!({ "labels": service_labels, "name": resource_name(&["sy", deployment, &instance.name, &mount.name]) }),
+                        json!({ "labels": service_labels, "name": resource_name(&["apmpr", deployment, &instance.name, &mount.name]) }),
                     );
                 }
                 continue;
@@ -2707,7 +2707,7 @@ fn generate(
                 let volume_name = resource_name(&[deployment, &instance.name, &mount.name]);
                 volumes.insert(
                     volume_name,
-                    json!({ "labels": service_labels, "name": resource_name(&["sy", deployment, &instance.name, &mount.name]) }),
+                    json!({ "labels": service_labels, "name": resource_name(&["apmpr", deployment, &instance.name, &mount.name]) }),
                 );
             }
         }
@@ -3690,5 +3690,5 @@ fn resource_name(parts: &[&str]) -> String {
 }
 
 fn remote_network_name(deployment: &str, device: &str) -> String {
-    resource_name(&["sy", &format!("{deployment}-{device}"), "private"])
+    resource_name(&["apmpr", &format!("{deployment}-{device}"), "private"])
 }

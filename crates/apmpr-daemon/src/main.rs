@@ -26,6 +26,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Err("usage: apmpr-daemon [--help|--version]".into());
     }
+    if let Some(message) = router_config::stale_environment_error() {
+        return Err(message.into());
+    }
     let project_root = env::current_dir()?;
     let cli_program = env::var_os("APMPR_CLI")
         .map(PathBuf::from)

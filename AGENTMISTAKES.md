@@ -1,5 +1,41 @@
 # Agent mistakes and lessons
 
+## 2026-07-31 — A guard against a stale value must not read the value
+
+- The Part 7 environment guard reported stale `SWITCHYARD_*` names via `env::vars()`. That
+  iterator decodes both names *and values* to `String` and panics on non-UTF-8. The guard
+  needs only names, so it took a dependency on data it never uses — and any unrelated
+  variable holding non-UTF-8 bytes crashed every command, including `--help`.
+- The same guard was placed in one binary. `apmpr-daemon` and `apmpr-router` ship separately
+  and read the same variables, so both kept exactly the silent-ignore behavior the guard was
+  written to eliminate.
+- Lesson: read the narrowest thing that answers the question — `vars_os()` and names only,
+  which also guarantees a token value can never be echoed. And when a guard exists because a
+  *value* is read somewhere, it belongs wherever that read happens, not only in the binary
+  that was open in the editor.
+
+## 2026-07-31 — A test of a helper is not a test of the behavior
+
+- The guard's test called `renamed_environment_variables` directly. Deleting the call site
+  in `run()` — the thing that makes the guard exist at all — left the test green. I had
+  recorded it as mutation-checked, but had only mutated the helper, not the wiring.
+- Lesson: mutation-check the change a user would notice, not the function that implements
+  it. For a process-level behavior that means running the real binary; the placement is the
+  feature, and only a test that exercises it can protect it.
+
+## 2026-07-31 — Documentation can be confidently, checkably wrong
+
+- I wrote that ownership labels feed the compatibility hashes. They cannot: labels are
+  derived *from* the resource hash, a few lines after it is finalized. The hashes really had
+  changed and regenerating really was justified, so the conclusion was right and the stated
+  reason was fiction — the most durable kind of error, because nothing fails.
+- In the same pass I wrote that historical roadmap entries were "kept as written", while the
+  sweep I had just run rewrote their identifiers, and gave a recovery command that only
+  *listed* Docker containers under prose promising networks and volumes were removable.
+- Lesson: a causal claim in a compatibility record is checkable — check it, in the order the
+  code actually executes. Do not describe what a change ought to have done; describe what it
+  did, and verify any command before offering it as a remedy.
+
 ## 2026-07-31 — A rename sweep cannot see encoded, composed, or self-describing text
 
 - The Part 7 rename was planned as a mechanical substitution and verified by searching for

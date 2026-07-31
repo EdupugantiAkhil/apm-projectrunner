@@ -32,7 +32,11 @@ These were decided before the work started; parts below are written against them
 used during development, not a competing product direction. Part 7 replaced it everywhere.
 
 Because the rename landed last, Parts 1–6 were authored against the old `switchyard` names.
-Their entries below are kept as written where they quote historical identifiers.
+**Part 7 rewrote their entries below to the current spellings**, so a dated record may name
+`apmpr-planner` or `apmpr migrate` where the commit it cites actually contained
+`switchyard-planner` or `switchyard migrate`. The commit hashes are unchanged and remain
+authoritative; read identifiers in pre-Part-7 entries as today's names for the same things.
+The same caveat applies to the historical entries in `PROGRESS.md` and `AGENTMISTAKES.md`.
 
 ## Status at a glance
 
@@ -656,13 +660,32 @@ value sits in plain sight, so:
 3. The two `Proxy-Authenticate` realms diverged: one became `apmpr`, the other
    `APM ProjectRunner`, so a listener advertised a realm its own credential check rejected.
 
-The compatibility goldens were regenerated: the API group and ownership labels feed both
-hashes, so all four moved. The fixture diff was reviewed alongside them and is purely
-renamed strings.
+The compatibility goldens were regenerated. Both hashes are taken over the serialized
+deployment, so the renamed `apiVersion`, router image, and embedded host-router API
+group/header moved all four. Ownership labels are derived from the resource hash rather than
+hashed into it. The fixture diff was reviewed alongside them and is purely renamed strings.
 
-Landed with 339 workspace tests passing (336 before, plus three added here), 51 Web tests,
-formatting, all-target/all-feature Clippy with warnings denied, rustdoc with warnings
-denied, TypeScript, warning-free Web lint, and the Vite production build.
+**Independent review found six more defects, all fixed.** Three were in the new guards
+themselves: the environment check read `env::vars()`, which decodes values, so an unrelated
+non-UTF-8 value panicked every command including `--help`; it existed only in `apmpr`,
+leaving `apmpr-daemon` and `apmpr-router` silently ignoring stale variables; and `migrate`
+treated the API-group *spelling* as the schema *generation*, letting a
+`switchyard.dev/v1alpha2` document skip a refusal its `apmpr.dev/v1alpha2` twin receives.
+The guard now lives in `router-config`, inspects names only, and all three binaries call it.
+
+A fourth was a missed rename with the same shape as the header defect: generated Compose
+projects, networks, and volumes kept `sy--`, an abbreviation of the old name that is visible
+in `docker ps` and is what runtime discovery filters on. It is now `apmpr--`, and feeds no
+hash, so no golden moved.
+
+The last two were documentation that was wrong rather than merely thin — a claim that
+ownership labels feed the compat hashes when they are derived from one, and a claim that
+historical entries were kept verbatim when the sweep had rewritten them. Both corrected.
+
+Landed with 343 workspace tests passing (336 before, plus seven added across the rename and
+its review fixes), 51 Web tests, formatting, all-target/all-feature Clippy with warnings
+denied, rustdoc with warnings denied, TypeScript, warning-free Web lint, and the Vite
+production build.
 
 
 ---

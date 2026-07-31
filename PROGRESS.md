@@ -34,17 +34,41 @@ Updated: 2026-07-31
   article agreement (`a APM ProjectRunner`), and several sentences that became tautologies
   once both sides of "renamed X to Y" read the same ("Working name: APM ProjectRunner. The
   intended product name is APM ProjectRunner").
-- Regenerated all four compatibility goldens. The API group and ownership labels feed both
-  the definition and resource hashes, so every hash moved; the fixture diff was reviewed
-  alongside them and contains only renamed strings. Routing matrix is now
-  `d1fff1bb…`/`e7886861…`; JAS base is `074a9af7…`/`dd0a6e5c…`.
-- Verification passes: 339 workspace tests with the five declared reliability ignores
-  (336 before, plus the three added here); all-target, all-feature Clippy with warnings
-  denied; rustdoc with warnings denied; `cargo fmt --check`; `git diff --check`; 51 Web
-  tests; TypeScript; warning-free Web lint; and the Vite production build. Every relative
-  Markdown link under the root and `docs/` resolves. A direct CLI run confirms the
-  rejection-then-`migrate` loop end to end and that the environment error prints names
-  without values.
+- Regenerated all four compatibility goldens. Both hashes are taken over the serialized
+  deployment, so the renamed `apiVersion`, router image, and embedded host-router API
+  group/header moved them. Ownership labels are derived *from* the resource hash rather than
+  hashed into it, so they are not a cause — an earlier draft of this entry had that backwards.
+  The fixture diff was reviewed alongside the new hashes and contains only renamed strings.
+  Routing matrix is now `d1fff1bb…`/`e7886861…`; JAS base is `074a9af7…`/`dd0a6e5c…`.
+- Independent review found six real defects, all fixed in a follow-up commit. Three were
+  mine and material: the environment guard called `env::vars()`, which decodes *values*, so
+  any unrelated non-UTF-8 environment value panicked every command including `--help`; the
+  guard existed only in `apmpr`, leaving `apmpr-daemon` and `apmpr-router` with exactly the
+  silent-ignore behavior it was written to remove; and `migrate` conflated the API-group
+  spelling with the schema generation, so a `switchyard.dev/v1alpha2` document skipped the
+  current-schema refusal its `apmpr.dev/v1alpha2` twin receives. The guard now lives in
+  `router-config`, reads `vars_os()` and inspects names only, and all three binaries call it.
+- The fourth was a missed rename: generated Compose projects, networks, and volumes kept the
+  `sy--` prefix, an abbreviation of the old name, which is user-visible in `docker ps` and is
+  what runtime discovery filters on. Now `apmpr--`. It feeds no hash, so no golden moved.
+- The last two were my documentation being wrong rather than merely incomplete: I claimed
+  ownership labels feed the compat hashes, when labels are derived *from* the resource hash
+  and cannot affect it, and I claimed historical roadmap entries were "kept as written" when
+  the sweep had in fact rewritten their identifiers. Both are corrected, the second by
+  stating plainly what happened rather than by attempting to restore hundreds of historical
+  names. The suggested cleanup command also only *listed* containers while the prose
+  promised networks and volumes; it is now three commands with an explicit data-loss warning.
+- Review also confirmed the guard test gap: the original test called the helper directly, so
+  deleting the call site would have left it green. There is now a binary-level test that
+  runs the real executable, and removing the call fails it.
+- Verification passes: 343 workspace tests with the five declared reliability ignores
+  (336 before, plus seven added across the rename and its review fixes); all-target,
+  all-feature Clippy with warnings denied; rustdoc with warnings denied; `cargo fmt
+  --check`; `git diff --check`; 51 Web tests; TypeScript; warning-free Web lint; and the
+  Vite production build. Every relative Markdown link under the root and `docs/` resolves.
+  Direct runs of all three binaries confirm the rejection-then-`migrate` loop end to end,
+  that each reports a stale variable by name without its value, and that an unrelated
+  non-UTF-8 environment value no longer fails a command.
 
 ## 2026-07-31 — V2 Part 6 release usability
 

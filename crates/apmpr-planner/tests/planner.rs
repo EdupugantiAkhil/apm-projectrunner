@@ -132,11 +132,11 @@ fn remote_provider_is_partitioned_and_routed_by_device_host() {
     deployment.spec.instances[0].device = Some("builder".into());
     let generated = plan_with_devices(&deployment, &devices()).unwrap();
     let remote = &generated.remote_projects["builder"];
-    assert_eq!(remote.compose_project, "sy--comparison-builder");
+    assert_eq!(remote.compose_project, "apmpr--comparison-builder");
     assert_eq!(remote.compose_file, Path::new("compose.builder.yaml"));
     assert_eq!(remote.services, ["comparison--provider-main--api"]);
     let remote_compose: serde_yaml::Value = serde_yaml::from_str(&remote.compose_yaml).unwrap();
-    let network = "sy--comparison-builder--private";
+    let network = "apmpr--comparison-builder--private";
     assert_eq!(remote_compose["networks"][network]["name"], network);
     assert_eq!(
         remote_compose["networks"][network]["labels"]["dev.apmpr.managed"],
@@ -1310,7 +1310,7 @@ fn parallel_deployments_have_disjoint_names_and_dynamic_loopback_ports() {
     let second = plan(&second_bundle).unwrap();
     assert_ne!(first.compose_project, second.compose_project);
     assert!(!first.compose_yaml.contains("comparison-two"));
-    assert!(!second.compose_yaml.contains("sy-comparison-private"));
+    assert!(!second.compose_yaml.contains("apmpr--comparison--private"));
     assert!(first.compose_yaml.contains("127.0.0.1::8080"));
     assert!(second.compose_yaml.contains("127.0.0.1::8080"));
 

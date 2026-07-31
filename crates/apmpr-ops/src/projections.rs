@@ -567,7 +567,7 @@ fn resource_rows(
                 let logical = resource
                     .name
                     .trim_start_matches('/')
-                    .strip_prefix(&format!("sy-{deployment}-"))
+                    .strip_prefix(&format!("apmpr-{deployment}-"))
                     .unwrap_or(&resource.name);
                 let (instance, service) = logical.split_once('-').unwrap_or((logical, "container"));
                 let status = resource.state.clone().unwrap_or_else(|| "observed".into());

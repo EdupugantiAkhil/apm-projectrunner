@@ -45,7 +45,7 @@ ready_ns="$(python3 -c 'import time; print(time.time_ns())')"
 
 compose=(
   docker compose
-  --project-name sy--routing-matrix
+  --project-name apmpr--routing-matrix
   --project-directory "$root"
   --file "$artifact_dir/compose.yaml"
 )

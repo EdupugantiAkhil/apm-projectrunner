@@ -61,24 +61,28 @@ pub fn migrate(
             "cannot migrate kind `{kind}`; expected {KIND}"
         )));
     }
-    let previous_version = match version {
-        API_VERSION => {
-            ensure_no_legacy_group_providers(&document)?;
-            None
+    // The API group and the schema generation are independent. The rename to `apmpr.dev`
+    // changed only the spelling, so a `switchyard.dev/v1alpha2` document must face exactly
+    // the same current-schema checks as its `apmpr.dev/v1alpha2` twin; only the two
+    // v1alpha1 spellings carry the previous schema.
+    let current_schema = matches!(version, API_VERSION | RENAMED_API_VERSION);
+    let rewritten_version = match version {
+        API_VERSION => None,
+        PREVIOUS_API_VERSION | RENAMED_API_VERSION | RENAMED_PREVIOUS_API_VERSION => {
+            Some(version.to_owned())
         }
-        PREVIOUS_API_VERSION => Some(PREVIOUS_API_VERSION.to_owned()),
-        // Pre-rename documents. Both `switchyard.dev` spellings become the current version,
-        // because the rename changed the API group without changing the schema.
-        RENAMED_API_VERSION | RENAMED_PREVIOUS_API_VERSION => Some(version.to_owned()),
         other => {
             return Err(MigrationError(format!(
                 "cannot migrate apiVersion `{other}`; supported input versions are {RENAMED_PREVIOUS_API_VERSION}, {RENAMED_API_VERSION}, {PREVIOUS_API_VERSION}, and {API_VERSION}"
             )));
         }
     };
+    if current_schema {
+        ensure_no_legacy_group_providers(&document)?;
+    }
 
     let mut changes = Vec::new();
-    if let Some(from) = &previous_version {
+    if let Some(from) = &rewritten_version {
         changes.push(format!("apiVersion: {from} -> {API_VERSION}"));
     }
     migrate_group_instances(&mut document, &mut changes)?;
@@ -93,7 +97,7 @@ pub fn migrate(
             changes,
         });
     }
-    if previous_version.is_some() {
+    if rewritten_version.is_some() {
         set_api_version(&mut document)?;
     }
     let migrated = serde_yaml::to_string(&document).map_err(|error| {
@@ -1299,6 +1303,48 @@ mod tests {
         assert!(message.contains("spec.groups.base.instances[1]"));
         assert!(message.contains("spec.groups.feature.instances[2]"));
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn the_api_group_spelling_does_not_change_which_schema_is_enforced() {
+        // The rename changed the prefix, not the schema. A v1alpha2 document carrying a
+        // legacy `providers` mapping must be refused under either spelling; treating the
+        // pre-rename one as v1alpha1 would silently rewrite a document the current-prefix
+        // path deliberately rejects.
+        let directory = tempfile::tempdir().unwrap();
+        for version in [API_VERSION, RENAMED_API_VERSION] {
+            let path = directory.path().join("deployment.yaml");
+            let original = format!(
+                r#"apiVersion: {version}
+kind: Deployment
+metadata: {{ name: demo }}
+spec:
+  repositories:
+    fixture: {{ url: https://example.invalid/repository.git }}
+  sources:
+    app: {{ repository: fixture, ref: main, path: worktrees/app }}
+  blocks:
+    database:
+      services:
+        main:
+          execution: {{ type: container, image: example/database:1 }}
+  instances:
+    - {{ name: db-main, block: database, source: app }}
+  groups:
+    base:
+      providers:
+        database: db-main
+"#
+            );
+            fs::write(&path, &original).unwrap();
+            let error = migrate(&path, || panic!("a refused migration must not write"))
+                .expect_err("a v1alpha2 document with providers must be refused");
+            assert!(
+                error.to_string().contains("still contains providers"),
+                "{error}"
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        }
     }
 
     #[test]

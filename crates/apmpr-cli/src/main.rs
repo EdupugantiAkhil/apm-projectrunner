@@ -36,34 +36,9 @@ fn main() -> ExitCode {
     }
 }
 
-/// Reports every `SWITCHYARD_*` variable still set in the environment.
-///
-/// The rename to APM ProjectRunner moved these to `APMPR_*`. A stale variable would otherwise
-/// be silently ignored, which for `SWITCHYARD_ROUTER_TOKEN` reads as an unexplained "must be
-/// set" failure while the value sits right there under its old name.
-fn renamed_environment_variables<I>(variables: I) -> Vec<String>
-where
-    I: IntoIterator<Item = String>,
-{
-    let mut stale: Vec<String> = variables
-        .into_iter()
-        .filter(|name| name.starts_with("SWITCHYARD_"))
-        .map(|name| {
-            let renamed = name.replacen("SWITCHYARD_", "APMPR_", 1);
-            format!("{name} -> {renamed}")
-        })
-        .collect();
-    stale.sort();
-    stale
-}
-
 fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let stale = renamed_environment_variables(env::vars().map(|(name, _)| name));
-    if !stale.is_empty() {
-        return Err(Box::new(MessageError(format!(
-            "Switchyard was renamed to APM ProjectRunner, so these environment variables are no longer read; rename them and retry:\n  {}",
-            stale.join("\n  ")
-        ))));
+    if let Some(message) = router_config::stale_environment_error() {
+        return Err(Box::new(MessageError(message)));
     }
     let command = cli::parse(env::args_os().skip(1))?;
     if command == CliCommand::Help {
@@ -1930,31 +1905,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn renamed_environment_variables_name_their_apmpr_replacement() {
-        let stale = renamed_environment_variables(
-            ["SWITCHYARD_ROUTER_TOKEN", "PATH", "SWITCHYARD_BUNDLE"]
-                .into_iter()
-                .map(str::to_owned),
-        );
-        assert_eq!(
-            stale,
-            vec![
-                "SWITCHYARD_BUNDLE -> APMPR_BUNDLE".to_owned(),
-                "SWITCHYARD_ROUTER_TOKEN -> APMPR_ROUTER_TOKEN".to_owned(),
-            ]
-        );
-        // An environment already using the new names is not reported.
-        assert!(
-            renamed_environment_variables(
-                ["APMPR_ROUTER_TOKEN", "PATH"]
-                    .into_iter()
-                    .map(str::to_owned)
-            )
-            .is_empty()
-        );
-    }
-
-    #[test]
     fn up_source_preparation_clones_one_store_and_creates_all_worktrees() {
         let directory = tempfile::tempdir().unwrap();
         let origin = directory.path().join("origin");
@@ -2048,7 +1998,7 @@ mod tests {
             "deployment": "demo",
             "definitionHash": "definition",
             "resourceHash": "resources",
-            "composeProject": "sy--demo",
+            "composeProject": "apmpr--demo",
             "artifactDir": ".apmpr/generated/demo",
             "composeYaml": "",
             "resolvedDeploymentYaml": "",

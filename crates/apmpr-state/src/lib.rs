@@ -2942,7 +2942,7 @@ mod tests {
                     port: 22,
                     identity_file: None,
                 },
-                compose_project: "sy--demo-builder".into(),
+                compose_project: "apmpr--demo-builder".into(),
                 compose_file: "compose.builder.yaml".into(),
                 services: vec!["demo--provider--api".into()],
             },

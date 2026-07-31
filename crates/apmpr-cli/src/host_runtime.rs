@@ -1232,7 +1232,7 @@ mod tests {
             deployment: "demo".into(),
             definition_hash: "definition".into(),
             resource_hash: "resource".into(),
-            compose_project: "sy--demo".into(),
+            compose_project: "apmpr--demo".into(),
             artifact_dir: ".apmpr/generated/demo".into(),
             local_service_count: 0,
             compose_yaml: String::new(),
