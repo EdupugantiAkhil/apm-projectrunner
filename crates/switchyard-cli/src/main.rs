@@ -1292,6 +1292,7 @@ fn runtime_plan(workspace_root: &Path, plan: &Plan) -> RuntimePlan {
         requires_router_token: !plan.sidecars.is_empty(),
         local_service_count: plan.local_service_count,
         runtime_secrets: plan.runtime_secrets.clone(),
+        external_probes: plan.external_probes.clone(),
         remote_projects: plan
             .remote_projects
             .iter()

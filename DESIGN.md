@@ -581,9 +581,11 @@ does not mean the block is ready.
 
 ### Instance
 
-A concrete copy of a block in a deployment. Each instance selects a source and supplies
-parameters. It also selects an execution device; `local` is the default and the only
-placement honored before the limited remote execution cut.
+An instance is either a concrete copy of a block or an external endpoint. A started
+instance selects a source, supplies parameters, and selects an execution device; `local`
+is the default and the only placement honored before the limited remote execution cut.
+An external instance instead declares one upstream host and the ports that group members
+may reach. It has no source, block, device, Compose service, source identity, or lifecycle.
 
 ```yaml
 instances:
@@ -600,6 +602,11 @@ instances:
     device: local
     parameters:
       LOG_LEVEL: debug
+
+  - name: staging-es
+    external: search.staging.internal
+    ports: [9200, 9300]
+    probe: { type: tcp, port: 9200 }
 ```
 
 Every expanded service name is namespaced:
@@ -629,8 +636,16 @@ groups:
 An outbound IPv4 or IPv6 loopback TCP connection is intercepted in the sender's namespace.
 The router preserves the destination port and tries active group members on that same port
 in authored order. If several members listen, the first listed wins and a warning names
-the collision. Ports are observed at runtime; `publish`, probes, and image `EXPOSE` remain
-lifecycle or ingress metadata, not routing declarations.
+the collision. Started-member ports are observed at runtime; an external member has no
+listener registry, so its expanded `ports:` allowlist supplies the same per-port candidacy.
+`publish`, started-service probes, and image `EXPOSE` remain lifecycle or ingress metadata,
+not routing declarations.
+
+For example, a call to `localhost:9200` from any started member of a group containing
+`staging-es` is forwarded to `search.staging.internal:9200`. The external address is used
+as authored and must resolve and be reachable from the sidecar routing environment. An
+optional external HTTP, HTTPS, TCP, or command probe runs during `up`; failure is reported
+as external reachability, separately from managed-instance startup failure.
 
 Each instance has its own namespace so alternative members can remain alive and a group
 can switch between them without rebuilding or restarting applications. Reordering members

@@ -3,8 +3,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     fmt, fs, io,
+    net::{TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    time::Duration,
 };
 
 use serde::Deserialize;
@@ -29,6 +31,11 @@ pub enum RuntimeError {
         command: String,
         detail: String,
     },
+    ExternalUnreachable {
+        instance: String,
+        host: String,
+        detail: String,
+    },
     Teardown(Vec<RuntimeError>),
 }
 
@@ -51,6 +58,14 @@ impl fmt::Display for RuntimeError {
                 command,
                 detail,
             } => write!(formatter, "device `{device}`: `{command}` failed: {detail}"),
+            Self::ExternalUnreachable {
+                instance,
+                host,
+                detail,
+            } => write!(
+                formatter,
+                "external instance `{instance}` at `{host}` is not reachable: {detail}"
+            ),
             Self::Teardown(errors) => {
                 writeln!(
                     formatter,
@@ -256,6 +271,7 @@ pub struct RuntimePlan {
     /// Zero when every instance is remote; the local Compose project is then skipped.
     pub local_service_count: usize,
     pub remote_projects: Vec<RemoteRuntimeProject>,
+    pub external_probes: Vec<switchyard_planner::ExternalProbePlan>,
 }
 
 #[derive(Clone, Debug)]
@@ -309,10 +325,54 @@ impl<E: CommandExecutor> DockerRuntime<E> {
         for remote in &plan.remote_projects {
             self.up_project(plan, Some(remote))?;
         }
-        if plan.local_service_count == 0 {
-            return Ok(());
+        if plan.local_service_count > 0 {
+            self.up_project(plan, None)?;
         }
-        self.up_project(plan, None)
+        self.probe_externals(plan)
+    }
+
+    fn probe_externals(&self, plan: &RuntimePlan) -> Result<(), RuntimeError> {
+        let http_agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(5)))
+            .build()
+            .into();
+        for external in &plan.external_probes {
+            let result = match &external.probe {
+                switchyard_planner::Probe::Tcp { port } => {
+                    probe_external_tcp(&external.host, *port)
+                }
+                switchyard_planner::Probe::Http { path, port, https } => {
+                    let scheme = if *https { "https" } else { "http" };
+                    let path = if path.starts_with('/') {
+                        path.clone()
+                    } else {
+                        format!("/{path}")
+                    };
+                    http_agent
+                        .get(format!("{scheme}://{}:{port}{path}", external.host))
+                        .call()
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                }
+                switchyard_planner::Probe::Command { command } => {
+                    let Some((program, arguments)) = command.split_first() else {
+                        continue;
+                    };
+                    self.executor
+                        .capture(program, arguments)
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                }
+            };
+            if let Err(detail) = result {
+                return Err(RuntimeError::ExternalUnreachable {
+                    instance: external.instance.clone(),
+                    host: external.host.clone(),
+                    detail,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Verifies every selected remote Docker daemon before any Compose mutation.
@@ -597,6 +657,24 @@ impl<E: CommandExecutor> DockerRuntime<E> {
                 map_project_error(remote, &render_command("docker", &arguments), error)
             })
     }
+}
+
+fn probe_external_tcp(host: &str, port: u16) -> Result<(), String> {
+    let addresses = (host, port)
+        .to_socket_addrs()
+        .map_err(|error| format!("could not resolve host: {error}"))?
+        .collect::<Vec<_>>();
+    if addresses.is_empty() {
+        return Err("host resolved to no addresses".into());
+    }
+    let mut failures = Vec::new();
+    for address in addresses {
+        match TcpStream::connect_timeout(&address, Duration::from_secs(5)) {
+            Ok(_) => return Ok(()),
+            Err(error) => failures.push(format!("{address}: {error}")),
+        }
+    }
+    Err(failures.join("; "))
 }
 
 fn secret_environment(plan: &RuntimePlan) -> Result<BTreeMap<String, OsString>, RuntimeError> {
@@ -1034,6 +1112,7 @@ mod tests {
             requires_router_token: false,
             runtime_secrets: Vec::new(),
             remote_projects: Vec::new(),
+            external_probes: Vec::new(),
         }
     }
 
@@ -1326,6 +1405,34 @@ mod tests {
             "--wait".into(),
             "--remove-orphans".into()
         ]));
+    }
+
+    #[test]
+    fn external_tcp_probe_has_a_distinct_reachability_error() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut reachable = plan();
+        reachable.local_service_count = 0;
+        reachable
+            .external_probes
+            .push(switchyard_planner::ExternalProbePlan {
+                instance: "host-db".into(),
+                host: "127.0.0.1".into(),
+                probe: switchyard_planner::Probe::Tcp { port },
+            });
+        DockerRuntime::new(FakeExecutor::default())
+            .up(&reachable)
+            .unwrap();
+
+        drop(listener);
+        reachable.external_probes[0].probe = switchyard_planner::Probe::Tcp { port: 0 };
+        let error = DockerRuntime::new(FakeExecutor::default())
+            .up(&reachable)
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::ExternalUnreachable { .. }));
+        assert!(error.to_string().contains("external instance `host-db`"));
+        assert!(error.to_string().contains("is not reachable"));
+        assert!(!error.to_string().contains("failed to start"));
     }
 
     #[test]

@@ -36,6 +36,7 @@ pub struct TransparentTarget {
     component: Arc<str>,
     host: Arc<str>,
     local: bool,
+    declared_ports: Option<Arc<BTreeSet<u16>>>,
 }
 
 impl TransparentTarget {
@@ -44,7 +45,13 @@ impl TransparentTarget {
             component: component.into(),
             host: host.into(),
             local,
+            declared_ports: None,
         }
+    }
+
+    pub fn with_declared_ports(mut self, ports: impl IntoIterator<Item = u16>) -> Self {
+        self.declared_ports = Some(Arc::new(ports.into_iter().collect()));
+        self
     }
 
     pub fn component(&self) -> &str {
@@ -57,6 +64,12 @@ impl TransparentTarget {
 
     pub fn is_local(&self) -> bool {
         self.local
+    }
+
+    fn declares_port(&self, port: u16) -> Option<bool> {
+        self.declared_ports
+            .as_ref()
+            .map(|ports| ports.contains(&port))
     }
 }
 
@@ -290,6 +303,9 @@ async fn forward_transparent(
         if observed.get(index).copied().unwrap_or(false) {
             continue;
         }
+        if target.declares_port(port) == Some(false) {
+            continue;
+        }
         if let Ok(mut upstream) = connect_target(&target, port, connect_timeout).await {
             tokio::io::copy_bidirectional(&mut client, &mut upstream).await?;
             return Ok(());
@@ -320,9 +336,12 @@ async fn observe_targets(
     for (index, target) in targets.iter().enumerate() {
         let host = Arc::clone(&target.host);
         let local = target.local;
+        let declared_ports = target.declared_ports.clone();
         let registry_excluded_ports = registry_excluded_ports.clone();
         checks.spawn(async move {
-            let ports = if local {
+            let ports = if let Some(ports) = declared_ports {
+                Some((*ports).clone())
+            } else if local {
                 listening_ports(&registry_excluded_ports).ok()
             } else {
                 observed_listeners(&host, connect_timeout).await
@@ -862,5 +881,35 @@ where
         }
         writer.write_all(&buffer[..count]).await?;
         activity.send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+}
+
+#[cfg(test)]
+mod transparent_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn declared_external_ports_are_candidates_and_connect_port_for_port() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let target =
+            TransparentTarget::new("staging-es", "127.0.0.1", false).with_declared_ports([port]);
+        let observed = observe_targets(
+            std::slice::from_ref(&target),
+            port,
+            &BTreeSet::new(),
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(observed, [true]);
+        assert_eq!(target.declares_port(port), Some(true));
+        assert_eq!(target.declares_port(port.saturating_sub(1)), Some(false));
+
+        let accepted = tokio::spawn(async move { listener.accept().await.unwrap().1 });
+        let stream = connect_target(&target, port, Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(stream.peer_addr().unwrap().port(), port);
+        accepted.await.unwrap();
     }
 }

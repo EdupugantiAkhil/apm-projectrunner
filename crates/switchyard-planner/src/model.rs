@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 pub const API_VERSION: &str = "switchyard.dev/v1alpha2";
 pub const KIND: &str = "Deployment";
@@ -240,8 +240,19 @@ pub enum Probe {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Instance {
     pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub block: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source: String,
+    /// Hostname or IP address of an instance Switchyard routes to but never starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external: Option<String>,
+    /// Port-for-port routes exposed by an external instance.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<ExternalPort>,
+    /// Optional reachability check performed during `up`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe: Option<Probe>,
     /// Execution placement. `local` is the only supported device in this release.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
@@ -258,6 +269,100 @@ pub struct Instance {
     /// Environment keys removed after inherited service defaults are applied.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub environment_unset: Vec<String>,
+}
+
+impl Instance {
+    pub fn is_external(&self) -> bool {
+        self.external.is_some()
+    }
+
+    pub fn expanded_external_ports(&self) -> Vec<u16> {
+        self.ports.iter().flat_map(|port| port.expanded()).collect()
+    }
+}
+
+/// One external port or inclusive range. Ranges serialize as quoted YAML strings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExternalPort {
+    Single(u16),
+    Range { start: u16, end: u16 },
+}
+
+impl ExternalPort {
+    pub fn expanded(self) -> std::ops::RangeInclusive<u16> {
+        match self {
+            Self::Single(port) => port..=port,
+            Self::Range { start, end } => start..=end,
+        }
+    }
+}
+
+impl Serialize for ExternalPort {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Single(port) => serializer.serialize_u16(*port),
+            Self::Range { start, end } => serializer.serialize_str(&format!("{start}-{end}")),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ExternalPort {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = ExternalPort;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a nonzero port integer or an inclusive \"start-end\" range")
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let port = u16::try_from(value)
+                    .map_err(|_| E::custom("port must be between 1 and 65535"))?;
+                Ok(ExternalPort::Single(port))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let value = u64::try_from(value)
+                    .map_err(|_| E::custom("port must be between 1 and 65535"))?;
+                self.visit_u64(value)
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let (start, end) = value
+                    .split_once('-')
+                    .ok_or_else(|| E::custom("port range must use \"start-end\""))?;
+                if start.is_empty() || end.is_empty() || end.contains('-') {
+                    return Err(E::custom("port range must use \"start-end\""));
+                }
+                let start = start
+                    .parse::<u16>()
+                    .map_err(|_| E::custom("range start must be between 1 and 65535"))?;
+                let end = end
+                    .parse::<u16>()
+                    .map_err(|_| E::custom("range end must be between 1 and 65535"))?;
+                Ok(ExternalPort::Range { start, end })
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

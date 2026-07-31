@@ -411,8 +411,8 @@ and the TypeScript/Vite production build pass.
 
 ### Part 2e — External instances: things already running outside Switchyard
 
-Not everything a group needs is started by Switchyard. A Postgres installed natively on the
-machine, a shared Elasticsearch on the corporate network, a service on a teammate's box —
+Not everything a group needs is started by Switchyard. A separately managed Postgres,
+a shared Elasticsearch on the corporate network, a service on a teammate's box —
 today none of these can be a group member, so a deployment that needs one cannot be
 expressed at all.
 
@@ -420,9 +420,9 @@ An **external instance** is an instance Switchyard routes to but does not start:
 
 ```yaml
 instances:
-  - { name: host-db,      external: 127.0.0.1,              ports: [5432] }
-  - { name: host-kafka,   external: 127.0.0.1,              ports: [9092, 9093, 2181] }
-  - { name: host-devsvc,  external: 127.0.0.1,              ports: ["8000-8010"] }
+  - { name: shared-db,    external: db.dev.internal,         ports: [5432] }
+  - { name: shared-kafka, external: kafka.dev.internal,      ports: [9092, 9093, 2181] }
+  - { name: teammate-svc, external: teammate.dev.internal,   ports: ["8000-8010"] }
   - { name: staging-es,   external: search.staging.internal, ports: [9200, 9300] }
 
 groups:
@@ -443,8 +443,10 @@ possible: a range whose two sides differ would need arithmetic, and "which end d
 land on" is a question worth not having. It also means one entry per external service
 rather than per port.
 
-**Not only the host.** `search.staging.internal` is the same mechanism as `127.0.0.1`,
-which is why the field is `external:` rather than `host:` and takes a full hostname.
+**Use the address as authored.** `search.staging.internal` is resolved from the routing
+sidecar and must be reachable from there. Switchyard does not reinterpret a loopback address
+as the developer host; host-machine bridging, when wanted, must be named explicitly by an
+address reachable from the container network.
 
 - [ ] `Instance` gains an external form: `{ name, external, ports }`, with no block, no
       source, no device, and no lifecycle — `up` never starts or stops it

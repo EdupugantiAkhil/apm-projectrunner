@@ -1257,6 +1257,7 @@ mod tests {
             origins: Default::default(),
             injected_files: Default::default(),
             warnings: Default::default(),
+            external_probes: Default::default(),
             runtime_secrets: Default::default(),
             has_overrides: false,
         };

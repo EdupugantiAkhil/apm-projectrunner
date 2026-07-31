@@ -978,3 +978,17 @@ audit shell startup files as well as the requested cache directories.
 - Lesson: when authored state is a shared collection, derive the mutation's complete affected
   set from before/after plans. The command's named object is not necessarily the mutation
   boundary.
+
+## 2026-07-31 — An external endpoint is not an implicit host-loopback escape hatch
+
+- The first Part 2e pass interpreted an example loopback address as a request to reach the
+  developer host from Docker and began adding special host-gateway behavior.
+- Correction: preserve the authored endpoint literally. Group `localhost:<port>` is the
+  intercepted caller address; the external host is the upstream destination reached on that
+  same port and must be resolvable from the routing sidecar.
+- Lesson: distinguish the virtual address presented to group members from the upstream
+  endpoint before introducing platform-specific bridging semantics.
+- A reachability test dropped a temporary listener and assumed its freed ephemeral port would
+  remain closed; the full parallel suite immediately reused it. Correction: use port zero for
+  the deliberately invalid runtime-only check. Lesson: a released ephemeral port is never a
+  deterministic negative network fixture.

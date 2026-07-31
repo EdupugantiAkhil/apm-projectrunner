@@ -195,9 +195,10 @@ than a copy of the whole block.
 **Not every member is something Switchyard starts.** `staging-es` is an *external instance*: a
 host and a list of ports, no block and no source. A member of `regression` reaching
 `search.staging.internal:9200` gets there through the group like any other dependency, but
-nothing is launched or stopped — Switchyard only routes. The same form covers a Postgres
-installed natively on your machine (`external: 127.0.0.1, ports: [5432]`), a service on a
-teammate's box, or a shared staging cluster. `ports:` takes single ports and inclusive ranges
+nothing is launched or stopped — Switchyard only routes. The same form covers a separately
+managed Postgres, a service on a teammate's box, or a shared staging cluster, provided its
+authored address is resolvable and reachable from the routing sidecars. `ports:` takes single
+ports and inclusive ranges
 (`["8000-8010"]`) in one list, and maps port-for-port: 9200 inside the group is 9200 there.
 This is the one place a port is always written by hand, because an external has no `publish:`
 or image metadata to learn from.
@@ -227,16 +228,13 @@ changing which UI and backend checkout each address opens.
 
 ## Where today's schema differs
 
-The sample above is the intended shape. Three things about the current build differ, all tracked
+The sample above is the intended shape. Two things about the current build differ, both tracked
 in [docs/v2-roadmap.md](../v2-roadmap.md):
 
-1. **There are no external instances.** Every instance must have a block and a source, so
-   anything already running outside Switchyard — a natively installed database, a shared staging
-   service — cannot be a group member at all. Part 2e adds the `{ name, external, ports }` form.
-2. **`scripts:` is not the current shape, and is deferred.** Run actions live in
+1. **`scripts:` is not the current shape, and is deferred.** Run actions live in
    `.switchyard/run-scripts.yaml` as seven-field records. They are deliberately outside the V2
    roadmap until a shell action has a settled way to reach the deployment it is about.
-3. **Address selection is not yet per request.** Instance addresses and a bare group address are
+2. **Address selection is not yet per request.** Instance addresses and a bare group address are
    generated without a hand-authored router topology. The bare group address works only when
    exactly one active member has its own `address:`, which is deliberate and generic. Part 3 still
    needs explicit member subdomains/browser identity and an end-to-end fixture that serves several

@@ -1385,3 +1385,120 @@ fn declared_lifecycle_hooks_are_rejected_not_silently_ignored() {
         "error should name the removed field: {error}"
     );
 }
+
+fn external_bundle(instances: &str, members: &str) -> switchyard_planner::Bundle {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("deployment.yaml");
+    let yaml = format!(
+        r#"apiVersion: switchyard.dev/v1alpha2
+kind: Deployment
+metadata: {{ name: external-demo }}
+spec:
+  repositories:
+    fixture: {{ url: https://example.invalid/repository.git }}
+  sources:
+    app: {{ repository: fixture, ref: main, path: sources/app }}
+  blocks:
+    caller:
+      services:
+        app:
+          execution: {{ type: container, image: example/caller:1 }}
+  instances:
+    - {{ name: caller, block: caller, source: app }}
+{instances}
+  groups:
+    test:
+      instances: [{members}]
+"#
+    );
+    fs::write(&path, yaml).unwrap();
+    load_bundle(&path).unwrap()
+}
+
+#[test]
+fn external_instance_expands_ranges_into_ordered_route_members_without_lifecycle() {
+    let deployment = external_bundle(
+        "    - { name: host-db, external: 127.0.0.1, ports: [5432, \"8000-8002\"], probe: { type: tcp, port: 5432 } }\n",
+        "caller, host-db",
+    );
+    let generated = plan(&deployment).unwrap();
+    let route: serde_json::Value =
+        serde_json::from_str(&generated.route_configs["caller"]).unwrap();
+    assert_eq!(
+        route["spec"]["transparentProxy"]["members"],
+        serde_json::json!([
+            {
+                "component": "caller/app",
+                "host": "external-demo--caller--app"
+            },
+            {
+                "component": "host-db",
+                "host": "127.0.0.1",
+                "ports": [5432, 8000, 8001, 8002]
+            }
+        ])
+    );
+    assert_eq!(generated.external_probes.len(), 1);
+    assert_eq!(generated.external_probes[0].instance, "host-db");
+    assert!(!generated.compose_yaml.contains("host-db"));
+    assert!(!generated.source_identities.contains_key("host-db"));
+    let manifest: serde_json::Value = serde_json::from_str(&generated.manifest_json).unwrap();
+    assert_eq!(
+        manifest["externalInstances"][0]["ports"],
+        serde_json::json!([5432, 8000, 8001, 8002])
+    );
+}
+
+#[test]
+fn external_instance_validation_rejects_invalid_or_oversized_ranges_and_mixed_lifecycle() {
+    let reversed = external_bundle(
+        "    - { name: bad, external: localhost, ports: [\"9000-8000\"] }\n",
+        "caller, bad",
+    );
+    let diagnostics = plan(&reversed).unwrap_err();
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.path == "spec.instances[1].ports[0]"
+            && diagnostic.message.contains("exceeds end")
+    }));
+
+    let oversized = external_bundle(
+        "    - { name: bad, external: localhost, ports: [\"1-1025\"] }\n",
+        "caller, bad",
+    );
+    let diagnostics = plan(&oversized).unwrap_err();
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.path == "spec.instances[1].ports[0]"
+            && diagnostic.message.contains("at most 1024")
+    }));
+
+    let mixed = external_bundle(
+        "    - { name: bad, external: localhost, ports: [5432], block: caller, source: app, device: local }\n",
+        "caller, bad",
+    );
+    let diagnostics = plan(&mixed).unwrap_err();
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.path == "spec.instances[1]"
+            && diagnostic
+                .message
+                .contains("external instance may contain only")
+    }));
+}
+
+#[test]
+fn externals_on_one_host_with_distinct_ports_are_independent_members() {
+    let deployment = external_bundle(
+        "    - { name: host-db, external: 127.0.0.1, ports: [5432] }\n    - { name: host-kafka, external: 127.0.0.1, ports: [9092] }\n",
+        "caller, host-db, host-kafka",
+    );
+    let generated = plan(&deployment).unwrap();
+    let route: serde_json::Value =
+        serde_json::from_str(&generated.route_configs["caller"]).unwrap();
+    assert_eq!(
+        route["spec"]["transparentProxy"]["members"][1]["ports"],
+        serde_json::json!([5432])
+    );
+    assert_eq!(
+        route["spec"]["transparentProxy"]["members"][2]["ports"],
+        serde_json::json!([9092])
+    );
+}

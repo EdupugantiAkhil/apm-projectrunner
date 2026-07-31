@@ -10,6 +10,29 @@ Updated: 2026-07-31
 - Web UI plan (`docs/web-ui-plan.md`): complete. Parts 1 through 13, including follow-up
   Parts 11a–11c, and Part 13's security review with its two fixes.
 
+## 2026-07-31 — V2 Part 2e external instances
+
+- Added the strict `{ name, external, ports, probe? }` instance form. External instances
+  have no block, source, device, Compose resources, source identity, or lifecycle; down and
+  cleanup therefore never target them.
+- Added integer and quoted inclusive-range ports with nonzero, ordered, duplicate, and
+  1024-port range validation. Ranges expand before routing so priority and collision
+  diagnostics remain per-port and use the existing first-listed rule.
+- Extended transparent route members with an optional declared-port allowlist. Started
+  members continue to advertise live listeners; external members use authored ports and
+  connect to the authored host on the unchanged destination port. Same-host externals with
+  disjoint ports remain independent members.
+- Added optional external HTTP, HTTPS, TCP, and command probes to apply plans. `up` runs them
+  after managed services become healthy and reports `external instance ... is not reachable`,
+  distinct from Docker or managed-instance startup failures.
+- External instances remain visible in manifests, membership projections, TUI/Web deployment
+  rows, and connection details without appearing as local device placements.
+- Verification passes: full workspace tests with the five declared reliability ignores;
+  workspace all-target/all-feature Clippy with warnings denied; rustdoc with warnings denied;
+  formatting and diff checks; all 49 Web tests, TypeScript compilation, and the Vite production
+  build. Focused routing coverage also opens a real TCP listener and proves that an authored
+  external port connects to the same port while an undeclared port is not a candidate.
+
 ## 2026-07-31 — V2 Part 2d membership is the connection
 
 - Removed deployment `spec.bindings` and `spec.routes` from the strict authored schema.

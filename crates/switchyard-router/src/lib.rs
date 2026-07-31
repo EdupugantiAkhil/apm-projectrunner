@@ -806,11 +806,14 @@ fn transparent_targets(proxy: &router_config::TransparentProxy) -> Vec<Transpare
                 .as_str()
                 .split_once('/')
                 .unwrap_or((member.component.as_str(), ""));
-            TransparentTarget::new(
+            let target = TransparentTarget::new(
                 member.component.as_str(),
                 member.host.as_str(),
                 instance == proxy.consumer.as_str(),
-            )
+            );
+            member.ports.as_ref().map_or(target.clone(), |ports| {
+                target.with_declared_ports(ports.iter().copied())
+            })
         })
         .collect()
 }

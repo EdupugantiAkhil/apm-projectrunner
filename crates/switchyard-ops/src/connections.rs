@@ -283,8 +283,26 @@ fn details_from_members(
                         .instances
                         .iter()
                         .find(|candidate| candidate.name == instance)
-                        .and_then(|candidate| bundle.spec.blocks.get(&candidate.block))
-                        .map(|block| block.services.keys().cloned().collect())
+                        .map(|candidate| {
+                            if candidate.is_external() {
+                                vec![format!(
+                                    "external ports {}",
+                                    candidate
+                                        .expanded_external_ports()
+                                        .iter()
+                                        .map(u16::to_string)
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                )]
+                            } else {
+                                bundle
+                                    .spec
+                                    .blocks
+                                    .get(&candidate.block)
+                                    .map(|block| block.services.keys().cloned().collect())
+                                    .unwrap_or_default()
+                            }
+                        })
                         .unwrap_or_default()
                 },
                 |service| vec![service.to_owned()],
@@ -293,7 +311,16 @@ fn details_from_members(
                 let health = services
                     .iter()
                     .find(|row| row.instance == instance && row.service == service)
-                    .map_or("unknown", |row| row.health.as_str());
+                    .map_or_else(
+                        || {
+                            if service.starts_with("external ports ") {
+                                "external"
+                            } else {
+                                "unknown"
+                            }
+                        },
+                        |row| row.health.as_str(),
+                    );
                 MemberDetail {
                     instance: instance.into(),
                     service,

@@ -3714,6 +3714,9 @@ fn add_bundle_placements(
     bundle: &switchyard_planner::Bundle,
 ) {
     for instance in &bundle.spec.instances {
+        if instance.is_external() {
+            continue;
+        }
         placements
             .entry(instance.device.clone().unwrap_or_else(|| "local".into()))
             .or_default()

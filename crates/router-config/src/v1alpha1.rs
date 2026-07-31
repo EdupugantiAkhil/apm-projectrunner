@@ -275,6 +275,22 @@ impl RouterConfig {
                         "transparent group member host must be nonempty",
                     ));
                 }
+                if let Some(ports) = &member.ports {
+                    if ports.is_empty() || ports.contains(&0) {
+                        errors.push(ValidationError::new(
+                            ValidationCode::InvalidListener,
+                            &format!("{path}.ports"),
+                            "declared transparent member ports must be nonempty and nonzero",
+                        ));
+                    }
+                    if ports.iter().collect::<BTreeSet<_>>().len() != ports.len() {
+                        errors.push(ValidationError::new(
+                            ValidationCode::DuplicateIdentifier,
+                            &format!("{path}.ports"),
+                            "declared transparent member ports must be unique",
+                        ));
+                    }
+                }
                 if !transparent_members.insert(member.component.clone()) {
                     errors.push(ValidationError::new(
                         ValidationCode::DuplicateIdentifier,
@@ -739,6 +755,9 @@ pub struct TransparentProxy {
 pub struct TransparentMember {
     pub component: ComponentId,
     pub host: String,
+    /// Authored listener ports for a member without a Switchyard listener registry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ports: Option<Vec<u16>>,
 }
 
 const fn default_transparent_connect_timeout_ms() -> u64 {

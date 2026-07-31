@@ -150,12 +150,24 @@ pub struct Plan {
     /// Non-fatal findings produced while selecting routes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<PlannerWarning>,
+    /// Reachability checks for external instances, performed by `up` after managed
+    /// services have become healthy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_probes: Vec<ExternalProbePlan>,
     /// Apply-time secret bindings, deliberately excluded from serialization.
     #[serde(skip)]
     pub runtime_secrets: Vec<RuntimeSecretPlan>,
     /// Whether explicit overlays, a variation, or ephemeral values participated.
     #[serde(skip)]
     pub has_overrides: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalProbePlan {
+    pub instance: String,
+    pub host: String,
+    pub probe: Probe,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -623,6 +635,17 @@ fn validate(
                 "instance name is declared more than once",
             ));
         }
+        if instance.is_external() {
+            validate_external_instance(instance, &path, &adapters, &mut errors);
+            continue;
+        }
+        if !instance.ports.is_empty() || instance.probe.is_some() {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::UnsupportedSchema,
+                &path,
+                "`ports` and instance-level `probe` are valid only with `external`",
+            ));
+        }
         let Some(block) = bundle.spec.blocks.get(&instance.block) else {
             errors.push(Diagnostic::new(
                 DiagnosticCode::MissingReference,
@@ -977,6 +1000,120 @@ fn validate_probe(
     }
 }
 
+fn validate_external_instance(
+    instance: &Instance,
+    path: &str,
+    adapters: &switchyard_adapter_sdk::AdapterRegistry,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let host = instance.external.as_deref().unwrap_or_default();
+    if host.trim().is_empty()
+        || !(plausible_hostname(host) || host.parse::<std::net::IpAddr>().is_ok())
+    {
+        errors.push(Diagnostic::new(
+            DiagnosticCode::InvalidPath,
+            format!("{path}.external"),
+            "external must be a nonempty hostname or IP address without a port",
+        ));
+    }
+    if !instance.block.is_empty()
+        || !instance.source.is_empty()
+        || instance.device.is_some()
+        || instance.address.is_some()
+        || !instance.parameters.is_empty()
+        || !instance.environment.is_empty()
+        || !instance.environment_unset.is_empty()
+    {
+        errors.push(Diagnostic::new(
+            DiagnosticCode::UnsupportedSchema,
+            path,
+            "an external instance may contain only `name`, `external`, `ports`, optional `probe`, and labels",
+        ));
+    }
+    if instance.ports.is_empty() {
+        errors.push(Diagnostic::new(
+            DiagnosticCode::MissingReference,
+            format!("{path}.ports"),
+            "an external instance must declare at least one port",
+        ));
+    }
+    let mut expanded = BTreeSet::new();
+    for (index, port) in instance.ports.iter().enumerate() {
+        let port_path = format!("{path}.ports[{index}]");
+        let (start, end) = match port {
+            ExternalPort::Single(port) => (*port, *port),
+            ExternalPort::Range { start, end } => (*start, *end),
+        };
+        if start == 0 || end == 0 {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::InvalidPath,
+                &port_path,
+                "external ports must be between 1 and 65535",
+            ));
+            continue;
+        }
+        if start > end {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::InvalidPath,
+                &port_path,
+                format!("external port range start {start} exceeds end {end}"),
+            ));
+            continue;
+        }
+        if u32::from(end) - u32::from(start) + 1 > 1024 {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::InvalidPath,
+                &port_path,
+                "external port ranges may contain at most 1024 ports",
+            ));
+            continue;
+        }
+        for value in start..=end {
+            if !expanded.insert(value) {
+                errors.push(Diagnostic::new(
+                    DiagnosticCode::DuplicateName,
+                    &port_path,
+                    format!("external port {value} is declared more than once"),
+                ));
+            }
+        }
+    }
+    if let Some(probe) = &instance.probe {
+        let probe_path = format!("{path}.probe");
+        let configuration = match probe {
+            Probe::Http { path, port, https } => {
+                json!({ "type": "http", "path": path, "port": port, "https": https })
+            }
+            Probe::Tcp { port } => json!({ "type": "tcp", "port": port }),
+            Probe::Command { command } => json!({ "type": "command", "command": command }),
+        };
+        match adapters.lookup(AdapterKind::Probe, "probe-health") {
+            Some(adapter) => extend_adapter_diagnostics(
+                errors,
+                adapter.adapter().validate_configuration(&configuration),
+                DiagnosticCode::MissingReference,
+                &probe_path,
+            ),
+            None => errors.push(Diagnostic::new(
+                DiagnosticCode::UnsupportedSchema,
+                probe_path,
+                "built-in adapter probe-health is not registered",
+            )),
+        }
+        let probe_port = match probe {
+            Probe::Http { port, .. } | Probe::Tcp { port } => Some(*port),
+            Probe::Command { .. } => None,
+        };
+        if probe_port.is_some_and(|port| !expanded.contains(&port)) {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::MissingReference,
+                format!("{path}.probe.port"),
+                "external probe port must be included in the instance `ports` list",
+            ));
+        }
+    }
+}
+
 fn extend_adapter_diagnostics(
     errors: &mut Vec<Diagnostic>,
     diagnostics: Vec<AdapterDiagnostic>,
@@ -1048,6 +1185,14 @@ fn validate_host_upstreams(
             ));
             continue;
         };
+        if instance.is_external() {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::UnsupportedSchema,
+                format!("{path}.instance"),
+                "external instances are routed by group membership and may not be host upstreams",
+            ));
+            continue;
+        }
         let Some(service) = bundle.spec.blocks[&instance.block]
             .services
             .get(&upstream.service)
@@ -1143,6 +1288,40 @@ fn resolve_groups(
                 ));
                 continue;
             };
+            if instance.is_external() {
+                if requested_service.is_some() {
+                    errors.push(Diagnostic::new(
+                        DiagnosticCode::MissingReference,
+                        path,
+                        format!("external group member `{instance_name}` must not name a service"),
+                    ));
+                    continue;
+                }
+                if !seen.insert(member.as_str()) {
+                    errors.push(Diagnostic::new(
+                        DiagnosticCode::DuplicateName,
+                        path,
+                        format!("group member `{member}` is listed more than once"),
+                    ));
+                    continue;
+                }
+                if let Some((first_group, first_index)) =
+                    instance_groups.insert(instance_name, (name, index))
+                {
+                    errors.push(Diagnostic::new(
+                        DiagnosticCode::DuplicateName,
+                        &path,
+                        format!(
+                            "instance `{instance_name}` belongs to both group `{first_group}` \
+                             (spec.groups.{first_group}.instances[{first_index}]) and group `{name}`; \
+                             create a separate external instance for each group"
+                        ),
+                    ));
+                    continue;
+                }
+                valid_members.push(member.clone());
+                continue;
+            }
             let Some(block) = bundle.spec.blocks.get(&instance.block) else {
                 continue;
             };
@@ -1575,6 +1754,9 @@ fn validate_expanded_dependencies(
 ) {
     let mut graph = BTreeMap::<String, Vec<String>>::new();
     for instance in instances.values() {
+        if instance.is_external() {
+            continue;
+        }
         let block = &bundle.spec.blocks[&instance.block];
         for (service_name, service) in &block.services {
             let node = format!("{}/{service_name}", instance.name);
@@ -1591,6 +1773,7 @@ fn validate_expanded_dependencies(
                 };
                 let valid = instances
                     .get(target_instance)
+                    .filter(|candidate| !candidate.is_external())
                     .and_then(|candidate| bundle.spec.blocks.get(&candidate.block))
                     .is_some_and(|target_block| target_block.services.contains_key(target_service));
                 if valid {
@@ -1701,12 +1884,23 @@ fn generate(
     for instance in &mut resource_definition.spec.instances {
         instance.address = None;
     }
+    resource_definition
+        .spec
+        .instances
+        .retain(|instance| !instance.is_external());
     let routed_instances = resource_definition
         .spec
         .groups
         .values()
         .flat_map(|group| &group.instances)
         .map(|member| provider_reference(member).0.to_owned())
+        .filter(|name| {
+            resource_definition
+                .spec
+                .instances
+                .iter()
+                .any(|instance| instance.name == *name)
+        })
         .collect::<BTreeSet<_>>();
     resource_definition.spec.groups.clear();
     if !routed_instances.is_empty() {
@@ -1749,6 +1943,7 @@ fn generate(
         .spec
         .instances
         .iter()
+        .filter(|instance| !instance.is_external())
         .filter_map(|instance| {
             selected_group_for_instance(bundle, groups, &instance.name)
                 .map(|group| (instance.name.clone(), group.to_owned()))
@@ -1759,10 +1954,11 @@ fn generate(
         .instances
         .iter()
         .filter(|instance| {
-            instance
-                .device
-                .as_deref()
-                .is_none_or(|device| device == "local")
+            !instance.is_external()
+                && instance
+                    .device
+                    .as_deref()
+                    .is_none_or(|device| device == "local")
                 && (groups.declared_members.values().any(|members| {
                     members
                         .iter()
@@ -1785,8 +1981,23 @@ fn generate(
     let host_upstreams = host_upstreams(bundle, devices);
     let mut source_identities = BTreeMap::new();
     let source_manager = SourceManager::new(&bundle.workspace_root);
+    let external_probes = bundle
+        .spec
+        .instances
+        .iter()
+        .filter_map(|instance| {
+            instance.probe.clone().map(|probe| ExternalProbePlan {
+                instance: instance.name.clone(),
+                host: instance.external.clone().expect("validated external probe"),
+                probe,
+            })
+        })
+        .collect::<Vec<_>>();
 
     for instance in &bundle.spec.instances {
+        if instance.is_external() {
+            continue;
+        }
         let mut instance_labels = labels.clone();
         instance_labels.insert(INSTANCE_LABEL.into(), instance.name.clone());
         let remote_device = instance
@@ -2064,6 +2275,14 @@ fn generate(
         "hostUpstreams": host_upstreams,
         "ownershipLabels": labels,
         "sourceIdentities": source_identities,
+        "externalInstances": bundle.spec.instances.iter().filter_map(|instance| {
+            instance.external.as_ref().map(|host| json!({
+                "instance": instance.name,
+                "host": host,
+                "ports": instance.expanded_external_ports(),
+                "probed": instance.probe.is_some(),
+            }))
+        }).collect::<Vec<_>>(),
     });
     if !remote_projects.is_empty() {
         let manifest_remote_projects = remote_projects
@@ -2118,6 +2337,7 @@ fn generate(
         origins: overlay.map_or_else(Vec::new, |value| value.origins.clone()),
         injected_files: overlay.map_or_else(Vec::new, |value| value.files.clone()),
         warnings,
+        external_probes,
         runtime_secrets: overlay.map_or_else(Vec::new, |value| {
             value
                 .secret_environment
@@ -2816,6 +3036,13 @@ fn transparent_members(
             let Some(instance) = instances.get(instance_name) else {
                 return Vec::new();
             };
+            if let Some(host) = instance.external.as_deref() {
+                return vec![json!({
+                    "component": instance_name,
+                    "host": host,
+                    "ports": instance.expanded_external_ports(),
+                })];
+            }
             let Some(block) = bundle.spec.blocks.get(&instance.block) else {
                 return Vec::new();
             };

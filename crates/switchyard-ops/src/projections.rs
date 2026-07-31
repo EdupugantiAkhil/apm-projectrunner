@@ -421,9 +421,19 @@ pub fn load_definition_choices(
         .iter()
         .map(|instance| InstanceRow {
             name: instance.name.clone(),
-            block: instance.block.clone(),
-            source: instance.source.clone(),
-            device: instance.device.clone().unwrap_or_else(local_device),
+            block: instance
+                .external
+                .as_ref()
+                .map_or_else(|| instance.block.clone(), |_| "external".into()),
+            source: instance
+                .external
+                .clone()
+                .unwrap_or_else(|| instance.source.clone()),
+            device: if instance.is_external() {
+                "external".into()
+            } else {
+                instance.device.clone().unwrap_or_else(local_device)
+            },
         })
         .collect();
     let blocks = bundle.spec.blocks.keys().cloned().collect();
