@@ -35,7 +35,7 @@ Updated: 2026-07-31
 - Verification passes: workspace tests with the five declared reliability ignores; all-target,
   all-feature Clippy with warnings denied; rustdoc with warnings denied; formatting and diff
   checks; 49 Web tests; and the TypeScript/Vite production build. Web lint exits zero with the
-  four pre-existing exhaustive-dependencies warnings.
+  four pre-existing exhaustive-dependencies warnings. Implementation landed in `6616583`.
 
 ## 2026-07-31 V2 Part 2c — repository stores and source worktrees
 

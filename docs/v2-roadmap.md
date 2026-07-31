@@ -47,7 +47,7 @@ verification evidence.
 | ✅ | 2a — Membership stops being policed by capability | `a24991b` |
 | ✅ | 2b — A group shares one localhost; capabilities and slots are removed | `d2bdddf` |
 | ✅ | 2c — Repositories are declared once; sources are a repo and a ref | `4e6969a` |
-| ⬜ | 2d — `bindings:` is deleted; membership is the connection | |
+| ✅ | 2d — `bindings:` is deleted; membership is the connection | `6616583` |
 | ⬜ | 2e — External instances: things already running outside Switchyard | |
 | ⬜ | 3 — Serving a whole group from one address (router) | |
 | ⬜ | 4 — Vocabulary and documentation alignment | |
@@ -361,7 +361,7 @@ TypeScript/Vite production build passed.
 
 ---
 
-### Part 2d — `bindings:` is deleted; membership is the connection
+### Part 2d — `bindings:` is deleted; membership is the connection ✅
 
 Vision reference: user_flow steps 8 and 9, including the one-instance-one-group rule.
 
@@ -380,22 +380,22 @@ context, and schema validation rejects multi-group membership before planning or
 This rule is structural; it does not infer whether an instance is a consumer,
 receiver-only, UI, backend, or database.
 
-- [ ] `spec.bindings` removed from the schema; membership alone resolves every consumer
-- [ ] Every instance appears in at most one group's `instances:` list; validation names
+- [x] `spec.bindings` removed from the schema; membership alone resolves every consumer
+- [x] Every instance appears in at most one group's `instances:` list; validation names
       both groups when the rule is violated
-- [ ] A grouped instance gets that group's complete ordered member view
-- [ ] Acceptance proves that two instances may reuse the same source and startup profile
+- [x] A grouped instance gets that group's complete ordered member view
+- [x] Acceptance proves that two instances may reuse the same source and startup profile
       while belonging to different groups
-- [ ] Delete the backend-specific `BackendGroupInvariant`. The generic replacement is an
+- [x] Delete the backend-specific `BackendGroupInvariant`. The generic replacement is an
       instance-in-multiple-groups validation diagnostic; it does not classify that
       instance by role or wait for a runtime connection
-- [ ] Ops, TUI, and web surfaces that read or write bindings move to membership — the Web
+- [x] Ops, TUI, and web surfaces that read or write bindings move to membership — the Web
       UI's "desired connections" table becomes group membership editing
-- [ ] Migration refuses an instance listed in several groups and names every occurrence;
+- [x] Migration refuses an instance listed in several groups and names every occurrence;
       it cannot silently duplicate a runtime instance or choose which group keeps it
-- [ ] Migration drops `bindings:` where it agrees with membership; where it disagrees,
+- [x] Migration drops `bindings:` where it agrees with membership; where it disagrees,
       **refuse and report** rather than pick one
-- [ ] **`spec.routes` goes in the same pass.** It is the other place a connection can be
+- [x] **`spec.routes` goes in the same pass.** It is the other place a connection can be
       authored — bypassing groups entirely — and leaving it is the same mistake as
       keeping `bindings:`: a second way to say what a group says, able to contradict it.
       One mechanism, no escape hatch.
@@ -403,6 +403,9 @@ receiver-only, UI, backend, or database.
 **Sequencing.** This depends on Part 2b: once group membership supplies the shared
 localhost, unique membership replaces the routing-context choice that `bindings:` used to
 express. Land 2b first, then this.
+
+Landed in `6616583`; workspace tests, Clippy, rustdoc, formatting, 49 Web tests, Web lint,
+and the TypeScript/Vite production build pass.
 
 ---
 
