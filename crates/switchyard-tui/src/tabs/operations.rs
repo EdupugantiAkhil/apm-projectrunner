@@ -788,10 +788,12 @@ mod tests {
         let mut log = OperationLog::default();
         log.start("readiness", Some("demo".into()), false);
         log.append("instance frontend service api ready");
+        log.append("Warning [provider_collision] spec.bindings.backend-1: routing to db-main, the first listed");
         log.finish(OperationOutcome::Finished(0));
         log.start("cleanup", Some("other".into()), true);
         log.finish(OperationOutcome::Finished(0));
         assert!(render_timeline(&log, "frontend").contains("readiness"));
+        assert!(render_timeline(&log, "provider_collision").contains("routing to db-main"));
         assert!(!render_timeline(&log, "frontend").contains("cleanup"));
         assert!(render_timeline(&log, "other").contains("DESTRUCTIVE"));
     }

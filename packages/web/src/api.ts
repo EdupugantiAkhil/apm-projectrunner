@@ -149,7 +149,8 @@ export interface RouteState {
 }
 export interface OperationEvent { id: number; operationId: string; kind: 'operation' | 'build' | 'health' | 'route' | 'log'; timestamp: number; data: Record<string, unknown> }
 export interface DeploymentDefinition { apiVersion: string; name: string; path: string; yaml: string; hash: string }
-export interface DeploymentValidation { apiVersion: string; name: string; valid: boolean; diagnostics: Array<{ code: string; path: string; message: string }>; preview: Record<string, unknown> }
+export interface PlannerWarning { code: string; path: string; message: string }
+export interface DeploymentValidation { apiVersion: string; name: string; valid: boolean; diagnostics: Array<{ code: string; path: string; message: string }>; warnings?: PlannerWarning[]; preview: Record<string, unknown> }
 export interface AdapterRecord { kind: string; declaration: { id?: string; version?: string; capabilities?: string[]; [key: string]: unknown }; configurationSchema: JsonSchema }
 export type ProfileTrust = 'trusted' | 'imported' | 'changed' | 'not-imported'
 export type ProfileOrigin = { kind: 'project' } | { kind: 'imported-from-source' | 'discovered-in-source'; source: string; commit: string | null }

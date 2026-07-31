@@ -30,7 +30,7 @@ fn current_example_deployments_remain_schema_compatible_and_deterministic() {
         Golden {
             path: "tests/compat/jas-base-deployment.yaml",
             deployment: "jas-base",
-            definition_hash: "8c42f9d3ab55f6767e3450206ea898be0c4550f06d7e592682314adc31f1f86b",
+            definition_hash: "0a06182fe9337f4d580eebe3f2c0724e1854cb488e51e957d0db154a2cea11f9",
             resource_hash: "1f6e979ac8162d3480ac098ad9282b18ee36533fca273c6c57df674cbeba3e9e",
             route_configs: 4,
             has_host_router: true,

@@ -18,11 +18,19 @@ fn prepare_project() -> TempDir {
     let temp = TempDir::new().unwrap();
     let fixture =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../switchyard-planner/tests/fixtures");
-    fs::copy(
-        fixture.join("deployment.yaml"),
-        temp.path().join("deployment.yaml"),
-    )
-    .unwrap();
+    let deployment_path = temp.path().join("deployment.yaml");
+    fs::copy(fixture.join("deployment.yaml"), &deployment_path).unwrap();
+    let deployment = fs::read_to_string(&deployment_path)
+        .unwrap()
+        .replace(
+            "    - { name: provider-main, block: provider, source: app }",
+            "    - { name: provider-main, block: provider, source: app }\n    - { name: provider-replica, block: provider, source: app }",
+        )
+        .replace(
+            "      instances: [provider-main/api]",
+            "      instances: [provider-main/api, provider-replica/api]",
+        );
+    fs::write(&deployment_path, deployment).unwrap();
     fs::copy(
         fixture.join("process-compose.yaml"),
         temp.path().join("process-compose.yaml"),
@@ -65,6 +73,9 @@ async fn no_daemon_fallback_and_api_backend_have_identical_output() {
         .output()
         .unwrap();
     assert!(direct.status.success());
+    assert!(String::from_utf8_lossy(&direct.stdout).contains(
+        "Warning [provider_collision] spec.bindings.consumer-a: `search` slot on consumer-a has two candidates in group `base`: provider-main/api and provider-replica/api; routing to provider-main/api, the first listed"
+    ));
     assert!(!temp.path().join(".switchyard/daemon.json").exists());
 
     let config = DaemonConfig::new(temp.path().into(), binary.into());

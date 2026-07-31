@@ -68,7 +68,7 @@ fn legacy_workspace_fixture_expands_through_generic_planner_contracts() {
     );
     assert_eq!(
         bundle.spec.groups["ai-main"].address.as_deref(),
-        Some("ui-b.jas-base.localhost")
+        Some("ai-main.jas-base.localhost")
     );
     assert_eq!(feature_group.extends.as_deref(), Some("ai-main"));
     assert_eq!(
@@ -77,7 +77,7 @@ fn legacy_workspace_fixture_expands_through_generic_planner_contracts() {
     );
     assert_eq!(
         feature_group.address.as_deref(),
-        Some("ui-a.jas-base.localhost")
+        Some("ai-feature.jas-base.localhost")
     );
     assert_eq!(bundle.spec.bindings["jas-main"], "ai-feature");
     assert_eq!(bundle.spec.bindings["jas-feature"], "ai-main");
@@ -145,7 +145,10 @@ fn legacy_workspace_fixture_expands_through_generic_planner_contracts() {
         .collect::<BTreeSet<_>>();
     assert_eq!(
         domains,
-        BTreeSet::from(["ui-a.jas-base.localhost", "ui-b.jas-base.localhost"])
+        BTreeSet::from([
+            "ai-feature.jas-base.localhost",
+            "ai-main.jas-base.localhost"
+        ])
     );
 
     for source in ["main", "feature"] {

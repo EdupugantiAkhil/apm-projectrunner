@@ -497,9 +497,11 @@ pub fn plan_with_overlays_and_devices(
         return Err(load_errors);
     }
     let (resolved, mut resolution) = resolve(bundle, &overlays, options)?;
-    let groups = validate(&resolved, devices)?;
+    let validation = validate(&resolved, devices)?;
     for instance in &resolved.spec.instances {
-        for (slot, provider) in crate::selected_routes(&resolved, &groups, &instance.name) {
+        for (slot, provider) in
+            crate::selected_routes(&resolved, &validation.groups, &instance.name)
+        {
             if !resolution.origins.iter().any(|origin| {
                 origin.instance == instance.name && origin.category == "route" && origin.key == slot
             }) {
@@ -521,7 +523,14 @@ pub fn plan_with_overlays_and_devices(
             &right.key,
         ))
     });
-    let plan = generate(&resolved, &groups, Some(&resolution), devices).map_err(|error| {
+    let plan = generate(
+        &resolved,
+        &validation.groups,
+        validation.warnings,
+        Some(&resolution),
+        devices,
+    )
+    .map_err(|error| {
         vec![Diagnostic::new(
             DiagnosticCode::InvalidPath,
             "$",

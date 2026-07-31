@@ -2852,6 +2852,7 @@ fn validate_definition(
                     name: name.into(),
                     valid: true,
                     diagnostics: Vec::new(),
+                    warnings: plan.warnings,
                     preview: json!({
                         "expandedServiceCount": expanded_service_count,
                         "composeYaml": plan.compose_yaml,

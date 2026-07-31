@@ -1,6 +1,6 @@
 # Switchyard implementation progress
 
-Updated: 2026-07-30
+Updated: 2026-07-31
 
 ## Release status
 
@@ -9,6 +9,53 @@ Updated: 2026-07-30
 - Team release (Phase 7): in progress.
 - Web UI plan (`docs/web-ui-plan.md`): complete. Parts 1 through 13, including follow-up
   Parts 11a–11c, and Part 13's security review with its two fixes.
+
+## 2026-07-31 V2 Part 2a — group membership stops being policed by capability
+
+- Removed the hard duplicate-provider rejection and its diagnostic code. Group resolution now keeps
+  every candidate in resolved membership order while retaining the first as the selected provider;
+  a planner warning is emitted only when a bound consumer slot actually has several candidates.
+  The warning names the slot, consumer, group, ordered candidates, and winner.
+- The deterministic inheritance rule is unchanged and now defines collision order precisely: resolve
+  the parent first; remove every inherited member whose provided capabilities overlap any child
+  member; append surviving child `instances` in authored order. The first candidate in that resolved
+  order wins. Focused tests prove inherited order is preserved, capability overrides replace inherited
+  candidates, and reversing `instances` flips both the warning and generated route.
+- Proved the intended boundary by experiment. A copied routing-matrix definition with `ui-1` and
+  `ui-3` in one group planned both Compose services with zero warnings because no consumer slot asks
+  for `ui`. A copied collision fixture warned for both the base binding and its inherited binding and
+  routed to `provider-main`; reversing the list routed both to `provider-replica`. A consumer with two
+  slots on `127.0.0.1:8001` still failed validation with `ListenerConflict`.
+- Added the warning channel to serialized `Plan` output and the daemon validation contract. CLI
+  `validate`, `plan`, and `up` print the established `Warning [provider_collision] path: message`
+  shape. Direct command runs confirmed all three; the controlled `up` experiment printed both
+  warnings before deliberately failing against a nonexistent Docker socket. The daemon API test made
+  an in-process request and asserted the returned code, path, and message. The Web UI now renders
+  warnings on the selected deployment as soon as definition validation returns, and also retains the
+  draft builder, desired-connections, and routing-editor surfaces. The TUI needs no separate channel:
+  F7/F8/F9 stream the same CLI stdout into its ordered Operations timeline, whose warning rendering
+  and filtering are covered.
+- Corrected the crossed JAS group names: `ai-main` now owns `ai-main.jas-base.localhost` and
+  `ai-feature` owns `ai-feature.jas-base.localhost`, with the compatibility fixture and generated
+  address assertions updated together. The JAS definition hash is now
+  `0a06182fe9337f4d580eebe3f2c0724e1854cb488e51e957d0db154a2cea11f9`; its resource hash remains
+  `1f6e979ac8162d3480ac098ad9282b18ee36533fca273c6c57df674cbeba3e9e`.
+- Left routing-matrix membership unchanged. Adding `ui-1` and `ui-3` to `feature-services` is accepted
+  by the planner and emits no warning, but the fixture's real bind-preview proof then changes from five
+  routed providers to six and fails its contract (`left: 6`, `right: 5`). The group intentionally
+  models the backend's five downstream slots while the three instance addresses keep the UI peers
+  symmetric, so changing it here would repeat the Part 2 regression rather than clarify the fixture.
+- Compatibility output was regenerated from the updated fixture and checked directly. Two independent
+  `switchyard plan` runs were byte-identical for JAS base (37,583 bytes) and routing matrix (28,125
+  bytes); the compatibility test also serializes two plans and compares complete output, Compose,
+  routes, and hashes.
+- Verification: `cargo fmt --all -- --check` produced no output; workspace Clippy with all targets,
+  features, and warnings denied passed; `cargo test --workspace --all-features` passed 307 tests with
+  0 failures and the five declared reliability ignores. Relative to the 303-test Part 2 baseline, the
+  net four additions are three planner tests after replacing the removed rejection test, plus one
+  daemon API test. Web TypeScript passed with no output; lint exited zero with exactly the four
+  pre-existing exhaustive-dependencies warnings in `App.tsx` and `DeploymentBuilder.tsx`; 49 web
+  tests passed across four files, one more than baseline for the visible planner-warning surface.
 
 ## 2026-07-30 V2 Part 1 — group membership becomes a list
 

@@ -1,5 +1,29 @@
 # Agent mistakes and lessons
 
+## 2026-07-31 — A rule can faithfully implement wording that its justification does not support
+
+- Part 1 implemented "one provider per capability" exactly as step 8 stated it: any group with two
+  members providing the same capability was rejected. The implementation matched the sentence and its
+  tests, but the section's reasoning was narrower: it only explained why a consumer with one fixed
+  slot cannot route that slot to two providers. The mismatch surfaced when the routing-matrix topology
+  needed two UI branches to share one backend and service set; nothing inside the deployment consumes
+  `ui`, so the rejected duplicate had no competing listener or route.
+- Correction: police the consumer's selected slot, not group membership. Preserve every group member,
+  warn only when one consumed slot has several candidates, and route deterministically to the first
+  resolved candidate. Keep genuine duplicate listener addresses as planning errors because those are
+  actual address conflicts.
+- Lesson: when a specification states a broad invariant and then justifies it with a narrower example,
+  test the boundary outside the example before encoding the broad statement as a hard rejection. A
+  real topology is stronger evidence than internally consistent wording and tests derived from it.
+
+## 2026-07-31 — Do not reuse zsh's special lowercase `path` variable
+
+- While comparing deterministic planner output, a loop assigned a fixture filename to `path`. In zsh,
+  lowercase `path` is tied to `PATH`, so the next `cmp`, `python3`, and `wc` commands appeared missing.
+  This repeated the existing 2026-07-22 lesson in this file.
+- Correction: rerun with `fixture_path`; both plans were byte-identical. Lesson: consult the mistake
+  log as a preflight checklist, and use task-specific shell variable names even in one-off verification.
+
 ## 2026-07-30 — A migrated document must preserve resolved semantics, not merely parse
 
 - The first migration validation stopped after the rewritten YAML deserialized as v1alpha2. A valid

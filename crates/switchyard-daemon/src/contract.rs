@@ -514,6 +514,8 @@ pub struct DeploymentValidationV1 {
     pub name: String,
     pub valid: bool,
     pub diagnostics: Vec<switchyard_planner::Diagnostic>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<switchyard_planner::PlannerWarning>,
     pub preview: Value,
 }
 

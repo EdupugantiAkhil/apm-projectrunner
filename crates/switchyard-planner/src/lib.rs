@@ -77,7 +77,6 @@ pub enum DiagnosticCode {
     DependencyCycle,
     ListenerConflict,
     MissingProvider,
-    DuplicateProvider,
     IncompatibleProtocol,
     IncompleteGroup,
     BackendGroupInvariant,
@@ -108,6 +107,44 @@ impl Diagnostic {
 impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?} at {}: {}", self.code, self.path, self.message)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlannerWarningCode {
+    ProviderCollision,
+}
+
+impl PlannerWarningCode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ProviderCollision => "provider_collision",
+        }
+    }
+}
+
+impl fmt::Display for PlannerWarningCode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannerWarning {
+    pub code: PlannerWarningCode,
+    pub path: String,
+    pub message: String,
+}
+
+impl PlannerWarning {
+    fn new(code: PlannerWarningCode, path: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            path: path.into(),
+            message: message.into(),
+        }
     }
 }
 
@@ -146,6 +183,9 @@ pub struct Plan {
     /// File payloads written only beneath the generated artifact directory.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub injected_files: Vec<InjectedFilePlan>,
+    /// Non-fatal findings produced while selecting routes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<PlannerWarning>,
     /// Apply-time secret bindings, deliberately excluded from serialization.
     #[serde(skip)]
     pub runtime_secrets: Vec<RuntimeSecretPlan>,
@@ -208,6 +248,19 @@ struct DocumentVersion {
     api_version: String,
 }
 
+type ProviderMap = BTreeMap<String, BTreeMap<String, String>>;
+type CandidateMap = BTreeMap<String, BTreeMap<String, Vec<String>>>;
+
+struct ResolvedGroups {
+    providers: ProviderMap,
+    candidates: CandidateMap,
+}
+
+struct ValidationResult {
+    groups: ProviderMap,
+    warnings: Vec<PlannerWarning>,
+}
+
 /// Loads one self-contained deployment bundle without changing runtime state.
 pub fn load_bundle(path: &Path) -> Result<Bundle, PlannerError> {
     let input = fs::read_to_string(path)?;
@@ -247,8 +300,15 @@ pub fn plan_with_devices(
     if !bundle.spec.overlays.is_empty() {
         return plan_with_overlays_and_devices(bundle, &OverlayOptions::default(), devices);
     }
-    let resolved_groups = validate(bundle, devices)?;
-    generate(bundle, &resolved_groups, None, devices).map_err(|error| {
+    let validation = validate(bundle, devices)?;
+    generate(
+        bundle,
+        &validation.groups,
+        validation.warnings,
+        None,
+        devices,
+    )
+    .map_err(|error| {
         vec![Diagnostic::new(
             DiagnosticCode::InvalidPath,
             "$",
@@ -269,7 +329,7 @@ pub fn resolve_service_groups(
     let mut errors = Vec::new();
     let groups = resolve_groups(bundle, &instances, &mut errors);
     if errors.is_empty() {
-        Ok(groups)
+        Ok(groups.providers)
     } else {
         Err(errors)
     }
@@ -462,8 +522,9 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 fn validate(
     bundle: &Bundle,
     devices: &BTreeMap<String, PlanningDevice>,
-) -> Result<BTreeMap<String, BTreeMap<String, String>>, Vec<Diagnostic>> {
+) -> Result<ValidationResult, Vec<Diagnostic>> {
     let mut errors = Vec::new();
+    let mut warnings = Vec::new();
     if bundle.api_version != API_VERSION || bundle.kind != KIND {
         errors.push(Diagnostic::new(
             DiagnosticCode::UnsupportedSchema,
@@ -635,7 +696,14 @@ fn validate(
 
     let resolved_groups = resolve_groups(bundle, &instances, &mut errors);
     validate_expanded_dependencies(bundle, &instances, &mut errors);
-    validate_routes(bundle, &instances, &resolved_groups, &adapters, &mut errors);
+    validate_routes(
+        bundle,
+        &instances,
+        &resolved_groups,
+        &adapters,
+        &mut errors,
+        &mut warnings,
+    );
     validate_address_claims(bundle, &mut errors);
     let has_addresses = bundle
         .spec
@@ -723,7 +791,13 @@ fn validate(
     }
 
     if errors.is_empty() {
-        Ok(resolved_groups)
+        warnings
+            .sort_by(|left, right| (&left.path, &left.message).cmp(&(&right.path, &right.message)));
+        warnings.dedup();
+        Ok(ValidationResult {
+            groups: resolved_groups.providers,
+            warnings,
+        })
     } else {
         Err(errors)
     }
@@ -1118,7 +1192,7 @@ fn resolve_groups(
     bundle: &Bundle,
     instances: &BTreeMap<&str, &Instance>,
     errors: &mut Vec<Diagnostic>,
-) -> BTreeMap<String, BTreeMap<String, String>> {
+) -> ResolvedGroups {
     #[derive(Clone)]
     struct ResolvedMember {
         reference: String,
@@ -1129,6 +1203,7 @@ fn resolve_groups(
     struct ResolvedGroup {
         members: Vec<ResolvedMember>,
         providers: BTreeMap<String, String>,
+        candidates: BTreeMap<String, Vec<String>>,
     }
 
     fn capabilities(
@@ -1228,24 +1303,24 @@ fn resolve_groups(
         members.extend(additions);
 
         let mut providers = BTreeMap::new();
+        let mut candidates = BTreeMap::<String, Vec<String>>::new();
         for member in &members {
             for capability in &member.capabilities {
-                if let Some(first) = providers.get(capability) {
-                    errors.push(Diagnostic::new(
-                        DiagnosticCode::DuplicateProvider,
-                        format!("spec.groups.{name}.instances"),
-                        format!(
-                            "{first} and {} both provide `{capability}`; a group may contain one provider per capability",
-                            member.reference
-                        ),
-                    ));
-                } else {
-                    providers.insert(capability.clone(), member.reference.clone());
-                }
+                providers
+                    .entry(capability.clone())
+                    .or_insert_with(|| member.reference.clone());
+                candidates
+                    .entry(capability.clone())
+                    .or_default()
+                    .push(member.reference.clone());
             }
         }
         stack.remove(name);
-        let group = ResolvedGroup { members, providers };
+        let group = ResolvedGroup {
+            members,
+            providers,
+            candidates,
+        };
         resolved.insert(name.to_owned(), group.clone());
         group
     }
@@ -1262,18 +1337,45 @@ fn resolve_groups(
             errors,
         );
     }
-    resolved
-        .into_iter()
-        .map(|(name, group)| (name, group.providers))
-        .collect()
+    let mut providers = BTreeMap::new();
+    let mut candidates = BTreeMap::new();
+    for (name, group) in resolved {
+        providers.insert(name.clone(), group.providers);
+        candidates.insert(name, group.candidates);
+    }
+    ResolvedGroups {
+        providers,
+        candidates,
+    }
+}
+
+fn candidate_count(count: usize) -> String {
+    match count {
+        2 => "two".into(),
+        3 => "three".into(),
+        _ => count.to_string(),
+    }
+}
+
+fn candidate_list(candidates: &[String]) -> String {
+    match candidates {
+        [] => String::new(),
+        [only] => only.clone(),
+        [first, second] => format!("{first} and {second}"),
+        _ => {
+            let (last, rest) = candidates.split_last().expect("non-empty candidate list");
+            format!("{}, and {last}", rest.join(", "))
+        }
+    }
 }
 
 fn validate_routes(
     bundle: &Bundle,
     instances: &BTreeMap<&str, &Instance>,
-    groups: &BTreeMap<String, BTreeMap<String, String>>,
+    groups: &ResolvedGroups,
     adapters: &switchyard_adapter_sdk::AdapterRegistry,
     errors: &mut Vec<Diagnostic>,
+    warnings: &mut Vec<PlannerWarning>,
 ) {
     for (consumer, group) in &bundle.spec.bindings {
         if !instances.contains_key(consumer.as_str()) {
@@ -1283,7 +1385,7 @@ fn validate_routes(
                 "binding consumer does not exist",
             ));
         }
-        if !groups.contains_key(group) {
+        if !groups.providers.contains_key(group) {
             errors.push(Diagnostic::new(
                 DiagnosticCode::MissingReference,
                 format!("spec.bindings.{consumer}"),
@@ -1300,14 +1402,13 @@ fn validate_routes(
         {
             continue;
         }
-        let mut selected = bundle
-            .spec
-            .bindings
-            .get(*consumer)
-            .and_then(|group| groups.get(group))
+        let selected_group = bundle.spec.bindings.get(*consumer);
+        let mut selected = selected_group
+            .and_then(|group| groups.providers.get(group))
             .cloned()
             .unwrap_or_default();
-        if let Some(routes) = bundle.spec.routes.get(*consumer) {
+        let explicit_routes = bundle.spec.routes.get(*consumer);
+        if let Some(routes) = explicit_routes {
             selected.extend(routes.clone());
         }
         for (slot, route_slot) in block
@@ -1315,6 +1416,28 @@ fn validate_routes(
             .values()
             .flat_map(|service| &service.consumes)
         {
+            if explicit_routes.is_none_or(|routes| !routes.contains_key(slot)) {
+                if let Some((group, candidates)) = selected_group.and_then(|group| {
+                    groups
+                        .candidates
+                        .get(group)
+                        .and_then(|capabilities| capabilities.get(slot))
+                        .map(|candidates| (group, candidates))
+                }) {
+                    if candidates.len() > 1 {
+                        warnings.push(PlannerWarning::new(
+                            PlannerWarningCode::ProviderCollision,
+                            format!("spec.bindings.{consumer}"),
+                            format!(
+                                "`{slot}` slot on {consumer} has {} candidates in group `{group}`: {}; routing to {}, the first listed",
+                                candidate_count(candidates.len()),
+                                candidate_list(candidates),
+                                candidates[0]
+                            ),
+                        ));
+                    }
+                }
+            }
             let Some(provider_ref) = selected.get(slot) else {
                 errors.push(Diagnostic::new(
                     DiagnosticCode::IncompleteGroup,
@@ -1764,7 +1887,7 @@ fn apply_addresses(
                 if candidates.is_empty() {
                     DiagnosticCode::MissingProvider
                 } else {
-                    DiagnosticCode::DuplicateProvider
+                    DiagnosticCode::IncompleteGroup
                 },
                 &path,
                 format!(
@@ -1980,6 +2103,7 @@ fn resolve_path(base: &Path, value: &Path) -> PathBuf {
 fn generate(
     bundle: &Bundle,
     groups: &BTreeMap<String, BTreeMap<String, String>>,
+    warnings: Vec<PlannerWarning>,
     overlay: Option<&OverlayResolution>,
     devices: &BTreeMap<String, PlanningDevice>,
 ) -> Result<Plan, Box<dyn std::error::Error>> {
@@ -2351,6 +2475,7 @@ fn generate(
         source_identities,
         origins: overlay.map_or_else(Vec::new, |value| value.origins.clone()),
         injected_files: overlay.map_or_else(Vec::new, |value| value.files.clone()),
+        warnings,
         runtime_secrets: overlay.map_or_else(Vec::new, |value| {
             value
                 .secret_environment

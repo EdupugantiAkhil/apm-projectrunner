@@ -472,4 +472,10 @@ describe('Switchyard GUI', () => {
     const user = userEvent.setup(); const fetchMock = vi.mocked(fetch); render(<App client={new ApiClient('test')} />); await screen.findByRole('heading', { name: 'comparison', level: 1 }); await user.click(screen.getByRole('button', { name: 'Load routing definition' })); const editor = await screen.findByLabelText('Deployment YAML'); await user.type(editor, '  hostRouter: {{}}\n'); expect(screen.getByRole('heading', { name: 'Full YAML diff' })).toBeInTheDocument(); await user.click(screen.getByRole('button', { name: 'Validate changes' })); await user.click(await screen.findByRole('button', { name: 'Apply definition edit' }));
     await waitFor(() => { const calls = fetchMock.mock.calls; const put = calls.findIndex(([url, init]) => String(url).endsWith('/definition') && init?.method === 'PUT'); const validation = calls.findIndex(([url, init]) => String(url).endsWith('/deployments') && init?.method === 'POST' && JSON.parse(String(init.body)).validateOnly); expect(validation).toBeGreaterThanOrEqual(0); expect(put).toBeGreaterThan(validation) })
   })
+
+  it('shows planner warnings returned by deployment validation', async () => {
+    const client = new ApiClient('test'); vi.spyOn(client, 'definition').mockResolvedValue(authoredDefinition); vi.spyOn(client, 'validateDeployment').mockResolvedValue({ apiVersion: 'v1', name: 'comparison', valid: true, diagnostics: [], warnings: [{ code: 'provider_collision', path: 'spec.bindings.backend-1', message: '`database` slot has two candidates; routing to db-main, the first listed' }], preview: { definition: deployment.snapshot } })
+    render(<App client={client} />); await screen.findByRole('heading', { name: 'comparison', level: 1 })
+    const warnings = await screen.findByRole('complementary', { name: 'Planner warnings' }); expect(within(warnings).getByText('provider_collision')).toBeInTheDocument(); expect(within(warnings).getByText('spec.bindings.backend-1')).toBeInTheDocument(); expect(within(warnings).getByText(/routing to db-main, the first listed/)).toBeInTheDocument()
+  })
 })

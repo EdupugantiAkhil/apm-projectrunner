@@ -149,11 +149,11 @@ spec:
       parameters: { FIXTURE_SOURCE: repository-root/ui-b }
   groups:
     ai-main:
-      address: ui-b.jas-base.localhost
+      address: ai-main.jas-base.localhost
       instances: [ai-main/suite, jas-feature/service, ui-b/app]
     ai-feature:
       extends: ai-main
-      address: ui-a.jas-base.localhost
+      address: ai-feature.jas-base.localhost
       instances: [ai-feature/suite, jas-main/service, ui-a/app]
   bindings:
     ui-a: ai-feature

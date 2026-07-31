@@ -1,9 +1,9 @@
 use std::{fs, path::Path};
 
 use switchyard_planner::{
-    ChangeImpact, DiagnosticCode, ManagedProfile, OverlayOptions, PlanningDevice,
-    PublishedUpstream, classify_changes, load_bundle, load_bundle_from_str, parse_dotenv, plan,
-    plan_with_binding, plan_with_devices, plan_with_overlays, write_plan,
+    ChangeImpact, DiagnosticCode, ManagedProfile, OverlayOptions, PlannerWarningCode,
+    PlanningDevice, PublishedUpstream, classify_changes, load_bundle, load_bundle_from_str,
+    parse_dotenv, plan, plan_with_binding, plan_with_devices, plan_with_overlays, write_plan,
 };
 
 fn bundle() -> switchyard_planner::Bundle {
@@ -22,6 +22,38 @@ fn devices() -> std::collections::BTreeMap<String, PlanningDevice> {
     )])
 }
 
+fn provider_collision_bundle(group: &str) -> switchyard_planner::Bundle {
+    let mut deployment = bundle();
+    let provider = deployment.spec.blocks.get_mut("provider").unwrap();
+    let provider_service = provider.services.get_mut("api").unwrap();
+    let capability = provider_service.provides.remove("search").unwrap();
+    provider_service
+        .provides
+        .insert("database".into(), capability);
+    let consumer = deployment.spec.blocks.get_mut("consumer").unwrap();
+    let consumer_service = consumer.services.get_mut("api").unwrap();
+    let slot = consumer_service.consumes.remove("search").unwrap();
+    consumer_service.consumes.insert("database".into(), slot);
+
+    deployment
+        .spec
+        .instances
+        .retain(|instance| instance.name != "consumer-b");
+    deployment.spec.instances[0].name = "db-main".into();
+    deployment.spec.instances[1].name = "backend-1".into();
+    let mut replica = deployment.spec.instances[0].clone();
+    replica.name = "db-replica".into();
+    deployment.spec.instances.push(replica);
+    deployment.spec.groups.get_mut("base").unwrap().instances =
+        vec!["db-main/api".into(), "db-replica/api".into()];
+    deployment.spec.bindings.clear();
+    deployment
+        .spec
+        .bindings
+        .insert("backend-1".into(), group.into());
+    deployment
+}
+
 #[test]
 fn v1alpha1_loader_error_names_the_migration_command() {
     let directory = tempfile::tempdir().unwrap();
@@ -36,31 +68,93 @@ fn v1alpha1_loader_error_names_the_migration_command() {
 }
 
 #[test]
-fn group_rejects_two_members_providing_one_capability() {
-    let mut deployment = bundle();
-    let mut replica = deployment
-        .spec
-        .instances
-        .iter()
-        .find(|instance| instance.name == "provider-main")
-        .unwrap()
-        .clone();
-    replica.name = "provider-replica".into();
-    deployment.spec.instances.push(replica);
+fn consumer_slot_warns_and_routes_to_the_first_listed_candidate() {
+    let deployment = provider_collision_bundle("base");
+
+    let generated = plan(&deployment).expect("provider collisions are non-fatal");
+    assert_eq!(generated.warnings.len(), 1);
+    assert_eq!(
+        generated.warnings[0].code,
+        PlannerWarningCode::ProviderCollision
+    );
+    assert_eq!(generated.warnings[0].path, "spec.bindings.backend-1");
+    assert_eq!(
+        generated.warnings[0].message,
+        "`database` slot on backend-1 has two candidates in group `base`: db-main/api and db-replica/api; routing to db-main/api, the first listed"
+    );
+    let routes: serde_json::Value =
+        serde_json::from_str(&generated.route_configs["backend-1"]).unwrap();
+    assert_eq!(
+        routes["spec"]["routes"][0]["provider"],
+        "db-main/api--database"
+    );
+}
+
+#[test]
+fn reordering_colliding_group_members_changes_the_selected_provider() {
+    let mut deployment = provider_collision_bundle("base");
     deployment
         .spec
         .groups
         .get_mut("base")
         .unwrap()
         .instances
-        .push("provider-replica/api".into());
+        .reverse();
 
-    let diagnostics = plan(&deployment).unwrap_err();
-    assert!(diagnostics.iter().any(|diagnostic| {
-        diagnostic.code == DiagnosticCode::DuplicateProvider
-            && diagnostic.message
-                == "provider-main/api and provider-replica/api both provide `search`; a group may contain one provider per capability"
-    }));
+    let generated = plan(&deployment).expect("reordered collision should plan");
+    assert!(
+        generated.warnings[0]
+            .message
+            .ends_with("routing to db-replica/api, the first listed")
+    );
+    let routes: serde_json::Value =
+        serde_json::from_str(&generated.route_configs["backend-1"]).unwrap();
+    assert_eq!(
+        routes["spec"]["routes"][0]["provider"],
+        "db-replica/api--database"
+    );
+}
+
+#[test]
+fn inherited_collision_order_is_preserved_through_extends() {
+    let deployment = provider_collision_bundle("feature");
+
+    let generated = plan(&deployment).expect("inherited collision should plan");
+    assert!(generated.warnings[0].message.contains("group `feature`"));
+    assert!(
+        generated.warnings[0]
+            .message
+            .ends_with("routing to db-main/api, the first listed")
+    );
+}
+
+#[test]
+fn unconsumed_duplicate_capabilities_do_not_warn() {
+    let mut deployment = bundle();
+    let mut ui = deployment.spec.blocks["provider"].clone();
+    let service = ui.services.get_mut("api").unwrap();
+    let capability = service.provides.remove("search").unwrap();
+    service.provides.insert("ui".into(), capability);
+    deployment.spec.blocks.insert("ui".into(), ui);
+    for name in ["ui-a", "ui-b"] {
+        let mut instance = deployment.spec.instances[0].clone();
+        instance.name = name.into();
+        instance.block = "ui".into();
+        deployment.spec.instances.push(instance);
+        deployment
+            .spec
+            .groups
+            .get_mut("base")
+            .unwrap()
+            .instances
+            .push(format!("{name}/api"));
+    }
+
+    let generated = plan(&deployment).expect("two UIs should be legal group members");
+    assert!(generated.warnings.is_empty());
+    let compose: serde_json::Value = serde_yaml::from_str(&generated.compose_yaml).unwrap();
+    assert!(compose["services"].get("comparison--ui-a--api").is_some());
+    assert!(compose["services"].get("comparison--ui-b--api").is_some());
 }
 
 #[test]
@@ -691,7 +785,7 @@ fn group_address_generates_its_domain_destination_and_origin_route() {
             matches!(
                 destination,
                 router_config::ListenerDestination::CustomDomain { slot, domain }
-                    if slot.as_str() == "ui-b-domain" && domain == "ui-b.jas-base.localhost"
+                    if slot.as_str() == "ui-b-domain" && domain == "ai-main.jas-base.localhost"
             )
         })
     }));
@@ -699,7 +793,7 @@ fn group_address_generates_its_domain_destination_and_origin_route() {
         matches!(
             &route.identity,
             router_config::BrowserIdentity::Origin { origin }
-                if origin == "http://ui-b.jas-base.localhost:18081"
+                if origin == "http://ai-main.jas-base.localhost:18081"
         ) && route.destination.as_str() == "browser-java"
             && route.provider.as_str() == "jas-feature"
     }));
@@ -732,7 +826,7 @@ fn instance_address_generates_its_domain_destination_and_origin_route() {
 fn backend_group_invariant_keeps_address_path_and_duplicate_guidance() {
     let mut deployment = jas_base_bundle();
     let mut second = deployment.spec.groups["ai-main"].clone();
-    second.address = Some("ui-b-copy.jas-base.localhost".into());
+    second.address = Some("ai-copy.jas-base.localhost".into());
     deployment.spec.groups.insert("ai-copy".into(), second);
 
     let errors = plan(&deployment).expect_err("one backend cannot serve two addressed groups");
@@ -794,7 +888,7 @@ fn duplicate_addresses_are_case_insensitive_and_ignore_a_trailing_dot() {
         .iter()
         .position(|instance| instance.name == "ui-a")
         .unwrap();
-    deployment.spec.instances[index].address = Some("UI-B.JAS-BASE.LOCALHOST.".into());
+    deployment.spec.instances[index].address = Some("AI-MAIN.JAS-BASE.LOCALHOST.".into());
 
     let errors = plan(&deployment).expect_err("addresses are case-insensitively unique");
     assert!(errors.iter().any(|error| {
@@ -826,7 +920,7 @@ fn authored_domain_for_a_different_slot_conflicts_with_generated_address() {
         .destinations
         .push(router_config::ListenerDestination::CustomDomain {
             slot: router_config::RouteSlotId::from("ui-a-domain"),
-            domain: "ui-b.jas-base.localhost".into(),
+            domain: "ai-main.jas-base.localhost".into(),
         });
 
     let errors = plan(&deployment).expect_err("authored and generated domain slots must agree");
@@ -849,7 +943,7 @@ fn authored_origin_for_a_different_provider_conflicts_with_generated_address() {
         .browser_routes
         .push(router_config::BrowserRoute {
             identity: router_config::BrowserIdentity::Origin {
-                origin: "http://ui-b.jas-base.localhost:18081".into(),
+                origin: "http://ai-main.jas-base.localhost:18081".into(),
             },
             destination: router_config::RouteSlotId::from("browser-java"),
             provider: router_config::ComponentId::from("jas-main"),
@@ -874,11 +968,11 @@ fn identical_authored_domain_and_origin_merge_without_duplicates() {
         .destinations
         .push(router_config::ListenerDestination::CustomDomain {
             slot: router_config::RouteSlotId::from("ui-b-domain"),
-            domain: "ui-b.jas-base.localhost".into(),
+            domain: "ai-main.jas-base.localhost".into(),
         });
     router.browser_routes.push(router_config::BrowserRoute {
         identity: router_config::BrowserIdentity::Origin {
-            origin: "http://ui-b.jas-base.localhost:18081".into(),
+            origin: "http://ai-main.jas-base.localhost:18081".into(),
         },
         destination: router_config::RouteSlotId::from("browser-java"),
         provider: router_config::ComponentId::from("jas-feature"),
@@ -894,7 +988,7 @@ fn identical_authored_domain_and_origin_merge_without_duplicates() {
             matches!(
                 destination,
                 router_config::ListenerDestination::CustomDomain { domain, .. }
-                    if domain == "ui-b.jas-base.localhost"
+                    if domain == "ai-main.jas-base.localhost"
             )
         })
         .count();
@@ -906,7 +1000,7 @@ fn identical_authored_domain_and_origin_merge_without_duplicates() {
             matches!(
                 &route.identity,
                 router_config::BrowserIdentity::Origin { origin }
-                    if origin == "http://ui-b.jas-base.localhost:18081"
+                    if origin == "http://ai-main.jas-base.localhost:18081"
             ) && route.destination.as_str() == "browser-java"
         })
         .count();

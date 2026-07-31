@@ -1,9 +1,9 @@
-import type { DeploymentDetail, DeploymentSummary, DeviceRecord, Operation, ProfileRecord, SourceRecord } from './api'
+import type { DeploymentDetail, DeploymentSummary, DeviceRecord, Operation, PlannerWarning, ProfileRecord, SourceRecord } from './api'
 import { consumedSlots, resolvedGroups, type ConnectionSpec } from './connectionModel'
 
 export type HomeDestination = 'sources' | 'devices' | 'profiles' | 'builder' | 'deployments' | 'operations'
 export type ChecklistState = 'done' | 'todo' | 'unknown'
-export interface DeploymentSignal { summary: DeploymentSummary; detail: DeploymentDetail | null; spec: ConnectionSpec | null; error: string | null }
+export interface DeploymentSignal { summary: DeploymentSummary; detail: DeploymentDetail | null; spec: ConnectionSpec | null; warnings?: PlannerWarning[]; error: string | null }
 export interface ChecklistStep { label: string; state: ChecklistState; signal: string; action: string; destination: HomeDestination }
 export interface Problem { category: 'Sources' | 'Profiles' | 'Deployments' | 'Devices' | 'Operations' | 'Connections'; message: string; destination: HomeDestination }
 

@@ -258,6 +258,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
         CliCommand::Validate { bundle } => {
             let (_, plan) = load_and_plan(&bundle)?;
+            print_planner_warnings(&plan);
             println!(
                 "deployment `{}` is valid (definition {})",
                 plan.deployment, plan.definition_hash
@@ -265,10 +266,12 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
         CliCommand::Plan { bundle, options } => {
             let (_, plan) = load_and_plan_options(&bundle, &options)?;
+            print_planner_warnings(&plan);
             print_plan(&workspace_root, &plan)?;
         }
         CliCommand::Up { bundle, options } => {
             let (_, plan) = load_and_plan_options(&bundle, &options)?;
+            print_planner_warnings(&plan);
             let runtime_plan = runtime_plan(&workspace_root, &plan);
             runtime.check_remote_eligibility(&runtime_plan)?;
             refuse_runtime_drift(&runtime.status(&runtime_plan)?)?;
@@ -1195,6 +1198,15 @@ fn diagnostics(diagnostics: Vec<switchyard_planner::Diagnostic>) -> MessageError
             .collect::<Vec<_>>()
             .join("\n"),
     )
+}
+
+fn print_planner_warnings(plan: &Plan) {
+    for warning in &plan.warnings {
+        println!(
+            "Warning [{}] {}: {}",
+            warning.code, warning.path, warning.message
+        );
+    }
 }
 
 fn runtime_plan(workspace_root: &Path, plan: &Plan) -> RuntimePlan {
