@@ -881,3 +881,13 @@ audit shell startup files as well as the requested cache directories.
   outside this V2 roadmap.
 - Lesson: a source of truth must describe one coherent target. Historical implementation
   behavior belongs in migration notes or progress records, not in the target workflow.
+
+## 2026-07-31 — Informal examples must not masquerade as domain concepts
+
+- Vision prose described UI, backend, and database as project "parts" or "segments" and
+  then mapped a segment to a startup profile. There is no schema field or deterministic
+  rule that can classify those roles, and one profile may expand into several services.
+- Correction: define only measurable concepts—repository, source worktree, startup
+  profile/block, instance, service, and group. UI/backend/database remain examples.
+- Lesson: if the planner cannot derive or validate a noun, do not put it in the glossary
+  as a product concept or use it to explain schema relationships.

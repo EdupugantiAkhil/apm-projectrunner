@@ -11,7 +11,7 @@ work yet.
 The vocabulary used below is defined in the [Glossary](#glossary) at the end. Two words are
 worth knowing before you start, because the UI uses them everywhere:
 
-- A **startup profile** is a reusable recipe for starting one part of your project.
+- A **startup profile** is a reusable recipe that expands into one or more services.
 - An **instance** is one checkout of code, run through one startup profile.
 
 ---
@@ -25,7 +25,7 @@ worth knowing before you start, because the UI uses them everywhere:
 4.  Sources                  →  clone repositories, add worktrees
 5.  Startup profiles         →  reusable recipes for starting instances
 6.  Run actions              →  project-level scripts (Up, Down, smoke tests)
-7.  Instances                →  live copies of each part, optionally on another device
+7.  Instances                →  source-backed runtime copies, optionally on another device
 8.  Service groups           →  a named set of instances; membership is the connection
 9.  Addresses                →  open a group, or one instance, by name
 ```
@@ -179,11 +179,11 @@ Removal is ownership-aware, and the confirmation copy tells you which you are do
 | Managed repository | The managed clone may be removed only after its source worktrees are removed. |
 | Adopted repository | Only the registration is forgotten. Your clone is untouched. |
 
-## Step 5 — Startup profiles: how each part gets started
+## Step 5 — Startup profiles: reusable service definitions
 
-A **startup profile** is the reusable definition of how one part of your project starts —
-its command or container, its services, its ports, its volumes, and the parameters you can
-vary per instance. Internally this is a *block*; the UI calls it a startup profile.
+A **startup profile** is the reusable definition that expands into one service or a
+coordinated suite: commands or containers, ports, volumes, and the parameters you can vary
+per instance. Internally this is a *block*; the UI calls it a startup profile.
 
 Go to **profiles**. Switchyard discovers profiles from two places, and the difference matters:
 
@@ -430,7 +430,7 @@ groups:
     instances: [ui-2, backend-2, db-new]
 ```
 
-The address belongs to the group, so it names the combination rather than one part of it. Two
+The address belongs to the group, so it names the combination rather than one instance. Two
 fields, and `instances` is the same member list from step 8 — nothing extra to keep in sync.
 
 No member is the entry point. The address reaches the group, and which member answers is a
@@ -506,7 +506,7 @@ onto the save.
 
 ### Reaching a specific instance from the browser
 
-This is the one place where you have to do something Switchyard-specific. Every other segment
+This is the one place where you have to do something Switchyard-specific. Every application instance
 gets its own network namespace and its own `127.0.0.1`, so two instances can bind the same port
 with no collision. The browser cannot: it lives on your host and has exactly one shared
 `localhost`.
@@ -552,12 +552,11 @@ field name differ, both are given — the persisted YAML keeps the internal name
 | **Repository** | — | A named managed or adopted Git clone backing one or more source worktrees. |
 | **Checkout** | source path | The exact source worktree an instance runs from. |
 | **Worktree** | — | A Git feature giving one repository several checked-out branches in separate directories at once. This is what makes several branches alive simultaneously. |
-| **Startup profile** | **block** | A reusable definition of how a part of the project starts. Expands into one service or a coordinated suite. `block` is the YAML field name. |
+| **Startup profile** | **block** | A reusable definition that expands into one service or a coordinated suite. `block` is the YAML field name. |
 | **Project-local profile** | — | A startup profile stored in the Switchyard project, shared by every instance. |
 | **Source-local profile** | — | A startup profile stored inside a source (the Git worktree), so it travels with the branch. Untrusted until its manifest is reviewed. |
 | **Trust / manifest review** | — | The gate on source-local profiles. Reading a profile's manifest marks it trusted; changed content requires review again. |
 | **Instance** | — | One checkout + one startup profile + its parameters + its device. The thing that actually runs. |
-| **Segment** | — | ABOUT.md's informal word for "a part of the project" (the UI, the backend, the database). In the implementation this is a startup profile, and "an instance of a segment" is an instance. |
 | **Service** | — | One concrete process or container that a startup profile expands into. One instance may produce several. |
 | **Deployment** | — | The whole authored topology: repositories, sources, instances, parameters, groups, and addresses. |
 | **Overlay** | — | A YAML file layered onto the deployment to vary it (`overlays/dev.yaml`) without duplicating the whole definition. |

@@ -19,8 +19,8 @@ continue calling fixed dependency addresses such as `localhost:8001`; Switchyard
 those calls to the selected provider group inside the consumer's isolated network
 namespace.
 
-Switchyard's core is solution-agnostic. Java, Python, JAS, UI, and database terminology
-in this document describes the first reference fixture only. The runtime must work with
+Switchyard's core is solution-agnostic. Java, Python, JAS, UI, and database are example
+instance or service names in the first reference fixture, not measurable roles. The runtime must work with
 any executable, container image, repository layout, language, framework, protocol, or
 service grouping that can satisfy the generic contracts below.
 

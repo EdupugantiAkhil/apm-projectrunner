@@ -1,12 +1,12 @@
 # About Switchyard
 
-The goal of this project is to let you run multiple instances of different parts of a
-project, so you can independently work on each of them in a different branch and test
-them by connecting them with other already running instances.
+The goal of this project is to run multiple source-backed instances at once, so you can
+work on different branches independently and test them in groups with other already
+running instances.
 
 ## The idea
 
-Take a project with three parts:
+Take a project that runs three services:
 
 - 1 React UI
 - 1 Node.js backend
@@ -16,18 +16,17 @@ Normally you get one of each. If you want to work on the backend in a feature br
 while someone else's UI change is also in flight, you switch branches, restart things,
 and lose whatever state you had.
 
-With Switchyard (the APM project manager), you run **multiple instances of each of these
-segments**. Several UIs, several backends, several databases — each instance built from a
-selected branch — all alive on the same machine at the same time. Instances in different
-groups may use the same branch.
+With Switchyard (the APM project manager), you run **multiple source-backed instances**.
+Several UIs, several backends, several databases — each instance built from a selected
+branch — all alive on the same machine at the same time. Instances in different groups
+may use the same branch.
 
-Then you connect each segment independently. Any UI can be pointed at any backend, and
-any backend at any database. You are not restricted to matching sets; you pick the
-combination you want to test.
+Then you place instances into groups. You are not restricted to matching branch sets; you
+pick the combination you want to test.
 
 ## Groups
 
-You make a **group** with one entry of each segment:
+You make a **group** as an ordered list of instances:
 
 ```text
 group "feature-test"
@@ -71,8 +70,7 @@ group arrives at a different backend. The applications never find out.
 ## Open a group by its address
 
 Each group has one stable custom address, such as
-`feature-test.my-project.localhost`. Opening it uses that group's UI, backend, database,
-and other selected segments:
+`feature-test.my-project.localhost`. Opening it uses that group's selected instances:
 
 ```text
 feature-test.my-project.localhost
@@ -80,7 +78,7 @@ feature-test.my-project.localhost
 UI feature → Backend feature → Database new
 ```
 
-Inside the group, every segment still uses its existing dependency host and port. The
+Inside the group, every instance still uses its existing dependency host and port. The
 group address can optionally be exposed on a LAN or private network.
 
 ## Instances on more than one device
@@ -91,9 +89,9 @@ changes. Remote consumers, routers, and cross-device sidecars are not yet suppor
 
 ## Working this way
 
-You work on each part in its own branch and instance. Build a group, move a sender, or
-create another instance from the same code. Application addresses and ports never
-change.
+You work on each change in its own branch, source worktree, and instance. Build a group,
+move a sender, or create another instance from the same code. Application addresses and
+ports never change.
 
 Change group membership to change what talks to what. Moved instances keep running while
 their routing context is replaced.

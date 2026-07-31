@@ -10,6 +10,17 @@ Updated: 2026-07-31
 - Web UI plan (`docs/web-ui-plan.md`): complete. Parts 1 through 13, including follow-up
   Parts 11a–11c, and Part 13's security review with its two fixes.
 
+## 2026-07-31 Vision vocabulary — remove unmeasurable part/segment roles
+
+- Removed `part` and `segment` as product-model vocabulary from the target vision.
+  Startup profiles are reusable definitions that expand into services; instances are
+  source-backed runtime copies; groups contain ordered instances.
+- Kept UI, backend, and database only as example instance/service names in the target
+  model. The current planner still contains legacy `"ui"` capability selection and a
+  `BackendGroupInvariant`; the V2 roadmap now explicitly removes both and requires a
+  repository-wide role-inference audit.
+- Documentation-only clarification. No implementation changed and no code tests were run.
+
 ## 2026-07-31 V2 roadmap and vision-flow reconciliation
 
 - Made `docs/vision/user_flow.md` agree with the membership-only schema: Step 8 now authors

@@ -36,9 +36,9 @@ spec:
     backend-feature:  { repository: monorepo, ref: backend-fix, path: ./sources/backend-feature }
     infra:            { repository: monorepo, ref: main,        path: ./sources/infra }
 
-  # ── Startup profiles: how each kind of part starts ──────────────────────────
-  # Written once per kind of part, not once per branch. A profile says how to start
-  # the thing and which port it listens on. It does not say what talks to what —
+  # ── Startup profiles: reusable service definitions ─────────────────────────
+  # Written once per runtime shape, not once per branch. A profile expands into
+  # services and says how they start. It does not say what talks to what —
   # that is the group's job, below.
   blocks:
     react-ui:
@@ -141,8 +141,8 @@ scripts:
 
 ## Reading it
 
-**Four sections do the real work.** Sources say which checkouts exist, blocks say how a kind of
-part starts, instances pair the two, and groups name the combinations. Everything else is detail.
+**Four sections do the real work.** Sources say which checkouts exist, blocks define reusable
+services, instances pair the two, and groups name the combinations. Everything else is detail.
 
 **A source is a repository, a ref, and a path — and missing paths get created.** If
 `./sources/ui-feature` is not there, `up` runs `git worktree add` for you; if the clone itself is

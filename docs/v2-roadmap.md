@@ -14,6 +14,11 @@ The sample configuration is the V2 acceptance contract. V2 is not complete until
 file, excluding its explicitly deferred `scripts:` section, validates, plans, starts, and
 passes an end-to-end routing smoke test without compatibility-only fields.
 
+There is no `part`, `segment`, UI, backend, or database role in the authored model.
+Those words may label examples, but the implementation must not infer or validate them.
+Behavior may depend only on schema-visible repositories, sources, blocks, instances,
+services, addresses, ordered group membership, and observed listener ports.
+
 ## Settled decisions
 
 These were decided before the work started; parts below are written against them.
@@ -183,6 +188,8 @@ port 5432.
       the acceptance test for the whole part
 - [ ] Remove `provides:` and `consumes:` from the authored schema and all client authoring,
       validation, compatibility filtering, and projections
+- [ ] Remove role inference built on capability names. No planner, API, or client branch
+      may treat names such as `ui`, `backend`, or `database` as product types
 - [ ] Remove the fixed-listener override path generated from capabilities and slots; a
       future port-remapping feature, if needed, must have its own explicit schema rather
       than retaining the old topology model
@@ -359,8 +366,9 @@ will make an outbound call.
       intercepted connection from it fails with an ambiguity diagnostic naming the groups
       and saying to duplicate the instance
 - [ ] The shared-database shape from ABOUT.md is an acceptance test, not just an assertion
-- [ ] `BackendGroupInvariant` rewritten against membership rather than bindings; its "a
-      group's own binding is checked for the same agreement" clause disappears with the field
+- [ ] Delete the backend-specific `BackendGroupInvariant`. The generic replacement is an
+      ambiguous-group-context diagnostic when a member shared by several groups originates
+      an intercepted loopback connection; it does not classify that instance as a backend
 - [ ] Ops, TUI, and web surfaces that read or write bindings move to membership — the Web
       UI's "desired connections" table becomes group membership editing
 - [ ] Migration drops `bindings:` where it agrees with membership; where it disagrees,
@@ -449,6 +457,8 @@ request**.
 - [ ] Resolve an explicitly targeted member per request by instance subdomain
       (`backend-1.feature-test.comparison.localhost`) or browser route identity; no
       capability or slot name participates
+- [ ] Delete the planner's `group_capability_candidates(..., "ui", ...)` selection and
+      every diagnostic that requires a member "providing UI"
 - [ ] The bare group name resolves only when exactly one active member is independently
       browser-addressable through its own `address:`. That schema-visible fact replaces
       the removed `ui` capability as the default-selection rule
@@ -473,6 +483,10 @@ Touches `router-pingora` and `router-config`, not only the schema.
 
 - [ ] `DESIGN.md`: groups as lists, `address:` on both objects, `ingress:` gone,
       capabilities/slots/bindings/routes/extends gone
+- [ ] Audit schema, planner, operations, daemon, CLI, TUI, Web UI, examples, and current
+      docs for inferred `part`, `segment`, UI, backend, or database roles. Replace behavior
+      with generic instance/service/address/membership/listener rules; retain role words
+      only in clearly labeled examples
 - [ ] Reconcile the user_flow glossary against the terms diagnostics and UI labels use
 - [ ] `DEVIATION.md` records which sections V2 closed
 
