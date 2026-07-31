@@ -48,7 +48,7 @@ verification evidence.
 | ✅ | 2b — A group shares one localhost; capabilities and slots are removed | `d2bdddf` |
 | ✅ | 2c — Repositories are declared once; sources are a repo and a ref | `4e6969a` |
 | ✅ | 2d — `bindings:` is deleted; membership is the connection | `6616583` |
-| ⬜ | 2e — External instances: things already running outside Switchyard | |
+| ✅ | 2e — External instances: things already running outside Switchyard | `d0fcdd0` |
 | ⬜ | 3 — Serving a whole group from one address (router) | |
 | ⬜ | 4 — Vocabulary and documentation alignment | |
 | ⬜ | 5 — Daemon-as-service posture | |
@@ -448,28 +448,32 @@ sidecar and must be reachable from there. Switchyard does not reinterpret a loop
 as the developer host; host-machine bridging, when wanted, must be named explicitly by an
 address reachable from the container network.
 
-- [ ] `Instance` gains an external form: `{ name, external, ports }`, with no block, no
+- [x] `Instance` gains an external form: `{ name, external, ports }`, with no block, no
       source, no device, and no lifecycle — `up` never starts or stops it
-- [ ] `ports:` accepts integers and inclusive `"start-end"` range strings in one list;
+- [x] `ports:` accepts integers and inclusive `"start-end"` range strings in one list;
       ranges are quoted because YAML would otherwise mangle them
-- [ ] Range bounds validated `start <= end`, and capped (1024 ports) so `"1-65535"` fails
+- [x] Range bounds validated `start <= end`, and capped (1024 ports) so `"1-65535"` fails
       loudly rather than attempting to bind the machine
-- [ ] Ranges expand before the collision check, so a clash on one port warns about that
+- [x] Ranges expand before the collision check, so a clash on one port warns about that
       port rather than the whole range
-- [ ] Collisions stay positional: a started member listed before an external wins, with the
+- [x] Collisions stay positional: a started member listed before an external wins, with the
       warning naming both — the Part 2a rule, unchanged
-- [ ] Two externals sharing a host with different ports is normal, not a collision — a
+- [x] Two externals sharing a host with different ports is normal, not a collision — a
       collision is about a port inside one group, never about the target
-- [ ] An optional `probe:` on an external, reusing the existing `Probe` type, so an external
+- [x] An optional `probe:` on an external, reusing the existing `Probe` type, so an external
       that is not actually listening is reported at `up` rather than as a connection refused
       at first request
-- [ ] Diagnostics distinguish "external not reachable" from "instance failed to start" —
+- [x] Diagnostics distinguish "external not reachable" from "instance failed to start" —
       the remedies are entirely different
 
 **Depends on Part 2b**, which establishes that a group's routing comes from the ports its
 members listen on. An external is the one member with nothing to discover from — no
 `publish`, no `probe` port, no image metadata — so its `ports:` list is the one place a port
 is always authored by hand.
+
+Landed in `d0fcdd0`; workspace tests, all-target/all-feature Clippy, rustdoc, formatting,
+49 Web tests, TypeScript, and the Vite production build pass. Focused TCP coverage proves
+literal host resolution and port-for-port forwarding from the expanded external allowlist.
 
 ---
 
