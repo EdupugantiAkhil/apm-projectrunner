@@ -32,7 +32,7 @@ then committed. A part is only ticked once it is committed with verification evi
 | --- | --- | --- |
 | ✅ | 1 — Group membership becomes a list | `bae84bf` |
 | ✅ | 2 — Addresses on the group and on the instance | `5d14720` |
-| ⬜ | 2a — Membership stops being policed by capability | spec in `2eca965` |
+| ✅ | 2a — Membership stops being policed by capability | `a24991b` |
 | ⬜ | 3 — Serving a whole group from one address (router) | |
 | ⬜ | 4 — Run actions become a flat `scripts:` map | |
 | ⬜ | 5 — Vocabulary and documentation alignment | |
@@ -40,7 +40,7 @@ then committed. A part is only ticked once it is committed with verification evi
 | ⬜ | 7 — Release usability items | |
 | ⬜ | 8 — Rename to APM ProjectRunner (`apmpr`) | |
 
-Baseline after Part 2: 303 Rust tests passing, 48 web tests passing, four known React
+Baseline after Part 2a: 307 Rust tests passing, 49 web tests passing, four known React
 `exhaustive-deps` lint warnings (cleared in Part 7).
 
 ## The parts
@@ -116,16 +116,18 @@ was stated more broadly than the reason given for it.
 A group is a shared address space, and the only thing that matters is whether two members
 would answer at the same address:
 
-- [ ] Remove the rejection and `DiagnosticCode::DuplicateProvider`
-- [ ] Warn when a **consumer's slot** has several candidates, naming them and the winner
-- [ ] **First listed wins** — `instances:` order matters only where there is a collision
-- [ ] Two UIs in one group produce **no warning**; nothing consumes `ui`
-- [ ] A warning channel through the planner out to CLI, daemon API, and web UI
-- [ ] Deterministic ordering rule after `extends:`
-- [ ] A genuine listener conflict still fails planning — a different thing entirely
-- [ ] Fix the crossed `jas-base` group addresses (`ai-main` answers to `ui-b...`)
-- [ ] Remove Part 1's tests asserting the rejection
-- [ ] Decide whether `routing-matrix` should now use a group address
+- [x] Remove the rejection and `DiagnosticCode::DuplicateProvider`
+- [x] Warn when a **consumer's slot** has several candidates, naming them and the winner
+- [x] **First listed wins** — `instances:` order matters only where there is a collision
+- [x] Two UIs in one group produce **no warning**; nothing consumes `ui`
+- [x] A warning channel through the planner out to CLI, daemon API, and web UI
+- [x] Deterministic ordering rule after `extends:` — resolve the parent, drop inherited
+      members the child overrides, append the child's own in authored order
+- [x] A genuine listener conflict still fails planning — a different thing entirely
+- [x] Fix the crossed `jas-base` group addresses (`ai-main` answered to `ui-b...`)
+- [x] Remove Part 1's tests asserting the rejection
+- [ ] Decide whether `routing-matrix` should now use a group address — left as instance
+      addresses; revisit in Part 3, which needs a group-address fixture anyway
 
 `docs/vision/user_flow.md` step 8 was edited for this — the "One provider per capability"
 section is now "Address collisions, and who wins". This is the one deliberate exception to
