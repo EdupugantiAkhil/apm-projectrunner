@@ -10,6 +10,21 @@ Updated: 2026-07-31
 - Web UI plan (`docs/web-ui-plan.md`): complete. Parts 1 through 13, including follow-up
   Parts 11a–11c, and Part 13's security review with its two fixes.
 
+## 2026-07-31 One instance, one group
+
+- Replaced sender/receiver-dependent membership behavior with one structural rule: an
+  instance may appear in at most one group's `instances:` list.
+- Clarified the reason for per-instance namespaces: alternative members remain running so
+  a group can switch from one to another by ordering or disabling, without an application
+  rebuild or restart. Same-port coexistence is an enabling consequence, not the primary
+  product motivation.
+- Multi-group membership is now a schema validation error naming both groups, detectable
+  before planning or startup without inferring an instance's role or runtime behavior.
+- Updated the vision, sample, V2 roadmap, and architecture to use separate database
+  instances backed by the same source and startup profile instead of sharing one runtime
+  instance between groups.
+- Documentation-only clarification. No implementation changed and no code tests were run.
+
 ## 2026-07-31 Vision tracking cleanup and V2.1 roadmap
 
 - Deleted the stale `DEVIATION.md`. The V2 roadmap now directly records implementation
@@ -52,8 +67,8 @@ Updated: 2026-07-31
   managed clones and worktrees are created by `up`, and plain-path sources are not retained.
 - Made the sample configuration, excluding its explicitly deferred `scripts:` section, the
   V2 acceptance contract. The roadmap now requires an end-to-end fixture proving worktree
-  creation, two group addresses, different backends, a shared database, an external member,
-  and `disabled:` without compatibility-only fields.
+  creation, two group addresses, different backends, separate database instances reusing
+  one source/profile, an external member, and `disabled:` without compatibility-only fields.
 - Removed run-action and multi-project work from the V2 roadmap. Renumbered the remaining
   parts and retained the final rename to the intended **APM ProjectRunner** / `apmpr` name.
 - Documentation-only phase. No implementation changed and no code tests were run.
@@ -2187,9 +2202,9 @@ read off the schema.
   (`{ path: . }`, `{ path: ../.. }`) are not worktrees.
 - **Part 2d — `bindings:` and `routes:` deleted.** Removing `bindings:` from a
   single-group-per-consumer deployment produces four `IncompleteGroup` diagnostics, every one
-  already answered by membership. The rule becomes: an instance that consumes belongs to
-  exactly one group; one that consumes nothing may be shared by any number (which keeps
-  ABOUT.md's shared database legal). `routes:` goes in the same pass for the same reason.
+  already answered by membership. The initial audit proposed allowing receiver-only instances
+  in several groups, but the later product decision removed that unmeasurable distinction:
+  every instance belongs to at most one group. `routes:` goes in the same pass.
 - **Part 2e — external instances.** `{ name, external, ports }` for things already running
   outside Switchyard. `ports:` takes integers and inclusive range strings, mapping
   port-for-port; ranges expand before the Part 2a collision check so a clash names the port

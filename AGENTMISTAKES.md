@@ -902,3 +902,32 @@ audit shell startup files as well as the requested cache directories.
   flow where readers encounter them.
 - Lesson: a gap document needs continuous reconciliation or it becomes another product
   model. Prefer one target vision plus versioned roadmaps and implementation progress.
+
+## 2026-07-31 — Sender and receiver exceptions recreate an implicit role model
+
+- The membership rule allowed one runtime instance in several groups if it behaved only
+  as a receiver, then deferred rejection until that instance originated a connection.
+  Without capabilities or roles, the schema cannot measure that distinction.
+- Correction: an instance may appear in at most one group's membership list. Reusing a
+  source or startup profile in another group requires a separate instance, and
+  multi-group membership fails validation before runtime.
+- Lesson: topology rules should use authored, statically measurable facts. Do not make
+  schema validity depend on whether a process happens to initiate traffic later.
+
+## 2026-07-31 — A technical consequence was presented as the product reason
+
+- The roadmap said per-instance namespaces exist primarily because same-port listeners
+  would collide in one group namespace.
+- Correction: the product reason is to keep alternative instances running and switch
+  which one a group tests without rebuilds or restarts. Separate localhosts make that
+  possible; same-port coexistence is an important consequence.
+- Lesson: architecture explanations should lead with the user workflow that requires a
+  boundary, then explain the technical properties supplied by that boundary.
+
+## 2026-07-31 — Documentation changes were committed before owner review
+
+- A vision-alignment correction was committed immediately even though the owner had not
+  asked for a commit.
+- Correction: removed the commit while preserving its file changes locally for review.
+- Lesson: phase-sized commits are the repository default, but an owner's request to keep
+  work uncommitted controls the handoff.

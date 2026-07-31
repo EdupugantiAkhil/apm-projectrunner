@@ -26,7 +26,7 @@ service grouping that can satisfy the generic contracts below.
 
 Example deployment:
 
-- One shared database block.
+- One database block reused by separate database instances.
 - Five UI instances.
 - Two Python suites, each containing five services (ten Python containers total).
 - Three Java backend suites.
@@ -619,10 +619,10 @@ be ambiguous. Each group states its complete membership.
 groups:
   feature-test:
     address: feature-test.comparison.localhost
-    instances: [ui-1, backend-1, db-new]
+    instances: [ui-1, backend-1, db-feature-test]
   regression:
     address: regression.comparison.localhost
-    instances: [ui-2, backend-2, db-new]
+    instances: [ui-2, backend-2, db-regression]
 ```
 
 An outbound IPv4 or IPv6 loopback TCP connection is intercepted in the sender's namespace.
@@ -631,10 +631,16 @@ in authored order. If several members listen, the first listed wins and a warnin
 the collision. Ports are observed at runtime; `publish`, probes, and image `EXPOSE` remain
 lifecycle or ingress metadata, not routing declarations.
 
-A member of one group sees that group's receiver view. A member shared by several groups
-may receive traffic in all of them, which supports a shared database. If that shared member
-originates an intercepted loopback connection, the router rejects it as ambiguous and
-names the groups; a sender needing different contexts must be duplicated.
+Each instance has its own namespace so alternative members can remain alive and a group
+can switch between them without rebuilding or restarting applications. Reordering members
+or temporarily disabling the current winner changes which already-running instance
+receives a shared-port call. Same-port coexistence follows from that per-instance
+isolation; it is not the primary product reason for it.
+
+An instance may appear in at most one group's membership list. It sees that group's
+ordered member view. Reusing the same source or block in another group requires a separate
+instance. Validation rejects multi-group membership and names both groups before any
+runtime mutation.
 
 For a group address, an explicit instance subdomain or browser route identity selects the
 member. A bare group address works only when exactly one active member also carries an
@@ -654,7 +660,8 @@ spec:
     - overlays/development.yaml
     - overlays/mongodb.yaml
   instances:
-    - { name: shared-db, block: postgres, source: infrastructure }
+    - { name: main-db, block: postgres, source: infrastructure }
+    - { name: feature-db, block: postgres, source: infrastructure }
     - { name: backend-main, block: java-backend, source: monorepo-main }
     - { name: backend-a, block: java-backend, source: backend-feature-a }
     - { name: backend-b, block: java-backend, source: backend-feature-b }
@@ -667,9 +674,9 @@ spec:
     - { name: ui-5, block: ui, source: ui-feature-d }
   groups:
     main:
-      instances: [ui-1, backend-main, python-main, shared-db]
+      instances: [ui-1, backend-main, python-main, main-db]
     feature:
-      instances: [ui-2, backend-a, python-feature, shared-db]
+      instances: [ui-2, backend-a, python-feature, feature-db]
 ```
 
 ### Overlay
@@ -1071,21 +1078,15 @@ browser profile with `--proxy-server=<listener>` and
 `--proxy-bypass-list=<-loopback>`, as supported by
 [Chromium's proxy configuration](https://chromium.googlesource.com/chromium/src/+/HEAD/net/docs/proxy.md).
 
-### Downstream group invariant
+### Unique group membership
 
-A backend instance has exactly one selected downstream group at a time. Two UIs can
-share a backend only when they also share that backend's downstream group. If two UIs
-need the same backend source with different groups, Switchyard runs two backend
-instances:
+An instance may appear in at most one group's `instances:` list. Validation rejects
+multi-group membership and names both groups before any mutation. When two combinations
+need the same code or startup definition, each combination declares its own instance;
+the instances may reuse the same source worktree and block.
 
-```text
-ui-1 ──► backend-1a ──► group-a
-ui-3 ──► backend-1b ──► group-b
-```
-
-Without application-level context propagation, a single backend cannot associate an
-outbound `localhost:8001` connection with the inbound UI request that caused it. This is
-a fundamental boundary, not a router implementation limitation.
+This is a structural topology rule. It does not infer UI, backend, database, sender, or
+receiver roles from names or runtime traffic.
 
 ### State and ownership
 
@@ -1118,7 +1119,7 @@ Its primary job is to answer and change:
 
 It is an operational tool, not a generic admin dashboard. The main view should resemble
 a disciplined physical patch bay: ordered groups contain visible instance members, and
-shared members visibly appear in every group that can route to them.
+each instance visibly belongs to at most one group.
 
 The dashboard must grow guided startup-profile authoring, instance creation, group-membership
 editing, and device placement through shared operations and schema-driven forms. Raw
@@ -1158,8 +1159,8 @@ Layout:
 - A collapsible event and log drawer along the bottom.
 
 Signature element: the **live patch bay**. Group membership is the only visually bold
-gesture. Ordered member rows show routing priority, shared membership, and restrained
-motion when a group changes. Everything else remains flat, quiet, and compact.
+gesture. Ordered member rows show routing priority and restrained motion when an instance
+moves between groups. Everything else remains flat, quiet, and compact.
 
 This avoids a generic grid of statistic cards: counts matter less than topology and
 source identity in this product.
@@ -1174,10 +1175,10 @@ source identity in this product.
 │ ○ regression │                                    │ feature/ui-redesign│
 │ ○ clean-main │ ┌────────────┐   ┌──────────────┐  │ /worktrees/ui-a   │
 │              │ feature-test: ui-main, backend-main │                   │
-│ + Deployment │               python-main, shared-db│ Group             │
+│ + Deployment │               python-main, main-db  │ Group             │
 │              │                                    │ feature-test      │
 │ SOURCES      │ regression:   ui-feature, backend-a │ Position 1        │
-│ 8 clean      │               python-a, shared-db   │                   │
+│ 8 clean      │               python-a, feature-db  │                   │
 │ 2 modified   │                                    │ [Apply membership]│
 │ 1 missing    │ collision: none                     │ [Open] [Logs]     │
 ├──────────────┴────────────────────────────────────┴───────────────────┤
@@ -1190,8 +1191,8 @@ Interaction rules:
 - Selecting an instance opens its source, commit, health, environment, group, and logs.
 - Moving an instance between groups prepares a membership change; it does not apply until
   the user confirms the complete group diff.
-- A shared member that originates loopback traffic shows the multi-group ambiguity and
-  directs the user to duplicate that instance.
+- Adding an instance already assigned to another group produces a validation error naming
+  both groups and directs the user to create a separate instance.
 - Modified worktrees are visible before build and require acknowledgment.
 - Each member displays both the friendly instance name and abbreviated commit.
 - Keyboard users can change membership through select controls in the inspector; dragging is

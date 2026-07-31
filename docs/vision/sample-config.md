@@ -5,9 +5,10 @@ This is one complete deployment, annotated. It is the shape [ABOUT.md](ABOUT.md)
 reading the steps that introduce them one at a time.
 
 The scenario is the one from step 9: a UI and a backend, each with a main branch and a feature
-branch, sharing one database. Two named combinations — `feature-test` and `regression` — compare
-different checkouts. The sample also includes a disabled canary and an external service so those
-group-membership behaviors are part of the acceptance fixture.
+branch. Each combination has its own database instance, with both database instances using the
+same source and startup profile. Two named combinations — `feature-test` and `regression` —
+compare different checkouts. The sample also includes a disabled canary and an external service
+so those group-membership behaviors are part of the acceptance fixture.
 
 ```yaml
 apiVersion: switchyard.dev/v1alpha2
@@ -87,7 +88,8 @@ spec:
         parameters: { LOG_LEVEL: debug } }
     - { name: backend-canary, block: java-backend, source: backend-feature }
 
-    - { name: db-new, block: postgres, source: infra }
+    - { name: db-feature-test, block: postgres, source: infra }
+    - { name: db-regression,   block: postgres, source: infra }
 
     # An external instance: something already running that Switchyard routes to but
     # never starts. `external:` is the host, `ports:` the list — 9200 inside the
@@ -104,19 +106,20 @@ spec:
   # Move `ui-1` to the other list and the same running UI talks to backend-2
   # instead — no restart, no rebuild, no edited source.
   #
-  # `db-new` is in both groups and can receive traffic in both. If a shared member
-  # originates a loopback call itself, Switchyard rejects that call as ambiguous;
-  # duplicate a sender when it needs its own outbound group context.
+  # Every instance belongs to at most one group. The two database instances reuse
+  # the same source and startup profile without sharing one runtime instance.
   groups:
     feature-test:
       address: feature-test.comparison.localhost
-      instances: [ui-1, backend-1, backend-canary, db-new]
+      instances: [ui-1, backend-1, backend-canary, db-feature-test]
       # Keeps running and keeps its priority position, but this group ignores it.
+      # Remove it from `disabled` and move it before backend-1 to switch which
+      # already-running backend the group tests.
       disabled: [backend-canary]
 
     regression:
       address: regression.comparison.localhost
-      instances: [ui-2, backend-2, db-new, staging-es]
+      instances: [ui-2, backend-2, db-regression, staging-es]
 
 # ── Run actions: project-level scripts ────────────────────────────────────────
 # DEFERRED TO V3 — shown for completeness; the current build uses a different
@@ -203,9 +206,10 @@ open the group address to get the whole combination. Both are in
 [step 9](user_flow.md#step-9--addresses-open-a-group-or-an-instance-by-name).
 
 **The comparison is one click.** Open `feature-test` and `regression` in a browser and you are
-looking at two builds of your product side by side, with one database underneath. The additional
-disabled canary and external member exercise routing behavior without changing which UI and
-backend checkout each address opens.
+looking at two builds of your product side by side. Their database instances use the same source
+and startup profile but remain separate runtime instances, preserving the one-instance-one-group
+rule. The additional disabled canary and external member exercise routing behavior without
+changing which UI and backend checkout each address opens.
 
 ## What you do not write
 
@@ -238,9 +242,8 @@ in [docs/v2-roadmap.md](../v2-roadmap.md):
    capability/slot escape hatch.
 3. **Connections are authored twice more.** A `bindings:` map names a group per consumer, and a
    `routes:` map can name a provider per slot directly. Both restate what group membership
-   already says, and both can contradict it. Part 2d deletes them. A member shared across groups
-   can receive in all of them; an outbound loopback call from that shared member is rejected as
-   ambiguous.
+   already says, and both can contradict it. Part 2d deletes them and validates that each
+   instance belongs to at most one group.
 4. **There are no external instances.** Every instance must have a block and a source, so
    anything already running outside Switchyard — a natively installed database, a shared staging
    service — cannot be a group member at all. Part 2e adds the `{ name, external, ports }` form.

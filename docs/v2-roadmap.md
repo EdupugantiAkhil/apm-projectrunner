@@ -204,10 +204,16 @@ port 5432.
 - [x] `disabled:` removes a member from only that group's active routing while preserving
       its running instance, namespace, and authored priority position
 
-**Why this is not "one namespace per group".** Members may listen on the same port, and a
-receiver-only instance may be shared by several groups. One group namespace would make
-both legal cases collide. Switchyard therefore uses one namespace per instance and gives
-each sender its selected group's ordered receiver view.
+**Why this is not "one namespace per group".** The product goal is to keep alternative
+instances running and switch which one a group tests without rebuilding or restarting
+them: test `backend-1`, then reorder or disable it so the same callers reach `backend-2`.
+Each alternative therefore needs its own namespace and localhost.
+
+There is also an important network reason. Several members of one group may listen on the
+same fixed application port. One group namespace would make those legal listeners collide
+before Switchyard could apply the authored priority order. Per-instance namespaces both
+keep the alternatives alive for switching and let the group select the winner. Each
+instance gets its group's ordered member view.
 
 **Container proof completed.** Disposable Docker tests recovered undeclared original
 ports, routed late-starting listeners, changed the winner by reordering members, included
@@ -337,39 +343,36 @@ migration.
 
 ### Part 2d — `bindings:` is deleted; membership is the connection
 
-Vision reference: user_flow step 8, and the one-backend-one-group rule in step 9.
+Vision reference: user_flow steps 8 and 9, including the one-instance-one-group rule.
 
 `bindings:` restates group membership. In the ordinary case it carries no information at
 all — remove it from a deployment where every consumer is in exactly one group and planning
 fails with four `IncompleteGroup` diagnostics, every one of which the membership list
 already answers. Two places to say the same thing is two places to disagree.
 
-The only extra choice it could express is which group supplies the outbound localhost of
-an instance listed in **several** groups. One process cannot infer that context per
-connection. The schema deliberately does not classify instances as consumers or
-receiver-only, because capabilities and slots no longer exist.
+The only extra choice it could express is which group supplies an instance's localhost.
+The schema no longer needs that choice: an instance may appear in at most one group's
+`instances:` list. To reuse the same code or startup profile in another group, the author
+creates another instance.
 
-**Decided: delete the section.** Membership gives an instance its routing context. A
-single-group member sees that group's ordered localhost. A member shared by several groups
-is legal as a receiver, but if it originates an intercepted loopback connection the router
-rejects that connection as ambiguous and names every containing group. Duplicate the
-instance when it needs outbound group routing.
-
-This keeps `db-new` shared by `feature-test` and `regression` — ABOUT.md's own example —
-without pretending the planner can infer from a removed `consumes:` map whether a process
-will make an outbound call.
+**Decided: delete the section.** Membership gives every grouped instance one routing
+context, and schema validation rejects multi-group membership before planning or startup.
+This rule is structural; it does not infer whether an instance is a consumer,
+receiver-only, UI, backend, or database.
 
 - [ ] `spec.bindings` removed from the schema; membership alone resolves every consumer
-- [ ] A member of one group gets that group's complete ordered receiver view
-- [ ] A member of several groups remains available as a receiver in each group; an outbound
-      intercepted connection from it fails with an ambiguity diagnostic naming the groups
-      and saying to duplicate the instance
-- [ ] The shared-database shape from ABOUT.md is an acceptance test, not just an assertion
+- [ ] Every instance appears in at most one group's `instances:` list; validation names
+      both groups when the rule is violated
+- [ ] A grouped instance gets that group's complete ordered member view
+- [ ] Acceptance proves that two instances may reuse the same source and startup profile
+      while belonging to different groups
 - [ ] Delete the backend-specific `BackendGroupInvariant`. The generic replacement is an
-      ambiguous-group-context diagnostic when a member shared by several groups originates
-      an intercepted loopback connection; it does not classify that instance as a backend
+      instance-in-multiple-groups validation diagnostic; it does not classify that
+      instance by role or wait for a runtime connection
 - [ ] Ops, TUI, and web surfaces that read or write bindings move to membership — the Web
       UI's "desired connections" table becomes group membership editing
+- [ ] Migration refuses an instance listed in several groups and names every occurrence;
+      it cannot silently duplicate a runtime instance or choose which group keeps it
 - [ ] Migration drops `bindings:` where it agrees with membership; where it disagrees,
       **refuse and report** rather than pick one
 - [ ] **`spec.routes` goes in the same pass.** It is the other place a connection can be
@@ -377,10 +380,9 @@ will make an outbound call.
       keeping `bindings:`: a second way to say what a group says, able to contradict it.
       One mechanism, no escape hatch.
 
-**Sequencing.** This depends on Part 2b: once a group is one shared localhost, "which
-group's localhost does this instance see" is exactly the question an instance in two groups
-cannot answer, so 2b sharpens the ambiguity rather than softening it. Land 2b first, then
-this.
+**Sequencing.** This depends on Part 2b: once group membership supplies the shared
+localhost, unique membership replaces the routing-context choice that `bindings:` used to
+express. Land 2b first, then this.
 
 ---
 
@@ -469,8 +471,8 @@ request**.
 - [ ] Materialize `docs/vision/sample-config.md` as the acceptance fixture, excluding only
       its deferred `scripts:` section: validate, plan, create its missing clone/worktrees,
       start both groups, open both group addresses, prove their different backends and
-      shared database, reach the external instance, exercise `disabled:`, then stop and
-      clean up without compatibility-only schema fields
+      separate database instances reusing one source/profile, reach the external instance,
+      exercise `disabled:`, then stop and clean up without compatibility-only schema fields
 
 Touches `router-pingora` and `router-config`, not only the schema.
 

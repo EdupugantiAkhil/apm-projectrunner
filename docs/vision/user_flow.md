@@ -345,9 +345,9 @@ db-main and db-replica; routing to db-main, the first listed
 ```
 
 Order in `instances:` is therefore meaningful when — and only when — there is a collision.
-Nothing is rejected, because the topology still runs and the warning tells you what was
-chosen. Reorder the list to change the winner, or remove the member you did not mean to
-include.
+This is how a group switches between already-running alternatives: after testing
+`backend-1`, reorder the list so `backend-2` wins, or temporarily disable `backend-1`.
+Nothing is rebuilt or restarted. The warning tells you what was chosen.
 
 ### Temporarily disabling a member
 
@@ -363,8 +363,8 @@ groups:
 
 The group ignores disabled members for routing, health, address resolution, and collision
 warnings. Removing the name from `disabled:` restores the member at its original position.
-Other groups using a shared instance are unaffected. A disabled sender does not count as
-belonging to the group. Naming an instance that is not a member is a validation error.
+The instance still belongs to that group while disabled. Naming an instance that is not a
+member is a validation error.
 
 An app that genuinely talks to two databases already calls two ports — for example 5432 and
 5433 — or two hostnames. Each destination port is routed independently. Switchyard cannot
@@ -403,11 +403,10 @@ Changing a running group is a deliberate, previewed transition:
 
 Applications are not restarted and nothing is rebuilt. Only routing state reloads.
 
-An instance in exactly one active group uses that group's localhost. An instance may be
-shared by several groups as a receiver, such as one database used by two combinations. If
-that shared instance itself opens an intercepted loopback connection, the request is
-rejected as ambiguous and names the groups; duplicate the instance when it needs its own
-outbound group context.
+An instance may appear in at most one group's `instances:` list and uses that group's
+localhost. Reusing the same source or startup profile in another group requires another
+instance. The Web UI and schema validation reject multi-group membership before anything
+runs.
 
 ## Step 9 — Addresses: open a group or an instance by name
 
@@ -424,11 +423,11 @@ A group carries its own address. Opening it gives you that whole combination, wh
 groups:
   feature-test:
     address: feature-test.comparison.localhost
-    instances: [ui-1, backend-1, db-new]
+    instances: [ui-1, backend-1, db-feature-test]
 
   regression:
     address: regression.comparison.localhost
-    instances: [ui-2, backend-2, db-new]
+    instances: [ui-2, backend-2, db-regression]
 ```
 
 The address belongs to the group, so it names the combination rather than one instance. Two
@@ -468,32 +467,31 @@ and most instances stay that way.
 
 `.localhost` is the safe default for both kinds; LAN exposure is optional and off by default.
 
-### The one backend, one group rule
+### One instance, one group
 
 One rule constrains how combinations may overlap:
 
-**A sender cannot use two group localhosts.** If `backend-1` is a member of both
-`feature-test` and `regression`, an outbound loopback call cannot say which group's members
-should answer. Switchyard rejects that call as ambiguous and tells you to duplicate the
-backend instance — the copies may point at the same source. One process cannot infer
-per-request downstream context, so Switchyard refuses rather than picking one.
+**An instance can belong to at most one group.** If the same instance appears in two
+groups, validation fails and names both groups. To use the same code or startup profile
+in another combination, create another instance; both instances may point at the same
+source worktree.
 
-In practice: if two combinations differ *below* the backend, they need two backend instances,
-not one backend and two addresses. Group membership is the only connection statement, so an
-address cannot contradict a separate binding or direct route.
+This rule is structural and does not depend on classifying an instance as a sender,
+receiver, UI, backend, or database. Every instance has one unambiguous group context, and
+group membership remains the only connection statement.
 
 In the Web UI, group and instance addresses and `managedProfiles` are edited through the
-**Routing** panel's definition editor. Every save validates the complete deployment first, so
-the invariant above surfaces before anything runs, and you can chain a Plan or a Plan-and-Up
-onto the save.
+**Routing** panel's definition editor. Every save validates the complete deployment, so
+multi-group membership is rejected before Plan or Up.
 
 > **Not built this way yet.** Neither field exists in this shape. What is implemented is
 > `uiRoutes` (`crates/switchyard-planner/src/model.rs:316`): entries keyed by UI carrying
 > `origin`, `backend`, and `downstreamGroup`. That is a group address in all but location — it
-> names the combination and the planner enforces the rule above against it
-> (`lib.rs:1216-1287`) — but it hangs off the UI rather than the group, and its domain is
+> names the combination, but it hangs off the UI rather than the group, and its domain is
 > declared separately as a `custom_domain` destination on a `hostRouter` listener, so one
-> address means editing two places that must agree. Instance-level addresses are described in
+> address means editing two places that must agree. The current planner also has a narrower,
+> backend-specific downstream-group invariant; V2 replaces it with the generic
+> one-instance-one-group validation above. Instance-level addresses are described in
 > `DESIGN.md` as a separate `ingress:` block and are not implemented anywhere in the crates;
 > the shape above drops that block and puts `address:` on the instance instead.
 >

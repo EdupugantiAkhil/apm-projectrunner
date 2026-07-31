@@ -32,23 +32,27 @@ You make a **group** as an ordered list of instances:
 group "feature-test"
   ui       → ui-feature-test on branch feature-a
   backend  → backend on branch feature-a
-  database → database-new with the new schema
+  database → database-feature-test with the new schema
 
 group "regression"
   ui       → ui-regression on branch feature-a
   backend  → backend on main
-  database → database-new with the new schema
+  database → database-regression with the new schema
 ```
 
 That is the whole act of configuration. Once the group exists, the **auto routing
 magically happens** — you do not wire up addresses, edit config files, or change ports.
 
-An instance that makes group-routed outbound calls belongs to **at most one group**.
-Receiver-only instances, such as a database, may be shared. To use the same sender in
-two groups, create two instances from the same code.
+An instance belongs to **at most one group**. To use the same code or startup profile in
+two groups, create two instances. The instances may point at the same source worktree.
 
-One group may contain several instances listening on the same port. Switchyard warns and
-routes to the first listed instance; reorder the list to change the priority.
+Alternative instances stay running so you can switch what the group is testing without
+rebuilding or restarting them. For example, after testing `backend-1`, reorder the group
+or disable it temporarily and the same callers reach `backend-2`.
+
+Those alternatives may listen on the same port because every instance has its own
+namespace and localhost. Switchyard warns when more than one active group member listens
+on a requested port and routes to the first listed instance.
 
 Use `disabled: [instance-name]` to temporarily exclude a member from one group. The
 instance keeps running and retains its list position, but that group does not route to it.
