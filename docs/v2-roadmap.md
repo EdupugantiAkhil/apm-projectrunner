@@ -53,7 +53,7 @@ verification evidence.
 | ✅ | 4 — Vocabulary and documentation alignment | `db52a71` |
 | ✅ | 5 — Daemon-as-service posture | `08e86d1` |
 | ✅ | 6 — Release usability items | `494f7a0` |
-| ✅ | 7 — Rename to APM ProjectRunner (`apmpr`) | pending |
+| ✅ | 7 — Rename to APM ProjectRunner (`apmpr`) | `d2c7d7a` |
 
 Baseline after Part 2a: 307 Rust tests passing, 49 web tests passing, four known React
 `exhaustive-deps` lint warnings (cleared in Part 6).

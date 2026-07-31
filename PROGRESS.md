@@ -2,7 +2,7 @@
 
 Updated: 2026-07-31
 
-## 2026-07-31 — V2 Part 7 rename to APM ProjectRunner
+## 2026-07-31 — V2 Part 7 rename to APM ProjectRunner (`d2c7d7a`)
 
 - Renamed the tree from the development-era `Switchyard` name to **APM ProjectRunner**
   (`apmpr`): 15 crates to `apmpr-*`, binaries to `apmpr`/`apmpr-daemon`/`apmpr-router`,
