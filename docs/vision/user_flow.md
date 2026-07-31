@@ -344,6 +344,24 @@ Nothing is rejected, because the topology still runs and the warning tells you w
 chosen. Reorder the list to change the winner, or remove the member you did not mean to
 include.
 
+### Temporarily disabling a member
+
+Use `disabled:` to exclude an instance from one group without stopping it or losing its
+priority position:
+
+```yaml
+groups:
+  feature-test:
+    instances: [ui-1, backend-1, backend-canary, db-new]
+    disabled: [backend-canary]
+```
+
+The group ignores disabled members for routing, health, address resolution, and collision
+warnings. Removing the name from `disabled:` restores the member at its original position.
+Other groups using a receiver-only instance are unaffected. A disabled sender does not count
+as belonging to the group. `disabled:` is local to the named group and is not inherited
+through `extends:`. Naming an instance that is not a resolved member is a validation error.
+
 This matters most for capabilities nothing inside the deployment consumes. Two UIs in one
 group have no consumer slot pointing at either, so they never collide; each is reachable by
 its own address (step 10). Constraining that would rule out an ordinary comparison — the same
@@ -567,7 +585,7 @@ field name differ, both are given — the persisted YAML keeps the internal name
 | **Provides / capability** | `provides` | What a startup profile offers to others, e.g. `database`, `ai-ingest`. |
 | **Consumes / slot** | `consumes` | A dependency a startup profile needs, named by capability, with the fixed address the unchanged application already calls. |
 | **Address (slot)** | `address` | The host and port the unchanged application already uses, e.g. `127.0.0.1:8001`. It is the consumer's contract, not the provider's real location. |
-| **Service group** | **group** | A named, reusable set of instances that belong together, listed in `instances:`. May `extends:` another group and override only what differs. |
+| **Service group** | **group** | A named, reusable set of instances that belong together, listed in `instances:`. May `extends:` another group, override what differs, or temporarily exclude members with `disabled:`. |
 | **Connection** | **binding** | The selected provider group for one consumer instance. Replaced as a complete set, never slot by slot. |
 | **Route** | `routes` | A direct per-slot connection authored without a group. The low-level form a binding resolves into. |
 | **Transition** | — | What happens to existing network connections during a switch: **Close** (drop them), **Drain** (let them finish, with a timeout), **Pin** (keep them on the old provider while new ones use the new one). |

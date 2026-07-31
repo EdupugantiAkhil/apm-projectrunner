@@ -18,7 +18,8 @@ and lose whatever state you had.
 
 With Switchyard (the APM project manager), you run **multiple instances of each of these
 segments**. Several UIs, several backends, several databases — each instance built from a
-different branch — all alive on the same machine at the same time.
+selected branch — all alive on the same machine at the same time. Instances in different
+groups may use the same branch.
 
 Then you connect each segment independently. Any UI can be pointed at any backend, and
 any backend at any database. You are not restricted to matching sets; you pick the
@@ -30,22 +31,28 @@ You make a **group** with one entry of each segment:
 
 ```text
 group "feature-test"
-  ui       → ui on branch feature-a
+  ui       → ui-feature-test on branch feature-a
   backend  → backend on branch feature-a
-  database → database with the new schema
+  database → database-new with the new schema
 
 group "regression"
-  ui       → ui on branch feature-a
+  ui       → ui-regression on branch feature-a
   backend  → backend on main
-  database → database with the new schema
+  database → database-new with the new schema
 ```
 
 That is the whole act of configuration. Once the group exists, the **auto routing
 magically happens** — you do not wire up addresses, edit config files, or change ports.
 
-Two groups can share an instance. In the example above, both groups use the same UI
-instance and the same database; only the backend differs. That is exactly the comparison
-you want when you are trying to find out whether a bug is in the UI or the backend.
+An instance that makes group-routed outbound calls belongs to **at most one group**.
+Receiver-only instances, such as a database, may be shared. To use the same sender in
+two groups, create two instances from the same code.
+
+One group may contain several instances listening on the same port. Switchyard warns and
+routes to the first listed instance; reorder the list to change the priority.
+
+Use `disabled: [instance-name]` to temporarily exclude a member from one group. The
+instance keeps running and retains its list position, but that group does not route to it.
 
 ## Routing works as if there was no isolation
 
@@ -84,13 +91,12 @@ changes. Remote consumers, routers, and cross-device sidecars are not yet suppor
 
 ## Working this way
 
-You work on each part in its own branch, in its own instance, without coordinating with
-anyone else's work in progress. When you want to test, you make a group that combines
-your instance with whatever already-running instances you want to test against — no need
-to start a fresh copy of everything, and no need to rebuild a whole environment for each
-combination.
+You work on each part in its own branch and instance. Build a group, move a sender, or
+create another instance from the same code. Application addresses and ports never
+change.
 
-Change the group to change what talks to what. The instances keep running.
+Change group membership to change what talks to what. Moved instances keep running while
+their routing context is replaced.
 
 ---
 

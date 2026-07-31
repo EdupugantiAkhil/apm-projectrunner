@@ -84,6 +84,7 @@ spec:
     - { name: backend-1, block: java-backend, source: backend-main }
     - { name: backend-2, block: java-backend, source: backend-feature,
         parameters: { LOG_LEVEL: debug } }
+    - { name: backend-canary, block: java-backend, source: backend-feature }
 
     - { name: db-new, block: postgres, source: infra }
 
@@ -108,7 +109,9 @@ spec:
   groups:
     feature-test:
       address: feature-test.comparison.localhost
-      instances: [ui-1, backend-1, db-new]
+      instances: [ui-1, backend-1, backend-canary, db-new]
+      # Keeps running and keeps its priority position, but this group ignores it.
+      disabled: [backend-canary]
 
     regression:
       address: regression.comparison.localhost
@@ -167,6 +170,10 @@ are the same number — so there is nothing left for you to say. Switchyard lear
 `publish:`, `probe:`, and the image itself. If two members of one group listen on the same port,
 you get a warning and the first listed wins, the same rule as
 [address collisions](user_flow.md#address-collisions-and-who-wins).
+
+**Disabled members keep their place.** A name in a group's `disabled:` list stays running but
+is ignored by that group. Remove the name to restore it at the same `instances:` position and
+therefore the same routing priority.
 
 **`scripts:` and `blocks:` are not the same kind of thing.** Only `scripts:` follows the
 `npm run` model — a flat name-to-command map, because a run action genuinely is one line of shell
