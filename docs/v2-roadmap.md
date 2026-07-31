@@ -1,14 +1,18 @@
 # V2 roadmap — aligning the implementation with the vision
 
-The vision is [docs/vision/ABOUT.md](vision/ABOUT.md) and
-[docs/vision/user_flow.md](vision/user_flow.md). Those two files are the source of truth
-and are not edited. [DEVIATION.md](../DEVIATION.md) records where the implementation
-differs from them today; this file is the plan for closing those differences.
+The vision is [docs/vision/ABOUT.md](vision/ABOUT.md),
+[docs/vision/user_flow.md](vision/user_flow.md), and the executable target shape in
+[docs/vision/sample-config.md](vision/sample-config.md). Those files are the source of
+truth. [DEVIATION.md](../DEVIATION.md) records where the implementation differs from them
+today; this file is the plan for closing those differences.
 
 Scope of V2 is **the shapes the product is authored and reasoned about in**: group
-membership, addresses, and the vocabulary. Run actions are deferred to V3, multi-project support is
-deliberately out (see "Not in V2"), and the security/acceptance backlog in
+membership, addresses, and the vocabulary. The security/acceptance backlog in
 [docs/unfinished-work.md](unfinished-work.md) is a separate track that V2 does not touch.
+
+The sample configuration is the V2 acceptance contract. V2 is not complete until that
+file, excluding its explicitly deferred `scripts:` section, validates, plans, starts, and
+passes an end-to-end routing smoke test without compatibility-only fields.
 
 ## Settled decisions
 
@@ -16,12 +20,14 @@ These were decided before the work started; parts below are written against them
 
 | Decision | Choice |
 | --- | --- |
-| Migration | Hard cut. One `apiVersion` bump to `v1alpha2` covering every V2 schema change, plus a `switchyard migrate` command that rewrites `deployment.yaml` and `run-scripts.yaml` in place. The loader rejects `v1alpha1` with an error naming the command. |
-| Multi-project | Deferred to V2.1. |
+| Migration | Hard cut. One `apiVersion` bump to `v1alpha2` covering every V2 deployment-schema change, plus a `switchyard migrate` command that rewrites `deployment.yaml` in place. The loader rejects `v1alpha1` with an error naming the command. |
 | Naming | Rename to **APM ProjectRunner**, typed as `apmpr`. Binary `apmpr`, state dir `.apmpr/`, crates `apmpr-*`, `apiVersion: apmpr.dev/v1alpha2`, env `APMPR_*`, header `X-Apmpr-Route`. Done **last**, as a pure mechanical sweep over a settled tree. |
 
-Because the rename lands last, Parts 1–7 are authored against the current `switchyard`
-names throughout. Part 8 renames them all at once.
+**APM ProjectRunner is the intended product name.** `Switchyard` is a temporary
+implementation name introduced during development, not a competing product direction.
+
+Because the rename lands last, Parts 1–6 are authored against the current `switchyard`
+names throughout. Part 7 renames them all at once.
 
 ## Status at a glance
 
@@ -38,14 +44,13 @@ then committed. A part is only ticked once it is committed with verification evi
 | ⬜ | 2d — `bindings:` is deleted; membership is the connection | |
 | ⬜ | 2e — External instances: things already running outside Switchyard | |
 | ⬜ | 3 — Serving a whole group from one address (router) | |
-| ⏸ | 4 — Run actions become a flat `scripts:` map | deferred to V3 |
-| ⬜ | 5 — Vocabulary and documentation alignment | |
-| ⬜ | 6 — Daemon-as-service posture | |
-| ⬜ | 7 — Release usability items | |
-| ⬜ | 8 — Rename to APM ProjectRunner (`apmpr`) | |
+| ⬜ | 4 — Vocabulary and documentation alignment | |
+| ⬜ | 5 — Daemon-as-service posture | |
+| ⬜ | 6 — Release usability items | |
+| ⬜ | 7 — Rename to APM ProjectRunner (`apmpr`) | |
 
 Baseline after Part 2a: 307 Rust tests passing, 49 web tests passing, four known React
-`exhaustive-deps` lint warnings (cleared in Part 7).
+`exhaustive-deps` lint warnings (cleared in Part 6).
 
 ## The parts
 
@@ -81,7 +86,7 @@ final V2 model.
 ### Part 2 — Addresses on the group and on the instance ✅
 
 Closes [DEVIATION §1a](../DEVIATION.md#1a-addresses-on-the-group-and-on-the-instance).
-Vision reference: user_flow step 10. Landed in `5d14720`; 303 tests passing.
+Vision reference: user_flow step 9. Landed in `5d14720`; 303 tests passing.
 
 One rule replaces two mechanisms: **anything addressable carries `address:`, declared on
 the thing it names.**
@@ -131,10 +136,8 @@ would answer at the same address:
 - [ ] Decide whether `routing-matrix` should now use a group address — left as instance
       addresses; revisit in Part 3, which needs a group-address fixture anyway
 
-`docs/vision/user_flow.md` step 8 was edited for this — the "One provider per capability"
-section is now "Address collisions, and who wins". This is the one deliberate exception to
-treating the vision as immutable, made with the owner's explicit approval, because the
-rule was an oversight rather than an intent.
+`docs/vision/user_flow.md` step 8 is kept current with this rule so the source of truth and
+the roadmap do not describe different products.
 
 Landed in `a24991b`; 307 tests passing. The warning channel was the design work:
 `PlannerWarning` follows the existing `BundleWarning` shape and rides on `Plan.warnings`.
@@ -207,7 +210,7 @@ a receiver bound only to its own `127.0.0.1`. No test receiver published or expo
 application port.
 
 Touches the planner's route generation and the sidecar config, ahead of Part 3's host-router
-work. Schema-affecting, so it lands before the Part 8 rename and rides the same `v1alpha2`
+work. Schema-affecting, so it lands before the Part 7 rename and rides the same `v1alpha2`
 migration.
 
 ---
@@ -258,7 +261,7 @@ is the rule that makes the rest fall out. Two directory populations with no over
 
 A source is never a repository, and a repository is never a source. Nothing has to work out
 which one a directory is, and the adopt-versus-manage question is settled once at the
-repository level instead of per source: `url:` means Switchyard clones and owns it, `path:`
+repository level instead of per source: `url:` means Switchyard clones and owns it, `clone:`
 means read this and never touch it. Every worktree below is created by Switchyard either
 way, so worktree handling has exactly one case.
 
@@ -297,24 +300,13 @@ present is left alone; this is not a sync that enforces state.
       form — migration must never turn a directory Switchyard was reading into one it
       manages.
 
-**Unresolved: plain-path sources are not all worktrees.** "Every source is a worktree" is
-right for the branch-comparison case the product exists for, but every source in the
-repository today is a plain path, and several are not repository checkouts at all:
-`fixture-root: { path: . }` and `repository-root: { path: ../.. }` in `jas-base`, and
-`{ path: ../.. }` in `routing-matrix`, exist so a block can build a Dockerfile out of the
-repository. They have no ref and no branch, and forcing them into `{ repository, ref, path }`
-would be fiction. Three ways out, in preference order:
-
-1. **Keep a plain `{ path }` source as a third kind**, documented as "a directory, not a
-   checkout" — honest, and the validation cost is one variant rather than a rule with
-   exceptions. Loses the clean two-population split above.
-2. **Move build context off sources entirely** — a block's `build.context` is not really a
-   source, and treating it as one is what created these entries. Cleaner model, wider blast
-   radius.
-3. Force them through the repository form, which would have `jas-base` declare its own
-   repository as a repository and check itself out. Rejected.
-
-Decide before implementation; the checklist above assumes (1) unless overridden.
+**Plain-path sources are removed.** The sample configuration's two-population model is
+the rule: every source is a worktree and every worktree names its repository and ref.
+Build contexts resolve inside a source worktree; they are not modeled as standalone
+sources. Existing fixtures that use `{ path: . }` or `{ path: ../.. }` migrate by naming
+their containing Git clone once and creating a source worktree for the required ref.
+Migration refuses a path that is not inside a Git repository instead of inventing a
+repository or silently preserving a third source kind.
 
 **The containment guard has to change, and that is the one real cost.** Managed creation is
 currently guarded by `validate_containment`, which rejects any target outside
@@ -332,14 +324,14 @@ exists but is not a worktree of the named repository; a path that is a worktree 
 repository; two sources authored with the same path. Each needs a diagnostic rather than a
 raw `git` error surfacing.
 
-Schema-affecting, so it lands before the Part 8 rename and rides the same `v1alpha2`
+Schema-affecting, so it lands before the Part 7 rename and rides the same `v1alpha2`
 migration.
 
 ---
 
 ### Part 2d — `bindings:` is deleted; membership is the connection
 
-Vision reference: user_flow step 9, and the one-backend-one-group rule in step 10.
+Vision reference: user_flow step 8, and the one-backend-one-group rule in step 9.
 
 `bindings:` restates group membership. In the ordinary case it carries no information at
 all — remove it from a deployment where every consumer is in exactly one group and planning
@@ -449,7 +441,7 @@ is always authored by hand.
 
 ### Part 3 — Serving a whole group from one address (router)
 
-The substantial piece of step 10, and the reason Part 2 stops at the schema. Today a
+The substantial piece of step 9, and the reason Part 2 stops at the schema. Today a
 `custom_domain` destination maps to exactly one provider, resolved at config-render time.
 Reaching **any** member by one address means the host router resolving a member **per
 request**.
@@ -465,118 +457,28 @@ request**.
 - [ ] Checked against browser identity — an `Origin` serving several members must still
       identify the group unambiguously
 - [ ] A fixture that actually exercises a group address end to end
+- [ ] Materialize `docs/vision/sample-config.md` as the acceptance fixture, excluding only
+      its deferred `scripts:` section: validate, plan, create its missing clone/worktrees,
+      start both groups, open both group addresses, prove their different backends and
+      shared database, reach the external instance, exercise `disabled:`, then stop and
+      clean up without compatibility-only schema fields
 
 Touches `router-pingora` and `router-config`, not only the schema.
 
 ---
 
-### Part 4 — Run actions become a flat `scripts:` map — **deferred to V3**
-
-Closes [DEVIATION §6](../DEVIATION.md#6-run-actions-carry-a-structuredshell-split-that-may-not-earn-its-keep).
-Vision reference: user_flow step 6.
-
-**Deferred.** The schema change below is small and well understood, but it would land a
-shape whose central question is unanswered: a script cannot currently reach the deployment
-it is about. Shipping the flat map first would mean migrating everyone onto a format we
-then change again once that is solved. Left whole for V3.
-
-The intended shape, unchanged:
-
-```yaml
-scripts:
-  dev-up: switchyard up $SWITCHYARD_BUNDLE --with overlays/dev.yaml
-  smoke: ./scripts/smoke.sh --target feature-test
-```
-
-- [ ] Flat name→command map replaces the seven-field record
-- [ ] Runner puts the binary directory on `PATH`, exports `$SWITCHYARD_PROJECT` and
-      `$SWITCHYARD_BUNDLE` — the convenience is the environment, not the schema
-- [ ] Remove `StructuredCommand`, `OperationSpec::Structured`, `from_script`, most of
-      `validate()`
-- [ ] Browser authoring **dropped, not widened** — the browser lists and runs
-- [ ] The daemon's `run_action_backend_unsupported` rejection of shell actions must start
-      working; after this part every action is a shell action
-- [ ] Migration transform for existing `run-scripts.yaml`
-
-**On attribution** (the open question in DEVIATION §6): keep it, and recover it from the
-run rather than from the schema. The deployment target is already selected in the UI at
-run time; the runner records that selection, so the operation stays tagged in the timeline
-and still counts against the heavy-operation limit. That is the whole win the structured
-form was buying, and it survives without a second authoring format.
-
-#### Why it is deferred: a script cannot reach the deployment
-
-A run action is `$SHELL -c "<string>"` with `current_dir` set to the project
-(`switchyard-run-actions/src/lib.rs:403`, `run` at 418). Your shell, your machine, your
-permissions. That is right for `switchyard up` and wrong for anything that needs to *talk
-to* what is running, and the vision's own example is the second kind:
-`smoke: ./scripts/smoke.sh --target feature-test`.
-
-It cannot work today. `publish:` generates `127.0.0.1::8080` — an empty host port, so Docker
-assigns an ephemeral one at start and nothing can hardcode it. The group's shared localhost
-exists only inside sidecar namespaces, so `curl 127.0.0.1:8080` from your shell reaches
-nothing. And the environment step 6 promises is not implemented: `run-actions` never calls
-`.env()`, and `SWITCHYARD_BUNDLE` appears nowhere in the workspace.
-
-Three ways to close it, kept here as ideas rather than commitments:
-
-**(1) Export the addresses.** A group already has a stable name —
-`feature-test.comparison.localhost`, served by the host router. Give scripts
-`$SWITCHYARD_GROUP_FEATURE_TEST` and per-instance equivalents and `smoke.sh` curls
-something that does not move. No containers, no namespaces; just telling the script what it
-cannot discover. Smallest change, covers testing a group from outside.
-
-**(2) `switchyard exec`.** Run a command *inside* a member's namespace:
-
-```yaml
-scripts:
-  migrate: switchyard exec backend-1 -- ./gradlew flywayMigrate
-```
-
-The command then sees exactly the localhost `backend-1` sees — `127.0.0.1:5432` is that
-group's database. This is the honest answer to "how does a script reach the group": not by
-forwarding a port out, but by joining. It is also the real answer to "can a script pick its
-image" — what that question wants is the instance's *network*, not its base image.
-
-**(3) A script that names a group** and is given its own sidecar:
-
-```yaml
-scripts:
-  smoke: { group: feature-test, run: ./scripts/smoke.sh }
-```
-
-Most convenient and most magical. It costs the flat map: an entry becomes a string *or* an
-object, which is the structured/shell split this part exists to delete, reintroduced under
-a new name. Weigh that against what (2) already gives.
-
-Preference if nothing changes before V3: **(1) and (2)**. Together they cover both real
-cases — test a group from outside by name, run a task from inside — and neither costs the
-flat map. Both are one `switchyard` invocation in an ordinary shell, which is the `npm run`
-bargain the vision asks for.
-
-**On choosing an image per script** (asked during planning, recorded so it is not
-re-litigated): no. A script *acts on* the deployment from outside and needs your Docker,
-your daemon socket, and your credential helper; a block *is* the isolated thing under test
-and needs a pinned image. Putting `switchyard up` in a container containerizes the remote
-control rather than the appliance. A script that genuinely needs a runtime already has
-`docker run --rm -v $PWD:/w -w /w node:22 …` — one explicit line, no schema. Revisit only
-if that prefix turns out to be on most scripts in practice.
-
----
-
-### Part 5 — Vocabulary and documentation alignment
+### Part 4 — Vocabulary and documentation alignment
 
 `DESIGN.md` is the authoritative architecture doc and still describes the pre-V2 shapes.
 
 - [ ] `DESIGN.md`: groups as lists, `address:` on both objects, `ingress:` gone,
-      capabilities/slots/bindings/routes/extends gone; leave the flat `scripts:` map to V3
+      capabilities/slots/bindings/routes/extends gone
 - [ ] Reconcile the user_flow glossary against the terms diagnostics and UI labels use
 - [ ] `DEVIATION.md` records which sections V2 closed
-- [ ] `AGENTS.md` reflects that the vision was edited once, deliberately, in Part 2a
 
 ---
 
-### Part 6 — Daemon-as-service posture
+### Part 5 — Daemon-as-service posture
 
 user_flow step 2 states the intended split plainly: the daemon is a service, and
 `switchyard gui` only opens a window onto it. Today `gui` auto-starts the daemon as a
@@ -589,7 +491,7 @@ fallback, and the doc itself calls that "a fallback, not the design".
 
 ---
 
-### Part 7 — Release usability items that block the vision's flow
+### Part 6 — Release usability items that block the vision's flow
 
 Pulled from [docs/unfinished-work.md](unfinished-work.md) because the vision's flow reads
 wrong without them, not because they are security work:
@@ -602,7 +504,7 @@ wrong without them, not because they are security work:
 
 ---
 
-### Part 8 — Rename to APM ProjectRunner (`apmpr`)
+### Part 7 — Rename to APM ProjectRunner (`apmpr`)
 
 Closes [DEVIATION §5](../DEVIATION.md#5-naming). One mechanical sweep over a settled tree,
 reviewed as a pure rename diff with no behaviour mixed in.
@@ -619,11 +521,6 @@ reviewed as a pure rename diff with no behaviour mixed in.
 ---
 
 ## Not in V2
-
-**Multi-project support** — a project registry, a daemon holding more than one workspace,
-and an in-window project switcher (user_flow step 3). It is the largest single workstream
-in the vision, and it is additive plumbing: it changes no shape that Parts 1–8 change, so
-it sequences cleanly afterwards as V2.1.
 
 **The security and acceptance backlog** — SR-1 through SR-8 and the missing end-to-end
 evidence in [docs/unfinished-work.md](unfinished-work.md). These block a team release

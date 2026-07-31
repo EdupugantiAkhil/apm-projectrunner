@@ -868,3 +868,16 @@ audit shell startup files as well as the requested cache directories.
 - Correction: use a single-quoted search expression when matching Markdown backticks.
 - Lesson: shell quoting applies even to read-only verification commands; never place
   literal Markdown backticks inside a double-quoted command argument.
+
+## 2026-07-31 — An alignment roadmap must not preserve a second product model
+
+- The roadmap treated `user_flow.md` as immutable while retaining obsolete Step 9
+  bindings, capability-based group behavior, and roadmap sections for work explicitly
+  deferred beyond V2. That made the roadmap a negotiation between conflicting models
+  instead of a path to the approved sample schema.
+- Correction: update the vision flow when the owner approves a schema decision, then make
+  the roadmap follow that source of truth. Membership is the connection, the sample
+  configuration is the executable acceptance contract, and deferred work is tracked
+  outside this V2 roadmap.
+- Lesson: a source of truth must describe one coherent target. Historical implementation
+  behavior belongs in migration notes or progress records, not in the target workflow.

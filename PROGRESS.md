@@ -10,6 +10,23 @@ Updated: 2026-07-31
 - Web UI plan (`docs/web-ui-plan.md`): complete. Parts 1 through 13, including follow-up
   Parts 11a–11c, and Part 13's security review with its two fixes.
 
+## 2026-07-31 V2 roadmap and vision-flow reconciliation
+
+- Made `docs/vision/user_flow.md` agree with the membership-only schema: Step 8 now authors
+  and edits complete ordered groups without capabilities, slots, `extends:`, bindings, or
+  direct routes. The redundant Connections step is removed, and Addresses is now Step 9
+  with browser members selected without a `ui` capability.
+- Aligned repository/source setup and the glossary with `docs/vision/sample-config.md`.
+  Repositories are declared once, every source is a repository/ref/path worktree, missing
+  managed clones and worktrees are created by `up`, and plain-path sources are not retained.
+- Made the sample configuration, excluding its explicitly deferred `scripts:` section, the
+  V2 acceptance contract. The roadmap now requires an end-to-end fixture proving worktree
+  creation, two group addresses, different backends, a shared database, an external member,
+  and `disabled:` without compatibility-only fields.
+- Removed run-action and multi-project work from the V2 roadmap. Renumbered the remaining
+  parts and retained the final rename to the intended **APM ProjectRunner** / `apmpr` name.
+- Documentation-only phase. No implementation changed and no code tests were run.
+
 ## 2026-07-31 V2 schema clarification — no capabilities or slots
 
 - Clarified the final V2 topology in `DESIGN.md` and `docs/v2-roadmap.md`: group membership

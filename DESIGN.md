@@ -107,31 +107,36 @@ changing the human-authored topology model.
 
 ## 3. Domain model
 
-### Source
+### Repository and source
 
-A directory containing code to build or run.
+A repository names a Git clone once. Exactly one of `url:` (managed by Switchyard) or
+`clone:` (an existing clone that Switchyard never modifies) is required. A source is
+always a worktree backed by that repository, with an authored ref and project-relative
+path.
 
 ```yaml
+repositories:
+  monorepo:
+    url: git@github.com:example/product.git
+  legacy:
+    clone: /code/legacy
+
 sources:
   monorepo-main:
-    type: path
-    path: /code/product
+    repository: monorepo
+    ref: main
+    path: ./sources/monorepo-main
 
   backend-feature-a:
-    type: worktree
-    repository: /code/product
-    path: /code/worktrees/backend-feature-a
+    repository: monorepo
     ref: feature/backend-a
-
-  experimental-python:
-    type: repository
-    url: git@github.com:example/experimental-python.git
-    ref: main
-    managedPath: ~/.switchyard/sources/experimental-python
+    path: ./sources/backend-feature-a
 ```
 
-Initial releases should consume existing paths and worktrees. Managed clone, fetch, and
-worktree creation should be added only after the execution model is stable.
+Managed clones live under `.switchyard/clones/<repository>`. `up` creates a missing
+managed clone and any missing source worktree. Existing paths are validated against the
+named repository and ref. There is no plain-path source kind, and repository clones and
+source worktrees may not overlap or contain one another.
 
 ### Device
 
@@ -254,7 +259,7 @@ spec:
 ```
 
 The command is an argument array and is spawned without an implicit shell. Absolute
-paths are allowed. `${source.path}` resolves to the selected repository or worktree, so
+paths are allowed. `${source.path}` resolves to the selected source worktree, so
 the same block definition can start JAS from different worktrees without editing the
 script.
 
@@ -506,11 +511,11 @@ instances:
     block: ui
     source: ui-feature-b
 
-routes:
-  ui-a: { java: jas-main, python: ai-feature }
-  ui-b: { java: jas-feature, python: ai-main }
-  jas-main: { database: db-main, python: ai-feature }
-  jas-feature: { database: db-main, python: ai-main }
+groups:
+  feature-a:
+    instances: [ui-a, jas-main, ai-feature, db-main]
+  feature-b:
+    instances: [ui-b, jas-feature, ai-main, db-main]
 ```
 
 #### Required decomposition of `start-local-jas.sh`
@@ -640,7 +645,7 @@ instance `address:`; zero or several such members is an error rather than a gues
 The desired combination of sources, instances, parameters, and groups.
 
 ```yaml
-apiVersion: switchyard.dev/v1alpha1
+apiVersion: switchyard.dev/v1alpha2
 kind: Deployment
 metadata:
   name: comparison
@@ -671,7 +676,7 @@ spec:
 
 An overlay creates a product variation without copying its block or deployment
 definition. It may inject environment values and files, override declared parameters,
-and select routes for matching deployment instances.
+and replace group membership.
 
 ```yaml
 apiVersion: switchyard.dev/v1alpha1
@@ -1115,7 +1120,7 @@ It is an operational tool, not a generic admin dashboard. The main view should r
 a disciplined physical patch bay: ordered groups contain visible instance members, and
 shared members visibly appear in every group that can route to them.
 
-The dashboard must grow guided startup-profile authoring, instance creation, connection
+The dashboard must grow guided startup-profile authoring, instance creation, group-membership
 editing, and device placement through shared operations and schema-driven forms. Raw
 YAML remains an inspectable escape hatch, not the intended final interaction. The TUI
 may retain equivalent workflows for headless use, but new local authoring work should
@@ -1152,9 +1157,9 @@ Layout:
 - A contextual inspector on the right.
 - A collapsible event and log drawer along the bottom.
 
-Signature element: the **live patch bay**. Route cables are the only visually bold
-gesture. They use capability colors, clear direction, and restrained motion when a route
-changes. Everything else remains flat, quiet, and compact.
+Signature element: the **live patch bay**. Group membership is the only visually bold
+gesture. Ordered member rows show routing priority, shared membership, and restrained
+motion when a group changes. Everything else remains flat, quiet, and compact.
 
 This avoids a generic grid of statistic cards: counts matter less than topology and
 source identity in this product.
@@ -1165,17 +1170,16 @@ source identity in this product.
 ┌──────────────┬────────────────────────────────────┬───────────────────┐
 │ DEPLOYMENTS  │ comparison                 Running │ INSTANCE INSPECTOR│
 │              │                                    │                   │
-│ ● comparison │ UI CONSUMERS       PROVIDERS       │ ui-feature        │
+│ ● comparison │ GROUPS AND ORDERED MEMBERS          │ ui-feature        │
 │ ○ regression │                                    │ feature/ui-redesign│
 │ ○ clean-main │ ┌────────────┐   ┌──────────────┐  │ /worktrees/ui-a   │
-│              │ │ ui-main    ├──►│ backend-main │  │                   │
-│ + Deployment │ │ main@9ca21 │╲  └──────────────┘  │ Routes            │
-│              │ └────────────┘ ╲ ┌──────────────┐  │ Java   backend-a  │
-│ SOURCES      │                 ├►│ python-main  │  │ Python python-a   │
-│ 8 clean      │ ┌────────────┐  │ └──────────────┘  │ DB      shared-db  │
-│ 2 modified   │ │ ui-feature ├──┼► backend-a       │                   │
-│ 1 missing    │ │ feat@35ad2 │  ├► python-a        │ [Apply routes]    │
-│              │ └────────────┘  └► shared-db       │ [Open] [Logs]     │
+│              │ feature-test: ui-main, backend-main │                   │
+│ + Deployment │               python-main, shared-db│ Group             │
+│              │                                    │ feature-test      │
+│ SOURCES      │ regression:   ui-feature, backend-a │ Position 1        │
+│ 8 clean      │               python-a, shared-db   │                   │
+│ 2 modified   │                                    │ [Apply membership]│
+│ 1 missing    │ collision: none                     │ [Open] [Logs]     │
 ├──────────────┴────────────────────────────────────┴───────────────────┤
 │ EVENTS  Build completed: python-a/analysis                     ▴     │
 └──────────────────────────────────────────────────────────────────────┘
@@ -1189,8 +1193,8 @@ Interaction rules:
 - A shared member that originates loopback traffic shows the multi-group ambiguity and
   directs the user to duplicate that instance.
 - Modified worktrees are visible before build and require acknowledgment.
-- Each route displays both the friendly instance name and abbreviated commit.
-- Keyboard users can change routes through select controls in the inspector; dragging is
+- Each member displays both the friendly instance name and abbreviated commit.
+- Keyboard users can change membership through select controls in the inspector; dragging is
   never the only interaction.
 - Reduced-motion mode replaces cable animation with an immediate color/state change.
 
@@ -1212,7 +1216,7 @@ Interaction rules:
   and group membership.
 - Show the origin of every resolved value and a warning when a later overlay shadows it.
 - Compare two variations side by side across source refs, environment keys, injected
-  file hashes, routes, images, ports, and resource claims.
+  file hashes, group membership, images, ports, and resource claims.
 - Preview injected text files with secrets redacted and binary files as metadata only.
 - Show whether each change applies live or requires a restart or rebuild before apply.
 
@@ -1470,7 +1474,6 @@ packages/
   web/                        React GUI
   adapter-sdk/                public adapter contracts and schema helpers
 adapters/
-  source-path/                local directory sources
   source-git/                 repositories and worktrees
   execution-container/        image and Dockerfile components
   execution-runner-script/    scripts isolated in runner containers

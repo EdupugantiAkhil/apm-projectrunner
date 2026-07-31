@@ -26,12 +26,11 @@ worth knowing before you start, because the UI uses them everywhere:
 5.  Startup profiles         →  the recipe for starting each part
 6.  Run actions              →  project-level scripts (Up, Down, smoke tests)
 7.  Instances                →  live copies of each part, optionally on another device
-8.  Service groups           →  a named set of instances
-9.  Connections              →  point each consumer at a group
-10. Addresses                →  open a group, or one instance, by name
+8.  Service groups           →  a named set of instances; membership is the connection
+9.  Addresses                →  open a group, or one instance, by name
 ```
 
-Steps 4 through 10 all happen in the browser. Only steps 1 to 3 are CLI, and step 2 is
+Steps 4 through 9 all happen in the browser. Only steps 1 to 3 are CLI, and step 2 is
 normally a one-time or machine-startup concern rather than something you type each session.
 
 ---
@@ -60,8 +59,9 @@ switchyard project register path/to/code --name my-project
 ```
 
 Registration preserves everything already in the folder, creates project-local state and
-an empty `deployments/` directory, and registers the folder itself as the first source.
-Running it again on the same folder is safe.
+an empty `deployments/` directory. If the folder is a Git clone, it may be adopted as a
+repository in step 4, but source worktrees still live at their own authored paths. Running
+registration again on the same folder is safe.
 
 After either command you have a `.switchyard/` directory holding project state, and an
 authored `deployment.yaml` that is valid but empty of real work.
@@ -129,15 +129,25 @@ operations, block library**); arrow keys move between views.
 **Home** is the landing view for a project with no deployments. It shows a setup checklist
 across source → profile → instance → startup → connection, recommends the next unfinished
 action, and links straight into the view that performs it. If you follow Home's
-recommendation each time, it walks you through steps 4 to 9 in order.
+recommendation each time, it walks you through steps 4 to 8 in order.
 
 ## Step 4 — Add code: repositories and worktrees
 
-Go to **sources**. There are three ways to give Switchyard code:
+Go to **sources**. Repositories and worktrees are separate:
 
-**Clone a Git repository.** Enter a name and a repository URL (optionally a ref and an SSH
-identity file). Switchyard first tries a non-interactive clone using your existing Git
-credential helper and SSH agent — usually that just works and nothing is asked of you.
+- A named `repository` is either a managed `url:` that Switchyard clones under
+  `.switchyard/clones/`, or an adopted `clone:` path that Switchyard reads but never
+  modifies.
+- A named `source` is always a worktree with `{ repository, ref, path }`. Its path is
+  project-relative and is the checkout an instance uses.
+
+The browser edits the same structure shown in
+[sample-config.md](sample-config.md), and **Up** creates any missing managed clone and
+source worktree. There is no plain-path source kind.
+
+**Add a managed repository.** Enter a name and repository URL. Switchyard first tries a
+non-interactive clone using your existing Git credential helper and SSH agent — usually
+that just works and nothing is asked of you.
 
 If it does not:
 
@@ -151,20 +161,23 @@ If it does not:
 
 Clone progress streams into the operations timeline like any other operation.
 
-**Register an existing local directory** as an *unmanaged* source. Switchyard records where
-it is and nothing else; it never modifies or deletes the files.
+**Adopt an existing clone.** Choose its path once at the repository level. Switchyard reads
+the clone and may create source worktrees from it, but never modifies or deletes the clone
+itself.
 
-**Create a worktree** from a registered repository. Choose the repository, a ref, and an
-optional name. This is a *managed* source: Switchyard created the directory and can remove
-it. This is the step that makes "several branches alive at once" possible — one worktree per
-branch, each a separate checkout on disk, all backed by one clone.
+**Add a source worktree.** Choose the repository, ref, name, and project-relative path.
+This is the step that makes "several branches alive at once" possible — one worktree per
+branch, each a separate checkout on disk, all backed by one clone. If the path is absent,
+**Up** creates it; if it already exists, validation confirms that it belongs to the named
+repository at the authored ref.
 
-Removal is kind-aware, and the confirmation copy tells you which you are doing:
+Removal is ownership-aware, and the confirmation copy tells you which you are doing:
 
-| Source kind | Remove means |
+| Object | Remove means |
 | --- | --- |
-| Managed (worktree) | The worktree directory is deleted from disk. A dirty worktree requires a second explicit confirmation. |
-| Unmanaged (registered) | Only the registration is forgotten. Your files are untouched. |
+| Source worktree | The worktree directory may be removed. A dirty worktree requires a second explicit confirmation. |
+| Managed repository | The managed clone may be removed only after its source worktrees are removed. |
+| Adopted repository | Only the registration is forgotten. Your clone is untouched. |
 
 ## Step 5 — Startup profiles: how each part gets started
 
@@ -245,7 +258,7 @@ Use **+ New deployment** in the left rail to create a deployment, or **Add insta
 existing deployment. Either opens one progressively-revealed form (not a multi-step wizard)
 with live validation:
 
-1. **Checkout** — which registered source this instance runs from.
+1. **Checkout** — which authored source worktree this instance runs from.
 2. **Startup profile** — filtered to trusted profiles that are valid for that checkout.
 3. **Device** — where it runs. Eligible devices are selectable; ineligible ones are shown
    with the reason inline rather than hidden.
@@ -296,7 +309,7 @@ the filtered set.
 ## Step 8 — Service groups
 
 A **service group** is a named, reusable set of instances that belong together. It is just a
-list:
+complete ordered list:
 
 ```yaml
 groups:
@@ -304,38 +317,29 @@ groups:
     instances: [ai-main-ingest, ai-main-analysis, ai-main-reports]
 
   ai-feature:
-    extends: ai-main
-    instances: [ai-feature-analysis]
+    instances: [ai-main-ingest, ai-feature-analysis, ai-main-reports]
 ```
 
 Nothing classifies the members. Instances are all the same kind of thing — one checkout run
 through one startup profile — so a group does not sort them into backends and databases. It
 names which ones are in this combination, and that is all.
 
-Switchyard works out the rest. Every startup profile declares what it `provides` (its
-capabilities) and what it `consumes` (its slots). When a consumer needs its `database` slot
-filled, Switchyard looks through the group for the member that provides `database`. You do
-not restate a relationship the profiles already declare.
+Every member shares one localhost. If `ai-main-analysis` calls `127.0.0.1:8001`, Switchyard
+preserves port 8001 and tries active members of `ai-main` in their authored order. Listener
+ports are observed while instances run; profiles do not declare capabilities, consumed
+slots, or dependency wiring.
 
-`extends:` inherits a group and overrides only what differs. Above, `ai-feature` is `ai-main`
-with a different analysis instance. The override is matched by capability: `ai-feature-analysis`
-provides the same capability as `ai-main-analysis`, so it replaces it rather than joining it.
-
-`instances:` is always a list. There is no second form, because there is nothing a mapping
-would resolve — see below.
+`instances:` is always the complete list. There is no `extends:` form because there is no
+capability key that could say which inherited member a child replaces. When two groups are
+similar, repeat the short member list and make the difference visible.
 
 ### Address collisions, and who wins
 
-A group is a shared address space. Membership is not policed by capability: nothing stops two
-members providing the same one, because a capability name is a label for wiring a consumer's
-slot to a provider, not a category that decides who may belong.
-
-What matters is whether two members would answer at the same address. When a consumer's slot
-has more than one candidate in the group, Switchyard **warns and routes to the first candidate
-in the list**:
+A group is a shared address space. When two active members listen on the requested loopback
+port, Switchyard **warns and routes to the first listener in the list**:
 
 ```text
-warning: `database` slot on backend-1 has two candidates in group `dual-write`:
+warning: port 5432 has two listeners in group `dual-write`:
 db-main and db-replica; routing to db-main, the first listed
 ```
 
@@ -358,78 +362,53 @@ groups:
 
 The group ignores disabled members for routing, health, address resolution, and collision
 warnings. Removing the name from `disabled:` restores the member at its original position.
-Other groups using a receiver-only instance are unaffected. A disabled sender does not count
-as belonging to the group. `disabled:` is local to the named group and is not inherited
-through `extends:`. Naming an instance that is not a resolved member is a validation error.
+Other groups using a shared instance are unaffected. A disabled sender does not count as
+belonging to the group. Naming an instance that is not a member is a validation error.
 
-This matters most for capabilities nothing inside the deployment consumes. Two UIs in one
-group have no consumer slot pointing at either, so they never collide; each is reachable by
-its own address (step 10). Constraining that would rule out an ordinary comparison — the same
-backend and database, two UI branches — for no benefit.
-
-**An app that genuinely talks to two databases already calls two addresses** — `:5432` and
-`:5433`, or two hostnames — so its profile declares two slots with distinct names, and each is
-filled by its own provider. That needs no disambiguation and produces no warning:
-
-```yaml
-groups:
-  dual-write:
-    instances: [backend-1, db-primary, db-replica]   # provide `primary` and `replica`
-```
+An app that genuinely talks to two databases already calls two ports — for example 5432 and
+5433 — or two hostnames. Each destination port is routed independently. Switchyard cannot
+create a second channel that the application never opens.
 
 Switchyard cannot route a call the application never makes. If your code only ever opens
 `localhost:5432`, it has one database channel, and no amount of configuration creates a second
 one.
 
-A real address conflict — one instance declaring two slots at the same `127.0.0.1:5432` — is
-still a listener conflict and still fails planning. That is a different thing from two members
-of a group offering the same capability, and it remains an error.
-
-Groups are authored in the deployment definition. The Web UI resolves and displays them — the
-patch bay shows each group with its members — and both connection views only offer you groups
-that provide every capability a given consumer requires.
+A real listener conflict inside one instance still fails startup. Two different group members
+listening on the same port is allowed, warned, and resolved by list order.
 
 A group may also carry its own custom local address, so opening one name gives you that whole
-combination. That is step 10.
+combination. That is step 9.
 
-## Step 9 — Connections: point each consumer at a group
+### Editing group membership
 
-A **connection** (internally a *binding*) points one consumer instance at one service group.
-This is the switch you flip when you want to test a different combination.
+There is no `bindings:` section and no direct `routes:` section. Adding an instance to a
+group is the complete connection statement. The Web UI edits the same ordered
+`instances:` lists shown in step 8.
 
-The UI shows one of two views depending on whether the deployment is running, and it labels
-which one you are looking at so you never mistake desired state for observed state:
+- **Stopped → desired membership.** Edit a group's complete member list and save. It takes
+  effect on the next **Up**.
+- **Running → live groups.** The patch bay shows desired and observed membership, active
+  listeners, disabled members, and port collisions.
 
-- **Stopped → Desired connections (authored state).** A table of every consumer with consumed
-  slots, including consumers that have never been bound. Pick a group per consumer and save;
-  the change takes effect on the next **Up**. This is how a freshly authored deployment gets
-  its first connection without editing YAML.
-- **Running → the live patch bay.** Consumers, provider groups, and the routes actually in
-  effect, rendered from the applied snapshot.
+Changing a running group is a deliberate, previewed transition:
 
-Changing a live connection is a deliberate, previewed transition:
+1. Move, add, remove, reorder, disable, or re-enable members.
+2. Preview the complete old-group → new-group membership and collision changes.
+3. Choose what happens to existing connections: **Close**, **Drain** with a timeout, or
+   **Pin**.
+4. Apply the complete group snapshot atomically. Partial membership is invalid.
+5. Inspect the switch report, desired and observed versions, transition state, previous
+   version, and rollback history.
 
-1. Choose a compatible group. Incompatible groups are omitted and counted, not silently dropped.
-2. A **preview** shows the complete old-provider → new-provider table per slot. If there was no
-   previous group, the old column says so explicitly instead of showing blanks.
-3. Choose what happens to existing connections: **Close**, **Drain** (with a timeout), or **Pin**.
-4. Apply. The whole route table is replaced as one operation — partial group application is
-   invalid by design.
-5. A **switch report** afterwards says whether it succeeded, and the routes view shows desired
-   versus observed version, transition state, previous version, and rollback history. A failed
-   switch is diagnosable from the browser.
+Applications are not restarted and nothing is rebuilt. Only routing state reloads.
 
-Applications are not restarted and nothing is rebuilt. Only the router sidecar reloads.
+An instance in exactly one active group uses that group's localhost. An instance may be
+shared by several groups as a receiver, such as one database used by two combinations. If
+that shared instance itself opens an intercepted loopback connection, the request is
+rejected as ambiguous and names the groups; duplicate the instance when it needs its own
+outbound group context.
 
-**What is automatic and what is not.** Once slots and addresses are declared, switching is
-genuinely magic — the running application never finds out. But the declarations themselves are
-authored: a profile must state what it `provides` and what it `consumes`, and each consumed slot
-declares the fixed address the unchanged application already calls
-(`address: { host: 127.0.0.1, port: 8001 }`). Without that, there is nothing for the router to
-intercept. Mismatched connections are rejected rather than guessed at. See
-[DEVIATION.md](DEVIATION.md) §2.
-
-## Step 10 — Addresses: open a group or an instance by name
+## Step 9 — Addresses: open a group or an instance by name
 
 Anything addressable carries an `address:`. There is one rule, not a separate mechanism per
 kind: a group has an address, an instance has an address, and the field sits on the thing it
@@ -455,14 +434,14 @@ The address belongs to the group, so it names the combination rather than one pa
 fields, and `instances` is the same member list from step 8 — nothing extra to keep in sync.
 
 No member is the entry point. The address reaches the group, and which member answers is a
-routing decision like any other: by subdomain
-(`backend.feature-test.comparison.localhost`), by path, or by whichever slot the requester
-asks for. That matches how the rest of Switchyard works — a consumer asks for the capability
-it wants and the group answers; nothing is designated the front door.
+routing decision like any other. An instance subdomain such as
+`backend-1.feature-test.comparison.localhost` or an explicit browser route identity selects
+one member without adding a second topology model.
 
 Opening the bare name in a browser sends one request, so it needs a default. Switchyard
-resolves it to the member providing the UI capability. If a group has no UI member, or more
-than one, the bare name is an error listing what it could have meant rather than a guess.
+resolves it only when exactly one active member is independently browser-addressable through
+its own `address:`. If there are zero or several such members, the bare name is an error
+listing what it could have meant rather than a guess.
 
 `feature-test` and `regression` above differ only in the backend. That is exactly the
 comparison you want when working out whether a bug is in the UI or the backend, and it is one
@@ -478,7 +457,7 @@ instances:
   - { name: backend-1, block: java-backend, source: monorepo-main }
 ```
 
-Opening it reaches that instance, and whatever that instance is connected to (step 9) is what
+Opening it reaches that instance, and the other members of its group (step 8) are what
 it talks to. Use it when you want a memorable name for one UI rather than a named topology.
 
 Declaring the address on the instance means it cannot dangle: delete the instance and its
@@ -492,15 +471,15 @@ and most instances stay that way.
 
 One rule constrains how combinations may overlap:
 
-**Two groups cannot route through one backend instance to different downstream groups.** If
-`feature-test` reaches `backend-1` expecting it to talk to `feature-services`, and another
-group reaches the same `backend-1` expecting `main-services`, planning fails and tells you to
-duplicate the backend instance — the copies may point at the same source. One backend process
-cannot infer per-request downstream context, so Switchyard refuses rather than picking one.
+**A sender cannot use two group localhosts.** If `backend-1` is a member of both
+`feature-test` and `regression`, an outbound loopback call cannot say which group's members
+should answer. Switchyard rejects that call as ambiguous and tells you to duplicate the
+backend instance — the copies may point at the same source. One process cannot infer
+per-request downstream context, so Switchyard refuses rather than picking one.
 
 In practice: if two combinations differ *below* the backend, they need two backend instances,
-not one backend and two addresses. A group's own binding is checked for the same agreement,
-so an address can never quietly contradict the connection you authored in step 9.
+not one backend and two addresses. Group membership is the only connection statement, so an
+address cannot contradict a separate binding or direct route.
 
 In the Web UI, group and instance addresses and `managedProfiles` are edited through the
 **Routing** panel's definition editor. Every save validates the complete deployment first, so
@@ -567,11 +546,11 @@ field name differ, both are given — the persisted YAML keeps the internal name
 | --- | --- | --- |
 | **Daemon** | project service, background service | The long-lived process that owns project state, runs operations, and serves the API. It is what Switchyard *is*; the Web UI and TUI are clients of it. Expected to be running before you open any UI. |
 | **Switchyard project** | workspace, project directory | The folder holding your authored deployment, overlays, and project-local state under `.switchyard/`. Created by `switchyard init` or `switchyard project register`. |
-| **Source** | code | Code made available to Switchyard: a local path, a cloned repository, or a worktree. |
-| **Managed source** | worktree | A directory Switchyard created (a Git worktree). Switchyard may delete it. |
-| **Unmanaged source** | registered path | A directory you already had. Switchyard only remembers where it is; removing it forgets the registration and leaves files untouched. |
-| **Repository** | — | A Git repository and its relationship to the worktrees linked from it. |
-| **Checkout** | source path | The exact code tree an instance runs from — usually one worktree, i.e. one branch. |
+| **Source** | checkout | A Git worktree named by repository, ref, and project-relative path. The exact code tree an instance runs from. |
+| **Managed repository** | cloned repository | A clone created and owned by Switchyard from an authored `url:`. |
+| **Adopted repository** | existing clone | A clone named by `clone:` that Switchyard reads but never modifies or deletes. |
+| **Repository** | — | A named managed or adopted Git clone backing one or more source worktrees. |
+| **Checkout** | source path | The exact source worktree an instance runs from. |
 | **Worktree** | — | A Git feature giving one repository several checked-out branches in separate directories at once. This is what makes several branches alive simultaneously. |
 | **Startup profile** | **block** | A reusable definition of how a part of the project starts. Expands into one service or a coordinated suite. `block` is the YAML field name. |
 | **Project-local profile** | — | A startup profile stored in the Switchyard project, shared by every instance. |
@@ -580,25 +559,21 @@ field name differ, both are given — the persisted YAML keeps the internal name
 | **Instance** | — | One checkout + one startup profile + its parameters + its device. The thing that actually runs. |
 | **Segment** | — | ABOUT.md's informal word for "a part of the project" (the UI, the backend, the database). In the implementation this is a startup profile, and "an instance of a segment" is an instance. |
 | **Service** | — | One concrete process or container that a startup profile expands into. One instance may produce several. |
-| **Deployment** | — | The whole authored topology: sources, instances, parameters, groups, connections, addresses, and route overrides. |
+| **Deployment** | — | The whole authored topology: repositories, sources, instances, parameters, groups, and addresses. |
 | **Overlay** | — | A YAML file layered onto the deployment to vary it (`overlays/dev.yaml`) without duplicating the whole definition. |
-| **Provides / capability** | `provides` | What a startup profile offers to others, e.g. `database`, `ai-ingest`. |
-| **Consumes / slot** | `consumes` | A dependency a startup profile needs, named by capability, with the fixed address the unchanged application already calls. |
-| **Address (slot)** | `address` | The host and port the unchanged application already uses, e.g. `127.0.0.1:8001`. It is the consumer's contract, not the provider's real location. |
-| **Service group** | **group** | A named, reusable set of instances that belong together, listed in `instances:`. May `extends:` another group, override what differs, or temporarily exclude members with `disabled:`. |
-| **Connection** | **binding** | The selected provider group for one consumer instance. Replaced as a complete set, never slot by slot. |
-| **Route** | `routes` | A direct per-slot connection authored without a group. The low-level form a binding resolves into. |
+| **Service group** | **group** | A named, complete, ordered `instances:` list whose active members share one localhost. A `disabled:` list can temporarily exclude members without changing their priority. |
+| **Connection** | group membership | An instance's membership in a group. There is no separate `bindings:` or `routes:` section. |
 | **Transition** | — | What happens to existing network connections during a switch: **Close** (drop them), **Drain** (let them finish, with a timeout), **Pin** (keep them on the old provider while new ones use the new one). |
 | **Desired vs observed** | authored vs runtime | Desired is what you authored; observed is what is actually running. The UI keeps them in separate views and labels which you are looking at. |
-| **Group address** | `address` on a group; today `uiRoutes` | A group's own custom local name. Opening it reaches that whole combination; no member is a designated entry point. |
+| **Group address** | `address` on a group | A group's own custom local name. Its bare form resolves when exactly one active member also has an instance address. |
 | **Instance address** | `address` on an instance | A stable custom local name for one instance, with no combination implied. Optional; most instances have none. |
 | **Host router** | `hostRouter` | The native host process serving custom domains, TLS, and browser-facing traffic, mapping each domain to the instance behind it. |
 | **Device** | — | A host that can run instances: the implicit `local`, plus registered SSH hosts. |
 | **Reachability** | device status | Whether Switchyard can reach a device over SSH: `never`, `ok`, `unreachable`, `auth-failed`. |
 | **Eligibility** | — | Whether a device can actually run instances. Separate from reachability — a device can be reachable and still ineligible. |
 | **Run action** | project run script, script | A saved shell command for the project — a lifecycle shortcut or a smoke test — in a flat name-to-command map, like `package.json` `scripts`. Authored in a file; listed and run from the browser. |
-| **Operation** | — | Any tracked unit of work (clone, validate, plan, up, bind, down, cleanup), with streamed events and a durable record in the operations timeline. |
-| **Router / sidecar** | — | The Rust proxy that makes the fixed addresses resolve to the selected providers. A sidecar shares a consumer's network namespace; a native host router handles custom domains, TLS, and browser traffic. |
+| **Operation** | — | Any tracked unit of work (clone, validate, plan, up, membership change, down, cleanup), with streamed events and a durable record in the operations timeline. |
+| **Router / sidecar** | — | The Rust proxy that gives each group a shared localhost. A sidecar shares an instance's network namespace; a native host router handles custom domains, TLS, and browser traffic. |
 | **Block library** | — | The Web UI view listing available execution adapters and their JSON Schemas. Not the same thing as the startup-profile library. |
 
 ---

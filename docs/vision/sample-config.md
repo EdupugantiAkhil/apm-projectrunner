@@ -4,7 +4,7 @@ This is one complete deployment, annotated. It is the shape [ABOUT.md](ABOUT.md)
 [user_flow.md](user_flow.md) describe, in one file, so you can see how the pieces fit before
 reading the steps that introduce them one at a time.
 
-The scenario is the one from step 10: a UI and a backend, each with a main branch and a feature
+The scenario is the one from step 9: a UI and a backend, each with a main branch and a feature
 branch, sharing one database. Two named combinations — `feature-test` and `regression` — differ
 only in which checkouts they use, and you switch between them by opening a different address.
 
@@ -103,9 +103,9 @@ spec:
   # Move `ui-1` to the other list and the same running UI talks to backend-2
   # instead — no restart, no rebuild, no edited source.
   #
-  # `db-new` is in both groups. An instance that consumes something belongs to
-  # exactly one group; one that consumes nothing, like a database, can be shared
-  # by any number.
+  # `db-new` is in both groups and can receive traffic in both. If a shared member
+  # originates a loopback call itself, Switchyard rejects that call as ambiguous;
+  # duplicate a sender when it needs its own outbound group context.
   groups:
     feature-test:
       address: feature-test.comparison.localhost
@@ -166,8 +166,8 @@ because a group *is* the connection — membership is the whole statement, said 
 of a group shares one localhost, so a call to `127.0.0.1:8080` reaches
 whichever member of that group listens on 8080. This works because your code already calls the
 port the service actually listens on — the address the UI expects and the port the backend binds
-are the same number — so there is nothing left for you to say. Switchyard learns the ports from
-`publish:`, `probe:`, and the image itself. If two members of one group listen on the same port,
+are the same number — so there is nothing left for you to say. Sidecars observe active listener
+ports at runtime. If two members of one group listen on the same port,
 you get a warning and the first listed wins, the same rule as
 [address collisions](user_flow.md#address-collisions-and-who-wins).
 
@@ -199,7 +199,7 @@ or image metadata to learn from.
 **Addresses sit on the thing they name.** `ui-1.comparison.localhost` is on the instance;
 `feature-test.comparison.localhost` is on the group. Open the instance address to look at one UI;
 open the group address to get the whole combination. Both are in
-[step 10](user_flow.md#step-10--addresses-open-a-group-or-an-instance-by-name).
+[step 9](user_flow.md#step-9--addresses-open-a-group-or-an-instance-by-name).
 
 **The comparison is one click.** `feature-test` and `regression` differ only in which checkouts
 they name. Open both in a browser and you are looking at two builds of your product side by side,
@@ -231,22 +231,20 @@ in [docs/v2-roadmap.md](../v2-roadmap.md):
 2. **Routing is declared, not discovered.** Today each profile must carry `provides:` (what it
    offers, and on which port) and `consumes:` (each dependency, with the address the application
    already calls). Omit them and the deployment validates but produces **no router sidecars at
-   all** — every instance runs isolated. Making group membership sufficient, as the sample shows,
-   is Part 2b of the roadmap. `provides:`/`consumes:` will survive as an override for the genuine
-   remap case, where a consumer calls a port the provider does not listen on.
+   all** — every instance runs isolated. Part 2b removes both fields and makes group membership
+   sufficient, as the sample shows. Routing is port-for-port; remapping is not a retained
+   capability/slot escape hatch.
 3. **Connections are authored twice more.** A `bindings:` map names a group per consumer, and a
    `routes:` map can name a provider per slot directly. Both restate what group membership
-   already says, and both can contradict it. Part 2d deletes them: an instance that consumes
-   belongs to exactly one group, and one that consumes nothing can be shared by any number.
+   already says, and both can contradict it. Part 2d deletes them. A member shared across groups
+   can receive in all of them; an outbound loopback call from that shared member is rejected as
+   ambiguous.
 4. **There are no external instances.** Every instance must have a block and a source, so
    anything already running outside Switchyard — a natively installed database, a shared staging
    service — cannot be a group member at all. Part 2e adds the `{ name, external, ports }` form.
-5. **`scripts:` is not the current shape, and is deferred to V3.** Run actions live in
-   `.switchyard/run-scripts.yaml` as seven-field records. The flat map above is Part 4, held
-   back because a script runs in your shell and currently has no way to reach the deployment
-   it is about — published ports are ephemeral, and a group's shared localhost exists only
-   inside sidecar namespaces. Landing the new format before solving that would migrate everyone
-   onto a shape that then changes again. See Part 4 for the two candidate answers.
+5. **`scripts:` is not the current shape, and is deferred.** Run actions live in
+   `.switchyard/run-scripts.yaml` as seven-field records. They are deliberately outside the V2
+   roadmap until a shell action has a settled way to reach the deployment it is about.
 6. **Addresses still require a hand-authored `hostRouter:` block.** Declaring `address:` on a
    group or instance is accepted, but validation then insists on a `hostRouter:` section
    alongside it — listeners, providers, routes, and an explicit-header `browserRoutes` entry per
