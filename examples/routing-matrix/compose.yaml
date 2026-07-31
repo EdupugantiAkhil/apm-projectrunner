@@ -1,11 +1,11 @@
-name: switchyard-routing-matrix
+name: apmpr-routing-matrix
 
 x-labels: &labels
-  dev.switchyard.deployment: routing-matrix
-  dev.switchyard.managed: "true"
+  dev.apmpr.deployment: routing-matrix
+  dev.apmpr.managed: "true"
 
 x-provider: &provider
-  image: switchyard-routing-matrix:local
+  image: apmpr-routing-matrix:local
   pull_policy: never
   restart: unless-stopped
   labels: *labels
@@ -18,7 +18,7 @@ x-provider: &provider
     retries: 30
 
 x-namespace: &namespace
-  image: switchyard-routing-matrix:local
+  image: apmpr-routing-matrix:local
   pull_policy: never
   command: ["/usr/local/bin/routing-fixture", "hold"]
   restart: unless-stopped
@@ -27,7 +27,7 @@ x-namespace: &namespace
     routing-matrix: {}
 
 x-backend: &backend
-  image: switchyard-routing-matrix:local
+  image: apmpr-routing-matrix:local
   pull_policy: never
   restart: unless-stopped
   labels: *labels
@@ -38,12 +38,12 @@ x-backend: &backend
     retries: 30
 
 x-sidecar: &sidecar
-  image: switchyard-routing-matrix:local
+  image: apmpr-routing-matrix:local
   pull_policy: never
   restart: unless-stopped
   environment:
-    SWITCHYARD_ROUTER_TOKEN: routing-matrix-fixture
-  user: "${SWITCHYARD_UID:-65532}:${SWITCHYARD_GID:-65532}"
+    APMPR_ROUTER_TOKEN: routing-matrix-fixture
+  user: "${APMPR_UID:-65532}:${APMPR_GID:-65532}"
   labels: *labels
   healthcheck:
     test:
@@ -129,10 +129,10 @@ services:
 
   backend-1-sidecar:
     <<: *sidecar
-    command: ["/usr/local/bin/switchyard-router", "/etc/switchyard/router.json", "/tmp/switchyard-admin.socket"]
+    command: ["/usr/local/bin/apmpr-router", "/etc/apmpr/router.json", "/tmp/apmpr-admin.socket"]
     network_mode: service:backend-1-namespace
     volumes:
-      - ./router-backend-1.json:/etc/switchyard/router.json:ro
+      - ./router-backend-1.json:/etc/apmpr/router.json:ro
     depends_on:
       backend-1-namespace: { condition: service_started }
       services-feature-catalog: { condition: service_healthy }
@@ -155,10 +155,10 @@ services:
 
   backend-2-sidecar:
     <<: *sidecar
-    command: ["/usr/local/bin/switchyard-router", "/etc/switchyard/router.json", "/tmp/switchyard-admin.socket"]
+    command: ["/usr/local/bin/apmpr-router", "/etc/apmpr/router.json", "/tmp/apmpr-admin.socket"]
     network_mode: service:backend-2-namespace
     volumes:
-      - ./router-backend-2.json:/etc/switchyard/router.json:ro
+      - ./router-backend-2.json:/etc/apmpr/router.json:ro
     depends_on:
       backend-2-namespace: { condition: service_started }
       services-main-catalog: { condition: service_healthy }
@@ -177,13 +177,13 @@ services:
 
 networks:
   routing-matrix:
-    name: switchyard-routing-matrix-network
+    name: apmpr-routing-matrix-network
     labels: *labels
 
 volumes:
   backend-1-data:
-    name: switchyard-routing-matrix-backend-1-data
+    name: apmpr-routing-matrix-backend-1-data
     labels: *labels
   backend-2-data:
-    name: switchyard-routing-matrix-backend-2-data
+    name: apmpr-routing-matrix-backend-2-data
     labels: *labels

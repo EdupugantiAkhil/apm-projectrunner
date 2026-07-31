@@ -1,5 +1,44 @@
 # Agent mistakes and lessons
 
+## 2026-07-31 — A rename sweep cannot see encoded, composed, or self-describing text
+
+- The Part 7 rename was planned as a mechanical substitution and verified by searching for
+  the old name. That search reported the tree clean while three real defects survived it.
+- **Encoded values.** Two tests sent `Proxy-Authorization: Basic
+  c3dpdGNoeWFyZDp0ZXN0LXRva2Vu`. That base64 decodes to `switchyard:test-token`, so the old
+  name was physically present and textually invisible. Only the suite caught it.
+- **Composed identifiers.** `X-Switchyard-Route` became `X-APM ProjectRunner-Route` because
+  the prose rule matched before the header rule — a syntactically invalid header name,
+  produced by a substitution that was individually correct.
+- **Split constants.** The same realm string lived in two crates. One matched the `apmpr`
+  rule and the other the prose rule, leaving a listener advertising `realm="apmpr"` in one
+  path and `realm="APM ProjectRunner"` in the other, disagreeing with the credential it
+  checks.
+- Lesson: order substitutions from most specific to least, and treat the test suite — not a
+  grep for the old name — as the evidence that a rename is complete. A clean search proves
+  the string is gone, not that the meaning survived.
+
+## 2026-07-31 — Renaming a word breaks the sentences that were about the word
+
+- The same sweep rewrote documentation that *discussed* the rename, turning "Working name:
+  Switchyard. The intended product name is APM ProjectRunner" into a sentence equating a
+  name with itself, and collapsing the roadmap's own checklist into `.apmpr/ → .apmpr/`.
+  It also broke two ASCII box diagrams and a flow diagram's arrow column, because the new
+  name is nine characters longer, and produced "a APM ProjectRunner".
+- Lesson: prose that mentions an identifier is not a mention of the identifier. Historical
+  records, migration instructions, and layout that depends on a token's width all need
+  review by hand after a sweep; none of them are expressible as a substitution rule.
+
+## 2026-07-31 — A baseline captured through `tail` is not a baseline
+
+- The first attempt at a pre-change baseline piped `cargo test` through `tail -60`, which
+  kept only the trailing doc-test summaries and reported "132 passed" — while the run had
+  actually raced against the in-progress directory rename and aborted with a missing test
+  binary. The real baseline was 336.
+- Lesson: capture full output to a file and aggregate every `test result:` line. Record the
+  baseline before touching the tree, and never let a measurement run concurrently with the
+  change it is supposed to measure.
+
 ## 2026-07-31 — Complete hook dependencies require stable default objects
 
 - After adding the dependencies required by React hook lint, `App` still constructed its
@@ -21,7 +60,7 @@
 
 ## 2026-07-31 — A login service does not inherit an interactive shell's tool path
 
-- The first daemon service definitions used an exact `switchyard` executable but did not
+- The first daemon service definitions used an exact `apmpr` executable but did not
   preserve `PATH`. That starts the daemon itself successfully while leaving its Docker,
   Git, and project-command children dependent on the service manager's minimal default
   environment.
@@ -65,7 +104,7 @@
 
 - Part 4 was scoped as vocabulary alignment, which suggests word replacement. But
   `DESIGN.md` documented an overlay `groups:` replacement and a `routes:` slot that the
-  parser rejects outright under `deny_unknown_fields`, and listed a `switchyard group`
+  parser rejects outright under `deny_unknown_fields`, and listed a `apmpr group`
   command that has never existed. Following that document would have produced
   configurations that fail to parse.
 - Lesson: when a doc is stale, verify its examples against the parser before rewording
@@ -113,7 +152,7 @@
   contradictory: `git worktree add` necessarily updates the repository's administrative
   worktree records.
 - The owner clarified the product boundary: repositories are shared Git object/metadata
-  stores and may be bare; Switchyard never edits or runs a repository checkout. All working
+  stores and may be bare; APM ProjectRunner never edits or runs a repository checkout. All working
   files, mounts, edits, and execution belong to source worktrees.
 - Correction: managed `url:` repositories are bare stores, adopted `clone:` repositories
   may be bare or ordinary clones, and both back ordinary source worktrees. Lesson: ownership
@@ -284,9 +323,9 @@
 ## 2026-07-25 — Shared domains need a real leaf crate
 
 - A cross-crate `#[path]` include compiled the profile domain into the daemon a second time
-  to dodge the existing `switchyard-ops` → `switchyard-daemon` dependency direction, and a
+  to dodge the existing `apmpr-ops` → `apmpr-daemon` dependency direction, and a
   blanket `#[allow(dead_code)]` hid the resulting module warnings. Correction: extract the
-  shared profile domain into the leaf `switchyard-profiles` crate, re-export it from ops,
+  shared profile domain into the leaf `apmpr-profiles` crate, re-export it from ops,
   and depend on it directly from the daemon. Lesson: resolve a shared-domain dependency
   cycle by introducing one owned leaf crate, not by compiling another crate's source twice.
 
@@ -308,9 +347,9 @@
   exclusive temporary file, then register the source and remove the new marker if that
   final mutation fails. Lesson: a workflow spanning SQLite and the filesystem needs an
   explicit mutation order and compensation path even when each mutation is safe alone.
-- Registering the project folder as its own source initially made Switchyard's new
-  `.switchyard` database and marker appear as user worktree changes. Correction: only
-  project-root source inspection excludes the Switchyard-owned state directory; other
+- Registering the project folder as its own source initially made APM ProjectRunner's new
+  `.apmpr` database and marker appear as user worktree changes. Correction: only
+  project-root source inspection excludes the APM ProjectRunner-owned state directory; other
   source roots retain ordinary Git semantics. Lesson: adopting a source in place must
   keep tool-owned local state out of source-identity and dirty-worktree decisions.
 - A combined follow-up command ran the GUI's npm step from the Rust workspace root,
@@ -382,7 +421,7 @@
 
 - The first remote-runtime cut removed each remote service's explicit network and let
   Compose create an implicit `<project>_default` network. That network had no
-  Switchyard labels, so correct ownership verification refused teardown and stranded
+  APM ProjectRunner labels, so correct ownership verification refused teardown and stranded
   the remote container. Correction: generate a deterministic device-scoped network
   with ownership and device labels, attach every remote service, and cover remote
   networks and supported named volumes at the serialized-YAML boundary. Lesson: every
@@ -432,7 +471,7 @@
   Correction: construct expected `String` values explicitly. Lesson: use concrete
   constructors in assertions when dependency trait implementations make conversion
   targets ambiguous.
-- The first standalone reconciliation call admitted every Switchyard-labeled Docker
+- The first standalone reconciliation call admitted every APM ProjectRunner-labeled Docker
   resource returned by the host-wide observer, which inserted an unrelated deployment
   into the project's state during live verification. Correction: filter observations
   to deployment IDs in the project's generated manifests before reconciling. Lesson:
@@ -484,7 +523,7 @@
 
 ## 2026-07-16 — Interactive initializer follow-up
 
-- The initial `switchyard init` implementation only accepted a positional directory,
+- The initial `apmpr init` implementation only accepted a positional directory,
   despite project initialization being a discovery-oriented workflow. Correction: keep
   the positional form for automation and make the no-argument form prompt for the
   project name and destination. Lesson: initialization commands should provide a
@@ -611,7 +650,7 @@
 - A raw `docker compose restart` invalidated an already-running sidecar joined with
   `network_mode: service:<consumer>` and also changed ephemeral published ports.
   Correction: the recovery proof performs ownership-aware down/up for shared namespace
-  reconstruction, and `switchyard up` refreshes the native gateway when publications
+  reconstruction, and `apmpr up` refreshes the native gateway when publications
   change. Lesson: container restart is not namespace reconstruction; verify DNS and
   loopback publications after lifecycle transitions.
 - The local Nix shell exposed a `cargo-fmt` binary whose dynamic loader was unavailable,
@@ -769,7 +808,7 @@
   reserved for unique status banners and actions.
 - The stopped-state usability fix made `Run Up` prominent but initially verified only
   its presentation, not the daemon-to-CLI execution boundary. A live click exposed that
-  the daemon did not supply the router credential required by `switchyard up`.
+  the daemon did not supply the router credential required by `apmpr up`.
   Correction: provision one persistent project credential and test its injection into
   the real subprocess backend. Lesson: a recovery CTA is not complete until its
   end-to-end command prerequisites are exercised, especially credentials intentionally
@@ -910,7 +949,7 @@ audit shell startup files as well as the requested cache directories.
   field explicitly. Lesson: compile new test scaffolding against the repository's exact
   TypeScript restrictions before treating a concise syntax form as available.
 - The first askpass retry left configured Git credential helpers enabled. Even though
-  Switchyard itself wrote no secret, Git could have called a persistent helper after a
+  APM ProjectRunner itself wrote no secret, Git could have called a persistent helper after a
   successful retry, contradicting the memory-only contract. Correction: add the
   per-command `-c credential.helper=` override only on submitted-credential attempts.
   Lesson: a one-shot input channel also has to disable downstream credential-store

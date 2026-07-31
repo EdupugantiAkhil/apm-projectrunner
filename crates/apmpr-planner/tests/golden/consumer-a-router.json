@@ -1,0 +1,33 @@
+{
+  "apiVersion": "apmpr.dev/router/v1alpha1",
+  "kind": "RouterConfiguration",
+  "metadata": {
+    "deployment": "comparison"
+  },
+  "spec": {
+    "listeners": [],
+    "providers": [],
+    "routes": [],
+    "snapshot": {
+      "id": "comparison--consumer-a--initial",
+      "transitions": {
+        "grpc": {
+          "strategy": "close"
+        },
+        "http": {
+          "strategy": "close"
+        },
+        "https": {
+          "strategy": "close"
+        },
+        "tcp": {
+          "strategy": "close"
+        },
+        "websocket": {
+          "strategy": "close"
+        }
+      },
+      "version": 1
+    }
+  }
+}

@@ -54,7 +54,7 @@ jobs:
       - name: Darwin arm64 release assembly and install smoke
         run: |
           ./scripts/release.sh
-          test "$(find dist -maxdepth 1 -name 'switchyard-*-darwin-arm64.tar.gz' | wc -l | tr -d ' ')" = 1
+          test "$(find dist -maxdepth 1 -name 'apmpr-*-darwin-arm64.tar.gz' | wc -l | tr -d ' ')" = 1
           ./scripts/release-smoke.sh
 
   dependency-audit:
@@ -66,7 +66,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           # Pingora uses the affected protobuf crate only to encode metrics; no
           # untrusted protobuf input reaches the vulnerable decoder.
-          # time 0.3.47 raises its MSRV to Rust 1.88. Switchyard uses time only
+          # time 0.3.47 raises its MSRV to Rust 1.88. APM ProjectRunner uses time only
           # for certificate timestamps and exposes no untrusted RFC 2822 parser.
           ignore: RUSTSEC-2024-0437,RUSTSEC-2026-0194,RUSTSEC-2026-0195
 
@@ -80,8 +80,8 @@ jobs:
         run: ./scripts/phase4-proof.sh
 
   macos-docker-routing-proof:
-    if: vars.SWITCHYARD_MACOS_DOCKER_RUNNER == 'true'
-    runs-on: [self-hosted, macOS, ARM64, switchyard-docker]
+    if: vars.APMPR_MACOS_DOCKER_RUNNER == 'true'
+    runs-on: [self-hosted, macOS, ARM64, apmpr-docker]
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain
@@ -95,7 +95,7 @@ jobs:
         run: ./scripts/bootstrap
       - name: Complete macOS routing and product proofs
         env:
-          SWITCHYARD_TEST_DOCKER_DESKTOP_RESTART: 1
+          APMPR_TEST_DOCKER_DESKTOP_RESTART: 1
         run: |
           ./examples/routing-matrix/smoke.sh
           ./scripts/phase6-proof.sh

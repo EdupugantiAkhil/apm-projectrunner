@@ -26,15 +26,15 @@ contradiction; do not rewrite it merely to describe the current implementation.
 - `crates/router-pingora`: HTTP, HTTPS, WebSocket, gRPC, CORS, and browser-facing data
   plane built on Pingora.
 - `crates/router-tcp`: raw TCP routing and connection-transition behavior.
-- `crates/switchyard-router`: the shared sidecar/host router process, local admin
+- `crates/apmpr-router`: the shared sidecar/host router process, local admin
   channel, host-gateway lifecycle helpers, certificates, and managed HTTP proxy.
-- `crates/switchyard-planner`: desired-state validation and deterministic generation of
+- `crates/apmpr-planner`: desired-state validation and deterministic generation of
   Compose, router, manifest, and managed-profile artifacts.
-- `crates/switchyard-cli`: the `switchyard` command-line workflow for planning,
+- `crates/apmpr-cli`: the `apmpr` command-line workflow for planning,
   applying, inspecting, switching, opening browser profiles, stopping, and cleanup.
 - `examples/routing-matrix`: runnable zero-application-change topology fixture and smoke
   proof.
-- `extensions/switchyard-route`: dependency-free Chromium extension for tab-scoped
+- `extensions/apmpr-route`: dependency-free Chromium extension for tab-scoped
   explicit route identity.
 - `docs`: development, router, browser-routing, platform, and operational guidance.
 - `scripts`: bootstrap and shared format, lint, test, documentation, and audit checks.

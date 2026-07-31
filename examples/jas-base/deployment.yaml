@@ -1,10 +1,10 @@
-apiVersion: switchyard.dev/v1alpha2
+apiVersion: apmpr.dev/v1alpha2
 kind: Deployment
 metadata:
   name: jas-base
   labels: { fixture: legacy-workspace }
 spec:
-  routerImage: &fixture-image switchyard-jas-base:local
+  routerImage: &fixture-image apmpr-jas-base:local
   repositories:
     fixture: { url: ../.. }
   sources:
@@ -128,7 +128,7 @@ spec:
       address: ai-feature.jas-base.localhost
       instances: [ai-feature/suite, jas-main/service, ui-a/app]
   hostRouter:
-    apiVersion: switchyard.dev/router/v1alpha1
+    apiVersion: apmpr.dev/router/v1alpha1
     kind: RouterConfiguration
     metadata: { deployment: jas-base }
     spec:
@@ -142,7 +142,7 @@ spec:
           grpc: { strategy: drain, timeoutMs: 5000 }
           tcp: { strategy: close }
       identity:
-        explicitHeader: X-Switchyard-Route
+        explicitHeader: X-Apmpr-Route
         stripBeforeForwarding: true
       listeners:
         - consumer: gateway

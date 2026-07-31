@@ -10,7 +10,7 @@ use tokio::{net::TcpListener, runtime::Builder};
 
 fn config(proxy_port: u16, upstream_port: u16) -> RouterConfig {
     serde_json::from_value(json!({
-        "apiVersion": "switchyard.dev/router/v1alpha1",
+        "apiVersion": "apmpr.dev/router/v1alpha1",
         "kind": "RouterConfiguration",
         "metadata": { "deployment": "grpc-test" },
         "spec": {
@@ -98,7 +98,7 @@ fn passes_grpc_data_and_trailers_over_h2c() {
             let client_task = tokio::spawn(async move { connection.await.unwrap() });
             let request = Request::builder()
                 .method("POST")
-                .uri("http://localhost/switchyard.Greeter/SayHello")
+                .uri("http://localhost/apmpr.Greeter/SayHello")
                 .header("content-type", "application/grpc")
                 .header("te", "trailers")
                 .header("content-length", "12")

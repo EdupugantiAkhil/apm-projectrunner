@@ -5,17 +5,17 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 fixture_dir="$root/examples/jas-base"
 base_deployment="$fixture_dir/deployment.yaml"
 deployment="$fixture_dir/deployment.smoke.yaml"
-artifact_dir="$root/.switchyard/generated/jas-base"
-switchyard="$root/target/debug/switchyard"
-router="$root/target/debug/switchyard-router"
+artifact_dir="$root/.apmpr/generated/jas-base"
+apmpr="$root/target/debug/apmpr"
+router="$root/target/debug/apmpr-router"
 source_name="jas-base-smoke-source-$$"
 worktree_name="jas-base-smoke-worktree-$$"
-main_source="$root/.switchyard/jas-base-source-main-$$"
-worktree="$root/.switchyard/worktrees/$worktree_name"
-export SWITCHYARD_ROUTER_TOKEN="${SWITCHYARD_ROUTER_TOKEN:-jas-base-phase6-proof}"
-export SWITCHYARD_ROUTER_BIN="$router"
-export SWITCHYARD_UID="${SWITCHYARD_UID:-$(id -u)}"
-export SWITCHYARD_GID="${SWITCHYARD_GID:-$(id -g)}"
+main_source="$root/.apmpr/jas-base-source-main-$$"
+worktree="$root/.apmpr/worktrees/$worktree_name"
+export APMPR_ROUTER_TOKEN="${APMPR_ROUTER_TOKEN:-jas-base-phase6-proof}"
+export APMPR_ROUTER_BIN="$router"
+export APMPR_UID="${APMPR_UID:-$(id -u)}"
+export APMPR_GID="${APMPR_GID:-$(id -g)}"
 
 for command in cargo curl docker git python3; do
   command -v "$command" >/dev/null || {
@@ -26,10 +26,10 @@ done
 docker info >/dev/null
 docker compose version >/dev/null
 
-if docker ps --all --quiet --filter label=dev.switchyard.deployment=jas-base | grep -q . \
-  || docker volume ls --quiet --filter label=dev.switchyard.deployment=jas-base | grep -q . \
-  || docker network ls --quiet --filter label=dev.switchyard.deployment=jas-base | grep -q .; then
-  echo "jas-base proof: owned fixture resources already exist; clean them with 'switchyard cleanup $base_deployment --yes'" >&2
+if docker ps --all --quiet --filter label=dev.apmpr.deployment=jas-base | grep -q . \
+  || docker volume ls --quiet --filter label=dev.apmpr.deployment=jas-base | grep -q . \
+  || docker network ls --quiet --filter label=dev.apmpr.deployment=jas-base | grep -q .; then
+  echo "jas-base proof: owned fixture resources already exist; clean them with 'apmpr cleanup $base_deployment --yes'" >&2
   exit 1
 fi
 
@@ -38,15 +38,15 @@ registered=false
 created_worktree=false
 
 cleanup() {
-  if [[ -x "$switchyard" && -f "$deployment" ]]; then
-    "$switchyard" down "$deployment" >/dev/null 2>&1 || true
-    "$switchyard" cleanup "$deployment" --yes >/dev/null 2>&1 || true
+  if [[ -x "$apmpr" && -f "$deployment" ]]; then
+    "$apmpr" down "$deployment" >/dev/null 2>&1 || true
+    "$apmpr" cleanup "$deployment" --yes >/dev/null 2>&1 || true
   fi
   if [[ "$created_worktree" == true ]]; then
-    "$switchyard" worktree remove "$worktree_name" >/dev/null 2>&1 || true
+    "$apmpr" worktree remove "$worktree_name" >/dev/null 2>&1 || true
   fi
   if [[ "$registered" == true ]]; then
-    "$switchyard" source deregister "$source_name" >/dev/null 2>&1 || true
+    "$apmpr" source deregister "$source_name" >/dev/null 2>&1 || true
   fi
   rm -f "$deployment"
   rm -rf "$main_source"
@@ -60,14 +60,14 @@ mkdir -p "$main_source"
 cp "$fixture_dir/sources/main/start-jas-service.sh" "$main_source/"
 cp "$fixture_dir/sources/main/process-compose.yaml" "$main_source/"
 git -C "$main_source" init --quiet
-git -C "$main_source" config user.name "Switchyard fixture"
-git -C "$main_source" config user.email "fixture@switchyard.invalid"
+git -C "$main_source" config user.name "APM ProjectRunner fixture"
+git -C "$main_source" config user.email "fixture@apmpr.invalid"
 git -C "$main_source" add .
 git -C "$main_source" commit --quiet -m "fixture source"
 
-"$switchyard" source register "$source_name" "$main_source"
+"$apmpr" source register "$source_name" "$main_source"
 registered=true
-"$switchyard" worktree create "$source_name" HEAD --name "$worktree_name"
+"$apmpr" worktree create "$source_name" HEAD --name "$worktree_name"
 created_worktree=true
 
 python3 - "$base_deployment" "$deployment" "$main_source" "$worktree" <<'PY'
@@ -81,7 +81,7 @@ text = text.replace("sources/feature", str(feature))
 destination.write_text(text, encoding="utf-8")
 PY
 
-"$switchyard" validate "$deployment"
+"$apmpr" validate "$deployment"
 
 # Variation planning proves two overlay variations resolve without colliding. The
 # collision guard also inspects other deployments' generated artifacts, so a workspace
@@ -90,7 +90,7 @@ PY
 # in that case; the offline planner variation test still covers disjointness.
 plan_variation() {
   local overlay="$1" variation="$2" output
-  if output="$("$switchyard" plan "$deployment" --with "$overlay" --variation "$variation" 2>&1)"; then
+  if output="$("$apmpr" plan "$deployment" --with "$overlay" --variation "$variation" 2>&1)"; then
     return 0
   fi
   if grep -q "ListenerConflict" <<<"$output"; then
@@ -102,7 +102,7 @@ plan_variation() {
 }
 plan_variation "$fixture_dir/overlays/main.yaml" main
 plan_variation "$fixture_dir/overlays/feature.yaml" feature
-"$switchyard" up "$deployment"
+"$apmpr" up "$deployment"
 
 compose=(
   docker compose
@@ -154,14 +154,14 @@ assert ui_b["selectedProviders"]["java"]["source"] == feature
 assert {value["source"] for value in ui_b["selectedProviders"]["python"].values()} == {main}
 PY
 
-status="$($switchyard status "$deployment" --routes)"
+status="$($apmpr status "$deployment" --routes)"
 grep -F "jas-feature path=$worktree" <<<"$status" >/dev/null
 grep -F "ai-feature path=$worktree" <<<"$status" >/dev/null
 grep -F "jas-main path=$main_source" <<<"$status" >/dev/null
 
 jas_service=jas-base--jas-main--service--app
 jas_id_before="$("${compose[@]}" ps --quiet "$jas_service")"
-"$switchyard" bind "$deployment" jas-main ai-main
+"$apmpr" bind "$deployment" jas-main ai-main
 switched="$(published_identity jas-base--jas-main--service 10081)"
 python3 - "$switched" <<'PY'
 import json
@@ -173,8 +173,8 @@ PY
 test "$jas_id_before" = "$("${compose[@]}" ps --quiet "$jas_service")"
 
 before_restart="$(published_identity jas-base--jas-main--service 10081)"
-"$switchyard" down "$deployment"
-"$switchyard" up "$deployment"
+"$apmpr" down "$deployment"
+"$apmpr" up "$deployment"
 after_restart="$(published_identity jas-base--jas-main--service 10081)"
 python3 - "$before_restart" "$after_restart" <<'PY'
 import json
@@ -192,15 +192,15 @@ for store in ["kv", "document"]:
     )
 PY
 
-"$switchyard" down "$deployment"
-"$switchyard" cleanup "$deployment" --yes
-test -z "$(docker ps --all --quiet --filter label=dev.switchyard.deployment=jas-base)"
-test -z "$(docker volume ls --quiet --filter label=dev.switchyard.deployment=jas-base)"
-test -z "$(docker network ls --quiet --filter label=dev.switchyard.deployment=jas-base)"
+"$apmpr" down "$deployment"
+"$apmpr" cleanup "$deployment" --yes
+test -z "$(docker ps --all --quiet --filter label=dev.apmpr.deployment=jas-base)"
+test -z "$(docker volume ls --quiet --filter label=dev.apmpr.deployment=jas-base)"
+test -z "$(docker network ls --quiet --filter label=dev.apmpr.deployment=jas-base)"
 
-"$switchyard" worktree remove "$worktree_name"
+"$apmpr" worktree remove "$worktree_name"
 created_worktree=false
-"$switchyard" source deregister "$source_name"
+"$apmpr" source deregister "$source_name"
 registered=false
 rm -f "$deployment"
 rm -rf "$main_source"

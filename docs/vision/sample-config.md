@@ -11,7 +11,7 @@ compare different checkouts. The sample also includes a disabled canary and an e
 so those group-membership behaviors are part of the acceptance fixture.
 
 ```yaml
-apiVersion: switchyard.dev/v1alpha2
+apiVersion: apmpr.dev/v1alpha2
 kind: Deployment
 metadata:
   name: comparison
@@ -20,9 +20,9 @@ spec:
   # ── Repositories: where the code comes from ─────────────────────────────────
   # Named once. Every worktree below is backed by this one clone, which `up` makes
   # if it is not there. No path — you never work in the clone itself, so where it
-  # sits is Switchyard's business. Use `clone: ~/work/monorepo` instead of `url:`
+  # sits is APM ProjectRunner's business. Use `clone: ~/work/monorepo` instead of `url:`
   # to point at Git storage you already have (a bare repository or ordinary clone).
-  # Repositories are placeholders for objects and worktree metadata: Switchyard never
+  # Repositories are placeholders for objects and worktree metadata: APM ProjectRunner never
   # runs from their checkout. All editable and runnable trees are sources below.
   repositories:
     monorepo:
@@ -93,7 +93,7 @@ spec:
     - { name: db-feature-test, block: postgres, source: infra }
     - { name: db-regression,   block: postgres, source: infra }
 
-    # An external instance: something already running that Switchyard routes to but
+    # An external instance: something already running that APM ProjectRunner routes to but
     # never starts. `external:` is the host, `ports:` the list — 9200 inside the
     # group reaches 9200 there. Ranges work too: ports: ["8000-8010"].
     - { name: staging-es, external: search.staging.internal, ports: [9200, 9300] }
@@ -128,8 +128,8 @@ spec:
 # format (see the differences section below).
 #
 # A flat name-to-command map, exactly the `package.json` scripts model. The runner
-# puts Switchyard's own binary directory on PATH and exports $SWITCHYARD_PROJECT
-# and $SWITCHYARD_BUNDLE, so the commands stay short. Like `npm run`, the
+# puts APM ProjectRunner's own binary directory on PATH and exports $APMPR_PROJECT
+# and $APMPR_BUNDLE, so the commands stay short. Like `npm run`, the
 # convenience is the environment rather than the schema — every value is an
 # ordinary shell command in an ordinary shell.
 #
@@ -137,12 +137,12 @@ spec:
 # way to reach the deployment. Published ports are ephemeral and the group's
 # shared localhost only exists inside sidecars, so `smoke.sh --target
 # feature-test` below cannot actually hit anything. Two ideas, neither settled:
-# export the group addresses as environment variables, or add `switchyard exec
+# export the group addresses as environment variables, or add `apmpr exec
 # backend-1 -- <cmd>` to run inside a member's namespace.
 scripts:
-  dev-up: switchyard up $SWITCHYARD_BUNDLE --with overlays/dev.yaml --set LOG_LEVEL=debug
+  dev-up: apmpr up $APMPR_BUNDLE --with overlays/dev.yaml --set LOG_LEVEL=debug
   smoke:  ./scripts/smoke.sh --target feature-test
-  status: switchyard status $SWITCHYARD_BUNDLE
+  status: apmpr status $APMPR_BUNDLE
 ```
 
 ## Reading it
@@ -156,15 +156,15 @@ not there, it clones first. So the file is enough on its own: hand someone this 
 and they get the whole tree, rather than a list of directories they have to assemble by hand.
 
 **Every source is a worktree, and the clone always lives somewhere else.** Two populations of
-directory that never overlap: clones under `.switchyard/clones/` (or your own path, if you point
+directory that never overlap: clones under `.apmpr/clones/` (or your own path, if you point
 at one you already have), worktrees wherever you author them. Nothing ever has to work out which
-kind a directory is, and the question of what Switchyard may modify is settled once at the
+kind a directory is, and the question of what APM ProjectRunner may modify is settled once at the
 repository level rather than per source.
 
 **Only sources carry a path, and that asymmetry is deliberate.** A source directory is something
 you use: you open it in an editor, run commands in it, point tooling at it. It has to be yours to
 choose and written down where you can see it. The clone is bookkeeping you never work in, so where
-it sits is Switchyard's business. Declaring the repository once is what makes "all backed by one
+it sits is APM ProjectRunner's business. Declaring the repository once is what makes "all backed by one
 clone" true in the file rather than only in prose.
 
 **Nothing declares what talks to what.** There is no wiring section and no connections section,
@@ -192,10 +192,10 @@ what container; npm says what the script does.
 only in `source:`. This is what makes adding a third branch to compare a two-line change rather
 than a copy of the whole block.
 
-**Not every member is something Switchyard starts.** `staging-es` is an *external instance*: a
+**Not every member is something APM ProjectRunner starts.** `staging-es` is an *external instance*: a
 host and a list of ports, no block and no source. A member of `regression` reaching
 `search.staging.internal:9200` gets there through the group like any other dependency, but
-nothing is launched or stopped — Switchyard only routes. The same form covers a separately
+nothing is launched or stopped — APM ProjectRunner only routes. The same form covers a separately
 managed Postgres, a service on a teammate's box, or a shared staging cluster, provided its
 authored address is resolvable and reachable from the routing sidecars. `ports:` takes single
 ports and inclusive ranges
@@ -231,7 +231,7 @@ changing which UI and backend checkout each address opens.
 The sample above is the intended shape. Two current gaps remain in the implementation:
 
 1. **`scripts:` is not the current shape, and is deferred.** Run actions live in
-   `.switchyard/run-scripts.yaml` as seven-field records. They are deliberately outside the V2
+   `.apmpr/run-scripts.yaml` as seven-field records. They are deliberately outside the V2
    roadmap until a shell action has a settled way to reach the deployment it is about.
 2. **Plain container execution does not yet mount the selected source.** The UI and backend
    commands above intentionally run their selected checkout in the declared image. The current

@@ -11,7 +11,7 @@ model. Vary what a member *is*, not what it is connected to.
 ## Format
 
 ```yaml
-apiVersion: switchyard.dev/v1alpha1
+apiVersion: apmpr.dev/v1alpha1
 kind: Overlay
 metadata:
   name: mongodb-development
@@ -79,7 +79,7 @@ which writes the same file target must explicitly opt into replacement with `rep
 on the file. `spec.replace: true` applies to every keyed entry in that overlay. Lists do
 not merge implicitly.
 
-`switchyard plan` and `switchyard overlay diff` print each final value with its source
+`apmpr plan` and `apmpr overlay diff` print each final value with its source
 and warnings for shadowed layers. The generated manifest contains the same secret-safe
 origin records. File values are represented by their SHA-256 content hash.
 
@@ -88,7 +88,7 @@ origin records. File values are represented by their SHA-256 content hash.
 Files are written only below:
 
 ```text
-.switchyard/generated/<deployment>/overlays/<instance>/<sha256>/
+.apmpr/generated/<deployment>/overlays/<instance>/<sha256>/
 ```
 
 Each generated Compose application service receives a read-only bind mount at the
@@ -113,7 +113,7 @@ Environment values may reference an environment variable or a file:
 
 ```yaml
 PASSWORD: { environmentVariable: DATABASE_PASSWORD }
-TOKEN: { file: /run/user/1000/switchyard/token }
+TOKEN: { file: /run/user/1000/apmpr/token }
 ```
 
 Plans, resolved YAML, manifests, diffs, logs, and state show only a marker such as
@@ -128,12 +128,12 @@ diagnostic. Inline file content must therefore never contain a secret.
 ## CLI and concurrent variations
 
 ```text
-switchyard overlay validate overlays/mongodb.yaml
-switchyard overlay diff deployment.yaml --with overlays/mongodb.yaml
-switchyard plan deployment.yaml --with overlays/mongodb.yaml --set LOG_LEVEL=TRACE
-switchyard up deployment.yaml --with overlays/mongodb.yaml --variation mongo
-switchyard status deployment.yaml --variation mongo
-switchyard down deployment.yaml --variation mongo
+apmpr overlay validate overlays/mongodb.yaml
+apmpr overlay diff deployment.yaml --with overlays/mongodb.yaml
+apmpr plan deployment.yaml --with overlays/mongodb.yaml --set LOG_LEVEL=TRACE
+apmpr up deployment.yaml --with overlays/mongodb.yaml --variation mongo
+apmpr status deployment.yaml --variation mongo
+apmpr down deployment.yaml --variation mongo
 ```
 
 `--with`, `--variation`, and `--set` may also be used by `plan`, `up`, `status`, and

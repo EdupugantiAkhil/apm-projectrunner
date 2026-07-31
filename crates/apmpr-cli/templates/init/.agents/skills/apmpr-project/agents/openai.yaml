@@ -1,0 +1,4 @@
+interface:
+  display_name: "APM ProjectRunner Project"
+  short_description: "Safely author and operate APM ProjectRunner projects"
+  default_prompt: "Use $apmpr-project to inspect this repository, author only supported desired state, validate and plan every change, and stop with concrete blockers when safe configuration is not possible."

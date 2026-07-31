@@ -3,7 +3,7 @@
 Work to bring the React Web UI (`packages/web`) to the point where a project can be set
 up, authored, and operated without dropping to the TUI.
 
-This is **not** a port of the TUI. The TUI (`crates/switchyard-tui`) was surveyed to find
+This is **not** a port of the TUI. The TUI (`crates/apmpr-tui`) was surveyed to find
 capabilities worth having in the browser, but several of its workflows exist because a
 terminal shows one pane at a time or because a TTY is available — those are re-scoped or
 dropped here rather than reproduced. See "Deliberate divergences" below.
@@ -39,9 +39,9 @@ Follow-ups noted during implementation but out of this plan's scope:
 ## What this plan is not
 
 An earlier survey framed this work as a frontend backlog. Most of the highest-value items
-are in fact **backend work**: `crates/switchyard-daemon/src/server.rs:1277-1307` is the
+are in fact **backend work**: `crates/apmpr-daemon/src/server.rs:1277-1307` is the
 complete control-plane route table, and it contains no profile, run-action, device
-eligibility, or operation-list endpoints. The TUI reaches `switchyard-ops`
+eligibility, or operation-list endpoints. The TUI reaches `apmpr-ops`
 (`profiles.rs`, `run_scripts.rs`, `devices.rs`) in-process; the browser cannot.
 
 Each part below therefore states its API prerequisite explicitly. A part whose API does
@@ -52,7 +52,7 @@ not exist yet cannot be started as a frontend task.
 Three TUI workflows are re-scoped rather than reproduced:
 
 - **Terminal handoff is out of scope.** The TUI re-exec mechanism
-  (`crates/switchyard-tui/src/handoff.rs:65-111`) is an implementation detail of a
+  (`crates/apmpr-tui/src/handoff.rs:65-111`) is an implementation detail of a
   terminal client, not a capability to reproduce. The browser collects credentials
   through its own UI.
 - **The five-step instance wizard becomes one progressive form.** The linear modal
@@ -64,7 +64,7 @@ Three TUI workflows are re-scoped rather than reproduced:
 ## Sequencing constraints
 
 - **Profile save is blocked in every client.** The shared operations layer does not
-  expose the profile mutation (`crates/switchyard-tui/src/tabs/profiles.rs:511-565`), so
+  expose the profile mutation (`crates/apmpr-tui/src/tabs/profiles.rs:511-565`), so
   the TUI's schema-generated editor produces a preview only. The web profile *library*
   (Part 3) can ship without it; a web profile *editor* cannot, in either client. Treat
   the ops-layer mutation as a separate prerequisite, not part of this plan.
@@ -77,7 +77,7 @@ Three TUI workflows are re-scoped rather than reproduced:
 ## Part 1 — Unmanaged source deregistration
 
 **API status:** exists. `DELETE /api/v1/sources/{name}` is already routed at
-`crates/switchyard-daemon/src/server.rs:1299`.
+`crates/apmpr-daemon/src/server.rs:1299`.
 
 Frontend-only, under an hour.
 
@@ -120,7 +120,7 @@ by the CLI and TUI.
 
 ## Part 3 — Startup-profile library and trust workflow
 
-**API status:** missing entirely. `switchyard-ops/src/profiles.rs` is reachable only
+**API status:** missing entirely. `apmpr-ops/src/profiles.rs` is reachable only
 in-process. The Block Library (`DeploymentBuilder.tsx:30-31`) lists adapter declarations
 and their JSON Schemas, which is a different thing.
 
@@ -130,7 +130,7 @@ and their JSON Schemas, which is a different thing.
       imported profile.
 - [x] Mirror the TUI's trust semantics exactly — a source-local profile is untrusted
       until its manifest is reviewed, and changed content requires review again
-      (`crates/switchyard-tui/src/tabs/profiles.rs:75-103`).
+      (`crates/apmpr-tui/src/tabs/profiles.rs:75-103`).
 - [x] Document the endpoints in `docs/control-plane-api.md`.
 - [x] Build a Profiles view: origin and trust badges, manifest review before import,
       re-import on change, remove-imported, and validate-against-checkout with the
@@ -151,7 +151,7 @@ eligibility field; `DeviceStatus` in `packages/web/src/api.ts:84` is only
 eligibility.
 
 - [x] Extend the device payload with an eligibility verdict and its reason, kept separate
-      from SSH check status (`crates/switchyard-tui/src/tabs/devices.rs:194-236`).
+      from SSH check status (`crates/apmpr-tui/src/tabs/devices.rs:194-236`).
 - [x] Include the implicit `local` device in the listing, or document that clients
       synthesize it — pick one and apply it consistently.
 - [x] Return the instances currently placed on a device so removal can be placement-aware
@@ -183,7 +183,7 @@ placement (`DeploymentBuilder.tsx:24-27`).
       only creates whole deployments.
 - [x] Checkout/worktree selector, filtered to registered sources.
 - [x] Trusted-profile selector, filtered to profiles valid for the chosen checkout
-      (`crates/switchyard-tui/src/dialogs/wizard.rs:101-139`).
+      (`crates/apmpr-tui/src/dialogs/wizard.rs:101-139`).
 - [x] Device selector restricted to eligible devices, showing the ineligibility reason
       inline for the rest.
 - [x] Render profile-defined parameters through `SchemaForm`, not free-text.
@@ -207,7 +207,7 @@ Highest value-per-line item in the plan. The group selector at
 authored consumer with required slots but no initial binding has no graphical path.
 
 - [x] Derive consumers with consumed slots from the authored definition, including those
-      with no binding (`crates/switchyard-tui/src/tabs/connections.rs:162-223`).
+      with no binding (`crates/apmpr-tui/src/tabs/connections.rs:162-223`).
 - [x] Render unbound consumers as such rather than omitting them.
 - [x] Allow selecting a compatible complete group for an unbound consumer, reusing the
       existing compatibility filter and preview.
@@ -249,7 +249,7 @@ without the user mistaking desired state for observed state.
 - [x] Show desired versus observed version separately — the active-routes table at
       `App.tsx:143-145` currently collapses them into one column.
 - [x] Add explicit transition state and previous version.
-- [x] Render rollback history (`crates/switchyard-tui/src/tabs/connections.rs:526-586`).
+- [x] Render rollback history (`crates/apmpr-tui/src/tabs/connections.rs:526-586`).
 - [x] Show a post-switch success/failure report after an apply.
 
 **Done when:** a failed route switch is diagnosable from the browser.
@@ -258,7 +258,7 @@ without the user mistaking desired state for observed state.
 
 ## Part 9 — Project run actions (partial scope)
 
-**API status:** missing. `switchyard-ops/src/run_scripts.rs` is in-process only.
+**API status:** missing. `apmpr-ops/src/run_scripts.rs` is in-process only.
 
 Re-scoped on risk. A browser page is a much wider attack surface than a terminal, and
 `run_scripts.rs:141` writes actions to a project file on disk. **Authoring arbitrary
@@ -289,7 +289,7 @@ boundary is visible rather than implied.
 **API status:** depends on Part 2.
 
 - [x] Free-text filter over deployment, instance, service, operation label, and output
-      lines (`crates/switchyard-tui/src/tabs/operations.rs:337-365`).
+      lines (`crates/apmpr-tui/src/tabs/operations.rs:337-365`).
 - [x] Instance and service log filtering in the event drawer, which today filters by
       deployment only (`App.tsx:127-130`).
 - [x] Destructive-operation markers in the timeline, from the Part 2 field.
@@ -304,7 +304,7 @@ boundary is visible rather than implied.
 **API status:** depends on Part 2 (recent operations) and Part 4 (placement).
 
 Instance cards (`App.tsx:137-144`) show runtime state, source identity, logs, and Open.
-The TUI assembles considerably more (`crates/switchyard-tui/src/tabs/instances.rs:386-493`).
+The TUI assembles considerably more (`crates/apmpr-tui/src/tabs/instances.rs:386-493`).
 
 - [x] Startup profile per instance.
 - [x] Authored and observed device placement.
@@ -327,7 +327,7 @@ is connected.
 Deliberately last: a checklist is only useful once the actions it links to exist. The TUI
 Home tab tracks code registration, profile selection, instance creation, startup, and
 route connection, and recommends the next unfinished action
-(`crates/switchyard-tui/src/tabs/home.rs:41-56`, `:66-139`, `:186-230`).
+(`crates/apmpr-tui/src/tabs/home.rs:41-56`, `:66-139`, `:186-230`).
 
 - [x] Setup-progress checklist across source, profile, instance, startup, connection.
 - [x] Next-recommended-action affordance linking into the relevant view.

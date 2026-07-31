@@ -1,4 +1,4 @@
-# Switchyard TUI rewrite on AppCUI-rs — layout and interaction design
+# APM ProjectRunner TUI rewrite on AppCUI-rs — layout and interaction design
 
 Status: accepted for implementation (2026-07-18). Supersedes the "keep Ratatui"
 decision in `docs/new_tui_features.md` §0 by explicit product decision: the TUI is
@@ -53,13 +53,13 @@ source is vendored in `~/.cargo/registry/src/*/appcui-0.4.13/`.
 
 ### State model
 
-- One `ProjectState` struct owns everything projected from `switchyard-ops`
+- One `ProjectState` struct owns everything projected from `apmpr-ops`
   (sources, profiles, deployments/instances, devices, route matrix, run scripts).
   It is refreshed as a whole (`F5` and after every mutation) — views never load
   data ad hoc.
 - Views receive `&ProjectState` and rebuild their controls from it; they keep only
   selection/scroll state of their own.
-- All mutations go through `switchyard-ops`; the TUI contains **no** business
+- All mutations go through `apmpr-ops`; the TUI contains **no** business
   logic, only orchestration + presentation.
 
 ### Long-running work
@@ -79,7 +79,7 @@ keystrokes nondeterministically (verified empirically). The TUI therefore
 
 ```text
 pub fn run(project_dir) {
-    if SWITCHYARD_TUI_REOPEN_CODE is set { restore restart context from env }
+    if APMPR_TUI_REOPEN_CODE is set { restore restart context from env }
     outcome = run_app(project_dir)   // build App, run to exit
     match outcome {
         Exit              => return,
@@ -93,7 +93,7 @@ pub fn run(project_dir) {
 
 The handoff request is passed out of the app via a shared cell written by the Code
 tab before it closes the single window. Credential behavior is unchanged: no
-secrets ever enter Switchyard state; the terminal is fully restored before git
+secrets ever enter APM ProjectRunner state; the terminal is fully restored before git
 runs (AppCUI restores it when `run()` returns).
 
 ## 2. Per-tab layout
@@ -190,7 +190,7 @@ Vertical stack (single `Panel`):
 
 ### Operations
 
-- Top: run actions (`.switchyard/run-scripts.yaml`) as a `ListView` — these are
+- Top: run actions (`.apmpr/run-scripts.yaml`) as a `ListView` — these are
   project operations, deliberately kept out of Profiles. `Enter` runs one
   (confirm first), `F2`/`F3`/`Del` manage entries (shell-notice flow preserved).
 - Bottom (HSplitter): **timeline + log pane** — one ordered timeline of
@@ -199,13 +199,13 @@ Vertical stack (single `Panel`):
   Filter field narrows by deployment / instance / service. Destructive operations
   are labeled `DESTRUCTIVE` in the timeline.
 
-## 3. Module layout (crate `switchyard-tui`)
+## 3. Module layout (crate `apmpr-tui`)
 
 ```text
 src/
   lib.rs          – public run(project_dir): outer handoff loop (unchanged API)
   shell.rs        – single window, Tab host, command bar, help modal, busy chip
-  state.rs        – ProjectState projection + refresh (wraps switchyard-ops)
+  state.rs        – ProjectState projection + refresh (wraps apmpr-ops)
   handoff.rs      – CloneHandoff plumbing + interactive git execution
   tasks.rs        – BackgroundTask wiring (OpUpdate/OpCommand types)
   tabs/
@@ -217,8 +217,8 @@ src/
     wizard.rs     – instance creation wizard
 ```
 
-Rules: tabs never call `switchyard-state`/`planner` directly — only through
-`state.rs`/`switchyard-ops`. No persisted field renames. No secrets in any
+Rules: tabs never call `apmpr-state`/`planner` directly — only through
+`state.rs`/`apmpr-ops`. No persisted field renames. No secrets in any
 rendered preview or log.
 
 ## 4. Testing

@@ -1,6 +1,6 @@
 # Browser route identity
 
-Switchyard can identify unchanged browser applications in three ways, in strict order:
+APM ProjectRunner can identify unchanged browser applications in three ways, in strict order:
 an explicit per-tab header, the request `Origin`, then a dedicated managed-profile
 proxy listener. A request that has no valid identity is rejected rather than sent to an
 arbitrary backend.
@@ -10,7 +10,7 @@ arbitrary backend.
 The extension sends this request header:
 
 ```text
-X-Switchyard-Route: <route-id>
+X-Apmpr-Route: <route-id>
 ```
 
 `<route-id>` is a declared identifier of 1–128 lowercase ASCII letters, digits, `.`,
@@ -27,7 +27,7 @@ from the local extension boundary; LAN clients and arbitrary inbound requests ca
 self-assign routes. Conflicting explicit-header and Origin identities fail closed under
 the configured trust policy.
 
-The extension lives at [`extensions/switchyard-route`](../extensions/switchyard-route/).
+The extension lives at [`extensions/apmpr-route`](../extensions/apmpr-route/).
 Its checked-in `routes.js` and `manifest.json` host permission are examples. Replace
 them with the active deployment's route IDs and the same exact localhost URL prefixes
 before loading the unpacked extension. The
@@ -38,33 +38,33 @@ host permissions listed in `manifest.json`.
 The popup is fully keyboard operable: open it, tab to a declared route, and press Enter
 or Space. **Disconnect** removes the current tab rule. Closing a tab also removes its
 rule. To pause or remove the extension, use `chrome://extensions`; removal leaves
-Switchyard deployments and source trees untouched.
+APM ProjectRunner deployments and source trees untouched.
 
 ## Managed Chromium profile
 
 When neither the extension nor `Origin` can provide identity, start a dedicated profile:
 
 ```sh
-switchyard open deployment.yaml ui-1
+apmpr open deployment.yaml ui-1
 ```
 
 The applied host-gateway plan owns a loopback listener and writes:
 
 ```text
-.switchyard/generated/<deployment>/managed-profiles/<instance>.json
+.apmpr/generated/<deployment>/managed-profiles/<instance>.json
 ```
 
 The file identifies its deployment and instance, route, loopback proxy address, and start
 URL. Its instance field is spelled `ui` on disk, which is historical: any authored
 instance may have a managed profile, and nothing requires it to be a user interface.
 It contains no proxy credential or other secret. The host gateway creates a separate
-owner-only credential under `.switchyard/run/<deployment>/managed-profiles/`.
-`switchyard open` validates those
+owner-only credential under `.apmpr/run/<deployment>/managed-profiles/`.
+`apmpr open` validates those
 ownership fields, refuses non-loopback proxy addresses, verifies that the listener is
 running, and then launches Chromium with a deployment-scoped directory:
 
 ```text
-.switchyard/profiles/<deployment>/<instance>/
+.apmpr/profiles/<deployment>/<instance>/
 ```
 
 The browser receives both `--proxy-server=http://127.0.0.1:<port>` and
@@ -80,7 +80,7 @@ Managed-profile proxying is HTTP-only in this phase and does not implement HTTPS
 use extension-header or Origin routing instead.
 The launcher auto-detects Chromium and `chromium-browser` on Linux. On macOS it also
 discovers standard `/Applications` bundles for Chromium and the Stable, Beta, Dev, or
-Canary channels of Chrome for Testing. Set `SWITCHYARD_CHROMIUM` to an executable path
+Canary channels of Chrome for Testing. Set `APMPR_CHROMIUM` to an executable path
 for another Chromium build or Chrome for Testing. [Chrome 137 and
 newer removed the required unpacked-extension launch
 flag](https://developer.chrome.com/blog/extension-news-june-2025) from branded Chrome, and Edge
@@ -91,7 +91,7 @@ Close every window using the profile before removing it. Profiles are disposable
 can be deleted explicitly:
 
 ```sh
-rm -rf .switchyard/profiles/<deployment>/<instance>
+rm -rf .apmpr/profiles/<deployment>/<instance>
 ```
 
 Deleting a managed browser profile does not delete Docker volumes or source worktrees.

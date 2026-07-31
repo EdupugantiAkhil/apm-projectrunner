@@ -1,6 +1,6 @@
 # User flow
 
-How a person sets up and uses Switchyard through the Web UI, from an empty folder to a
+How a person sets up and uses APM ProjectRunner through the Web UI, from an empty folder to a
 group they can open in the browser by name.
 
 Read [ABOUT.md](ABOUT.md) first for *why* the project exists. This document is the *how*.
@@ -19,15 +19,15 @@ worth knowing before you start, because the UI uses them everywhere:
 ## The flow at a glance
 
 ```text
-1.  switchyard init          →  a Switchyard project folder exists
-2.  switchyard daemon run    →  the background service is running (usually already is)
-3.  switchyard gui           →  opens the browser window at the running service
-4.  Sources                  →  clone repositories, add worktrees
-5.  Startup profiles         →  reusable recipes for starting instances
-6.  Run actions              →  project-level scripts (Up, Down, smoke tests)
-7.  Instances                →  source-backed runtime copies, optionally on another device
-8.  Service groups           →  a named set of instances; membership is the connection
-9.  Addresses                →  open a group, or one instance, by name
+1.  apmpr init         →  an APM ProjectRunner project folder exists
+2.  apmpr daemon run   →  the background service is running (usually already is)
+3.  apmpr gui          →  opens the browser window at the running service
+4.  Sources            →  clone repositories, add worktrees
+5.  Startup profiles   →  reusable recipes for starting instances
+6.  Run actions        →  project-level scripts (Up, Down, smoke tests)
+7.  Instances          →  source-backed runtime copies, optionally on another device
+8.  Service groups     →  a named set of instances; membership is the connection
+9.  Addresses          →  open a group, or one instance, by name
 ```
 
 Steps 4 through 9 all happen in the browser. Only steps 1 to 3 are CLI, and step 2 is
@@ -37,14 +37,14 @@ normally a one-time or machine-startup concern rather than something you type ea
 
 ## Step 1 — Initialize the project folder (CLI)
 
-Switchyard needs a project folder to hold your authored deployment and its local state.
+APM ProjectRunner needs a project folder to hold your authored deployment and its local state.
 There are two ways in, depending on whether the folder already exists.
 
 **A new project folder:**
 
 ```bash
-switchyard init                      # prompts for a name and directory
-switchyard init ./my-project --name my-project
+apmpr init                      # prompts for a name and directory
+apmpr init ./my-project --name my-project
 ```
 
 This scaffolds `deployment.yaml`, an `overlays/dev.yaml`, a `README.md`, a `.gitignore`,
@@ -55,7 +55,7 @@ hostnames, which is why the rule is strict).
 **An existing code folder you want to adopt:**
 
 ```bash
-switchyard project register path/to/code --name my-project
+apmpr project register path/to/code --name my-project
 ```
 
 Registration preserves everything already in the folder, creates project-local state and
@@ -63,7 +63,7 @@ an empty `deployments/` directory. If the folder is a Git clone, it may be adopt
 repository in step 4, but source worktrees still live at their own authored paths. Running
 registration again on the same folder is safe.
 
-After either command you have a `.switchyard/` directory holding project state, and an
+After either command you have a `.apmpr/` directory holding project state, and an
 authored `deployment.yaml` that is valid but empty of real work.
 
 ## Step 2 — The background service
@@ -74,27 +74,27 @@ and operations keep progressing whether or not any UI is open. It is the long-li
 the Web UI is just a window onto it.
 
 ```bash
-switchyard daemon install   # install and start it as a per-user login service
-switchyard daemon run       # alternatively, run it in the foreground
-switchyard daemon status    # is it running? pid, API version, active operations
-switchyard daemon stop      # ask it to shut down
+apmpr daemon install   # install and start it as a per-user login service
+apmpr daemon run       # alternatively, run it in the foreground
+apmpr daemon status    # is it running? pid, API version, active operations
+apmpr daemon stop      # ask it to shut down
 ```
 
 The service is **already running** by the time you want a UI — started at login by the
-per-user service manager, so opening the UI never means "start Switchyard". The install
+per-user service manager, so opening the UI never means "start APM ProjectRunner". The install
 command writes and loads a project-specific launchd LaunchAgent on macOS or systemd user
 unit on Linux. Pass a project directory when installing it from somewhere else:
-`switchyard daemon install path/to/code`.
+`apmpr daemon install path/to/code`.
 
-Service output is appended to `.switchyard/daemon.log`.
+Service output is appended to `.apmpr/daemon.log`.
 
-`switchyard gui` does not start the service. Against a stopped daemon it reports the exact
-`switchyard daemon install <project>` command to run.
+`apmpr gui` does not start the service. Against a stopped daemon it reports the exact
+`apmpr daemon install <project>` command to run.
 
 ## Step 3 — Open the Web UI window (CLI)
 
 ```bash
-switchyard gui
+apmpr gui
 ```
 
 The GUI is **one window across every project**, not one window per project. It finds the
@@ -114,13 +114,13 @@ only.
 
 > **Not built yet.** This is the intended shape, and the rest of this document is written
 > against it. Today both the service and the GUI are scoped to a single project: the daemon
-> is bound to one workspace root, `switchyard gui [project]` takes a path and opens that
+> is bound to one workspace root, `apmpr gui [project]` takes a path and opens that
 > project's daemon, and there is no project registry or in-window switcher in any client.
 > One browser session is currently one project. Multi-project support means a project
 > registry, a service that can hold more than one workspace, and a switcher in the window —
 > it is listed as "Not in scope" in [docs/web-ui-plan.md](../web-ui-plan.md), which is a
 > statement about that plan's boundary rather than a decision against the feature. Until it
-> lands, run `switchyard gui path/to/code` per project. The
+> lands, run `apmpr gui path/to/code` per project. The
 > [V2.1 roadmap](../v2.1-roadmap.md) tracks the multi-project implementation.
 
 Everything below happens in that browser tab, scoped to the project you have selected. The
@@ -137,8 +137,8 @@ recommendation each time, it walks you through steps 4 to 8 in order.
 Go to **sources**. Repositories and worktrees are separate:
 
 - A named `repository` is Git storage: either a managed bare clone from `url:` under
-  `.switchyard/clones/`, or an adopted `clone:` path to a bare repository or ordinary
-  clone. It holds Git objects and worktree metadata; Switchyard never runs code from a
+  `.apmpr/clones/`, or an adopted `clone:` path to a bare repository or ordinary
+  clone. It holds Git objects and worktree metadata; APM ProjectRunner never runs code from a
   repository checkout. All editable and runnable working trees are sources.
 - A named `source` is always a worktree with `{ repository, ref, path }`. Its path is
   project-relative and is the checkout an instance uses.
@@ -147,7 +147,7 @@ The browser edits the same structure shown in
 [sample-config.md](sample-config.md), and **Up** creates any missing managed clone and
 source worktree. There is no plain-path source kind.
 
-**Add a managed repository.** Enter a name and repository URL. Switchyard first tries a
+**Add a managed repository.** Enter a name and repository URL. APM ProjectRunner first tries a
 non-interactive clone using your existing Git credential helper and SSH agent — usually
 that just works and nothing is asked of you.
 
@@ -163,7 +163,7 @@ If it does not:
 
 Clone progress streams into the operations timeline like any other operation.
 
-**Adopt existing Git storage.** Choose its path once at the repository level. Switchyard
+**Adopt existing Git storage.** Choose its path once at the repository level. APM ProjectRunner
 may update the Git metadata needed to create source worktrees, but never runs from or edits
 the clone's checkout and never deletes an adopted repository.
 
@@ -187,9 +187,9 @@ A **startup profile** is the reusable definition that expands into one service o
 coordinated suite: commands or containers, ports, volumes, and the parameters you can vary
 per instance. Internally this is a *block*; the UI calls it a startup profile.
 
-Go to **profiles**. Switchyard discovers profiles from two places, and the difference matters:
+Go to **profiles**. APM ProjectRunner discovers profiles from two places, and the difference matters:
 
-- **Project-local profiles** live in your Switchyard project. They are shared across every
+- **Project-local profiles** live in your APM ProjectRunner project. They are shared across every
   instance in the project, regardless of which repository or branch the instance runs.
 - **Source-local profiles** live inside a source — that is, inside the Git worktree itself.
   They travel with the branch, so a branch can change how it starts itself.
@@ -219,14 +219,14 @@ sets up the environment so the commands stay short.
 
 ```yaml
 scripts:
-  dev-up: switchyard up $SWITCHYARD_BUNDLE --with overlays/dev.yaml --set LOG_LEVEL=debug
+  dev-up: apmpr up $APMPR_BUNDLE --with overlays/dev.yaml --set LOG_LEVEL=debug
   smoke: ./scripts/smoke.sh --target feature-test
-  status: switchyard status $SWITCHYARD_BUNDLE
+  status: apmpr status $APMPR_BUNDLE
 ```
 
 Like `npm run`, the convenience is the environment rather than the schema. The runner puts
-Switchyard's own binary directory on `PATH`, so `switchyard` resolves without being installed
-globally, and exports `$SWITCHYARD_PROJECT` and `$SWITCHYARD_BUNDLE` for the selected
+APM ProjectRunner's own binary directory on `PATH`, so `apmpr` resolves without being installed
+globally, and exports `$APMPR_PROJECT` and `$APMPR_BUNDLE` for the selected
 deployment. Everything else is an ordinary command in an ordinary shell, run from the project
 directory with your permissions.
 
@@ -240,12 +240,12 @@ with the exact command before it executes, and the first shell execution in a pr
 requires a one-time acknowledgement that arbitrary commands run with your user permissions.
 Execution appears in the operations timeline like any other operation.
 
-> **Not built this way yet.** Today the file is `.switchyard/run-scripts.yaml` and each entry
+> **Not built this way yet.** Today the file is `.apmpr/run-scripts.yaml` and each entry
 > is a seven-field record that is *either* a `shell:` string *or* a `command:` naming one of
 > `up`, `down`, `plan`, `status` with `overlays`, `variation`, and `set` arguments. The browser
 > can create, edit, and delete the structured kind but not the shell kind. The flat-map model
 > above collapses that split: structured actions are already assembled into an argv for
-> Switchyard's own binary and run through the same `std::process::Command` as shell ones, so
+> APM ProjectRunner's own binary and run through the same `std::process::Command` as shell ones, so
 > they are a typed subset of what a shell string already expresses. Moving to it is a schema
 > change with a migration for existing `run-scripts.yaml` files. This work is deferred
 > beyond V2.
@@ -279,7 +279,7 @@ definition; nothing runs until you use **Up**.
 Go to **devices** to register an execution host. A device is `local` plus any registered SSH
 hosts. Each device shows two separate columns, because they answer different questions:
 
-- **Reachability** — can Switchyard reach it over SSH at all (`never | ok | unreachable |
+- **Reachability** — can APM ProjectRunner reach it over SSH at all (`never | ok | unreachable |
   auth-failed`)?
 - **Eligibility** — can it actually run instances (Docker present and usable, and so on)?
 
@@ -326,7 +326,7 @@ Nothing classifies the members. Instances are all the same kind of thing — one
 through one startup profile — so a group does not sort them into backends and databases. It
 names which ones are in this combination, and that is all.
 
-Every member shares one localhost. If `ai-main-analysis` calls `127.0.0.1:8001`, Switchyard
+Every member shares one localhost. If `ai-main-analysis` calls `127.0.0.1:8001`, APM ProjectRunner
 preserves port 8001 and tries active members of `ai-main` in their authored order. Listener
 ports are observed while instances run; profiles do not declare capabilities, consumed
 slots, or dependency wiring.
@@ -338,7 +338,7 @@ similar, repeat the short member list and make the difference visible.
 ### Address collisions, and who wins
 
 A group is a shared address space. When two active members listen on the requested loopback
-port, Switchyard **warns and routes to the first listener in the list**:
+port, APM ProjectRunner **warns and routes to the first listener in the list**:
 
 ```text
 warning: port 5432 has two listeners in group `dual-write`:
@@ -368,10 +368,10 @@ The instance still belongs to that group while disabled. Naming an instance that
 member is a validation error.
 
 An app that genuinely talks to two databases already calls two ports — for example 5432 and
-5433 — or two hostnames. Each destination port is routed independently. Switchyard cannot
+5433 — or two hostnames. Each destination port is routed independently. APM ProjectRunner cannot
 create a second channel that the application never opens.
 
-Switchyard cannot route a call the application never makes. If your code only ever opens
+APM ProjectRunner cannot route a call the application never makes. If your code only ever opens
 `localhost:5432`, it has one database channel, and no amount of configuration creates a second
 one.
 
@@ -439,7 +439,7 @@ routing decision like any other. An instance subdomain such as
 `backend-1.feature-test.comparison.localhost` or an explicit browser route identity selects
 one member without adding a second topology model.
 
-Opening the bare name in a browser sends one request, so it needs a default. Switchyard
+Opening the bare name in a browser sends one request, so it needs a default. APM ProjectRunner
 resolves it only when exactly one active member is independently browser-addressable through
 its own `address:`. If there are zero or several such members, the bare name is an error
 listing what it could have meant rather than a guess.
@@ -487,16 +487,16 @@ multi-group membership is rejected before Plan or Up.
 
 ### Reaching a specific instance from the browser
 
-This is the one place where you have to do something Switchyard-specific. Every application instance
+This is the one place where you have to do something APM ProjectRunner-specific. Every application instance
 gets its own network namespace and its own `127.0.0.1`, so two instances can bind the same port
 with no collision. The browser cannot: it lives on your host and has exactly one shared
 `localhost`.
 
 So a browser request needs an explicit identity, by one of three means:
 
-1. A per-tab `X-Switchyard-Route` header from the Chromium extension.
+1. A per-tab `X-Apmpr-Route` header from the Chromium extension.
 2. A distinct `Origin`, which you get for free by opening the instance's custom domain.
-3. A managed Chromium profile launched with `switchyard open`.
+3. A managed Chromium profile launched with `apmpr open`.
 
 A browser request with none of these is **rejected**, not routed to whichever backend happens to
 be available. That is intentional: silently picking a backend would make an experiment
@@ -525,16 +525,16 @@ field name differ, both are given — the persisted YAML keeps the internal name
 
 | Term | Also called | What it means |
 | --- | --- | --- |
-| **Daemon** | project service, background service | The long-lived process that owns project state, runs operations, and serves the API. It is what Switchyard *is*; the Web UI and TUI are clients of it. Expected to be running before you open any UI. |
-| **Switchyard project** | workspace, project directory | The folder holding your authored deployment, overlays, and project-local state under `.switchyard/`. Created by `switchyard init` or `switchyard project register`. |
+| **Daemon** | project service, background service | The long-lived process that owns project state, runs operations, and serves the API. It is what APM ProjectRunner *is*; the Web UI and TUI are clients of it. Expected to be running before you open any UI. |
+| **APM ProjectRunner project** | workspace, project directory | The folder holding your authored deployment, overlays, and project-local state under `.apmpr/`. Created by `apmpr init` or `apmpr project register`. |
 | **Source** | checkout | A Git worktree named by repository, ref, and project-relative path. The exact code tree an instance runs from. |
-| **Managed repository** | cloned repository | A bare Git repository created and owned by Switchyard from an authored `url:`. |
-| **Adopted repository** | existing clone | Existing Git storage named by `clone:`, either bare or an ordinary clone. Switchyard uses it for objects and linked-worktree metadata but never runs its checkout or deletes it. |
+| **Managed repository** | cloned repository | A bare Git repository created and owned by APM ProjectRunner from an authored `url:`. |
+| **Adopted repository** | existing clone | Existing Git storage named by `clone:`, either bare or an ordinary clone. APM ProjectRunner uses it for objects and linked-worktree metadata but never runs its checkout or deletes it. |
 | **Repository** | — | Named Git object and worktree-metadata storage backing one or more source worktrees. |
 | **Checkout** | source path | The exact source worktree an instance runs from. |
 | **Worktree** | — | A Git feature giving one repository several checked-out branches in separate directories at once. This is what makes several branches alive simultaneously. |
 | **Startup profile** | **block** | A reusable definition that expands into one service or a coordinated suite. `block` is the YAML field name. |
-| **Project-local profile** | — | A startup profile stored in the Switchyard project, shared by every instance. |
+| **Project-local profile** | — | A startup profile stored in the APM ProjectRunner project, shared by every instance. |
 | **Source-local profile** | — | A startup profile stored inside a source (the Git worktree), so it travels with the branch. Untrusted until its manifest is reviewed. |
 | **Trust / manifest review** | — | The gate on source-local profiles. Reading a profile's manifest marks it trusted; changed content requires review again. |
 | **Instance** | — | One checkout + one startup profile + its parameters + its device. The thing that actually runs. |
@@ -544,7 +544,7 @@ field name differ, both are given — the persisted YAML keeps the internal name
 | **Service group** | **group** | A named, complete, ordered `instances:` list whose active members share one localhost. A `disabled:` list can temporarily exclude members without changing their priority. |
 | **Connection** | group membership | An instance's membership in a group. There is no separate `bindings:` or `routes:` section. |
 | **Group member** | member | What diagnostics call one entry of a group's `instances:` list — "group member `x` does not exist". Not a separate object; it is an instance seen through the group that lists it. |
-| **External instance** | external member | A group member Switchyard routes to but never starts, declared as `{ name, external, ports }`. Reported as unreachable rather than as a failed start. |
+| **External instance** | external member | A group member APM ProjectRunner routes to but never starts, declared as `{ name, external, ports }`. Reported as unreachable rather than as a failed start. |
 | **Port collision** | first listed wins | Two active members of one group listening on the same port. The router logs the port, every candidate, and the winner, then routes to the first listed. It is not an error. |
 | **Transition** | — | What happens to existing network connections during a switch: **Close** (drop them), **Drain** (let them finish, with a timeout), **Pin** (keep them on the old member while new ones use the new one). |
 | **Desired vs observed** | authored vs runtime | Desired is what you authored; observed is what is actually running. The UI keeps them in separate views and labels which you are looking at. |
@@ -552,7 +552,7 @@ field name differ, both are given — the persisted YAML keeps the internal name
 | **Instance address** | `address` on an instance | A stable custom local name for one instance, with no combination implied. Optional; most instances have none. |
 | **Host router** | native gateway | The native host process serving custom domains, TLS, and browser-facing traffic. Its ordinary local configuration is generated from addresses, membership, published services, and HTTP probes. |
 | **Device** | — | A host that can run instances: the implicit `local`, plus registered SSH hosts. |
-| **Reachability** | device status | Whether Switchyard can reach a device over SSH: `never`, `ok`, `unreachable`, `auth-failed`. |
+| **Reachability** | device status | Whether APM ProjectRunner can reach a device over SSH: `never`, `ok`, `unreachable`, `auth-failed`. |
 | **Eligibility** | — | Whether a device can actually run instances. Separate from reachability — a device can be reachable and still ineligible. |
 | **Run action** | project run script, script | A saved shell command for the project — a lifecycle shortcut or a smoke test — in a flat name-to-command map, like `package.json` `scripts`. Authored in a file; listed and run from the browser. |
 | **Operation** | — | Any tracked unit of work (clone, validate, plan, up, membership change, down, cleanup), with streamed events and a durable record in the operations timeline. |

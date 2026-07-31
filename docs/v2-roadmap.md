@@ -25,14 +25,14 @@ These were decided before the work started; parts below are written against them
 
 | Decision | Choice |
 | --- | --- |
-| Migration | Hard cut. One `apiVersion` bump to `v1alpha2` covering every V2 deployment-schema change, plus a `switchyard migrate` command that rewrites `deployment.yaml` in place. The loader rejects `v1alpha1` with an error naming the command. |
-| Naming | Rename to **APM ProjectRunner**, typed as `apmpr`. Binary `apmpr`, state dir `.apmpr/`, crates `apmpr-*`, `apiVersion: apmpr.dev/v1alpha2`, env `APMPR_*`, header `X-Apmpr-Route`. Done **last**, as a pure mechanical sweep over a settled tree. |
+| Migration | Hard cut. One `apiVersion` bump to `v1alpha2` covering every V2 deployment-schema change, plus an `apmpr migrate` command that rewrites `deployment.yaml` in place. The loader rejects `v1alpha1`, and (after Part 7) any `switchyard.dev/` prefix, with an error naming the command. |
+| Naming | Rename `Switchyard` to **APM ProjectRunner**, typed as `apmpr`. Binary `apmpr`, state dir `.apmpr/`, crates `apmpr-*`, `apiVersion: apmpr.dev/v1alpha2`, env `APMPR_*`, header `X-Apmpr-Route`. Done **last**, over a settled tree. Delivered in Part 7. |
 
-**APM ProjectRunner is the intended product name.** `Switchyard` is a temporary
-implementation name introduced during development, not a competing product direction.
+**APM ProjectRunner is the product name.** `Switchyard` was a temporary implementation name
+used during development, not a competing product direction. Part 7 replaced it everywhere.
 
-Because the rename lands last, Parts 1–6 are authored against the current `switchyard`
-names throughout. Part 7 renames them all at once.
+Because the rename landed last, Parts 1–6 were authored against the old `switchyard` names.
+Their entries below are kept as written where they quote historical identifiers.
 
 ## Status at a glance
 
@@ -48,12 +48,12 @@ verification evidence.
 | ✅ | 2b — A group shares one localhost; capabilities and slots are removed | `d2bdddf` |
 | ✅ | 2c — Repositories are declared once; sources are a repo and a ref | `4e6969a` |
 | ✅ | 2d — `bindings:` is deleted; membership is the connection | `6616583` |
-| ✅ | 2e — External instances: things already running outside Switchyard | `d0fcdd0` |
+| ✅ | 2e — External instances: things already running outside APM ProjectRunner | `d0fcdd0` |
 | ⬜ | 3 — Serving a whole group from one address (router) | |
 | ✅ | 4 — Vocabulary and documentation alignment | `db52a71` |
 | ✅ | 5 — Daemon-as-service posture | `08e86d1` |
 | ✅ | 6 — Release usability items | `494f7a0` |
-| ⬜ | 7 — Rename to APM ProjectRunner (`apmpr`) | |
+| ✅ | 7 — Rename to APM ProjectRunner (`apmpr`) | pending |
 
 Baseline after Part 2a: 307 Rust tests passing, 49 web tests passing, four known React
 `exhaustive-deps` lint warnings (cleared in Part 6).
@@ -71,15 +71,15 @@ Vision reference: user_flow step 8. Landed in `bae84bf`; 292 tests passing.
 - [x] `extends:` overrides by capability, on the resolved group
 - [x] `instance/service` reference form still resolves inside the list
 - [x] Diagnostics say "group member", not "instance"
-- [x] `apiVersion` bump to `v1alpha2`, loader names `switchyard migrate`
-- [x] `switchyard migrate` with a per-transform seam for later parts
+- [x] `apiVersion` bump to `v1alpha2`, loader names `apmpr migrate`
+- [x] `apmpr migrate` with a per-transform seam for later parts
 - [x] In-repo definitions and compat fixtures migrated
 - [ ] ~~Two members providing one capability rejected~~ — reversed by Part 2a
 
 The slot→provider mapping is derived by the same `provider_for` search run the other
 direction, so the map no longer restates what the profiles already declare. Touched
-`switchyard-planner`, `switchyard-ops/connections.rs`,
-`packages/web/src/connectionModel.ts`, `switchyard-cli`, examples, and compat fixtures.
+`apmpr-planner`, `apmpr-ops/connections.rs`,
+`packages/web/src/connectionModel.ts`, `apmpr-cli`, examples, and compat fixtures.
 
 This was an intermediate migration step. Part 2b removes capabilities and slots from the
 authored schema, and Part 2d removes the bindings and routes that used the derived mapping.
@@ -165,7 +165,7 @@ That is the wrong default. ABOUT.md's promise is that "the auto routing magicall
 — you do not wire up addresses, edit config files, or change ports", and that "every UI
 still calls the backend at the address it was always written to call". A schema that
 requires you to restate every one of those addresses before anything is routed has moved
-the wiring rather than removed it. Reduced to that, Switchyard is SSH port forwarding with
+the wiring rather than removed it. Reduced to that, APM ProjectRunner is SSH port forwarding with
 a YAML file.
 
 **The rule: everything in a group shares one localhost.** Each member's namespace
@@ -175,7 +175,7 @@ in authored order. Receiver-side interception forwards deployment-network traffi
 to the receiver's own loopback, so an application may continue binding only
 `127.0.0.1`.
 
-This removes the false requirement that Switchyard predict every port before a program
+This removes the false requirement that APM ProjectRunner predict every port before a program
 starts. `publish:`, probes, and image `EXPOSE` remain useful lifecycle and host-ingress
 metadata, but they are not routing prerequisites. `provides:` and `consumes:` are not
 optional labels or an override language in V2: they are absent from the new schema.
@@ -219,7 +219,7 @@ Each alternative therefore needs its own namespace and localhost.
 
 There is also an important network reason. Several members of one group may listen on the
 same fixed application port. One group namespace would make those legal listeners collide
-before Switchyard could apply the authored priority order. Per-instance namespaces both
+before APM ProjectRunner could apply the authored priority order. Per-instance namespaces both
 keep the alternatives alive for switching and let the group select the winner. Each
 instance gets its group's ordered member view.
 
@@ -258,7 +258,7 @@ instance runs*:
 ```yaml
 repositories:
   monorepo:
-    url: git@github.com:acme/monorepo.git      # cloned into .switchyard/clones/monorepo
+    url: git@github.com:acme/monorepo.git      # cloned into .apmpr/clones/monorepo
   legacy:
     clone: ~/work/legacy-checkout               # existing bare repository or ordinary clone
 
@@ -274,28 +274,28 @@ A source becomes a repository plus a ref plus where it lives — which is what a
 **Every source is a worktree, and the repository always lives elsewhere** (decided). This
 is the rule that makes the rest fall out. Two directory populations with no overlap:
 
-| | Where | Who owns it | Ever modified by Switchyard |
+| | Where | Who owns it | Ever modified by APM ProjectRunner |
 | --- | --- | --- | --- |
-| Repository storage | `.switchyard/clones/<name>`, or your own path when adopted | Switchyard, or you | Git objects/worktree metadata; managed storage is removable |
-| Source worktrees | wherever you author `path:` | Switchyard | Created, and removable |
+| Repository storage | `.apmpr/clones/<name>`, or your own path when adopted | APM ProjectRunner, or you | Git objects/worktree metadata; managed storage is removable |
+| Source worktrees | wherever you author `path:` | APM ProjectRunner | Created, and removable |
 
 A source is never a repository, and a repository is never a source. Nothing has to work out
 which one a directory is, and the adopt-versus-manage question is settled once at the
-repository level instead of per source: `url:` means Switchyard creates and owns a bare
+repository level instead of per source: `url:` means APM ProjectRunner creates and owns a bare
 repository, while `clone:` adopts existing Git storage (bare or an ordinary clone).
-Repositories hold objects and linked-worktree metadata; Switchyard never runs their
+Repositories hold objects and linked-worktree metadata; APM ProjectRunner never runs their
 checkout. Every editable and runnable tree is a source worktree, created the same way
 against either repository form.
 
 **`path:` is mandatory on sources and absent from managed repositories.** A source
 directory is something you *use* — you open it in an editor, run commands in it, point
 tooling at it — so it must be yours to choose and yours to see written down. A managed
-clone is bookkeeping you never work in, so `.switchyard/clones/<name>` is fine and already
-exists (`switchyard-sources/src/lib.rs:206`, used by `clone_repository` at line 601).
+clone is bookkeeping you never work in, so `.apmpr/clones/<name>` is fine and already
+exists (`apmpr-sources/src/lib.rs:206`, used by `clone_repository` at line 601).
 Exactly one of `url:` or `clone:` is required on a repository.
 
 **The adopted-clone field is `clone:`, not `path:`.** Two fields spelled `path:` that mean
-different things — "the worktree Switchyard will create for you" on a source and "existing
+different things — "the worktree APM ProjectRunner will create for you" on a source and "existing
 Git storage backing worktrees" on a repository — is the kind of collision
 that reads fine in the spec and misleads in practice. `clone:` names what it points at and
 pairs obviously with `url:`, which is the other way of saying where the clone comes from.
@@ -305,9 +305,9 @@ if absent. A source whose `path` is absent gets `git worktree add` against its r
 its ref. Nothing on disk at all, and `deployment.yaml` reconstructs the whole tree. What is
 present is left alone; this is not a sync that enforces state.
 
-- [x] `repositories:` section — exactly one of `url:` (Switchyard creates and manages a
+- [x] `repositories:` section — exactly one of `url:` (APM ProjectRunner creates and manages a
       bare repository) or `clone:` (existing bare repository or ordinary clone)
-- [x] Managed clones land in `.switchyard/clones/<name>`, not authored
+- [x] Managed clones land in `.apmpr/clones/<name>`, not authored
 - [x] A source is always `{ repository, ref, path }` — all three required
 - [x] A repository `clone:` and a source `path:` may never be the same directory, or nested
       one inside the other; that is a validation error, not a warning
@@ -319,7 +319,7 @@ present is left alone; this is not a sync that enforces state.
       a `{ repository, ref, path }` source, collapsing duplicate repository paths into one
       entry and keeping every existing path exactly as authored. The repository an existing
       deployment names is one the user already has, so it migrates to the adopted `clone:`
-      form — migration must never turn a directory Switchyard was reading into one it
+      form — migration must never turn a directory APM ProjectRunner was reading into one it
       manages.
 
 **Plain-path sources are removed.** The sample configuration's two-population model is
@@ -332,7 +332,7 @@ repository or silently preserving a third source kind.
 
 **The containment guard has to change, and that is the one real cost.** Managed creation is
 currently guarded by `validate_containment`, which rejects any target outside
-`.switchyard/worktrees` with `source_outside_managed_root`. Author-chosen paths are outside
+`.apmpr/worktrees` with `source_outside_managed_root`. Author-chosen paths are outside
 it by definition, so the guard cannot stay as written. Replacing it with nothing would let
 a deployment file create directories anywhere on disk, including outside the project. The
 replacement should be: **contained within the project directory**, refusing absolute paths
@@ -409,14 +409,14 @@ and the TypeScript/Vite production build pass.
 
 ---
 
-### Part 2e — External instances: things already running outside Switchyard
+### Part 2e — External instances: things already running outside APM ProjectRunner
 
-Not everything a group needs is started by Switchyard. A separately managed Postgres,
+Not everything a group needs is started by APM ProjectRunner. A separately managed Postgres,
 a shared Elasticsearch on the corporate network, a service on a teammate's box —
 today none of these can be a group member, so a deployment that needs one cannot be
 expressed at all.
 
-An **external instance** is an instance Switchyard routes to but does not start:
+An **external instance** is an instance APM ProjectRunner routes to but does not start:
 
 ```yaml
 instances:
@@ -433,7 +433,7 @@ groups:
 
 **It is an instance kind, not a new group section** (decided). Groups stay one list of
 members, the collision rule keeps working unchanged, and an external reads as what it is:
-a member Switchyard happens not to start. The alternative — an `external:` map on the group
+a member APM ProjectRunner happens not to start. The alternative — an `external:` map on the group
 — would have needed a separate rule for ordering against members, because a YAML map has no
 meaningful order and Part 2a settled collisions as *first listed wins*.
 
@@ -444,7 +444,7 @@ land on" is a question worth not having. It also means one entry per external se
 rather than per port.
 
 **Use the address as authored.** `search.staging.internal` is resolved from the routing
-sidecar and must be reachable from there. Switchyard does not reinterpret a loopback address
+sidecar and must be reachable from there. APM ProjectRunner does not reinterpret a loopback address
 as the developer host; host-machine bridging, when wanted, must be named explicitly by an
 address reachable from the container network.
 
@@ -538,7 +538,7 @@ but it did find role names in **schema and command surfaces**, which is the same
 layer up. The managed-profile artifact and the `open` command both keyed a generic instance
 by a field spelled `ui`, so a non-UI instance with a managed profile was authored through a
 field claiming otherwise. Both are now `instance`. Two versioned contracts constrained how:
-the artifact keeps serializing `ui` under `switchyard.dev/managed-profile/v1alpha1`, and
+the artifact keeps serializing `ui` under `apmpr.dev/managed-profile/v1alpha1`, and
 `/api/v1` may not remove a request field, so `ui` remains a deprecated accepted alias with
 `instance` taking precedence. A mutation-checked test pins that alias.
 
@@ -549,7 +549,7 @@ are replaced by published ports, which the schema does have.
 
 `DESIGN.md` had also drifted past vocabulary into being wrong: it documented an overlay
 `groups:` replacement and a `routes:` slot that the parser rejects under
-`deny_unknown_fields`, listed a `switchyard group` command that does not exist while
+`deny_unknown_fields`, listed a `apmpr group` command that does not exist while
 omitting `move`, `migrate`, and `routes`, and never mentioned instance `address:` or
 `disabled:` at all. Those are corrected against the implementation rather than restated.
 
@@ -568,7 +568,7 @@ today's schema would falsify the log.
 ### Part 5 — Daemon-as-service posture ✅
 
 user_flow step 2 states the intended split plainly: the daemon is a service, and
-`switchyard gui` only opens a window onto it. Before this part, `gui` auto-started the
+`apmpr gui` only opens a window onto it. Before this part, `gui` auto-started the
 daemon as a fallback, and the doc itself called that "a fallback, not the design".
 
 - [x] A launchd plist and a systemd unit
@@ -577,7 +577,7 @@ daemon as a fallback, and the doc itself called that "a fallback, not the design
       rather than silently starting one
 
 Landed in `08e86d1`; the complete workspace check passes with the five declared
-reliability tests ignored. `switchyard daemon install [project]` generates and immediately
+reliability tests ignored. `apmpr daemon install [project]` generates and immediately
 loads a per-user, path-keyed launchd LaunchAgent or systemd user unit. Both definitions use
 the canonical project root, exact current CLI executable, captured tool `PATH`, failure
 restart policy, login startup, and the owner-only project daemon log. Reinstall replaces
@@ -616,18 +616,53 @@ Landed in `494f7a0`; 335 workspace tests and 51 Web tests pass.
 
 ---
 
-### Part 7 — Rename to APM ProjectRunner (`apmpr`)
+### Part 7 — Rename to APM ProjectRunner (`apmpr`) ✅
 
-One mechanical sweep over a settled tree, reviewed as a pure rename diff with no
-behaviour mixed in.
+One sweep over the tree, reviewed as a rename diff. Arrows below read *old → new*.
 
-- [ ] Crate names and paths → `apmpr-*`
-- [ ] Binary → `apmpr`
-- [ ] `.switchyard/` → `.apmpr/`, with a migration step folded into `apmpr migrate`
-- [ ] `apiVersion: switchyard.dev/v1alpha2` → `apmpr.dev/v1alpha2`
-- [ ] `SWITCHYARD_*` → `APMPR_*`
-- [ ] `X-Switchyard-Route` → `X-Apmpr-Route`
-- [ ] The repo directory and every doc; product name in prose is "APM ProjectRunner"
+- [x] Crate names and paths: `switchyard-*` → `apmpr-*`
+- [x] Binaries: `switchyard` → `apmpr`, plus `apmpr-daemon` and `apmpr-router`
+- [x] State directory: `.switchyard/` → `.apmpr/`
+- [x] `apiVersion: switchyard.dev/*` → `apmpr.dev/*`, across every versioned artifact
+- [x] Environment: `SWITCHYARD_*` → `APMPR_*`
+- [x] Browser route header: `X-Switchyard-Route` → `X-Apmpr-Route`
+- [x] Docker ownership labels: `dev.switchyard.*` → `dev.apmpr.*`
+- [x] Profile manifest: `switchyard-profiles.yaml` → `apmpr-profiles.yaml`
+- [x] Every doc; product name in prose is "APM ProjectRunner"
+
+**No state migration, because the project is unreleased.** The roadmap originally folded a
+`.switchyard/` → `.apmpr/` move into `apmpr migrate`; the project owner removed it as
+unnecessary for software that has never shipped. `migrate` therefore still does exactly one
+thing — rewrite a deployment file.
+
+**Three surfaces are a hard cut with an actionable error rather than a silent break.** A
+rename that merely stops matching leaves the user with an unexplained failure while the old
+value sits in plain sight, so:
+
+- a `switchyard.dev/*` `apiVersion` is rejected naming the replacement prefix, and `apmpr
+  migrate` accepts both pre-rename spellings and rewrites them;
+- any surviving `SWITCHYARD_*` variable fails the command up front, listing each stale name
+  beside its `APMPR_*` replacement — names only, never values, since one of them is a token;
+- Docker labels are renamed **without** a legacy fallback, on the project owner's call.
+  Resources from a pre-rename build are therefore not discovered and must be removed by
+  hand. `docs/support-policy.md` records the command.
+
+**Three defects a textual sweep could not have caught**, all found by the test suite:
+
+1. `X-Switchyard-Route` became `X-APM ProjectRunner-Route` — a header name containing
+   spaces — because the prose rule matched before the header rule.
+2. Two tests carried base64-encoded proxy credentials (`c3dpdGNoeWFyZDp0ZXN0LXRva2Vu` is
+   `switchyard:test-token`), which no textual search for the old name can find.
+3. The two `Proxy-Authenticate` realms diverged: one became `apmpr`, the other
+   `APM ProjectRunner`, so a listener advertised a realm its own credential check rejected.
+
+The compatibility goldens were regenerated: the API group and ownership labels feed both
+hashes, so all four moved. The fixture diff was reviewed alongside them and is purely
+renamed strings.
+
+Landed with 339 workspace tests passing (336 before, plus three added here), 51 Web tests,
+formatting, all-target/all-feature Clippy with warnings denied, rustdoc with warnings
+denied, TypeScript, warning-free Web lint, and the Vite production build.
 
 
 ---

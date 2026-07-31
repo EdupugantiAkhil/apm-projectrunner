@@ -1,28 +1,28 @@
 # Local control-plane API
 
-Switchyard's persistent control plane is available as either `switchyard daemon run`
-or the equivalent `switchyard-daemon` binary. The CLI command is the normal developer
-entry point because it can reuse the exact `switchyard` executable for script-compatible
+APM ProjectRunner's persistent control plane is available as either `apmpr daemon run`
+or the equivalent `apmpr-daemon` binary. The CLI command is the normal developer
+entry point because it can reuse the exact `apmpr` executable for script-compatible
 operations. The separate binary is useful to service managers and packagers; set
-`SWITCHYARD_CLI` when `switchyard` is not on its `PATH`.
+`APMPR_CLI` when `apmpr` is not on its `PATH`.
 
-For normal interactive use, `switchyard daemon install [project]` generates and starts a
+For normal interactive use, `apmpr daemon install [project]` generates and starts a
 per-user, per-project launchd LaunchAgent on macOS or systemd user unit on Linux. It records
-the canonical project working directory and exact current `switchyard` executable, enables
+the canonical project working directory and exact current `apmpr` executable, enables
 startup at login, restarts failed processes, and appends stdout and stderr to
-`.switchyard/daemon.log`. Re-running the command replaces the same path-keyed definition.
-`switchyard daemon run` remains the foreground and recovery entry point.
+`.apmpr/daemon.log`. Re-running the command replaces the same path-keyed definition.
+`apmpr daemon run` remains the foreground and recovery entry point.
 
 The daemon always binds a loopback address. Its default is an ephemeral port on
-`127.0.0.1`; a non-loopback `SWITCHYARD_DAEMON_BIND` is rejected. The global limit for
+`127.0.0.1`; a non-loopback `APMPR_DAEMON_BIND` is rejected. The global limit for
 heavy build/start work defaults to two and can be set with
-`SWITCHYARD_DAEMON_MAX_HEAVY`.
+`APMPR_DAEMON_MAX_HEAVY`.
 
 ## Discovery and authentication
 
-On startup, the daemon migrates `.switchyard/state.sqlite3`, reconciles generated
-manifests and best-effort Docker label observations through `switchyard-state`, and
-atomically writes `.switchyard/daemon.json`:
+On startup, the daemon migrates `.apmpr/state.sqlite3`, reconciles generated
+manifests and best-effort Docker label observations through `apmpr-state`, and
+atomically writes `.apmpr/daemon.json`:
 
 ```json
 {
@@ -41,11 +41,11 @@ exit. Credentials and secret-bearing output lines are never written to daemon ev
 
 The API bearer credential is distinct from the router-administration credential. For
 GUI and daemon-proxied commands, the daemon loads or creates the owner-only
-`.switchyard/router-token`, passes it to `switchyard up` through the child environment,
+`.apmpr/router-token`, passes it to `apmpr up` through the child environment,
 and uses the same value for native membership moves. The value is not included in the
 discovery document or any API response. Persisting it allows a restarted daemon to
 continue administering routers that outlive the control-plane process. If
-`SWITCHYARD_ROUTER_TOKEN` is explicitly set, it seeds a missing file and must match an
+`APMPR_ROUTER_TOKEN` is explicitly set, it seeds a missing file and must match an
 existing project credential.
 
 ## Version 1 endpoints
@@ -60,7 +60,7 @@ optional `context` fields. Framework types are not part of the public Rust contr
 | `POST` | `/api/v1/system/shutdown` | Graceful authenticated shutdown |
 | `POST` | `/api/v1/commands/validate` | Validate desired state |
 | `POST` | `/api/v1/commands/plan` | Render the deterministic plan |
-| `POST` | `/api/v1/commands/apply` | Apply/build/start (`switchyard up`) |
+| `POST` | `/api/v1/commands/apply` | Apply/build/start (`apmpr up`) |
 | `POST` | `/api/v1/commands/membership` | Move an instance to a group |
 | `POST` | `/api/v1/commands/status` | Inspect status, optionally including routes |
 | `POST` | `/api/v1/commands/routes` | Inspect route snapshots |
@@ -179,7 +179,7 @@ use HTTP 422 `validation_failed` with `context.diagnostics`; absent definitions 
 applied snapshot when present and otherwise checks the project-local deployments
 directory.
 
-The profile library is project-wide and follows the shared `switchyard-ops` precedence
+The profile library is project-wide and follows the shared `apmpr-ops` precedence
 and trust projection. `GET /api/v1/profiles` scans authored deployment definitions and
 returns a deduplicated `profiles` array plus non-fatal `sourceErrors`. Each profile carries
 `name`, the deployment definition used for expansion, an origin (`project`,
@@ -226,7 +226,7 @@ validation itself never starts a service or mutates a definition.
 
 Source-local trust requires a separate manifest review. First request
 `GET /api/v1/profiles/{name}/manifest?source=checkout`; it returns the verbatim
-`switchyard-profiles.yaml` and a SHA-256 `reviewHash`. Import or re-import then sends:
+`apmpr-profiles.yaml` and a SHA-256 `reviewHash`. Import or re-import then sends:
 
 ```json
 {
@@ -254,7 +254,7 @@ project definitions unchanged.
 `"type": "structured"`, `command` (`up`, `down`, `plan`, or `status`), optional
 `overlays`, optional `variation`, and optional `set` (`KEY=VALUE` entries). A shell
 definition has `"type": "shell"` and its verbatim `command`. The action file is
-`.switchyard/run-scripts.yaml`; malformed or duplicate entries return HTTP 422
+`.apmpr/run-scripts.yaml`; malformed or duplicate entries return HTTP 422
 `run_actions_invalid` rather than exposing a partial list.
 
 `POST /api/v1/run-actions` and `PUT /api/v1/run-actions/{name}` accept the structured
@@ -278,7 +278,7 @@ HTTP 202 with the normal operation record. Missing or stale confirmation returns
 content cannot execute under a prior preview.
 
 Shell execution runs in the project directory and requires the project-local
-`.switchyard/shell-run-notice-acknowledged` marker. When it is absent, the preview sets
+`.apmpr/shell-run-notice-acknowledged` marker. When it is absent, the preview sets
 `"shellAcknowledgementRequired": true`; execution must additionally send
 `"acknowledgeShellWarning": true`. Omitting it returns HTTP 409
 `shell_run_acknowledgement_required`. On the acknowledged confirmed request, the daemon
@@ -294,7 +294,7 @@ failure ends with `clone_credentials_required` and secret-free context
 `{ "kind": "credentials" }`; a retry may include a `credentials` object. An unknown SSH
 host ends with `clone_host_key_approval_required` and context containing `kind:
 "host_key"`, `host`, and the scanned SHA-256 `fingerprint`; a retry may include the exact
-`approvedHostKey`. Switchyard rescans and requires an exact host/fingerprint match before
+`approvedHostKey`. APM ProjectRunner rescans and requires an exact host/fingerprint match before
 using that public key in an isolated known-hosts file. It never silently uses
 `StrictHostKeyChecking=no` or `accept-new`.
 
@@ -314,7 +314,7 @@ remain in force.
 
 Worktree creation accepts `repository`, `ref`, and optional `name` and `path`; any
 explicit path must remain under the project's
-`.switchyard/worktrees` root. Worktree removal requires a JSON body containing
+`.apmpr/worktrees` root. Worktree removal requires a JSON body containing
 `allowDirty`. Omitting it or setting it to false returns `source_dirty` with staged,
 unstaged, and untracked counts. Setting it to true is the distinct destructive
 confirmation, but it still cannot target unmanaged or out-of-root paths. Expected
@@ -364,7 +364,7 @@ when present. The timestamp and bounded diagnostic are retained in SQLite.
 bundle only when an applied deployment's authored file is unavailable). A non-empty list
 blocks `DELETE /api/v1/devices/{name}` with HTTP 409 `device_has_placements`; the same
 list is returned in `context.placedInstances`. Clients should show it before removal, but
-the server guard is authoritative. Switchyard never accepts or stores passwords,
+the server guard is authoritative. APM ProjectRunner never accepts or stores passwords,
 private-key material, or agent secrets: authentication relies on the invoking user's SSH
 agent, SSH configuration, and key files, and only an identity file path is stored.
 
@@ -374,7 +374,7 @@ output and resumable event logs. Older terminal operations are evicted from memo
 their raw output and SSE replay are no longer available. Existing SSE streams retain
 their event log until the connected client finishes.
 
-Mutations acquire an expiring, heartbeated `switchyard-state` lease keyed by planned
+Mutations acquire an expiring, heartbeated `apmpr-state` lease keyed by planned
 deployment ID. A second mutation receives HTTP 409 and `operation_lock_contended`;
 reads remain independent. Apply operations additionally acquire the global heavy-work
 semaphore. Shutdown and cancellation terminate child commands cooperatively, record
@@ -392,8 +392,8 @@ also retained with their structured, secret-safe diagnostic context.
 
 The deployment route endpoint returns each router/binding's desired, current, previous,
 and observed versions and checksums, transition policy, status, and last error code,
-followed by append-only activation history. `switchyard status --routes` and
-`switchyard routes` add a compact version summary when they execute through a daemon.
+followed by append-only activation history. `apmpr status --routes` and
+`apmpr routes` add a compact version summary when they execute through a daemon.
 
 ## Server-Sent Events
 
@@ -419,7 +419,7 @@ The daemon serves static files below `/gui/`, with `index.html` as the fallback 
 client-side views. Static GUI requests are deliberately exempt from bearer auth; every
 `/api/v1` route remains guarded. The default directory is `packages/web/dist` under
 the project root and can be changed with `DaemonConfig::gui_dist` or
-`SWITCHYARD_GUI_DIST`. See [`gui.md`](gui.md) for build, launch, and security details.
+`APMPR_GUI_DIST`. See [`gui.md`](gui.md) for build, launch, and security details.
 
 ## Compatibility policy
 
@@ -437,10 +437,10 @@ and runtime path so apply-time secret references remain confined to the invoking
 See [`overlays.md`](overlays.md) for the supported commands and safety model. The
 versioned daemon command contract remains byte-compatible for overlay-less calls.
 
-Ordinary `switchyard` commands inspect secure project-local discovery first. A reachable
+Ordinary `apmpr` commands inspect secure project-local discovery first. A reachable
 daemon returns the existing stdout, stderr, and exit code. Missing or stale discovery
 falls back to the original one-shot path, so scripts do not require a daemon.
-`SWITCHYARD_BYPASS_DAEMON=1` is an internal recursion guard for the daemon backend.
+`APMPR_BYPASS_DAEMON=1` is an internal recursion guard for the daemon backend.
 
 Auth, versioning, SSE replay, locking, the heavy limit, cancellation, restart state, and
 CLI output parity are tested with an in-memory HTTP service and stub operations, without

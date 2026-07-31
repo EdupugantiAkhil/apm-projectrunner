@@ -1,0 +1,26 @@
+[package]
+name = "apmpr-ops"
+description = "Shared operations and read-model projections for APM ProjectRunner clients"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+serde_yaml = { package = "yaml_serde", version = "0.10.4" }
+sha2 = "0.10.8"
+apmpr-daemon = { path = "../apmpr-daemon" }
+apmpr-devices = { path = "../apmpr-devices" }
+apmpr-planner = { path = "../apmpr-planner" }
+apmpr-profiles = { path = "../apmpr-profiles" }
+apmpr-run-actions = { path = "../apmpr-run-actions" }
+apmpr-sources = { path = "../apmpr-sources" }
+apmpr-state = { path = "../apmpr-state" }
+
+[dev-dependencies]
+tempfile = "3.20.0"
+
+[lints]
+workspace = true

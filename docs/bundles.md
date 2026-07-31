@@ -4,15 +4,15 @@ Portable bundles are reviewable JSON files for sharing a deployment definition a
 overlay definitions needed to reproduce its shape on another machine.
 
 ```sh
-switchyard bundle export deployments/demo.yaml --with overlays/team.yaml \
-  --output demo.switchyard-bundle.json
+apmpr bundle export deployments/demo.yaml --with overlays/team.yaml \
+  --output demo.apmpr-bundle.json
 
-switchyard bundle import demo.switchyard-bundle.json --into imported/demo
-switchyard validate imported/demo/demo.yaml
-switchyard plan imported/demo/demo.yaml
+apmpr bundle import demo.apmpr-bundle.json --into imported/demo
+apmpr validate imported/demo/demo.yaml
+apmpr plan imported/demo/demo.yaml
 ```
 
-The bundle format is `switchyard.dev/bundle/v1alpha1`. A bundle contains:
+The bundle format is `apmpr.dev/bundle/v1alpha1`. A bundle contains:
 
 - bundle metadata: deployment name, deterministic created-at value, and source tool
   version;
@@ -26,7 +26,7 @@ The bundle format is `switchyard.dev/bundle/v1alpha1`. A bundle contains:
   `bundle_unsupported_api_version`.
 
 Bundles deliberately omit generated and machine-local state. Anything under
-`.switchyard/`, generated Compose, certificates, sockets, logs, daemon SQLite state,
+`.apmpr/`, generated Compose, certificates, sockets, logs, daemon SQLite state,
 and live source identity observations are never portable bundle content.
 
 ## Secrets and local inputs
@@ -51,7 +51,7 @@ configuration and secret references.
 Import writes files and performs no Docker mutation. It reports compatibility, required
 local inputs, the normal plan mutation preview, and conflicts:
 
-- `name_conflict`: the deployment name already exists in `.switchyard/generated/` or
+- `name_conflict`: the deployment name already exists in `.apmpr/generated/` or
   daemon state. Rename the imported deployment or remove the old local deployment.
 - `domain_conflict`: a custom domain is already claimed by another local manifest or
   daemon deployment. Choose a different local domain before applying.
@@ -60,7 +60,7 @@ local inputs, the normal plan mutation preview, and conflicts:
 - `live_port_conflict`: a requested host listener is not currently bindable. Stop the
   process using it or edit the deployment.
 - `external_resource_conflict`: a deterministic Docker container, network, or volume
-  name already exists with another owner or no Switchyard ownership labels. Inspect the
+  name already exists with another owner or no APM ProjectRunner ownership labels. Inspect the
   resource before cleanup.
 - `docker_unavailable`: Docker was not reachable, so external resource checks were
   skipped. The import still made no Docker changes.

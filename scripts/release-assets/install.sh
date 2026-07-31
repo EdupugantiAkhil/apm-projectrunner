@@ -36,8 +36,8 @@ require_safe_parent() {
   done
 }
 
-manifest="$prefix/share/switchyard/installed-files.manifest"
-require_safe_parent "share/switchyard/installed-files.manifest"
+manifest="$prefix/share/apmpr/installed-files.manifest"
+require_safe_parent "share/apmpr/installed-files.manifest"
 # Bash 3.2 treats a declared empty array as unbound under `set -u`. Keep an ignored
 # sentinel so a first install can iterate safely on stock macOS Bash.
 declare -a owned_hashes=("")
@@ -75,15 +75,15 @@ is_new_path() {
 
 declare -a sources=()
 declare -a relatives=()
-for binary in switchyard switchyard-daemon switchyard-router; do
+for binary in apmpr apmpr-daemon apmpr-router; do
   sources+=("$package_root/bin/$binary")
   relatives+=("bin/$binary")
 done
 sources+=("$package_root/uninstall.sh")
-relatives+=("bin/switchyard-uninstall")
+relatives+=("bin/apmpr-uninstall")
 while IFS= read -r -d '' source; do
   sources+=("$source")
-  relatives+=("share/switchyard/web/${source#"$package_root/web/"}")
+  relatives+=("share/apmpr/web/${source#"$package_root/web/"}")
 done < <(find "$package_root/web" -type f -print0)
 
 for index in "${!owned_relatives[@]}"; do
@@ -117,19 +117,19 @@ for index in "${!sources[@]}"; do
   if [[ -e $destination || -L $destination ]]; then
     expected=$(owned_hash_for "$relative" || true)
     [[ -n $expected && -f $destination && ! -L $destination ]] || {
-      echo "install: refusing to overwrite non-Switchyard file $destination" >&2
+      echo "install: refusing to overwrite non-APM ProjectRunner file $destination" >&2
       exit 1
     }
     actual=$(sha256_file "$destination")
     [[ $actual == "$expected" ]] || {
-      echo "install: refusing to overwrite modified Switchyard file $destination" >&2
+      echo "install: refusing to overwrite modified APM ProjectRunner file $destination" >&2
       exit 1
     }
   fi
 done
 
-mkdir -p "$prefix/bin" "$prefix/share/switchyard/web"
-temporary_manifest=$(mktemp "${TMPDIR:-/tmp}/switchyard-install.XXXXXX")
+mkdir -p "$prefix/bin" "$prefix/share/apmpr/web"
+temporary_manifest=$(mktemp "${TMPDIR:-/tmp}/apmpr-install.XXXXXX")
 trap 'rm -f "$temporary_manifest"' EXIT
 for index in "${!sources[@]}"; do
   source=${sources[$index]}
@@ -137,7 +137,7 @@ for index in "${!sources[@]}"; do
   destination="$prefix/$relative"
   mkdir -p "$(dirname "$destination")"
   install -m 0755 "$source" "$destination"
-  if [[ $relative == share/switchyard/web/* ]]; then
+  if [[ $relative == share/apmpr/web/* ]]; then
     chmod 0644 "$destination"
   fi
   printf '%s  %s\n' "$(sha256_file "$destination")" "$relative" >> "$temporary_manifest"
@@ -151,6 +151,6 @@ for relative in "${owned_relatives[@]}"; do
     echo "removed obsolete $destination"
   fi
 done
-find "$prefix/share/switchyard/web" -depth -type d -empty -delete 2>/dev/null || true
+find "$prefix/share/apmpr/web" -depth -type d -empty -delete 2>/dev/null || true
 install -m 0600 "$temporary_manifest" "$manifest"
 echo "installed $manifest"

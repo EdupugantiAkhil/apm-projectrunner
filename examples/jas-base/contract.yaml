@@ -1,4 +1,4 @@
-apiVersion: switchyard.dev/examples/v1alpha1
+apiVersion: apmpr.dev/examples/v1alpha1
 kind: FixtureContract
 metadata: { name: generic-legacy-workspace }
 topology:

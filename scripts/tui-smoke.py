@@ -146,14 +146,14 @@ def run_checked(argv: list[str], cwd: Path | None = None) -> None:
 
 
 def resolve_binary(root: Path) -> Path:
-    configured = os.environ.get("SWITCHYARD_BIN")
+    configured = os.environ.get("APMPR_BIN")
     if configured:
         binary = Path(configured).expanduser().resolve()
         if not binary.is_file():
-            raise SmokeFailure(f"SWITCHYARD_BIN does not name a file: {binary}")
+            raise SmokeFailure(f"APMPR_BIN does not name a file: {binary}")
         return binary
-    run_checked(["cargo", "build", "-p", "switchyard-cli", "--offline"], root)
-    binary = root / "target" / "debug" / "switchyard"
+    run_checked(["cargo", "build", "-p", "apmpr-cli", "--offline"], root)
+    binary = root / "target" / "debug" / "apmpr"
     if not binary.is_file():
         raise SmokeFailure(f"cargo build did not create {binary}")
     return binary
@@ -167,7 +167,7 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     results = Results()
     terminal: Terminal | None = None
-    workspace = Path(tempfile.mkdtemp(prefix="switchyard-tui-smoke-"))
+    workspace = Path(tempfile.mkdtemp(prefix="apmpr-tui-smoke-"))
     try:
         binary = resolve_binary(root)
         project = workspace / "project"
@@ -182,9 +182,9 @@ def main() -> int:
             [
                 "git",
                 "-c",
-                "user.name=Switchyard Smoke",
+                "user.name=APM ProjectRunner Smoke",
                 "-c",
-                "user.email=smoke@switchyard.invalid",
+                "user.email=smoke@apmpr.invalid",
                 "commit",
                 "-qm",
                 "initial",
@@ -193,11 +193,11 @@ def main() -> int:
         )
 
         env = os.environ.copy()
-        env["SWITCHYARD_BIN"] = str(binary)
+        env["APMPR_BIN"] = str(binary)
         env.setdefault("TERM", "xterm-256color")
         terminal = Terminal([str(binary), "tui", str(project)], project, env)
 
-        terminal.wait_for("Switchyard", 15)
+        terminal.wait_for("APM ProjectRunner", 15)
         tabs = [
             ("h", "First-run checklist", "Home"),
             ("c", "Repositories and checkouts", "Code"),
@@ -218,7 +218,7 @@ def main() -> int:
 
         def help_round_trip() -> None:
             terminal.send(F1)
-            terminal.wait_for("Switchyard help")
+            terminal.wait_for("APM ProjectRunner help")
             terminal.send(ESC)
             terminal.wait_for("Project run actions")
 

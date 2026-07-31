@@ -29,9 +29,9 @@ fi
   echo "release smoke: dist/SHA256SUMS is missing; run scripts/release.sh first" >&2
   exit 1
 }
-archives=(dist/switchyard-*.tar.gz)
+archives=(dist/apmpr-*.tar.gz)
 [[ ${#archives[@]} -eq 1 && -f ${archives[0]} ]] || {
-  echo "release smoke: expected exactly one dist/switchyard-*.tar.gz" >&2
+  echo "release smoke: expected exactly one dist/apmpr-*.tar.gz" >&2
   exit 1
 }
 (
@@ -39,7 +39,7 @@ archives=(dist/switchyard-*.tar.gz)
   verify_sha256 SHA256SUMS
 )
 
-temporary=$(mktemp -d "${TMPDIR:-/tmp}/switchyard-release-smoke.XXXXXX")
+temporary=$(mktemp -d "${TMPDIR:-/tmp}/apmpr-release-smoke.XXXXXX")
 trap 'rm -rf "$temporary"' EXIT
 tar -C "$temporary" -xzf "${archives[0]}"
 roots=("$temporary"/*/)
@@ -49,14 +49,14 @@ roots=("$temporary"/*/)
 }
 prefix="$temporary/prefix"
 "${roots[0]}/install.sh" --prefix "$prefix"
-"$prefix/bin/switchyard" --help >/dev/null
-"$prefix/bin/switchyard-daemon" --version >/dev/null
+"$prefix/bin/apmpr" --help >/dev/null
+"$prefix/bin/apmpr-daemon" --version >/dev/null
 router_help="$temporary/router-help.txt"
-if ! "$prefix/bin/switchyard-router" --help >"$router_help" 2>&1; then
+if ! "$prefix/bin/apmpr-router" --help >"$router_help" 2>&1; then
   grep -q 'usage:' "$router_help"
 fi
 "${roots[0]}/install.sh" --prefix "$prefix"
-"$prefix/bin/switchyard-uninstall" --prefix "$prefix"
+"$prefix/bin/apmpr-uninstall" --prefix "$prefix"
 [[ ! -e $prefix ]] || {
   echo "release smoke: uninstall left files under $prefix" >&2
   find "$prefix" -mindepth 1 -print >&2

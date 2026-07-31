@@ -4,9 +4,9 @@ Build and run the router with a validated JSON router configuration, a local
 administration socket, and a token supplied outside the configuration file:
 
 ```sh
-cargo build --package switchyard-router
-SWITCHYARD_ROUTER_TOKEN="$(openssl rand -hex 32)" \
-  cargo run --package switchyard-router -- sidecar router.json /tmp/switchyard-router.sock
+cargo build --package apmpr-router
+APMPR_ROUTER_TOKEN="$(openssl rand -hex 32)" \
+  cargo run --package apmpr-router -- sidecar router.json /tmp/apmpr-router.sock
 ```
 
 This router configuration is a generated artifact, not authored topology. The planner
@@ -21,7 +21,7 @@ connections using the previous target.
 
 The native gateway administration channel is a mode-`0600` Unix socket. A sidecar keeps
 the same owner-only socket inside its container filesystem. The control plane first
-verifies the exact container's Switchyard ownership labels, then invokes the bounded
+verifies the exact container's APM ProjectRunner ownership labels, then invokes the bounded
 router admin client with `docker exec` and sends the request over stdin; no sidecar
 administration port is published and no token appears in process arguments. Each
 connection accepts one newline-terminated JSON object of at most 1 MiB and returns one
@@ -51,15 +51,15 @@ Host mode performs a non-mutating preflight of every domain, listener port, and
 loopback upstream before it creates credentials or starts listeners:
 
 ```sh
-SWITCHYARD_ROUTER_TOKEN="$(openssl rand -hex 32)" \
-  cargo run --package switchyard-router -- host host-router.json /tmp/switchyard-host.sock
+APMPR_ROUTER_TOKEN="$(openssl rand -hex 32)" \
+  cargo run --package apmpr-router -- host host-router.json /tmp/apmpr-host.sock
 ```
 
 Host listeners use loopback addresses by default, and container upstreams must always
 remain loopback-only. Custom domains are exact, case-insensitive matches; duplicate
 domain claims and occupied ports fail before certificate files are changed. Unprivileged
 ports are the default. Binding ports below 1024 requires an explicit operating-system
-capability or redirect and is not performed by Switchyard.
+capability or redirect and is not performed by APM ProjectRunner.
 
 ### LAN exposure
 
@@ -69,7 +69,7 @@ local interface address or a wildcard address such as `0.0.0.0`:
 
 ```yaml
 hostRouter:
-  apiVersion: switchyard.dev/router/v1alpha1
+  apiVersion: apmpr.dev/router/v1alpha1
   kind: RouterConfiguration
   metadata: { deployment: demo }
   spec:
@@ -93,8 +93,8 @@ wildcard binds are exposed. Provider upstreams are never widened by LAN mode and
 still resolve to loopback. Review every exposed listener before acknowledging the risk,
 especially database or internal-provider protocols.
 
-`switchyard up` prints a warning with every concrete `interface-address:port` exposed by
-LAN wildcard or specific binds. `switchyard status` reports `exposure: loopback` or
+`apmpr up` prints a warning with every concrete `interface-address:port` exposed by
+LAN wildcard or specific binds. `apmpr status` reports `exposure: loopback` or
 `exposure: LAN` with the same addresses. The daemon deployment list/detail responses
 also include `gatewayExposure.mode` and `gatewayExposure.exposedAddresses`, and the
 router log contains a structured `lan_exposure_warning` startup event.
@@ -105,21 +105,21 @@ LAN-reachable interface; addresses on VPN-style links (`tailscale*`, `tun*`, `wg
 host routes) and container bridges (`docker*`, `br-*`, `veth*`, `virbr*`) are exposed by
 the gateway but never advertised over mDNS, because other LAN devices could not reach
 them. Install `avahi-utils`, which provides `avahi-publish-address` and `avahi-browse`,
-and run `avahi-daemon`. Switchyard starts one owned
+and run `avahi-daemon`. APM ProjectRunner starts one owned
 `avahi-publish-address -a -R <name> <address>` process per name/address pair after the
 gateway is ready (`-R` avoids reverse-PTR collisions with avahi-daemon's own records). Domains with any other suffix and loopback-only deployments
 are never published. Publisher PID identity and the most recent checks are recorded in
-the owner-only `.switchyard/run/<deployment>/mdns-publication.json`; logs are in the
+the owner-only `.apmpr/run/<deployment>/mdns-publication.json`; logs are in the
 same directory. `down`, `cleanup`, gateway replacement, and a re-apply that disables
 LAN exposure stop only identity-verified owned publishers and remove the state.
 
 Automatic `.local` publication is intentionally Linux-only. On macOS, loopback routing
 is fully supported and an acknowledged gateway can bind an explicit LAN address, but
-Switchyard does not start or own a Bonjour publisher. Use the host's concrete address
+APM ProjectRunner does not start or own a Bonjour publisher. Use the host's concrete address
 or separately managed DNS on that platform; requesting automatic `.local` publication
 fails before any publisher process or state is created.
 
-Before publication, `switchyard up` reports these structured LAN checks; `status`
+Before publication, `apmpr up` reports these structured LAN checks; `status`
 retains the report and shows each name/address as `published` or `failed`:
 
 - `avahi-publish-address` is a hard requirement. If it is absent, install
@@ -151,7 +151,7 @@ publisher state and preflight report for inspection; it does not start publisher
 Set `publishTailscale: true` only when the acknowledged LAN gateway should also be
 reported as reachable over an already-configured tailnet. This option is rejected in
 loopback mode or without the LAN risk acknowledgement. After the gateway is ready,
-Switchyard locates `tailscale`, parses `tailscale status --json`, requires
+APM ProjectRunner locates `tailscale`, parses `tailscale status --json`, requires
 `BackendState: Running`, reads `Self.DNSName` and `Self.TailscaleIPs`, and verifies that
 at least one Tailscale IP is among the gateway's concrete exposed addresses. A wildcard
 bind normally satisfies that check; a specific-interface bind that excludes the
@@ -161,7 +161,7 @@ This adapter is advisory and never changes tailnet state: it does not run `tails
 up`, `tailscale set`, `tailscale serve`, or `tailscale funnel`. In particular, Funnel
 publishes to the public internet and is unsupported. The verified ts.net name,
 Tailscale addresses, listener ports, and check results are recorded owner-only in
-`.switchyard/run/<deployment>/tailscale-publication.json`. `status` re-runs the checks
+`.apmpr/run/<deployment>/tailscale-publication.json`. `status` re-runs the checks
 and reports missing or drifted persisted state without rewriting it; `down` and cleanup
 only remove this file. The daemon's optional `tailscalePublication` list/detail field
 reads the same guarded record and never invokes Tailscale.
@@ -174,19 +174,19 @@ http://app.example.test:18080/`. DNS publication and gateway routing remain sepa
 concerns.
 
 To revert, restore every listener bind to loopback and remove the `exposure` block (or
-set `mode: loopback`), then run the normal `switchyard up` apply again. The owned host
+set `mode: loopback`), then run the normal `apmpr up` apply again. The owned host
 gateway and mDNS publishers are stopped before the replacement starts, closing the LAN
 listeners and withdrawing the names. Public-internet exposure is unsupported and
-explicitly out of scope: Switchyard does not configure router port-forwarding, public
+explicitly out of scope: APM ProjectRunner does not configure router port-forwarding, public
 DNS, TLS ingress, authentication, or production firewall policy. LAN mode is intended
 only for trusted private networks and must not be used as public ingress.
 
-When a deployment includes `hostRouter`, `switchyard up` starts the native gateway
+When a deployment includes `hostRouter`, `apmpr up` starts the native gateway
 after Compose reports healthy and waits for all listeners plus its administration
-socket. The CLI finds `switchyard-router` beside itself or on `PATH`; set
-`SWITCHYARD_ROUTER_BIN` to an explicit binary when developing from separate build
+socket. The CLI finds `apmpr-router` beside itself or on `PATH`; set
+`APMPR_ROUTER_BIN` to an explicit binary when developing from separate build
 directories. Deployment-scoped PID identity and logs live under
-`.switchyard/run/<deployment>` with owner-only permissions. `status` reports Docker and
+`.apmpr/run/<deployment>` with owner-only permissions. `status` reports Docker and
 host state, `down` stops only a PID whose Linux start time, executable, command line,
 and generated config all match the ownership record, and `cleanup --yes` removes
 marker-owned host credentials after stopping the deployment. Stale or reused PIDs are
@@ -197,7 +197,7 @@ endpoint to a loopback address with port `0` and add `hostUpstreams.<provider>` 
 instance, service, and container port declared by that service's `publish` list. After
 Compose starts, the CLI accepts exactly one nonzero loopback result from
 `docker compose port` and writes the resolved configuration under
-`.switchyard/run/<deployment>/host-router.json`. Providers with a concrete loopback
+`.apmpr/run/<deployment>/host-router.json`. Providers with a concrete loopback
 port remain valid for externally managed local processes.
 
 Authored `hostRouter` and `hostUpstreams` remain an advanced compatibility path. For an
@@ -207,7 +207,7 @@ HTTP/HTTPS probe port is also in `publish:`; that supplies the protocol, health 
 dynamically published upstream without adding router topology to the deployment.
 
 Docker may assign a new ephemeral loopback port when a published container namespace
-is recreated or restarted. A later `switchyard up` compares the running host config to
+is recreated or restarted. A later `apmpr up` compares the running host config to
 current `docker compose port` observations and safely refreshes the owned gateway when
 they differ.
 
@@ -224,7 +224,7 @@ paths before planning or mutation.
 A bare group address resolves only when exactly one active member is independently
 browser-addressable through its own `address:`. The planner generates a direct route to
 that default plus an `<instance>.<group-address>` domain for every active member with one
-HTTP/HTTPS-compatible host upstream. On loopback listeners, `X-Switchyard-Route` may also
+HTTP/HTTPS-compatible host upstream. On loopback listeners, `X-Apmpr-Route` may also
 select one of those members per request; unknown identities fail closed and the header is
 stripped before forwarding. Each generated Origin continues to identify the group for
 browser calls to fixed localhost ports. Non-browser services remain reachable through
@@ -232,20 +232,20 @@ the group's transparent shared localhost.
 
 An HTTPS listener uses its `tls.certificate` and `tls.privateKey` paths. Missing pairs
 are generated as 90-day self-signed identities, the key is mode `0600`, and identities
-renew during the final 30 days. Existing pairs without a Switchyard ownership marker
+renew during the final 30 days. Existing pairs without an APM ProjectRunner ownership marker
 are treated as external and never overwritten or removed. Review trust-store commands
-without changing system state, then remove only Switchyard-owned files with:
+without changing system state, then remove only APM ProjectRunner-owned files with:
 
 ```sh
-cargo run --package switchyard-router -- certificates trust host-router.json
-cargo run --package switchyard-router -- certificates cleanup host-router.json
+cargo run --package apmpr-router -- certificates trust host-router.json
+cargo run --package apmpr-router -- certificates cleanup host-router.json
 ```
 
 Trust installation remains an explicit user action because it changes the OS/browser
 security boundary. On macOS the printed command adds each certificate to the current
 user's Login Keychain with SSL trust and no `sudo`; macOS may display its normal user
 authentication dialog. Run the printed `security remove-trusted-cert` command before
-certificate cleanup to reverse that trust. Switchyard never executes either Keychain
+certificate cleanup to reverse that trust. APM ProjectRunner never executes either Keychain
 command itself. For non-`*.localhost` names, configure local DNS or `/etc/hosts`
 separately; certificate generation does not claim DNS ownership.
 

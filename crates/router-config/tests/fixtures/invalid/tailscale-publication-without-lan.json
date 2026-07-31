@@ -1,5 +1,5 @@
 {
-  "apiVersion": "switchyard.dev/router/v1alpha1",
+  "apiVersion": "apmpr.dev/router/v1alpha1",
   "kind": "RouterConfiguration",
   "metadata": { "deployment": "demo" },
   "spec": {
@@ -21,6 +21,6 @@
     "bindings": [],
     "routes": [],
     "browserRoutes": [],
-    "identity": { "explicitHeader": "X-Switchyard-Route", "stripBeforeForwarding": true }
+    "identity": { "explicitHeader": "X-Apmpr-Route", "stripBeforeForwarding": true }
   }
 }

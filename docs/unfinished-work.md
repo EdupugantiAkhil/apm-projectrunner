@@ -54,7 +54,7 @@ end-to-end evidence is still missing. The manual procedures are in
 ### macOS and browser routing
 
 - [ ] On a clean supported macOS user account, install Chromium or Chrome for Testing
-      and verify `switchyard open` launches an isolated profile.
+      and verify `apmpr open` launches an isolated profile.
 - [ ] In that profile, verify the private proxy-auth extension loads, fixed localhost
       requests traverse the selected managed proxy, and credentials do not appear in
       arguments, generated metadata, logs, or operation results.

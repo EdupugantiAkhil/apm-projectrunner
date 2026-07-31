@@ -1,0 +1,2317 @@
+//! Synchronous, daemon-neutral, non-destructive source and worktree management.
+
+use std::{
+    fmt, fs, io,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    process::{Command, Output},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use std::io::Write as _;
+
+use apmpr_adapter_sdk::{SourceAdapter, SourceIdentity};
+use apmpr_adapters::{SourceGitAdapter, SourcePathAdapter};
+use apmpr_state::{RegisteredSource, RegisteredSourceKind, StateError, StateStore};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+/// A stable source-management failure suitable for API and CLI translation.
+#[derive(Debug)]
+pub struct SourceError {
+    code: &'static str,
+    message: String,
+    challenge: Option<CloneChallenge>,
+}
+
+/// A secret-free browser action required before a managed clone can be retried.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CloneChallenge {
+    /// Git needs an HTTPS username and password or personal access token.
+    Credentials,
+    /// The SSH host is unknown and its scanned key requires explicit approval.
+    HostKey { host: String, fingerprint: String },
+}
+
+/// In-memory HTTPS credentials supplied to a single Git attempt.
+pub struct CloneCredentials {
+    pub username: String,
+    pub password: String,
+}
+
+/// Browser approval for one exact SSH host-key fingerprint.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApprovedHostKey {
+    pub host: String,
+    pub fingerprint: String,
+}
+
+impl SourceError {
+    /// Returns the stable machine-readable failure code.
+    pub const fn code(&self) -> &'static str {
+        self.code
+    }
+
+    /// Returns a secret-free browser action for retryable authentication failures.
+    pub fn challenge(&self) -> Option<&CloneChallenge> {
+        self.challenge.as_ref()
+    }
+
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            challenge: None,
+        }
+    }
+
+    fn with_challenge(
+        code: &'static str,
+        message: impl Into<String>,
+        challenge: CloneChallenge,
+    ) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            challenge: Some(challenge),
+        }
+    }
+}
+
+impl fmt::Display for SourceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl std::error::Error for SourceError {}
+
+impl From<StateError> for SourceError {
+    fn from(error: StateError) -> Self {
+        let code = error.code();
+        Self::new(code, error.to_string())
+    }
+}
+
+impl From<io::Error> for SourceError {
+    fn from(error: io::Error) -> Self {
+        Self::new("source_io", error.to_string())
+    }
+}
+
+/// Summarized working-tree changes from porcelain status.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirtyState {
+    /// Number of paths with staged changes.
+    pub staged: usize,
+    /// Number of paths with unstaged changes.
+    pub unstaged: usize,
+    /// Number of untracked paths.
+    pub untracked: usize,
+}
+
+impl DirtyState {
+    /// Whether any staged, unstaged, or untracked change exists.
+    pub const fn is_dirty(&self) -> bool {
+        self.staged != 0 || self.unstaged != 0 || self.untracked != 0
+    }
+}
+
+/// Live, read-only inspection of a source path.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceInspection {
+    /// Adapter-compatible identity used by resolved deployments.
+    pub identity: SourceIdentity,
+    /// Whether the selected path is a linked worktree rather than the main worktree.
+    pub linked_worktree: Option<bool>,
+    /// Current local branch, absent for detached HEAD or unknown state.
+    pub branch: Option<String>,
+    /// Whether HEAD is detached.
+    pub detached: Option<bool>,
+    /// Detailed dirty summary, when Git inspection succeeded.
+    pub changes: Option<DirtyState>,
+    /// Commits ahead of the configured upstream.
+    pub ahead: Option<u64>,
+    /// Commits behind the configured upstream.
+    pub behind: Option<u64>,
+    /// Stable degradation code such as `git_unavailable` or `source_not_repository`.
+    pub unknown_code: Option<String>,
+}
+
+/// One entry returned by `git worktree list --porcelain`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeInspection {
+    /// Worktree directory.
+    pub path: PathBuf,
+    /// Checked-out commit.
+    pub commit: Option<String>,
+    /// Local branch name, when attached.
+    pub branch: Option<String>,
+    /// Whether HEAD is detached.
+    pub detached: bool,
+    /// Whether Git marks the worktree prunable.
+    pub prunable: bool,
+}
+
+/// A registered record paired with its current live observation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisteredSourceInspection {
+    /// Durable source record.
+    pub source: RegisteredSource,
+    /// Current Git/path identity.
+    pub inspection: SourceInspection,
+}
+
+/// Optional transport settings for a managed Git clone.
+///
+/// HTTPS authentication remains in the user's Git credential helper, while SSH uses
+/// existing agent/config state or a key path.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct GitCloneOptions {
+    /// Optional branch, tag, or other clone-compatible ref.
+    pub requested_ref: Option<String>,
+    /// Optional path to an existing SSH private key. APM ProjectRunner passes the path to SSH and
+    /// never reads or stores the key contents.
+    pub ssh_identity_file: Option<PathBuf>,
+}
+
+/// The kind of guarded mutation being requested.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Mutation {
+    /// Create a new owned path.
+    Create,
+    /// Remove an existing owned path.
+    Remove,
+}
+
+/// Project-scoped managed source lifecycle.
+#[derive(Clone, Debug)]
+pub struct SourceManager {
+    workspace_root: PathBuf,
+    worktree_root: PathBuf,
+    clone_root: PathBuf,
+}
+
+impl SourceManager {
+    /// Uses `.apmpr/worktrees` and `.apmpr/clones` under a project workspace.
+    pub fn new(workspace_root: impl Into<PathBuf>) -> Self {
+        let workspace_root = workspace_root.into();
+        Self {
+            worktree_root: workspace_root.join(".apmpr/worktrees"),
+            clone_root: workspace_root.join(".apmpr/clones"),
+            workspace_root,
+        }
+    }
+
+    /// Project workspace that owns the registry and managed roots.
+    pub fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
+
+    /// Deterministic location for deployment-authored managed repository clones.
+    pub fn clone_root(&self) -> &Path {
+        &self.clone_root
+    }
+
+    /// Ensures a deployment-authored managed clone exists at its deterministic location.
+    ///
+    /// Existing clones are inspected but never rewritten.
+    pub fn ensure_managed_clone(
+        &self,
+        name: &str,
+        repository_url: &str,
+    ) -> Result<PathBuf, SourceError> {
+        validate_source_name(name)?;
+        if repository_url.trim().is_empty() {
+            return Err(SourceError::new(
+                "repository_url_empty",
+                "repository URL must not be empty",
+            ));
+        }
+        let target = self.clone_root.join(name);
+        if target.exists() {
+            let bare = git(&target, &["rev-parse", "--is-bare-repository"])? == "true";
+            let root = if bare {
+                normalize_git_path(&target, &git(&target, &["rev-parse", "--git-dir"])?)
+                    .canonicalize()?
+            } else {
+                PathBuf::from(git(&target, &["rev-parse", "--show-toplevel"])?).canonicalize()?
+            };
+            if root != target.canonicalize()? {
+                return Err(SourceError::new(
+                    "repository_clone_mismatch",
+                    format!(
+                        "managed repository path `{}` is not a Git repository root",
+                        target.display()
+                    ),
+                ));
+            }
+            let remote = git(&target, &["config", "--get", "remote.origin.url"])?;
+            if remote != repository_url {
+                return Err(SourceError::new(
+                    "repository_remote_mismatch",
+                    format!(
+                        "managed repository `{name}` already uses remote `{remote}`, not `{repository_url}`"
+                    ),
+                ));
+            }
+            return Ok(root);
+        }
+
+        self.guard_mutation(None, &target, Mutation::Create, false, &self.clone_root)?;
+        fs::create_dir_all(&self.clone_root)?;
+        let target_text = target.to_string_lossy();
+        let args = [
+            "clone",
+            "--bare",
+            "--",
+            repository_url,
+            target_text.as_ref(),
+        ];
+        if let Err(error) = run_git_clone(&self.workspace_root, &args, None) {
+            remove_failed_clone_target(&target);
+            return Err(error);
+        }
+        target.canonicalize().map_err(Into::into)
+    }
+
+    /// Ensures an authored project-local worktree exists at exactly the requested ref.
+    ///
+    /// Creation is detached so several sources may use the same branch without Git's
+    /// one-checked-out-branch restriction. Existing worktrees are never moved or reset.
+    pub fn ensure_deployment_worktree(
+        &self,
+        repository: &Path,
+        requested_ref: &str,
+        target: &Path,
+    ) -> Result<PathBuf, SourceError> {
+        validate_clone_ref(requested_ref)?;
+        validate_containment(target, &self.workspace_root, Mutation::Create)?;
+        let repository = repository.canonicalize().map_err(|error| {
+            SourceError::new(
+                "repository_clone_not_found",
+                format!(
+                    "repository clone `{}` is unavailable: {error}",
+                    repository.display()
+                ),
+            )
+        })?;
+        let expected_commit = git(
+            &repository,
+            &[
+                "rev-parse",
+                "--verify",
+                &format!("{requested_ref}^{{commit}}"),
+            ],
+        )
+        .map_err(|error| {
+            if error.code() == "git_unavailable" {
+                error
+            } else {
+                SourceError::new(
+                    "source_ref_unknown",
+                    format!(
+                        "Git ref `{requested_ref}` is unknown in `{}`",
+                        repository.display()
+                    ),
+                )
+            }
+        })?;
+
+        if target.exists() {
+            let target = target.canonicalize()?;
+            let top =
+                PathBuf::from(git(&target, &["rev-parse", "--show-toplevel"])?).canonicalize()?;
+            if top != target {
+                return Err(SourceError::new(
+                    "source_worktree_mismatch",
+                    format!(
+                        "source path `{}` is not a Git worktree root",
+                        target.display()
+                    ),
+                ));
+            }
+            let target_common = canonical_git_common_dir(&target)?;
+            let repository_common = canonical_git_common_dir(&repository)?;
+            if target_common != repository_common {
+                return Err(SourceError::new(
+                    "source_repository_mismatch",
+                    format!(
+                        "source path `{}` belongs to a different repository",
+                        target.display()
+                    ),
+                ));
+            }
+            let actual_commit = git(&target, &["rev-parse", "HEAD"])?;
+            if actual_commit != expected_commit {
+                return Err(SourceError::new(
+                    "source_ref_mismatch",
+                    format!(
+                        "source path `{}` is at commit `{actual_commit}`, but `{requested_ref}` resolves to `{expected_commit}`",
+                        target.display()
+                    ),
+                ));
+            }
+            return Ok(target);
+        }
+        let parent = target.parent().ok_or_else(|| {
+            SourceError::new("source_outside_managed_root", "source path has no parent")
+        })?;
+        fs::create_dir_all(parent)?;
+        let target_text = target.to_string_lossy();
+        run_git(
+            &repository,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                target_text.as_ref(),
+                requested_ref,
+            ],
+            "worktree_create_failed",
+        )?;
+        target.canonicalize().map_err(Into::into)
+    }
+
+    /// Inspects a path without mutating it. Expected Git absence/failures degrade to unknown.
+    pub fn inspect(&self, path: &Path, requested_ref: Option<&str>) -> SourceInspection {
+        let project_root_source =
+            path.canonicalize().ok() == self.workspace_root.canonicalize().ok();
+        inspect_path(path, requested_ref, project_root_source)
+    }
+
+    /// Lists live inspection for every registered source.
+    pub fn list(&self, store: &StateStore) -> Result<Vec<RegisteredSourceInspection>, SourceError> {
+        store
+            .sources()?
+            .into_iter()
+            .map(|source| {
+                let inspection = self.inspect(&source.path, source.requested_ref.as_deref());
+                Ok(RegisteredSourceInspection { source, inspection })
+            })
+            .collect()
+    }
+
+    /// Registers an existing path as immutable unmanaged ownership.
+    pub fn register_unmanaged(
+        &self,
+        store: &StateStore,
+        name: &str,
+        path: &Path,
+    ) -> Result<RegisteredSource, SourceError> {
+        validate_source_name(name)?;
+        if !path.exists() {
+            return Err(SourceError::new(
+                "source_path_not_found",
+                format!("source path `{}` does not exist", path.display()),
+            ));
+        }
+        let path = path.canonicalize()?;
+        let inspection = self.inspect(&path, None);
+        let source = RegisteredSource {
+            name: name.into(),
+            kind: RegisteredSourceKind::Unmanaged,
+            path,
+            repository_path: inspection.identity.repository.map(PathBuf::from),
+            requested_ref: inspection.identity.r#ref,
+            created_at: now_millis()?,
+            managed_relative_path: None,
+        };
+        store.register_source(&source)?;
+        Ok(source)
+    }
+
+    /// Forgets a record. Managed records must already have had their path removed.
+    pub fn deregister(&self, store: &StateStore, name: &str) -> Result<(), SourceError> {
+        let source = store.source(name)?.ok_or_else(|| {
+            SourceError::new(
+                "source_not_found",
+                format!("source `{name}` is not registered"),
+            )
+        })?;
+        if source.kind == RegisteredSourceKind::Managed && source.path.exists() {
+            return Err(SourceError::new(
+                "source_managed_exists",
+                format!("managed source `{name}` must be removed before deregistration"),
+            ));
+        }
+        store.deregister_source(name)?;
+        Ok(())
+    }
+
+    /// Creates a managed linked worktree against a registered repository source.
+    pub fn create_worktree(
+        &self,
+        store: &StateStore,
+        repository_name: &str,
+        requested_ref: &str,
+        name: &str,
+        requested_path: Option<&Path>,
+    ) -> Result<RegisteredSource, SourceError> {
+        self.create_worktree_inner(
+            store,
+            repository_name,
+            requested_ref,
+            None,
+            name,
+            requested_path,
+        )
+    }
+
+    /// Creates a managed linked worktree on a new branch based at an existing ref.
+    pub fn create_worktree_branch(
+        &self,
+        store: &StateStore,
+        source_name: &str,
+        base_ref: &str,
+        branch: &str,
+        name: &str,
+        requested_path: Option<&Path>,
+    ) -> Result<RegisteredSource, SourceError> {
+        self.create_worktree_inner(
+            store,
+            source_name,
+            base_ref,
+            Some(branch),
+            name,
+            requested_path,
+        )
+    }
+
+    fn create_worktree_inner(
+        &self,
+        store: &StateStore,
+        repository_name: &str,
+        requested_ref: &str,
+        new_branch: Option<&str>,
+        name: &str,
+        requested_path: Option<&Path>,
+    ) -> Result<RegisteredSource, SourceError> {
+        validate_source_name(name)?;
+        let repository = store.source(repository_name)?.ok_or_else(|| {
+            SourceError::new(
+                "repository_unregistered",
+                format!("repository source `{repository_name}` is not registered"),
+            )
+        })?;
+        let repository_path = repository
+            .repository_path
+            .as_deref()
+            .unwrap_or(&repository.path);
+        let target = requested_path
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.worktree_root.join(name));
+        self.guard_mutation(None, &target, Mutation::Create, false, &self.worktree_root)?;
+        if let Err(error) = git(
+            repository_path,
+            &[
+                "rev-parse",
+                "--verify",
+                &format!("{requested_ref}^{{commit}}"),
+            ],
+        ) {
+            if error.code() == "git_unavailable" {
+                return Err(error);
+            }
+            return Err(SourceError::new(
+                "source_ref_unknown",
+                format!("Git ref `{requested_ref}` is unknown"),
+            ));
+        }
+        if let Some(branch) = new_branch {
+            if git(repository_path, &["check-ref-format", "--branch", branch]).is_err() {
+                return Err(SourceError::new(
+                    "source_branch_invalid",
+                    format!("`{branch}` is not a valid Git branch name"),
+                ));
+            }
+        }
+        fs::create_dir_all(target.parent().expect("managed target has parent"))?;
+        let target_text = target.to_string_lossy();
+        let mut args = vec!["worktree", "add"];
+        if let Some(branch) = new_branch {
+            args.extend(["-b", branch]);
+        }
+        args.extend([target_text.as_ref(), requested_ref]);
+        run_git(repository_path, &args, "worktree_create_failed")?;
+        let path = target.canonicalize()?;
+        let relative = path
+            .strip_prefix(self.worktree_root.canonicalize()?)
+            .map_err(|_| {
+                SourceError::new(
+                    "source_outside_managed_root",
+                    "created worktree escaped the managed root",
+                )
+            })?
+            .to_owned();
+        let source = RegisteredSource {
+            name: name.into(),
+            kind: RegisteredSourceKind::Managed,
+            path,
+            repository_path: Some(repository_path.canonicalize()?),
+            requested_ref: Some(new_branch.unwrap_or(requested_ref).into()),
+            created_at: now_millis()?,
+            managed_relative_path: Some(relative),
+        };
+        if let Err(error) = store.register_source(&source) {
+            let _ = run_git(
+                repository_path,
+                &["worktree", "remove", source.path.to_string_lossy().as_ref()],
+                "worktree_remove_failed",
+            );
+            return Err(error.into());
+        }
+        Ok(source)
+    }
+
+    /// Creates a managed clone under the clone root.
+    pub fn create_clone(
+        &self,
+        store: &StateStore,
+        repository_name: &str,
+        name: &str,
+        requested_ref: Option<&str>,
+    ) -> Result<RegisteredSource, SourceError> {
+        validate_source_name(name)?;
+        let repository = store.source(repository_name)?.ok_or_else(|| {
+            SourceError::new(
+                "repository_unregistered",
+                format!("repository source `{repository_name}` is not registered"),
+            )
+        })?;
+        let repository_path = repository
+            .repository_path
+            .as_deref()
+            .unwrap_or(&repository.path);
+        if let Some(reference) = requested_ref {
+            validate_clone_ref(reference)?;
+            if let Err(error) = git(
+                repository_path,
+                &["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
+            ) {
+                if error.code() == "git_unavailable" {
+                    return Err(error);
+                }
+                return Err(SourceError::new(
+                    "source_ref_unknown",
+                    format!("Git ref `{reference}` is unknown"),
+                ));
+            }
+        }
+        self.clone_repository(
+            store,
+            repository_path.to_string_lossy().as_ref(),
+            name,
+            &GitCloneOptions {
+                requested_ref: requested_ref.map(str::to_owned),
+                ssh_identity_file: None,
+            },
+            false,
+        )
+    }
+
+    /// Creates a managed clone from a Git repository URL under the clone root.
+    ///
+    /// Git transport and registration remain owned by this manager so interactive
+    /// clients do not need a second source-lifecycle implementation.
+    pub fn create_clone_from_url(
+        &self,
+        store: &StateStore,
+        repository_url: &str,
+        name: &str,
+        requested_ref: Option<&str>,
+    ) -> Result<RegisteredSource, SourceError> {
+        self.create_clone_from_url_with_options(
+            store,
+            repository_url,
+            name,
+            &GitCloneOptions {
+                requested_ref: requested_ref.map(str::to_owned),
+                ssh_identity_file: None,
+            },
+        )
+    }
+
+    /// Creates a managed URL clone with explicit non-secret transport options.
+    pub fn create_clone_from_url_with_options(
+        &self,
+        store: &StateStore,
+        repository_url: &str,
+        name: &str,
+        options: &GitCloneOptions,
+    ) -> Result<RegisteredSource, SourceError> {
+        validate_source_name(name)?;
+        if repository_url.trim().is_empty() || repository_url.starts_with('-') {
+            return Err(SourceError::new(
+                "invalid_repository_url",
+                "repository URL must be non-empty and may not start with '-'",
+            ));
+        }
+        if has_embedded_http_credentials(repository_url) {
+            return Err(SourceError::new(
+                "repository_credentials_unsupported",
+                "repository URL must not contain credentials; use the Git credential helper",
+            ));
+        }
+        if let Some(reference) = options.requested_ref.as_deref() {
+            validate_clone_ref(reference)?;
+        }
+        if let Some(identity) = &options.ssh_identity_file {
+            validate_ssh_identity(identity)?;
+        }
+        self.clone_repository(store, repository_url, name, options, false)
+    }
+
+    /// Creates one browser-authenticated managed URL clone attempt.
+    ///
+    /// Credentials are passed only through the child environment to a temporary askpass
+    /// helper that contains no secret material. The helper and any approved public host key
+    /// are removed when this call returns.
+    pub fn create_clone_from_url_browser(
+        &self,
+        store: &StateStore,
+        repository_url: &str,
+        name: &str,
+        options: &GitCloneOptions,
+        credentials: Option<&CloneCredentials>,
+        approved_host_key: Option<&ApprovedHostKey>,
+    ) -> Result<RegisteredSource, SourceError> {
+        validate_source_name(name)?;
+        if repository_url.trim().is_empty() || repository_url.starts_with('-') {
+            return Err(SourceError::new(
+                "invalid_repository_url",
+                "repository URL must be non-empty and may not start with '-'",
+            ));
+        }
+        if has_embedded_http_credentials(repository_url) {
+            return Err(SourceError::new(
+                "repository_credentials_unsupported",
+                "repository URL must not contain credentials; submit them separately",
+            ));
+        }
+        if credentials.is_some() && is_cleartext_remote(repository_url) {
+            return Err(SourceError::new(
+                "insecure_credential_transport",
+                "credentials cannot be sent over plain http:// to a remote host, because Git transmits them unencrypted; use https:// or an SSH URL",
+            ));
+        }
+        if let Some(reference) = options.requested_ref.as_deref() {
+            validate_clone_ref(reference)?;
+        }
+        if let Some(identity) = &options.ssh_identity_file {
+            validate_ssh_identity(identity)?;
+        }
+        self.clone_repository_browser(
+            store,
+            repository_url,
+            name,
+            options,
+            credentials,
+            approved_host_key,
+        )
+    }
+
+    /// Creates a managed URL clone with Git attached to the caller's terminal.
+    ///
+    /// This preserves native Git credential-helper and OpenSSH key-selection/prompt
+    /// behavior. Callers must temporarily yield any full-screen terminal UI first.
+    pub fn create_clone_from_url_interactive(
+        &self,
+        store: &StateStore,
+        repository_url: &str,
+        name: &str,
+        requested_ref: Option<&str>,
+    ) -> Result<RegisteredSource, SourceError> {
+        validate_source_name(name)?;
+        if repository_url.trim().is_empty() || repository_url.starts_with('-') {
+            return Err(SourceError::new(
+                "invalid_repository_url",
+                "repository URL must be non-empty and may not start with '-'",
+            ));
+        }
+        if has_embedded_http_credentials(repository_url) {
+            return Err(SourceError::new(
+                "repository_credentials_unsupported",
+                "repository URL must not contain credentials; use the Git credential helper",
+            ));
+        }
+        if let Some(reference) = requested_ref {
+            validate_clone_ref(reference)?;
+        }
+        self.clone_repository(
+            store,
+            repository_url,
+            name,
+            &GitCloneOptions {
+                requested_ref: requested_ref.map(str::to_owned),
+                ssh_identity_file: None,
+            },
+            true,
+        )
+    }
+
+    fn clone_repository(
+        &self,
+        store: &StateStore,
+        repository: &str,
+        name: &str,
+        options: &GitCloneOptions,
+        interactive: bool,
+    ) -> Result<RegisteredSource, SourceError> {
+        let target = self.clone_root.join(name);
+        self.guard_mutation(None, &target, Mutation::Create, false, &self.clone_root)?;
+        fs::create_dir_all(&self.clone_root)?;
+        let mut args = vec!["clone"];
+        if let Some(reference) = options.requested_ref.as_deref() {
+            args.extend(["--branch", reference]);
+        }
+        let target_text = target.to_string_lossy();
+        args.extend(["--", repository, target_text.as_ref()]);
+        let clone_result = if interactive {
+            run_git_clone_interactive(&self.workspace_root, &args)
+        } else {
+            run_git_clone(
+                &self.workspace_root,
+                &args,
+                options.ssh_identity_file.as_deref(),
+            )
+        };
+        if let Err(error) = clone_result {
+            remove_failed_clone_target(&target);
+            return Err(error);
+        }
+        self.register_clone(store, name, options, &target)
+    }
+
+    fn clone_repository_browser(
+        &self,
+        store: &StateStore,
+        repository: &str,
+        name: &str,
+        options: &GitCloneOptions,
+        credentials: Option<&CloneCredentials>,
+        approved_host_key: Option<&ApprovedHostKey>,
+    ) -> Result<RegisteredSource, SourceError> {
+        let target = self.clone_root.join(name);
+        self.guard_mutation(None, &target, Mutation::Create, false, &self.clone_root)?;
+        fs::create_dir_all(&self.clone_root)?;
+        let mut args = vec!["clone"];
+        if let Some(reference) = options.requested_ref.as_deref() {
+            args.extend(["--branch", reference]);
+        }
+        let target_text = target.to_string_lossy();
+        args.extend(["--", repository, target_text.as_ref()]);
+        let result = run_git_clone_browser(
+            &self.workspace_root,
+            &args,
+            repository,
+            options.ssh_identity_file.as_deref(),
+            credentials,
+            approved_host_key,
+        );
+        if let Err(error) = result {
+            remove_failed_clone_target(&target);
+            return Err(error);
+        }
+        self.register_clone(store, name, options, &target)
+    }
+
+    fn register_clone(
+        &self,
+        store: &StateStore,
+        name: &str,
+        options: &GitCloneOptions,
+        target: &Path,
+    ) -> Result<RegisteredSource, SourceError> {
+        let path = target.canonicalize()?;
+        let source = RegisteredSource {
+            name: name.into(),
+            kind: RegisteredSourceKind::Managed,
+            path: path.clone(),
+            repository_path: Some(path.clone()),
+            requested_ref: options.requested_ref.clone(),
+            created_at: now_millis()?,
+            managed_relative_path: Some(
+                path.strip_prefix(self.clone_root.canonicalize()?)
+                    .map_err(|_| {
+                        SourceError::new(
+                            "source_outside_managed_root",
+                            "created clone escaped the managed root",
+                        )
+                    })?
+                    .to_owned(),
+            ),
+        };
+        store.register_source(&source)?;
+        Ok(source)
+    }
+
+    /// Removes a managed clone or linked worktree after ownership and dirty checks.
+    pub fn remove(
+        &self,
+        store: &StateStore,
+        name: &str,
+        allow_dirty: bool,
+    ) -> Result<DirtyState, SourceError> {
+        let source = store.source(name)?.ok_or_else(|| {
+            SourceError::new(
+                "source_not_found",
+                format!("source `{name}` is not registered"),
+            )
+        })?;
+        let registered_as_linked_worktree = source
+            .repository_path
+            .as_deref()
+            .is_some_and(|repository| repository != source.path);
+        let root = if registered_as_linked_worktree {
+            &self.worktree_root
+        } else {
+            &self.clone_root
+        };
+        let changes = self.guard_mutation(
+            Some(&source),
+            &source.path,
+            Mutation::Remove,
+            allow_dirty,
+            root,
+        )?;
+        let linked = self
+            .inspect(&source.path, source.requested_ref.as_deref())
+            .linked_worktree
+            == Some(true);
+        if linked && !changes.is_dirty() {
+            let repository = source.repository_path.as_deref().ok_or_else(|| {
+                SourceError::new(
+                    "source_repository_unknown",
+                    "managed worktree has no repository path",
+                )
+            })?;
+            run_git(
+                repository,
+                &["worktree", "remove", source.path.to_string_lossy().as_ref()],
+                "worktree_remove_failed",
+            )?;
+        } else {
+            fs::remove_dir_all(&source.path)?;
+            if linked {
+                let repository = source.repository_path.as_deref().ok_or_else(|| {
+                    SourceError::new(
+                        "source_repository_unknown",
+                        "managed worktree has no repository path",
+                    )
+                })?;
+                run_git(repository, &["worktree", "prune"], "worktree_prune_failed")?;
+            }
+        }
+        Ok(changes)
+    }
+
+    /// Validates every mutating operation through a single ownership/containment/dirty gate.
+    pub fn guard_mutation(
+        &self,
+        source: Option<&RegisteredSource>,
+        target: &Path,
+        mutation: Mutation,
+        allow_dirty: bool,
+        managed_root: &Path,
+    ) -> Result<DirtyState, SourceError> {
+        if let Some(source) = source {
+            if source.kind != RegisteredSourceKind::Managed {
+                return Err(SourceError::new(
+                    "source_unmanaged",
+                    "unmanaged sources can only be deregistered",
+                ));
+            }
+        }
+        validate_containment(target, managed_root, mutation)?;
+        if mutation == Mutation::Create {
+            if target.exists() {
+                return Err(SourceError::new(
+                    "source_target_exists",
+                    format!("target `{}` already exists", target.display()),
+                ));
+            }
+            return Ok(DirtyState::default());
+        }
+        let inspection = self.inspect(
+            target,
+            source.and_then(|value| value.requested_ref.as_deref()),
+        );
+        let changes = inspection.changes.ok_or_else(|| {
+            SourceError::new(
+                "source_state_unknown",
+                "cannot safely remove a source whose Git state is unknown",
+            )
+        })?;
+        if changes.is_dirty() && !allow_dirty {
+            return Err(SourceError::new(
+                "source_dirty",
+                format!(
+                    "source has {} staged, {} unstaged, and {} untracked path(s)",
+                    changes.staged, changes.unstaged, changes.untracked
+                ),
+            ));
+        }
+        Ok(changes)
+    }
+
+    /// Lists all worktrees associated with a repository.
+    pub fn worktrees(&self, repository: &Path) -> Result<Vec<WorktreeInspection>, SourceError> {
+        let output = git(repository, &["worktree", "list", "--porcelain"])
+            .map_err(|error| SourceError::new(error.code, error.message))?;
+        Ok(parse_worktrees(&output))
+    }
+}
+
+fn inspect_path(
+    path: &Path,
+    requested_ref: Option<&str>,
+    exclude_project_state: bool,
+) -> SourceInspection {
+    let path_text = path.to_string_lossy();
+    let repository = match git(path, &["rev-parse", "--show-toplevel"]) {
+        Ok(value) => value,
+        Err(error) => return unknown_inspection(path_text.into_owned(), error.code),
+    };
+    let reference = requested_ref
+        .map(str::to_owned)
+        .or_else(|| git(path, &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok());
+    let adapter = SourceGitAdapter.inspect(&json!({"path": path_text, "repository": repository, "ref": reference.clone().unwrap_or_else(|| "HEAD".into())})).ok();
+    let identity = adapter.unwrap_or(SourceIdentity {
+        path: path.to_string_lossy().into_owned(),
+        repository: Some(repository.clone()),
+        r#ref: reference.clone(),
+        commit: git(path, &["rev-parse", "HEAD"]).ok(),
+        dirty: None,
+    });
+    let branch = git(path, &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok();
+    let detached = Some(branch.is_none());
+    let common = git(path, &["rev-parse", "--git-common-dir"]).ok();
+    let git_dir = git(path, &["rev-parse", "--git-dir"]).ok();
+    let linked_worktree = common.zip(git_dir).map(|(common, git_dir)| {
+        normalize_git_path(path, &common) != normalize_git_path(path, &git_dir)
+    });
+    let status_arguments = if exclude_project_state {
+        vec![
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            ".",
+            ":(exclude).apmpr",
+        ]
+    } else {
+        vec!["status", "--porcelain=v1", "--untracked-files=all"]
+    };
+    let changes = git(path, &status_arguments)
+        .ok()
+        .map(|value| parse_dirty(&value));
+    let upstream = git(
+        path,
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
+    )
+    .ok();
+    let (ahead, behind) = upstream
+        .and_then(|_| {
+            git(
+                path,
+                &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+            )
+            .ok()
+        })
+        .and_then(|value| {
+            let mut fields = value.split_whitespace();
+            Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
+        })
+        .map_or((None, None), |(ahead, behind)| (Some(ahead), Some(behind)));
+    SourceInspection {
+        identity: SourceIdentity {
+            dirty: changes.as_ref().map(DirtyState::is_dirty),
+            ..identity
+        },
+        linked_worktree,
+        branch,
+        detached,
+        changes,
+        ahead,
+        behind,
+        unknown_code: None,
+    }
+}
+
+fn unknown_inspection(path: String, code: &'static str) -> SourceInspection {
+    let identity = SourcePathAdapter
+        .inspect(&json!({"path": path}))
+        .unwrap_or(SourceIdentity {
+            path: String::new(),
+            repository: None,
+            r#ref: None,
+            commit: None,
+            dirty: None,
+        });
+    SourceInspection {
+        identity,
+        linked_worktree: None,
+        branch: None,
+        detached: None,
+        changes: None,
+        ahead: None,
+        behind: None,
+        unknown_code: Some(code.into()),
+    }
+}
+
+fn git(path: &Path, args: &[&str]) -> Result<String, SourceError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .output()
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                SourceError::new("git_unavailable", "git binary is unavailable")
+            } else {
+                SourceError::new("git_inspection_failed", error.to_string())
+            }
+        })?;
+    output_text(output, "source_not_repository")
+}
+
+fn run_git(path: &Path, args: &[&str], code: &'static str) -> Result<String, SourceError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .output()
+        .map_err(|error| {
+            SourceError::new(
+                if error.kind() == io::ErrorKind::NotFound {
+                    "git_unavailable"
+                } else {
+                    code
+                },
+                error.to_string(),
+            )
+        })?;
+    output_text(output, code)
+}
+
+fn run_git_clone(
+    path: &Path,
+    args: &[&str],
+    ssh_identity_file: Option<&Path>,
+) -> Result<String, SourceError> {
+    let ssh_command = ssh_clone_command(ssh_identity_file)?;
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_SSH_COMMAND", ssh_command)
+        .output()
+        .map_err(|error| {
+            SourceError::new(
+                if error.kind() == io::ErrorKind::NotFound {
+                    "git_unavailable"
+                } else {
+                    "clone_create_failed"
+                },
+                error.to_string(),
+            )
+        })?;
+    output_text(output, "clone_create_failed")
+}
+
+fn run_git_clone_browser(
+    path: &Path,
+    args: &[&str],
+    repository: &str,
+    ssh_identity_file: Option<&Path>,
+    credentials: Option<&CloneCredentials>,
+    approved_host_key: Option<&ApprovedHostKey>,
+) -> Result<String, SourceError> {
+    run_git_clone_browser_with_program(
+        Path::new("git"),
+        path,
+        args,
+        repository,
+        ssh_identity_file,
+        credentials,
+        approved_host_key,
+    )
+}
+
+fn run_git_clone_browser_with_program(
+    git_program: &Path,
+    path: &Path,
+    args: &[&str],
+    repository: &str,
+    ssh_identity_file: Option<&Path>,
+    credentials: Option<&CloneCredentials>,
+    approved_host_key: Option<&ApprovedHostKey>,
+) -> Result<String, SourceError> {
+    let private = tempfile::Builder::new()
+        .prefix("apmpr-clone-")
+        .tempdir()
+        .map_err(SourceError::from)?;
+    fs::set_permissions(private.path(), fs::Permissions::from_mode(0o700))?;
+    let mut ssh_command = ssh_clone_command(ssh_identity_file)?;
+    if let Some(approval) = approved_host_key {
+        let scanned = scan_ssh_host(repository)?;
+        if !scanned.matches(approval) {
+            return Err(SourceError::new(
+                "host_key_changed",
+                "the SSH host key no longer matches the approved fingerprint",
+            ));
+        }
+        let known_hosts = private.path().join("known_hosts");
+        fs::write(&known_hosts, &scanned.keys)?;
+        fs::set_permissions(&known_hosts, fs::Permissions::from_mode(0o600))?;
+        ssh_command.push_str(" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=");
+        ssh_command.push_str(&posix_quote(known_hosts.to_string_lossy().as_ref()));
+    }
+    let mut command = Command::new(git_program);
+    if credentials.is_some() {
+        // Submitted one-shot credentials must not be offered to configured helpers,
+        // which could persist them after a successful authentication.
+        command.args(["-c", "credential.helper="]);
+    }
+    command
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_SSH_COMMAND", ssh_command);
+    if let Some(credentials) = credentials {
+        let helper = private.path().join("askpass");
+        fs::write(
+            &helper,
+            "#!/bin/sh\ncase \"$1\" in\n  *sername*) printf '%s\\n' \"$APMPR_ASKPASS_USERNAME\" ;;\n  *) printf '%s\\n' \"$APMPR_ASKPASS_PASSWORD\" ;;\nesac\n",
+        )?;
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))?;
+        command
+            .env("GIT_ASKPASS", &helper)
+            .env("SSH_ASKPASS", &helper)
+            .env("APMPR_ASKPASS_USERNAME", &credentials.username)
+            .env("APMPR_ASKPASS_PASSWORD", &credentials.password);
+    }
+    let output = command.output().map_err(|error| {
+        SourceError::new(
+            if error.kind() == io::ErrorKind::NotFound {
+                "git_unavailable"
+            } else {
+                "clone_create_failed"
+            },
+            error.to_string(),
+        )
+    })?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().into());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if is_http_repository(repository) && is_auth_failure(&stderr) {
+        // Asking for a secret that may not be sent would prompt only to reject the answer.
+        if is_cleartext_remote(repository) {
+            return Err(SourceError::new(
+                "insecure_credential_transport",
+                "this repository needs authentication, but credentials cannot be sent over plain http:// to a remote host; use https:// or an SSH URL",
+            ));
+        }
+        return Err(SourceError::with_challenge(
+            "clone_credentials_required",
+            "Git authentication is required",
+            CloneChallenge::Credentials,
+        ));
+    }
+    if approved_host_key.is_none() && is_unknown_host_failure(&stderr) {
+        let scanned = scan_ssh_host(repository)?;
+        return Err(SourceError::with_challenge(
+            "clone_host_key_approval_required",
+            "the SSH host key requires explicit approval",
+            CloneChallenge::HostKey {
+                fingerprint: scanned.primary_fingerprint().to_owned(),
+                host: scanned.host,
+            },
+        ));
+    }
+    let message = if credentials.is_some() {
+        "Git rejected the submitted credentials"
+    } else {
+        "Git clone failed"
+    };
+    Err(SourceError::new("clone_create_failed", message))
+}
+
+struct ScannedHostKey {
+    host: String,
+    /// Every fingerprint the host offered, sorted for a stable display order.
+    ///
+    /// A host commonly serves several key types and `ssh-keyscan` does not return them in a
+    /// stable order, so an approval is matched against the whole set rather than one entry.
+    fingerprints: Vec<String>,
+    keys: Vec<u8>,
+}
+
+impl ScannedHostKey {
+    /// Returns the fingerprint shown to the user when approving this host.
+    fn primary_fingerprint(&self) -> &str {
+        self.fingerprints
+            .first()
+            .map_or("", |fingerprint| fingerprint.as_str())
+    }
+
+    /// Reports whether an earlier approval matches any key this host currently offers.
+    fn matches(&self, approval: &ApprovedHostKey) -> bool {
+        self.host == approval.host && self.fingerprints.contains(&approval.fingerprint)
+    }
+}
+
+fn scan_ssh_host(repository: &str) -> Result<ScannedHostKey, SourceError> {
+    scan_ssh_host_with_programs(
+        repository,
+        Path::new("ssh-keyscan"),
+        Path::new("ssh-keygen"),
+    )
+}
+
+fn scan_ssh_host_with_programs(
+    repository: &str,
+    keyscan_program: &Path,
+    keygen_program: &Path,
+) -> Result<ScannedHostKey, SourceError> {
+    let (host, port) = ssh_host(repository).ok_or_else(|| {
+        SourceError::new(
+            "clone_host_key_unavailable",
+            "could not determine the SSH host from the repository URL",
+        )
+    })?;
+    let mut scan = Command::new(keyscan_program);
+    if let Some(port) = port {
+        scan.args(["-p", &port.to_string()]);
+    }
+    let output = scan.arg(&host).output().map_err(|error| {
+        SourceError::new(
+            "ssh_keyscan_unavailable",
+            format!("could not scan SSH host key: {error}"),
+        )
+    })?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return Err(SourceError::new(
+            "clone_host_key_unavailable",
+            "could not retrieve the SSH host key",
+        ));
+    }
+    let mut fingerprint = Command::new(keygen_program)
+        .args(["-lf", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| SourceError::new("ssh_keygen_unavailable", error.to_string()))?;
+    fingerprint
+        .stdin
+        .as_mut()
+        .expect("fingerprint stdin is piped")
+        .write_all(&output.stdout)?;
+    let result = fingerprint
+        .wait_with_output()
+        .map_err(|error| SourceError::new("ssh_keygen_failed", error.to_string()))?;
+    if !result.status.success() {
+        return Err(SourceError::new(
+            "ssh_keygen_failed",
+            "could not fingerprint the scanned SSH host key",
+        ));
+    }
+    let listing = String::from_utf8_lossy(&result.stdout);
+    let mut fingerprints = listing
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(1))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if fingerprints.is_empty() {
+        return Err(SourceError::new(
+            "ssh_keygen_failed",
+            "SSH host fingerprint output was invalid",
+        ));
+    }
+    // `ssh-keyscan` order varies between runs, so sort to keep the approved fingerprint
+    // stable across a scan-approve-retry cycle.
+    fingerprints.sort_unstable();
+    fingerprints.dedup();
+    let mut keys = Vec::new();
+    for line in output
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty() && !line.starts_with(b"#"))
+    {
+        keys.extend_from_slice(line);
+        keys.push(b'\n');
+    }
+    if keys.is_empty() {
+        return Err(SourceError::new(
+            "clone_host_key_unavailable",
+            "the SSH host scan returned no public key",
+        ));
+    }
+    Ok(ScannedHostKey {
+        host,
+        fingerprints,
+        keys,
+    })
+}
+
+fn ssh_host(repository: &str) -> Option<(String, Option<u16>)> {
+    if let Some(remainder) = repository.strip_prefix("ssh://") {
+        let authority = remainder.split('/').next()?;
+        let host_port = authority.rsplit('@').next()?;
+        if let Some(bracketed) = host_port.strip_prefix('[') {
+            let (host, rest) = bracketed.split_once(']')?;
+            let port = rest.strip_prefix(':').and_then(|value| value.parse().ok());
+            return Some((host.into(), port));
+        }
+        let (host, port) = host_port
+            .rsplit_once(':')
+            .map_or((host_port, None), |(host, port)| (host, port.parse().ok()));
+        return Some((host.into(), port));
+    }
+    let authority = repository.split(':').next()?;
+    let host = authority.rsplit('@').next()?;
+    (!host.contains('/') && !host.is_empty()).then(|| (host.into(), None))
+}
+
+fn is_http_repository(repository: &str) -> bool {
+    let lowercase = repository.to_ascii_lowercase();
+    lowercase.starts_with("https://") || lowercase.starts_with("http://")
+}
+
+/// Reports whether submitted credentials would travel unencrypted to a non-loopback host.
+///
+/// Git sends a password or token as an `Authorization: Basic` header, which is readable by
+/// anything on the path when the scheme is `http://`. Loopback is exempt because the request
+/// never leaves the machine, which keeps local registries and test servers usable.
+fn is_cleartext_remote(repository: &str) -> bool {
+    let lowercase = repository.to_ascii_lowercase();
+    let Some(remainder) = lowercase.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = remainder
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .rsplit('@')
+        .next()
+        .unwrap_or_default();
+    !is_loopback_authority(authority)
+}
+
+/// Reports whether an HTTP authority names this machine and nothing else.
+fn is_loopback_authority(authority: &str) -> bool {
+    let host = if let Some(bracketed) = authority.strip_prefix('[') {
+        bracketed
+            .split_once(']')
+            .map_or(authority, |(host, _)| host)
+    } else {
+        authority
+            .rsplit_once(':')
+            .map_or(authority, |(host, _)| host)
+    };
+    if host == "localhost" || host.ends_with(".localhost") {
+        return true;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(address) => address.is_loopback(),
+        // A bare name that is not an address could resolve anywhere, so treat it as remote.
+        Err(_) => false,
+    }
+}
+
+fn is_auth_failure(stderr: &str) -> bool {
+    let lowercase = stderr.to_ascii_lowercase();
+    [
+        "authentication failed",
+        "could not read username",
+        "could not read password",
+        "terminal prompts disabled",
+        "invalid username or password",
+    ]
+    .iter()
+    .any(|needle| lowercase.contains(needle))
+}
+
+fn is_unknown_host_failure(stderr: &str) -> bool {
+    let lowercase = stderr.to_ascii_lowercase();
+    lowercase.contains("host key verification failed")
+        || lowercase.contains("the authenticity of host")
+}
+
+fn run_git_clone_interactive(path: &Path, args: &[&str]) -> Result<String, SourceError> {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .status()
+        .map_err(|error| {
+            SourceError::new(
+                if error.kind() == io::ErrorKind::NotFound {
+                    "git_unavailable"
+                } else {
+                    "clone_create_failed"
+                },
+                error.to_string(),
+            )
+        })?;
+    if status.success() {
+        Ok(String::new())
+    } else {
+        Err(SourceError::new(
+            "clone_create_failed",
+            format!(
+                "Git clone exited with status {}",
+                status
+                    .code()
+                    .map_or_else(|| "signal".into(), |code| code.to_string())
+            ),
+        ))
+    }
+}
+
+fn validate_ssh_identity(path: &Path) -> Result<(), SourceError> {
+    let Some(text) = path.to_str() else {
+        return Err(SourceError::new(
+            "invalid_identity_file",
+            "SSH identity file path must be valid UTF-8",
+        ));
+    };
+    if text.is_empty() || text.chars().any(char::is_control) {
+        return Err(SourceError::new(
+            "invalid_identity_file",
+            "SSH identity file path cannot be empty or contain control characters",
+        ));
+    }
+    if !path.is_file() {
+        return Err(SourceError::new(
+            "identity_file_not_found",
+            format!("SSH identity file `{}` does not exist", path.display()),
+        ));
+    }
+    Ok(())
+}
+
+fn has_embedded_http_credentials(repository: &str) -> bool {
+    let lowercase = repository.to_ascii_lowercase();
+    ["https://", "http://"].iter().any(|scheme| {
+        lowercase
+            .strip_prefix(scheme)
+            .and_then(|remainder| remainder.split('/').next())
+            .is_some_and(|authority| authority.contains('@'))
+    })
+}
+
+fn validate_clone_ref(reference: &str) -> Result<(), SourceError> {
+    if reference.is_empty() || reference.starts_with('-') || reference.chars().any(char::is_control)
+    {
+        return Err(SourceError::new(
+            "invalid_source_ref",
+            "Git ref must be non-empty, may not start with '-', and may not contain control characters",
+        ));
+    }
+    Ok(())
+}
+
+fn remove_failed_clone_target(target: &Path) {
+    let Ok(metadata) = fs::symlink_metadata(target) else {
+        return;
+    };
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        let _ = fs::remove_file(target);
+    } else if metadata.is_dir() {
+        let _ = fs::remove_dir_all(target);
+    }
+}
+
+fn ssh_clone_command(identity_file: Option<&Path>) -> Result<String, SourceError> {
+    let mut command = "ssh -o BatchMode=yes".to_owned();
+    if let Some(path) = identity_file {
+        validate_ssh_identity(path)?;
+        let text = path.to_str().expect("validated UTF-8 identity path");
+        command.push_str(" -o IdentitiesOnly=yes -i ");
+        command.push_str(&posix_quote(text));
+    }
+    Ok(command)
+}
+
+fn posix_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn output_text(output: Output, code: &'static str) -> Result<String, SourceError> {
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().into())
+    } else {
+        Err(SourceError::new(
+            code,
+            String::from_utf8_lossy(&output.stderr).trim(),
+        ))
+    }
+}
+
+fn parse_dirty(status: &str) -> DirtyState {
+    let mut result = DirtyState::default();
+    for line in status.lines() {
+        let bytes = line.as_bytes();
+        if bytes.starts_with(b"??") {
+            result.untracked += 1;
+            continue;
+        }
+        if bytes.first().is_some_and(|value| *value != b' ') {
+            result.staged += 1;
+        }
+        if bytes.get(1).is_some_and(|value| *value != b' ') {
+            result.unstaged += 1;
+        }
+    }
+    result
+}
+
+fn parse_worktrees(value: &str) -> Vec<WorktreeInspection> {
+    let mut result = Vec::new();
+    let mut current: Option<WorktreeInspection> = None;
+    for line in value.lines().chain([""]) {
+        if line.is_empty() {
+            if let Some(entry) = current.take() {
+                result.push(entry);
+            }
+        } else if let Some(path) = line.strip_prefix("worktree ") {
+            current = Some(WorktreeInspection {
+                path: path.into(),
+                commit: None,
+                branch: None,
+                detached: false,
+                prunable: false,
+            });
+        } else if let Some(entry) = current.as_mut() {
+            if let Some(commit) = line.strip_prefix("HEAD ") {
+                entry.commit = Some(commit.into());
+            } else if let Some(branch) = line.strip_prefix("branch ") {
+                entry.branch = Some(branch.strip_prefix("refs/heads/").unwrap_or(branch).into());
+            } else if line == "detached" {
+                entry.detached = true;
+            } else if line.starts_with("prunable") {
+                entry.prunable = true;
+            }
+        }
+    }
+    result
+}
+
+fn normalize_git_path(worktree: &Path, value: &str) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        path
+    } else {
+        worktree.join(path)
+    }
+}
+
+fn canonical_git_common_dir(worktree: &Path) -> Result<PathBuf, SourceError> {
+    normalize_git_path(
+        worktree,
+        &git(worktree, &["rev-parse", "--git-common-dir"])?,
+    )
+    .canonicalize()
+    .map_err(Into::into)
+}
+
+fn validate_containment(target: &Path, root: &Path, mutation: Mutation) -> Result<(), SourceError> {
+    let canonical_root = if root.exists() {
+        root.canonicalize()?
+    } else {
+        let parent = root.parent().ok_or_else(|| {
+            SourceError::new("source_outside_managed_root", "managed root has no parent")
+        })?;
+        fs::create_dir_all(parent)?;
+        fs::create_dir_all(root)?;
+        root.canonicalize()?
+    };
+    let canonical_target = if target.exists() {
+        target.canonicalize()?
+    } else {
+        let parent = target.parent().ok_or_else(|| {
+            SourceError::new("source_outside_managed_root", "target has no parent")
+        })?;
+        let existing = nearest_existing(parent);
+        let canonical_parent = existing.canonicalize()?;
+        canonical_parent
+            .join(parent.strip_prefix(&existing).unwrap_or(parent))
+            .join(target.file_name().ok_or_else(|| {
+                SourceError::new("source_outside_managed_root", "target has no file name")
+            })?)
+    };
+    if canonical_target == canonical_root || !canonical_target.starts_with(&canonical_root) {
+        return Err(SourceError::new(
+            "source_outside_managed_root",
+            format!(
+                "{} target `{}` is outside `{}`",
+                match mutation {
+                    Mutation::Create => "creation",
+                    Mutation::Remove => "removal",
+                },
+                target.display(),
+                root.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn nearest_existing(path: &Path) -> PathBuf {
+    let mut current = path;
+    while !current.exists() {
+        current = current.parent().unwrap_or(Path::new("."));
+    }
+    current.to_owned()
+}
+
+fn now_millis() -> Result<i64, SourceError> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| SourceError::new("clock_before_epoch", error.to_string()))?
+        .as_millis();
+    i64::try_from(millis).map_err(|_| {
+        SourceError::new(
+            "clock_overflow",
+            "current timestamp exceeds SQLite integer range",
+        )
+    })
+}
+
+fn validate_source_name(name: &str) -> Result<(), SourceError> {
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(SourceError::new(
+            "invalid_source_name",
+            "source names may contain only ASCII letters, digits, '.', '-', and '_'",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn command(path: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn repository(temp: &TempDir) -> PathBuf {
+        let repository = temp.path().join("repository");
+        fs::create_dir(&repository).unwrap();
+        command(&repository, &["init", "-b", "main"]);
+        command(
+            &repository,
+            &["config", "user.email", "tests@apmpr.invalid"],
+        );
+        command(
+            &repository,
+            &["config", "user.name", "APM ProjectRunner Tests"],
+        );
+        fs::write(repository.join("tracked"), "initial\n").unwrap();
+        command(&repository, &["add", "tracked"]);
+        command(&repository, &["commit", "-m", "initial"]);
+        repository
+    }
+
+    fn store(temp: &TempDir) -> StateStore {
+        StateStore::open(temp.path().join("state.sqlite3"))
+            .unwrap()
+            .0
+    }
+
+    #[test]
+    fn deployment_sources_clone_once_and_create_project_local_worktrees() {
+        let temp = TempDir::new().unwrap();
+        let origin = repository(&temp);
+        let workspace = temp.path().join("project");
+        fs::create_dir(&workspace).unwrap();
+        let manager = SourceManager::new(&workspace);
+
+        let clone = manager
+            .ensure_managed_clone("monorepo", origin.to_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            clone,
+            workspace
+                .join(".apmpr/clones/monorepo")
+                .canonicalize()
+                .unwrap()
+        );
+        let first = manager
+            .ensure_deployment_worktree(&clone, "main", &workspace.join("sources/main"))
+            .unwrap();
+        let second = manager
+            .ensure_deployment_worktree(&clone, "main", &workspace.join("sources/other"))
+            .unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            fs::read_to_string(first.join("tracked")).unwrap(),
+            "initial\n"
+        );
+
+        assert_eq!(
+            manager
+                .ensure_managed_clone("monorepo", origin.to_str().unwrap())
+                .unwrap(),
+            clone
+        );
+        assert_eq!(
+            manager
+                .ensure_deployment_worktree(&clone, "main", &workspace.join("sources/main"))
+                .unwrap(),
+            first
+        );
+    }
+
+    #[test]
+    fn deployment_worktree_ref_mismatch_is_diagnostic_and_never_reset() {
+        let temp = TempDir::new().unwrap();
+        let repository = repository(&temp);
+        let workspace = temp.path().join("project");
+        fs::create_dir(&workspace).unwrap();
+        let manager = SourceManager::new(&workspace);
+        let target = workspace.join("sources/main");
+        manager
+            .ensure_deployment_worktree(&repository, "main", &target)
+            .unwrap();
+
+        fs::write(repository.join("tracked"), "second\n").unwrap();
+        command(&repository, &["add", "tracked"]);
+        command(&repository, &["commit", "-m", "second"]);
+        let error = manager
+            .ensure_deployment_worktree(&repository, "main", &target)
+            .unwrap_err();
+        assert_eq!(error.code(), "source_ref_mismatch");
+        assert_eq!(
+            fs::read_to_string(target.join("tracked")).unwrap(),
+            "initial\n"
+        );
+    }
+
+    #[test]
+    fn inspects_repository_linked_worktree_and_dirty_categories() {
+        let temp = TempDir::new().unwrap();
+        let repository = repository(&temp);
+        let linked = temp.path().join("linked");
+        command(
+            &repository,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature",
+                linked.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        fs::write(linked.join("tracked"), "unstaged\n").unwrap();
+        fs::write(linked.join("staged"), "staged\n").unwrap();
+        command(&linked, &["add", "staged"]);
+        fs::write(linked.join("untracked"), "untracked\n").unwrap();
+        let inspection = SourceManager::new(temp.path()).inspect(&linked, Some("feature"));
+        assert_eq!(inspection.linked_worktree, Some(true));
+        assert_eq!(inspection.branch.as_deref(), Some("feature"));
+        assert!(inspection.identity.commit.is_some());
+        assert_eq!(
+            inspection.changes,
+            Some(DirtyState {
+                staged: 1,
+                unstaged: 1,
+                untracked: 1
+            })
+        );
+        let worktrees = SourceManager::new(temp.path())
+            .worktrees(&repository)
+            .unwrap();
+        assert_eq!(worktrees.len(), 2);
+        let linked = linked.canonicalize().unwrap();
+        assert!(worktrees.iter().any(|entry| entry.path == linked));
+    }
+
+    #[test]
+    fn project_root_source_excludes_apmpr_owned_state_from_dirty_counts() {
+        let temp = TempDir::new().unwrap();
+        let repository = repository(&temp);
+        fs::create_dir(repository.join(".apmpr")).unwrap();
+        fs::write(repository.join(".apmpr/state.sqlite3"), "owned").unwrap();
+        let manager = SourceManager::new(&repository);
+        let clean = manager.inspect(&repository, None);
+        assert_eq!(clean.changes, Some(DirtyState::default()));
+
+        fs::write(repository.join("user-file"), "untracked").unwrap();
+        let dirty = manager.inspect(&repository, None);
+        assert_eq!(dirty.changes.unwrap().untracked, 1);
+    }
+
+    #[test]
+    fn unmanaged_registration_and_removal_never_mutate_path() {
+        let temp = TempDir::new().unwrap();
+        let repository = repository(&temp);
+        let store = store(&temp);
+        let manager = SourceManager::new(temp.path());
+        let source = manager
+            .register_unmanaged(&store, "repo", &repository)
+            .unwrap();
+        assert_eq!(source.kind, RegisteredSourceKind::Unmanaged);
+        let error = manager.remove(&store, "repo", true).unwrap_err();
+        assert_eq!(error.code(), "source_unmanaged");
+        assert!(repository.join("tracked").exists());
+        manager.deregister(&store, "repo").unwrap();
+        assert!(repository.exists());
+    }
+
+    #[test]
+    fn managed_worktree_round_trip_and_dirty_override() {
+        let temp = TempDir::new().unwrap();
+        let repository = repository(&temp);
+        let store = store(&temp);
+        let manager = SourceManager::new(temp.path());
+        manager
+            .register_unmanaged(&store, "repo", &repository)
+            .unwrap();
+        let source = manager
+            .create_worktree(&store, "repo", "HEAD", "feature", None)
+            .unwrap();
+        fs::write(source.path.join("untracked"), "change\n").unwrap();
+        let error = manager.remove(&store, "feature", false).unwrap_err();
+        assert_eq!(error.code(), "source_dirty");
+        assert!(source.path.exists());
+        let dirty = manager.remove(&store, "feature", true).unwrap();
+        assert_eq!(dirty.untracked, 1);
+        assert!(!source.path.exists());
+        manager.deregister(&store, "feature").unwrap();
+    }
+
+    #[test]
+    fn managed_worktree_new_branch_uses_the_selected_base_commit() {
+        let temp = TempDir::new().unwrap();
+        let repository = repository(&temp);
+        let store = store(&temp);
+        let manager = SourceManager::new(temp.path());
+        manager
+            .register_unmanaged(&store, "repo", &repository)
+            .unwrap();
+        let base = manager
+            .inspect(&repository, Some("main"))
+            .identity
+            .commit
+            .unwrap();
+        fs::write(repository.join("tracked"), "newer main\n").unwrap();
+        command(&repository, &["add", "tracked"]);
+        command(&repository, &["commit", "-m", "newer main"]);
+
+        let source = manager
+            .create_worktree_branch(&store, "repo", &base, "feature-auto", "feature-auto", None)
+            .unwrap();
+        let inspection = manager.inspect(&source.path, source.requested_ref.as_deref());
+        assert_eq!(inspection.branch.as_deref(), Some("feature-auto"));
+        assert_eq!(inspection.identity.commit.as_deref(), Some(base.as_str()));
+        assert_eq!(source.requested_ref.as_deref(), Some("feature-auto"));
+    }
+
+    #[test]
+    fn managed_clone_round_trip_stays_under_clone_root() {
+        let temp = TempDir::new().unwrap();
+        let repository = repository(&temp);
+        let store = store(&temp);
+        let manager = SourceManager::new(temp.path());
+        manager
+            .register_unmanaged(&store, "repo", &repository)
+            .unwrap();
+        let clone = manager
+            .create_clone(&store, "repo", "clone", Some("main"))
+            .unwrap();
+        assert!(
+            clone
+                .path
+                .starts_with(temp.path().canonicalize().unwrap().join(".apmpr/clones"))
+        );
+        assert_eq!(
+            manager.inspect(&clone.path, Some("main")).identity.dirty,
+            Some(false)
+        );
+        manager.remove(&store, "clone", false).unwrap();
+        assert!(!clone.path.exists());
+        manager.deregister(&store, "clone").unwrap();
+    }
+
+    #[test]
+    fn managed_clone_from_url_uses_the_same_guarded_lifecycle() {
+        let temp = TempDir::new().unwrap();
+        let repository = repository(&temp);
+        let store = store(&temp);
+        let manager = SourceManager::new(temp.path());
+        let clone = manager
+            .create_clone_from_url(
+                &store,
+                repository.to_str().unwrap(),
+                "url-clone",
+                Some("main"),
+            )
+            .unwrap();
+        assert!(
+            clone
+                .path
+                .starts_with(temp.path().canonicalize().unwrap().join(".apmpr/clones"))
+        );
+        assert_eq!(clone.kind, RegisteredSourceKind::Managed);
+        manager.remove(&store, "url-clone", false).unwrap();
+        manager.deregister(&store, "url-clone").unwrap();
+    }
+
+    #[test]
+    fn interactive_url_clone_uses_the_same_guarded_registration() {
+        let temp = TempDir::new().unwrap();
+        let repository = repository(&temp);
+        let store = store(&temp);
+        let manager = SourceManager::new(temp.path());
+        let clone = manager
+            .create_clone_from_url_interactive(
+                &store,
+                repository.to_str().unwrap(),
+                "interactive-clone",
+                Some("main"),
+            )
+            .unwrap();
+        assert_eq!(clone.kind, RegisteredSourceKind::Managed);
+        assert_eq!(clone.requested_ref.as_deref(), Some("main"));
+        manager.remove(&store, "interactive-clone", false).unwrap();
+        manager.deregister(&store, "interactive-clone").unwrap();
+    }
+
+    #[test]
+    fn ssh_clone_auth_uses_batch_mode_and_safely_quotes_identity_paths() {
+        let temp = TempDir::new().unwrap();
+        let identity = temp.path().join("key with ' quote");
+        fs::write(&identity, "test-only-key-placeholder").unwrap();
+        assert_eq!(ssh_clone_command(None).unwrap(), "ssh -o BatchMode=yes");
+        let command = ssh_clone_command(Some(&identity)).unwrap();
+        assert!(command.starts_with("ssh -o BatchMode=yes -o IdentitiesOnly=yes -i '"));
+        assert!(command.contains("key with '\"'\"' quote"));
+        assert_eq!(
+            ssh_clone_command(Some(&temp.path().join("missing")))
+                .unwrap_err()
+                .code(),
+            "identity_file_not_found"
+        );
+    }
+
+    #[test]
+    fn url_clone_rejects_embedded_credentials_and_malformed_refs() {
+        let temp = TempDir::new().unwrap();
+        let manager = SourceManager::new(temp.path());
+        let store = store(&temp);
+        let error = manager
+            .create_clone_from_url(
+                &store,
+                "HTTPS://user:token@example.invalid/team/repo.git",
+                "credentialed",
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "repository_credentials_unsupported");
+
+        let error = manager
+            .create_clone_from_url(
+                &store,
+                "https://example.invalid/team/repo.git",
+                "bad-ref",
+                Some("--upload-pack=unexpected"),
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "invalid_source_ref");
+    }
+
+    #[test]
+    fn failed_url_clone_leaves_target_available_for_auth_retry() {
+        let temp = TempDir::new().unwrap();
+        let manager = SourceManager::new(temp.path());
+        let store = store(&temp);
+        let missing = temp.path().join("missing-repository");
+        let error = manager
+            .create_clone_from_url(&store, missing.to_str().unwrap(), "retry", None)
+            .unwrap_err();
+        assert_eq!(error.code(), "clone_create_failed");
+        assert!(!temp.path().join(".apmpr/clones/retry").exists());
+    }
+
+    #[test]
+    fn browser_clone_uses_secret_free_one_shot_askpass_and_disables_helpers() {
+        let temp = TempDir::new().unwrap();
+        let fake_git = temp.path().join("git");
+        fs::write(
+            &fake_git,
+            "#!/bin/sh\n[ \"$1\" = -c ] || exit 21\n[ \"$2\" = credential.helper= ] || exit 22\n[ -x \"$GIT_ASKPASS\" ] || exit 23\nif grep -F \"$APMPR_ASKPASS_PASSWORD\" \"$GIT_ASKPASS\" >/dev/null; then exit 24; fi\n[ \"$APMPR_ASKPASS_PASSWORD\" = one-attempt-secret ] || exit 25\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o700)).unwrap();
+        run_git_clone_browser_with_program(
+            &fake_git,
+            temp.path(),
+            &["clone", "--", "https://example.invalid/repo.git", "target"],
+            "https://example.invalid/repo.git",
+            None,
+            Some(&CloneCredentials {
+                username: "user".into(),
+                password: "one-attempt-secret".into(),
+            }),
+            None,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn browser_clone_failures_do_not_echo_submitted_credentials() {
+        let temp = TempDir::new().unwrap();
+        let manager = SourceManager::new(temp.path());
+        let store = store(&temp);
+        let secret = "one-attempt-secret";
+        let error = manager
+            .create_clone_from_url_browser(
+                &store,
+                temp.path().join("missing").to_str().unwrap(),
+                "retry",
+                &GitCloneOptions::default(),
+                Some(&CloneCredentials {
+                    username: "user".into(),
+                    password: secret.into(),
+                }),
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "clone_create_failed");
+        assert!(!error.to_string().contains(secret));
+        assert!(store.source("retry").unwrap().is_none());
+        assert!(!temp.path().join(".apmpr/clones/retry").exists());
+    }
+
+    #[test]
+    fn browser_clone_classifies_auth_and_unknown_host_failures() {
+        assert!(is_auth_failure(
+            "fatal: could not read Username for 'https://example.invalid': terminal prompts disabled"
+        ));
+        assert!(is_unknown_host_failure("Host key verification failed."));
+        assert_eq!(
+            ssh_host("git@example.invalid:team/repo.git"),
+            Some(("example.invalid".into(), None))
+        );
+        assert_eq!(
+            ssh_host("ssh://git@example.invalid:2222/team/repo.git"),
+            Some(("example.invalid".into(), Some(2222)))
+        );
+
+        let temp = TempDir::new().unwrap();
+        let keyscan = temp.path().join("ssh-keyscan");
+        let keygen = temp.path().join("ssh-keygen");
+        fs::write(
+            &keyscan,
+            "#!/bin/sh\nprintf '%s\\n' 'example.invalid ssh-ed25519 AAAATEST'\n",
+        )
+        .unwrap();
+        fs::write(
+            &keygen,
+            "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '256 SHA256:test-fingerprint example.invalid (ED25519)'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&keyscan, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&keygen, fs::Permissions::from_mode(0o700)).unwrap();
+        let scanned =
+            scan_ssh_host_with_programs("git@example.invalid:team/repo.git", &keyscan, &keygen)
+                .unwrap();
+        assert_eq!(scanned.host, "example.invalid");
+        assert_eq!(scanned.fingerprints, vec!["SHA256:test-fingerprint"]);
+        assert_eq!(
+            String::from_utf8(scanned.keys).unwrap(),
+            "example.invalid ssh-ed25519 AAAATEST\n"
+        );
+    }
+
+    #[test]
+    fn host_key_approval_survives_multi_key_scan_order() {
+        // `ssh-keyscan` returns a multi-key host's entries in an unstable order, so an
+        // approval taken from one scan must still match a later scan that leads with a
+        // different key type.
+        let temp = TempDir::new().unwrap();
+        let keygen = temp.path().join("ssh-keygen");
+        // Real `ssh-keygen -lf -` fingerprints its input in the order it arrives, so the
+        // stub must echo scan order too — a fixed-order stub cannot reproduce this bug.
+        fs::write(
+            &keygen,
+            "#!/bin/sh\nwhile read -r host type _rest; do\n  case \"$type\" in\n    ssh-rsa) printf '%s\\n' \"3072 SHA256:rsa-print $host (RSA)\" ;;\n    *) printf '%s\\n' \"256 SHA256:ed25519-print $host (ED25519)\" ;;\n  esac\ndone\n",
+        )
+        .unwrap();
+        fs::set_permissions(&keygen, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let mut scans = Vec::new();
+        for (index, order) in [
+            "'example.invalid ssh-rsa AAAARSA' 'example.invalid ssh-ed25519 AAAAED'",
+            "'example.invalid ssh-ed25519 AAAAED' 'example.invalid ssh-rsa AAAARSA'",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let keyscan = temp.path().join(format!("ssh-keyscan-{index}"));
+            fs::write(&keyscan, format!("#!/bin/sh\nprintf '%s\\n' {order}\n")).unwrap();
+            fs::set_permissions(&keyscan, fs::Permissions::from_mode(0o700)).unwrap();
+            scans.push(
+                scan_ssh_host_with_programs("git@example.invalid:team/repo.git", &keyscan, &keygen)
+                    .unwrap(),
+            );
+        }
+
+        // Sorting makes the fingerprint the user approves independent of scan order.
+        assert_eq!(scans[0].fingerprints, scans[1].fingerprints);
+        assert_eq!(
+            scans[0].primary_fingerprint(),
+            scans[1].primary_fingerprint()
+        );
+
+        // Both keys are pinned, so either one satisfies a retry.
+        let approval = ApprovedHostKey {
+            host: "example.invalid".into(),
+            fingerprint: "SHA256:rsa-print".into(),
+        };
+        assert!(scans[0].matches(&approval));
+        assert!(scans[1].matches(&approval));
+        assert!(scans[1].matches(&ApprovedHostKey {
+            host: "example.invalid".into(),
+            fingerprint: "SHA256:ed25519-print".into(),
+        }));
+        assert_eq!(
+            String::from_utf8(scans[0].keys.clone())
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
+
+        // A genuinely different key, and a matching key on another host, are still rejected.
+        assert!(!scans[0].matches(&ApprovedHostKey {
+            host: "example.invalid".into(),
+            fingerprint: "SHA256:attacker-print".into(),
+        }));
+        assert!(!scans[0].matches(&ApprovedHostKey {
+            host: "other.invalid".into(),
+            fingerprint: "SHA256:rsa-print".into(),
+        }));
+    }
+
+    #[test]
+    fn credentials_are_refused_for_cleartext_remotes_but_allowed_on_loopback() {
+        for remote in [
+            "http://example.invalid/team/repo.git",
+            "http://example.invalid:8080/team/repo.git",
+            "HTTP://EXAMPLE.INVALID/team/repo.git",
+            "http://notlocalhost.example.invalid/repo.git",
+            "http://192.168.1.10/repo.git",
+            "http://[2001:db8::1]/repo.git",
+        ] {
+            assert!(is_cleartext_remote(remote), "{remote} should be remote");
+        }
+        for local in [
+            "http://localhost/repo.git",
+            "http://localhost:8080/repo.git",
+            "http://registry.localhost/repo.git",
+            "http://127.0.0.1:3000/repo.git",
+            "http://127.4.5.6/repo.git",
+            "http://[::1]:8080/repo.git",
+            "https://example.invalid/repo.git",
+            "git@example.invalid:team/repo.git",
+        ] {
+            assert!(!is_cleartext_remote(local), "{local} should be allowed");
+        }
+
+        let temp = TempDir::new().unwrap();
+        let manager = SourceManager::new(temp.path());
+        let store = store(&temp);
+        let error = manager
+            .create_clone_from_url_browser(
+                &store,
+                "http://example.invalid/team/repo.git",
+                "cleartext",
+                &GitCloneOptions::default(),
+                Some(&CloneCredentials {
+                    username: "user".into(),
+                    password: "one-attempt-secret".into(),
+                }),
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "insecure_credential_transport");
+        assert!(!error.to_string().contains("one-attempt-secret"));
+        assert!(store.source("cleartext").unwrap().is_none());
+    }
+
+    #[test]
+    fn refuses_path_escape_and_existing_target() {
+        let temp = TempDir::new().unwrap();
+        let manager = SourceManager::new(temp.path());
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        let error = manager
+            .guard_mutation(
+                None,
+                &outside,
+                Mutation::Create,
+                false,
+                &manager.worktree_root,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "source_outside_managed_root");
+        let target = manager.worktree_root.join("existing");
+        fs::create_dir_all(&target).unwrap();
+        let error = manager
+            .guard_mutation(
+                None,
+                &target,
+                Mutation::Create,
+                false,
+                &manager.worktree_root,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "source_target_exists");
+    }
+
+    #[test]
+    fn plain_path_degrades_to_explicit_unknown() {
+        let temp = TempDir::new().unwrap();
+        let inspection = SourceManager::new(temp.path()).inspect(temp.path(), None);
+        assert_eq!(
+            inspection.unknown_code.as_deref(),
+            Some("source_not_repository")
+        );
+        assert_eq!(inspection.identity.path, temp.path().to_string_lossy());
+    }
+}

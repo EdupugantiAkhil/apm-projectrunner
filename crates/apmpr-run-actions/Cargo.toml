@@ -1,0 +1,17 @@
+[package]
+name = "apmpr-run-actions"
+description = "Project run-action storage, validation, preview, acknowledgement, and execution"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { version = "1.0.219", features = ["derive"] }
+serde_yaml = { package = "yaml_serde", version = "0.10.4" }
+
+[dev-dependencies]
+tempfile = "3.20.0"
+
+[lints]
+workspace = true

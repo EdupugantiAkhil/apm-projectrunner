@@ -4,14 +4,14 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 fixture_dir="$root/examples/routing-matrix"
 deployment="$fixture_dir/deployment.yaml"
-artifact_dir="$root/.switchyard/generated/routing-matrix"
-runtime_dir="$root/.switchyard/run/routing-matrix"
-switchyard="$root/target/debug/switchyard"
-router="$root/target/debug/switchyard-router"
-export SWITCHYARD_ROUTER_TOKEN="${SWITCHYARD_ROUTER_TOKEN:-routing-matrix-phase4-proof}"
-export SWITCHYARD_ROUTER_BIN="$router"
-export SWITCHYARD_UID="${SWITCHYARD_UID:-$(id -u)}"
-export SWITCHYARD_GID="${SWITCHYARD_GID:-$(id -g)}"
+artifact_dir="$root/.apmpr/generated/routing-matrix"
+runtime_dir="$root/.apmpr/run/routing-matrix"
+apmpr="$root/target/debug/apmpr"
+router="$root/target/debug/apmpr-router"
+export APMPR_ROUTER_TOKEN="${APMPR_ROUTER_TOKEN:-routing-matrix-phase4-proof}"
+export APMPR_ROUTER_BIN="$router"
+export APMPR_UID="${APMPR_UID:-$(id -u)}"
+export APMPR_GID="${APMPR_GID:-$(id -g)}"
 
 for command in cargo curl docker python3; do
   command -v "$command" >/dev/null || {
@@ -22,25 +22,25 @@ done
 docker info >/dev/null
 docker compose version >/dev/null
 
-if docker ps --all --quiet --filter label=dev.switchyard.deployment=routing-matrix | grep -q . \
-  || docker volume ls --quiet --filter label=dev.switchyard.deployment=routing-matrix | grep -q .; then
-  echo "routing-matrix proof: owned fixture resources already exist; clean them with 'switchyard cleanup $deployment --yes'" >&2
+if docker ps --all --quiet --filter label=dev.apmpr.deployment=routing-matrix | grep -q . \
+  || docker volume ls --quiet --filter label=dev.apmpr.deployment=routing-matrix | grep -q .; then
+  echo "routing-matrix proof: owned fixture resources already exist; clean them with 'apmpr cleanup $deployment --yes'" >&2
   exit 1
 fi
 
 cleanup() {
-  if [[ -x "$switchyard" ]]; then
-    "$switchyard" down "$deployment" >/dev/null 2>&1 || true
-    "$switchyard" cleanup "$deployment" --yes >/dev/null 2>&1 || true
+  if [[ -x "$apmpr" ]]; then
+    "$apmpr" down "$deployment" >/dev/null 2>&1 || true
+    "$apmpr" cleanup "$deployment" --yes >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
 
 cd "$root"
 cargo build --locked --workspace --bins
-"$switchyard" validate "$deployment"
+"$apmpr" validate "$deployment"
 started_ns="$(python3 -c 'import time; print(time.time_ns())')"
-"$switchyard" up "$deployment"
+"$apmpr" up "$deployment"
 ready_ns="$(python3 -c 'import time; print(time.time_ns())')"
 
 compose=(
@@ -87,7 +87,7 @@ admin_request() {
   local socket="$1"
   local operation="$2"
   local config="${3:-}"
-  python3 - "$socket" "$SWITCHYARD_ROUTER_TOKEN" "$operation" "$config" <<'PY'
+  python3 - "$socket" "$APMPR_ROUTER_TOKEN" "$operation" "$config" <<'PY'
 import json
 import socket
 import sys
@@ -118,13 +118,13 @@ PY
 sidecar_admin_request() {
   local service="$1"
   local operation="$2"
-  python3 - "$SWITCHYARD_ROUTER_TOKEN" "$operation" <<'PY' |
+  python3 - "$APMPR_ROUTER_TOKEN" "$operation" <<'PY' |
 import json
 import sys
 print(json.dumps({"token": sys.argv[1], "operation": sys.argv[2]}))
 PY
     "${compose[@]}" exec --no-TTY "$service" \
-      /usr/local/bin/switchyard-router admin-client /tmp/switchyard-admin.socket
+      /usr/local/bin/apmpr-router admin-client /tmp/apmpr-admin.socket
 }
 
 make_host_snapshot() {
@@ -218,9 +218,9 @@ make_host_snapshot 4 backend-1 "$runtime_dir/host-restored.json"
 echo "host snapshot restore: $(admin_request "$runtime_dir/host.socket" apply "$runtime_dir/host-restored.json")"
 
 backend_1_url="$(published_url routing-matrix--backend-1--app)"
-"$switchyard" move "$deployment" backend-1 main-services
+"$apmpr" move "$deployment" backend-1 main-services
 main_observation="$(curl --noproxy '*' --fail --silent --show-error "$backend_1_url")"
-"$switchyard" move "$deployment" backend-1 feature-services
+"$apmpr" move "$deployment" backend-1 feature-services
 feature_observation="$(curl --noproxy '*' --fail --silent --show-error "$backend_1_url")"
 python3 - "$main_observation" "$feature_observation" <<'PY'
 import json
@@ -238,7 +238,7 @@ echo "sidecar route snapshot: $(sidecar_admin_request routing-matrix--backend-1-
 echo "sidecar routing decisions: $(sidecar_admin_request routing-matrix--backend-1--router events)"
 
 "${compose[@]}" stop routing-matrix--services-main-catalog--app >/dev/null
-if "$switchyard" move "$deployment" backend-1 main-services >"$runtime_dir/rejected-move.log" 2>&1; then
+if "$apmpr" move "$deployment" backend-1 main-services >"$runtime_dir/rejected-move.log" 2>&1; then
   echo "routing-matrix proof: unhealthy group unexpectedly activated" >&2
   exit 1
 fi
@@ -279,7 +279,7 @@ backend_id="$("${compose[@]}" ps --quiet routing-matrix--backend-1--app--app)"
 wait_http "$backend_1_url"
 test "$backend_id" = "$("${compose[@]}" ps --quiet routing-matrix--backend-1--app--app)"
 
-host_pid="$(python3 -c 'import json; print(json.load(open(".switchyard/run/routing-matrix/host-gateway.json"))["pid"])')"
+host_pid="$(python3 -c 'import json; print(json.load(open(".apmpr/run/routing-matrix/host-gateway.json"))["pid"])')"
 kill -KILL "$host_pid"
 for _ in {1..50}; do
   if [[ "$(uname -s)" == "Linux" ]]; then
@@ -289,13 +289,13 @@ for _ in {1..50}; do
   fi
   sleep 0.1
 done
-"$switchyard" up "$deployment"
+"$apmpr" up "$deployment"
 browser_identity ui-1 >/dev/null
 
 before_restart="$(browser_identity ui-1)"
 "${compose[@]}" restart >/dev/null
-"$switchyard" down "$deployment"
-"$switchyard" up "$deployment"
+"$apmpr" down "$deployment"
+"$apmpr" up "$deployment"
 after_restart="$(browser_identity ui-1)"
 python3 - "$before_restart" "$after_restart" <<'PY'
 import json, sys
@@ -304,13 +304,13 @@ assert after["requestCount"] > before["requestCount"]
 assert after["services"] == before["services"]
 PY
 
-if [[ ${SWITCHYARD_TEST_DOCKER_DESKTOP_RESTART:-0} == 1 ]]; then
+if [[ ${APMPR_TEST_DOCKER_DESKTOP_RESTART:-0} == 1 ]]; then
   [[ "$(uname -s)" == "Darwin" ]] || {
     echo "routing-matrix proof: Docker Desktop restart mode requires macOS" >&2
     exit 1
   }
   docker desktop restart --timeout 120
-  "$switchyard" up "$deployment"
+  "$apmpr" up "$deployment"
   recovered_after_desktop_restart="$(browser_identity ui-1)"
   python3 - "$after_restart" "$recovered_after_desktop_restart" <<'PY'
 import json, sys

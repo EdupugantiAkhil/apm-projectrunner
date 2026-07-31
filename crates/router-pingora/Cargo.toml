@@ -1,6 +1,6 @@
 [package]
 name = "router-pingora"
-description = "HTTP-family data plane for the Switchyard router"
+description = "HTTP-family data plane for the APM ProjectRunner router"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

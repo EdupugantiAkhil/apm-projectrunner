@@ -1,6 +1,50 @@
-# Switchyard implementation progress
+# APM ProjectRunner implementation progress
 
 Updated: 2026-07-31
+
+## 2026-07-31 — V2 Part 7 rename to APM ProjectRunner
+
+- Renamed the tree from the development-era `Switchyard` name to **APM ProjectRunner**
+  (`apmpr`): 15 crates to `apmpr-*`, binaries to `apmpr`/`apmpr-daemon`/`apmpr-router`,
+  the state directory to `.apmpr/`, every `switchyard.dev/*` API group to `apmpr.dev/*`,
+  `SWITCHYARD_*` to `APMPR_*`, `X-Switchyard-Route` to `X-Apmpr-Route`, the Docker
+  ownership labels to `dev.apmpr.*`, and `switchyard-profiles.yaml` to
+  `apmpr-profiles.yaml`.
+- **No state-directory migration**, per the project owner: the project is unreleased, so
+  there is no installed base to migrate. `apmpr migrate` still does exactly one thing.
+- **Docker labels are a hard cut with no legacy fallback**, also the owner's call.
+  Discovery and cleanup filter on `dev.apmpr.*` only, so resources from a pre-rename build
+  are not adopted and must be removed by hand. `docs/support-policy.md` records the
+  `docker ps` filter and the complete before/after table the policy requires.
+- Three surfaces fail loudly rather than silently, so a stale value is never just ignored:
+  a `switchyard.dev/*` `apiVersion` is rejected naming the replacement prefix and is
+  accepted by `apmpr migrate` (both pre-rename spellings); any surviving `SWITCHYARD_*`
+  variable fails the command up front listing each stale name beside its `APMPR_*`
+  replacement — names only, never values, since one of them is a router token. Both new
+  guards were mutation-checked: reverting either makes its test fail.
+- Three defects that no textual sweep could have found, all caught by the suite rather
+  than by reading. The prose rule ran before the header rule and produced
+  `X-APM ProjectRunner-Route`, a header name containing spaces. Two tests carried
+  base64-encoded proxy credentials (`c3dpdGNoeWFyZDp0ZXN0LXRva2Vu` decodes to
+  `switchyard:test-token`) that no search for the old name can match. And the two
+  `Proxy-Authenticate` realms diverged — one became `apmpr`, the other
+  `APM ProjectRunner` — so a listener advertised a realm its own credential check rejected.
+- Also repaired what the sweep damaged in prose: two DESIGN.md box diagrams whose borders
+  the longer name pushed out of alignment, the `user_flow.md` flow diagram's arrow column,
+  article agreement (`a APM ProjectRunner`), and several sentences that became tautologies
+  once both sides of "renamed X to Y" read the same ("Working name: APM ProjectRunner. The
+  intended product name is APM ProjectRunner").
+- Regenerated all four compatibility goldens. The API group and ownership labels feed both
+  the definition and resource hashes, so every hash moved; the fixture diff was reviewed
+  alongside them and contains only renamed strings. Routing matrix is now
+  `d1fff1bb…`/`e7886861…`; JAS base is `074a9af7…`/`dd0a6e5c…`.
+- Verification passes: 339 workspace tests with the five declared reliability ignores
+  (336 before, plus the three added here); all-target, all-feature Clippy with warnings
+  denied; rustdoc with warnings denied; `cargo fmt --check`; `git diff --check`; 51 Web
+  tests; TypeScript; warning-free Web lint; and the Vite production build. Every relative
+  Markdown link under the root and `docs/` resolves. A direct CLI run confirms the
+  rejection-then-`migrate` loop end to end and that the environment error prints names
+  without values.
 
 ## 2026-07-31 — V2 Part 6 release usability
 
@@ -21,15 +65,15 @@ Updated: 2026-07-31
 
 ## 2026-07-31 — V2 Part 5 daemon-as-service posture
 
-- Added `switchyard daemon install [project]`. It generates a per-user, per-project launchd
+- Added `apmpr daemon install [project]`. It generates a per-user, per-project launchd
   LaunchAgent on macOS or systemd user unit on Linux, loads/enables it immediately, and keys
   the service name by the readable project directory plus a digest of its canonical path.
-- Both definitions run the exact current `switchyard daemon run` command in the canonical
+- Both definitions run the exact current `apmpr daemon run` command in the canonical
   project root, start at login, restart failures, and append stdout and stderr to the
-  owner-only `.switchyard/daemon.log`. Reinstall atomically replaces regular definitions
+  owner-only `.apmpr/daemon.log`. Reinstall atomically replaces regular definitions
   while refusing symlink targets.
-- `switchyard gui [project]` no longer creates logs or spawns a daemon. A stopped service is
-  an actionable error naming `switchyard daemon install <canonical-project>`; browser opening
+- `apmpr gui [project]` no longer creates logs or spawns a daemon. A stopped service is
+  an actionable error naming `apmpr daemon install <canonical-project>`; browser opening
   remains best effort once the service is reachable.
 - Updated the vision's current-behavior note, `DESIGN.md`, GUI/API/development guidance, and
   upgrade recovery to reflect the service boundary.
@@ -52,7 +96,7 @@ Updated: 2026-07-31
 - Renamed the role-named `ui` field on both surfaces that keyed a generic instance by it.
   `ManagedProfilePlan`/`ManagedProfile` and `CliCommand::Open` now use `instance`. The
   generated artifact still serializes the field as `ui` via `#[serde(rename)]`, so
-  `switchyard.dev/managed-profile/v1alpha1` is unchanged on disk and the compatibility
+  `apmpr.dev/managed-profile/v1alpha1` is unchanged on disk and the compatibility
   goldens pass untouched.
 - Kept `/api/v1` compatible rather than breaking it: `CommandRequestV1.ui` remains an
   accepted deprecated alias for `open`, with the new `instance` field taking precedence
@@ -64,7 +108,7 @@ Updated: 2026-07-31
   both lines had been printing `none` unconditionally; they now show published ports.
 - Corrected `DESIGN.md` where it had drifted from vocabulary into inaccuracy: it
   documented an overlay `groups:` replacement and a `routes:` slot that the parser rejects
-  under `deny_unknown_fields`, listed a nonexistent `switchyard group` command while
+  under `deny_unknown_fields`, listed a nonexistent `apmpr group` command while
   omitting `move`/`migrate`/`routes`, and never documented instance `address:` or
   `disabled:`. Also dropped the role-keyed GUI color tokens (Java/Python/database routes),
   since no schema-visible service type exists to key a palette to.
@@ -165,7 +209,7 @@ the focused planner suite; and all five live Phase 3 router gates.
   Planning now derives each routed instance's complete ordered view solely from its one group
   membership. Validation rejects an instance appearing in several groups and reports both
   paths with guidance to create a separate instance.
-- Replaced the CLI/API binding operation with `switchyard move FILE INSTANCE GROUP` and
+- Replaced the CLI/API binding operation with `apmpr move FILE INSTANCE GROUP` and
   `/api/v1/commands/membership`. Live moves compare every sidecar in the source and destination
   groups, apply every changed immutable snapshot through the daemon's rollback/compensation
   path, and retain unchanged active snapshot metadata in generated artifacts. A move that
@@ -189,7 +233,7 @@ the focused planner suite; and all five live Phase 3 router gates.
 ## 2026-07-31 V2 Part 2c — repository stores and source worktrees
 
 - Added the authored `repositories:` map. A `url:` produces one managed bare Git store
-  under `.switchyard/clones/<name>`; `clone:` adopts an existing bare repository or
+  under `.apmpr/clones/<name>`; `clone:` adopts an existing bare repository or
   ordinary clone. Repository stores are never mounted or run.
 - Replaced plain/path/worktree source variants with the single required
   `{ repository, ref, path }` form. Source paths are project-contained, relative to the
@@ -201,7 +245,7 @@ the focused planner suite; and all five live Phase 3 router gates.
 - Deployment sources are authoritative for planning/startup and no longer depend on the
   SQLite registered-source catalog. Guided CLI/daemon/Web authoring converts a selected
   registered worktree into repository/source declarations.
-- Extended `switchyard migrate` to collapse repeated legacy repository paths into one
+- Extended `apmpr migrate` to collapse repeated legacy repository paths into one
   adopted repository, preserve distinct existing worktree paths, and refuse repository
   checkouts or non-Git plain paths instead of retaining a third source kind.
 - Migrated examples, compatibility fixtures, daemon/profile previews, init scaffolding,
@@ -326,7 +370,7 @@ the focused planner suite; and all five live Phase 3 router gates.
   models the backend's five downstream slots while the three instance addresses keep the UI peers
   symmetric, so changing it here would repeat the Part 2 regression rather than clarify the fixture.
 - Compatibility output was regenerated from the updated fixture and checked directly. Two independent
-  `switchyard plan` runs were byte-identical for JAS base (37,583 bytes) and routing matrix (28,125
+  `apmpr plan` runs were byte-identical for JAS base (37,583 bytes) and routing matrix (28,125
   bytes); the compatibility test also serializes two plans and compares complete output, Compose,
   routes, and hashes.
 - Verification: `cargo fmt --all -- --check` produced no output; workspace Clippy with all targets,
@@ -343,8 +387,8 @@ the focused planner suite; and all five live Phase 3 router gates.
   capability-to-provider routing from each member's declared services, rejects duplicate providers
   with the exact one-provider-per-capability diagnostic, applies inherited overrides by capability,
   and retains explicit `instance/service` member references for multi-service instances.
-- Bumped deployment definitions to `switchyard.dev/v1alpha2`. The loader rejects v1alpha1
-  deployments with an actionable `switchyard migrate` error, and the new CLI transform converts
+- Bumped deployment definitions to `apmpr.dev/v1alpha2`. The loader rejects v1alpha1
+  deployments with an actionable `apmpr migrate` error, and the new CLI transform converts
   provider maps to deduplicated member lists while preserving the per-transform seam for later V2
   schema changes. Independent review hardened the transform to compare resolved provider maps before
   and after conversion and refuse without writing when the list model would change capabilities or
@@ -478,7 +522,7 @@ the focused planner suite; and all five live Phase 3 router gates.
 ## 2026-07-25 web UI Part 11c — startup-profile provenance
 
 - Closed the last Part 11 caveat. Startup profiles are blocks: `project_profile_rows`
-  (`crates/switchyard-profiles/src/lib.rs:285-296`) maps every entry of `spec.blocks` to a profile
+  (`crates/apmpr-profiles/src/lib.rs:285-296`) maps every entry of `spec.blocks` to a profile
   of the same name, so an instance's `block` is its profile identity. The inspector now joins the
   already-loaded profile library on `(name, deployment)` and names the profile with its origin and
   trust rather than reporting provenance as unavailable.
@@ -524,7 +568,7 @@ the focused planner suite; and all five live Phase 3 router gates.
 
 ## 2026-07-25 web UI Part 11a — per-service resource attribution
 
-- Added the typed `dev.switchyard.service` ownership label beside the existing instance label and
+- Added the typed `dev.apmpr.service` ownership label beside the existing instance label and
   apply both to every planned service path: plain containers, remote containers, and the namespace,
   application, and router services emitted for sidecar-routed consumers. Service-owned volumes
   retain the same attribution.
@@ -600,8 +644,8 @@ the focused planner suite; and all five live Phase 3 router gates.
 ## 2026-07-25 web UI Part 9 — project run actions (partial scope)
 
 - Extracted the shared run-action file model, validation, CRUD, shell acknowledgement, typed
-  operation specification, and process construction from `switchyard-ops` into the
-  `switchyard-run-actions` leaf crate. Ops now re-exports that domain and the daemon consumes
+  operation specification, and process construction from `apmpr-ops` into the
+  `apmpr-run-actions` leaf crate. Ops now re-exports that domain and the daemon consumes
   it directly, without a cross-crate source include or a new frontend dependency.
 - Added authenticated list, structured-only CRUD, and preview/hash-confirmed execution routes.
   The server rejects shell-shaped authoring and mutations targeting an existing shell action
@@ -701,8 +745,8 @@ the focused planner suite; and all five live Phase 3 router gates.
   and runtime eligibility with an explicit reason, and includes authored
   `{deployment, instance}` placements.
 - Device checks now use the same SSH-plus-Docker eligibility semantics as the TUI and CLI.
-  The shared domain was extracted from `switchyard-ops` into the new leaf
-  `switchyard-devices` crate; ops re-exports it and the daemon depends on the leaf directly,
+  The shared domain was extracted from `apmpr-ops` into the new leaf
+  `apmpr-devices` crate; ops re-exports it and the daemon depends on the leaf directly,
   avoiding the existing ops-to-daemon dependency cycle.
 - The daemon rejects removal of `local` and returns HTTP 409 `device_has_placements` with
   the blocking placements when an SSH device is still referenced. The Devices view shows
@@ -724,9 +768,9 @@ the focused planner suite; and all five live Phase 3 router gates.
 
 - Added authenticated profile list/detail/manifest-review/validate/import/remove endpoints.
   The shared discovery, hashing, trust projection, import, and removal domain now lives in
-  the leaf `switchyard-profiles` crate. `switchyard-ops::profiles` and the existing ops-root
+  the leaf `apmpr-profiles` crate. `apmpr-ops::profiles` and the existing ops-root
   exports re-export that crate's single compiled set of types, while the daemon depends on
-  it directly; `switchyard-ops` can therefore retain its daemon dependency for standalone
+  it directly; `apmpr-ops` can therefore retain its daemon dependency for standalone
   reconciliation without a Cargo cycle or a cross-crate source include.
 - Added the only ops-layer API needed by the HTTP trust boundary: verbatim manifest review
   with a SHA-256 review hash, and reviewed import that compares and parses those exact bytes
@@ -736,7 +780,7 @@ the focused planner suite; and all five live Phase 3 router gates.
   manifest review before import or re-import, imported-profile removal, and checkout
   validation with expanded services and structured diagnostics. It explicitly states that
   profile editing is unavailable until a shared mutation exists.
-- Added profile-domain reviewed-import coverage in `switchyard-profiles`, one daemon API
+- Added profile-domain reviewed-import coverage in `apmpr-profiles`, one daemon API
   workflow covering discovery, detail, validation, stale review refusal, import,
   changed-content re-review/re-import, and removal, plus web client and view coverage. The
   daemon keeps its direct `yaml_serde` dependency for profile-validation request authoring;
@@ -774,8 +818,8 @@ the focused planner suite; and all five live Phase 3 router gates.
 
 - `DeploymentWorkspace` now derives each consumer's consumed slots from the deployment
   spec's blocks and instances rather than from existing routes alone, mirroring the
-  TUI's semantics in `crates/switchyard-tui/src/tabs/connections.rs:191-223` and
-  `crates/switchyard-ops/src/connections.rs:76-118`. Consumers with required slots and
+  TUI's semantics in `crates/apmpr-tui/src/tabs/connections.rs:191-223` and
+  `crates/apmpr-ops/src/connections.rs:76-118`. Consumers with required slots and
   no binding are listed as unbound instead of omitted.
 - The provider-group selector renders for any consumer with required slots, offering an
   explicit unbound placeholder, and reuses the existing compatibility filter, preview,
@@ -800,15 +844,15 @@ the focused planner suite; and all five live Phase 3 router gates.
 
 ## 2026-07-23 browser-first registered projects
 
-- Added non-destructive, idempotent `switchyard project register [directory] [--name]`.
-  It writes a versioned `.switchyard/project.json`, initializes project-local SQLite,
+- Added non-destructive, idempotent `apmpr project register [directory] [--name]`.
+  It writes a versioned `.apmpr/project.json`, initializes project-local SQLite,
   creates an empty authored `deployments/` directory, and registers the existing folder
   itself as the first unmanaged source without modifying pre-existing files.
-  Project-root Git inspection excludes `.switchyard` so tool-owned state does not make
+  Project-root Git inspection excludes `.apmpr` so tool-owned state does not make
   a clean checkout look modified; user changes remain visible.
-- `switchyard gui [project]` now selects that project from any working directory,
+- `apmpr gui [project]` now selects that project from any working directory,
   reuses its daemon or starts one in the background, records daemon output under
-  `.switchyard/daemon.log`, and opens the existing fragment-authenticated dashboard.
+  `.apmpr/daemon.log`, and opens the existing fragment-authenticated dashboard.
 - Added authenticated `GET /api/v1/project`; the dashboard rail shows the project name
   and exposes its canonical root as hover context. Unmarked initialized projects remain
   compatible, and the TUI remains available for headless use.
@@ -881,10 +925,10 @@ the focused planner suite; and all five live Phase 3 router gates.
   ownership-checked upgrade, executable invocation, uninstall, and an empty-prefix
   assertion. The final archive smoke passed, and a throwaway Ed25519 signing key
   produced and successfully verified its checksum signature with the fixed
-  `switchyard-release` identity/namespace.
+  `apmpr-release` identity/namespace.
 - GitHub Actions now has an Apple Silicon `macos-26` Rust/GUI/release job. Live Docker
   routing is gated to an explicitly enabled self-hosted Apple Silicon runner labelled
-  `switchyard-docker`, because hosted arm64 macOS runners do not provide nested
+  `apmpr-docker`, because hosted arm64 macOS runners do not provide nested
   virtualization.
 - macOS HTTPS guidance prints reversible per-user Login Keychain commands and never
   invokes privilege escalation. Automatic `.local` publication remains explicitly
@@ -991,7 +1035,7 @@ the focused planner suite; and all five live Phase 3 router gates.
 - Pressing `w` on a selected repository or linked worktree opens a one-field managed
   worktree form. The entered checkout name becomes a new branch based on the selected
   checkout's exact HEAD commit. The non-destructive `SourceManager` creates and
-  registers it under `.switchyard/worktrees`, making it an instance choice immediately.
+  registers it under `.apmpr/worktrees`, making it an instance choice immediately.
 - Instance creation now presents blocks as reusable startup profiles and sources as
   checkouts/worktrees. Project run scripts remain deployment-level operations rather
   than becoming a second, conflicting instance execution format.
@@ -1010,8 +1054,8 @@ the focused planner suite; and all five live Phase 3 router gates.
 - The Instances table merges runtime services with authored block/source context and
   falls back to authored-only rows before first apply, removing the duplicate
   authored/runtime rows and stale `not applied`/`stopped` display after a healthy `up`.
-- `switchyard init` now scaffolds a concise project-local
-  `.agents/skills/switchyard-project` skill with Codex UI metadata. It guides agents to
+- `apmpr init` now scaffolds a concise project-local
+  `.agents/skills/apmpr-project` skill with Codex UI metadata. It guides agents to
   validate and plan authored YAML, use the TUI or explicit lifecycle commands, preserve
   volumes by default, and avoid editing generated state or embedding credentials.
 - Verification: the complete workspace suite passes with the five declared reliability
@@ -1064,8 +1108,8 @@ the focused planner suite; and all five live Phase 3 router gates.
 
 ## 2026-07-16 standalone project TUI workflow
 
-- The intended fresh-project path is now `switchyard init` followed by
-  `switchyard tui .`: Sources, Devices, and Instances are first-class keyboard views,
+- The intended fresh-project path is now `apmpr init` followed by
+  `apmpr tui .`: Sources, Devices, and Instances are first-class keyboard views,
   with cyclic forward/back navigation and updated in-app help.
 - Devices support inline validated registration, background SSH connectivity checks,
   persisted check detail, selectable rows, and confirmed registry-only removal. The TUI
@@ -1078,7 +1122,7 @@ the focused planner suite; and all five live Phase 3 router gates.
   same-directory draft, and atomically replaces the definition only after success.
 - The pairing selector exposes consumer/provider-group changes with incompatible groups
   omitted and applies the selected complete replacement through typed, shell-free
-  `switchyard bind` arguments. Durable generated binding state is reloaded after the
+  `apmpr bind` arguments. Durable generated binding state is reloaded after the
   operation.
 - Runtime placement remains explicitly local. Registered devices are currently SSH
   connectivity targets; no inert per-instance device field or fake remote placement was
@@ -1089,7 +1133,7 @@ the focused planner suite; and all five live Phase 3 router gates.
   test suite passes with only its five declared reliability ignores; workspace Clippy
   passes for all targets and features with `-D warnings`; workspace formatting is clean.
   A live pseudo-terminal smoke initialized and validated a fresh project, launched
-  `switchyard tui <project>`, accepted `q`, and restored the terminal cleanly.
+  `apmpr tui <project>`, accepted `q`, and restored the terminal cleanly.
 
 ## 2026-07-16 device registry and SSH checks
 
@@ -1114,8 +1158,8 @@ the focused planner suite; and all five live Phase 3 router gates.
   the `user@host` destination argument; and the daemon check endpoint no longer holds
   the state-store mutex across the SSH subprocess, so a slow connect cannot stall
   unrelated API requests.
-- Local re-verification after the fixes: full `switchyard-state`/`switchyard-daemon`/
-  `switchyard-cli` suites pass unfiltered (including the socket test the Codex sandbox
+- Local re-verification after the fixes: full `apmpr-state`/`apmpr-daemon`/
+  `apmpr-cli` suites pass unfiltered (including the socket test the Codex sandbox
   blocked), workspace clippy passes with `-D warnings`, all 16 GUI tests and the
   production build pass. Live proof on this machine: device add/check/list/remove via
   the built CLI against a LAN host and an unreachable TEST-NET address produced real
@@ -1128,7 +1172,7 @@ implemented shape and the evidence used to close a phase.
 
 ## 2026-07-16 project TUI Sources view
 
-- Added `switchyard tui [<project-dir>]` and a Ratatui/Crossterm terminal shell with
+- Added `apmpr tui [<project-dir>]` and a Ratatui/Crossterm terminal shell with
   panic-safe terminal restoration, responsive resize/event handling, Sources and
   placeholder Instances tabs, a footer/spinner, and an in-app help overlay.
 - The Sources view lists live registry/Git inspection, registers local paths, creates
@@ -1154,7 +1198,7 @@ implemented shape and the evidence used to close a phase.
   resolves. Live pty proof: the TUI launches in a scaffolded project, renders tabs,
   toggles help, quits on `q` with the terminal restored, and an end-to-end add flow
   through the modal cloned a local git URL on a background thread and registered it as
-  a managed source visible to `switchyard source list`.
+  a managed source visible to `apmpr source list`.
 
 ## 2026-07-16 project TUI Instances view
 
@@ -1167,11 +1211,11 @@ implemented shape and the evidence used to close a phase.
   scrollable output tail and terminal exit-code reporting. The CLI remains the entry
   point so daemon-compatible actions retain automatic daemon delegation, while overlay,
   variation, and set options remain representable.
-- Added lenient project-local `.switchyard/run-scripts.yaml` loading, UI-level
+- Added lenient project-local `.apmpr/run-scripts.yaml` loading, UI-level
   create/edit/delete validation, structured and arbitrary-shell forms, and a shell
   execution notice. Round-trip/malformed-file, argv mapping, modal/confirmation state,
   and TestBackend rendering coverage were added.
-- Verification: `cargo test -p switchyard-tui` passes (13 tests), workspace Clippy
+- Verification: `cargo test -p apmpr-tui` passes (13 tests), workspace Clippy
   passes for all targets with `-D warnings`, and workspace formatting is clean.
 - Review pass found no defects; local live proof through a pty on a scaffolded
   project with Docker: `u` brought the deployment up to healthy, `s` refreshed status,
@@ -1213,7 +1257,7 @@ implemented shape and the evidence used to close a phase.
 
 ## Verification
 
-- `cargo test -p switchyard-cli -p switchyard-planner --all-features`: passed.
+- `cargo test -p apmpr-cli -p apmpr-planner --all-features`: passed.
 - `cargo test -p router-pingora --test http_proxy --all-features`: passed.
 - `cargo test --workspace --all-features`: passed, including router health rollback,
   DNS containment, protocol, transition, and shutdown coverage.
@@ -1229,8 +1273,8 @@ implemented shape and the evidence used to close a phase.
 
 ### SQLite state
 
-- `switchyard-state` is a synchronous, daemon-neutral library using bundled SQLite at
-  an explicit caller-provided path; `.switchyard/state.sqlite3` is the documented
+- `apmpr-state` is a synchronous, daemon-neutral library using bundled SQLite at
+  an explicit caller-provided path; `.apmpr/state.sqlite3` is the documented
   per-project convention.
 - Two ordered embedded migrations establish applied deployment snapshots, append-only
   deployment/operation/resource/health/route history, immutable route-snapshot
@@ -1238,7 +1282,7 @@ implemented shape and the evidence used to close a phase.
   non-overwriting pre-migration file backup, and newer schemas are refused.
 - Applied snapshots and structured contexts reject literal values in secret-bearing
   fields. The public secret type represents environment-variable and file references,
-  and reconciliation retains only Switchyard ownership labels from Docker observations.
+  and reconciliation retains only APM ProjectRunner ownership labels from Docker observations.
 - Reconciliation compares generated manifest definition/resource hashes, nullable
   last-applied state, and injected Docker-label observations. It records observations
   without changing runtime resources or promoting recovered manifests to desired state.
@@ -1257,8 +1301,8 @@ implemented shape and the evidence used to close a phase.
 
 ### Daemon and API
 
-- `switchyard-daemon` provides a standalone binary and the developer-facing
-  `switchyard daemon run/status/stop` group. It binds loopback only, runs migrations and
+- `apmpr-daemon` provides a standalone binary and the developer-facing
+  `apmpr daemon run/status/stop` group. It binds loopback only, runs migrations and
   startup reconciliation, writes an atomic mode-0600 discovery document, and cancels
   and joins active operations before graceful shutdown.
 - Axum is the small HTTP routing layer on the existing Tokio runtime. Versioned serde
@@ -1267,7 +1311,7 @@ implemented shape and the evidence used to close a phase.
 - The subprocess backend reuses the exact one-shot CLI implementation with an internal
   recursion guard, preserving stdout, stderr, and exit codes. Secure discovery selects
   the daemon when reachable; absent or stale discovery retains the old one-shot path.
-- Mutations use heartbeated `switchyard-state` deployment leases; apply work also uses a
+- Mutations use heartbeated `apmpr-state` deployment leases; apply work also uses a
   configurable global semaphore. Reads acquire neither. Cancellation, shutdown,
   subprocess completion, durable status updates, and lock release share a terminal path.
 - Per-operation SSE publishes operation, build, health, route, and log events with
@@ -1284,7 +1328,7 @@ implemented shape and the evidence used to close a phase.
   recovery, no-daemon fallback, and byte-identical API-backend CLI output. The production
   listener and Docker observation paths remain integration boundaries; this execution
   sandbox rejects socket creation with `EPERM`.
-- Verification for this increment: `cargo test -p switchyard-daemon --all-features`
+- Verification for this increment: `cargo test -p apmpr-daemon --all-features`
   passed (6 tests plus doc tests); the focused CLI fallback/API parity integration test
   passed; workspace Clippy with `-D warnings` passed; workspace rustdoc with
   `RUSTDOCFLAGS="-D warnings"` passed; and workspace formatting passed. The exact
@@ -1311,7 +1355,7 @@ implemented shape and the evidence used to close a phase.
   observed version/checksum state, transition policy, status, and last error code.
   `/api/v1/deployments/:deployment/routes` returns this state and append-only history;
   daemon-backed `status --routes` and `routes` append a compact version summary.
-- Bind requests and `switchyard bind` accept additive close, drain (with timeout), and
+- Bind requests and `apmpr bind` accept additive close, drain (with timeout), and
   pin controls. The selected policy is applied consistently to HTTP, HTTPS, WebSocket,
   gRPC, and TCP fields in the router's existing transition contract.
 
@@ -1332,11 +1376,11 @@ implemented shape and the evidence used to close a phase.
 
 ## Phase 5 verification
 
-- `cargo test -p switchyard-daemon --all-features --test api`: passed (8 tests),
+- `cargo test -p apmpr-daemon --all-features --test api`: passed (8 tests),
   including restart, domain/binding persistence, route failure/rollback persistence,
   lock-loss cancellation with attempt persistence, bounded terminal retention, and
   deleted-database recovery.
-- `cargo test -p switchyard-state -p switchyard-router-admin -p switchyard-daemon
+- `cargo test -p apmpr-state -p apmpr-router-admin -p apmpr-daemon
   --all-features --no-fail-fast`: passed (state, shared client, daemon, integration, and
   doc tests).
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passed.
@@ -1354,7 +1398,7 @@ implemented shape and the evidence used to close a phase.
 
 ### Adapter SDK (Part 1)
 
-- `switchyard-adapter-sdk` defines the versioned `switchyard.dev/adapter-sdk/v1alpha1`
+- `apmpr-adapter-sdk` defines the versioned `apmpr.dev/adapter-sdk/v1alpha1`
   contracts for source, execution, supervisor, route, and probe adapters. Configuration
   and recovery handles cross the boundary as serializable JSON; states, events, logs,
   claims, source identity, and route observations use normalized SDK types.
@@ -1367,12 +1411,12 @@ implemented shape and the evidence used to close a phase.
 - A public conformance suite checks schema compilation and dialect, valid/invalid
   examples, deterministic validation, capability consistency, compatibility, and
   lossless opaque-handle round trips.
-- `switchyard-adapters` implements the seven built-ins (`source-path`, `source-git`,
+- `apmpr-adapters` implements the seven built-ins (`source-path`, `source-git`,
   `execution-container`, `execution-runner-script`, `supervisor-process-compose`,
-  `route-switchyard`, `probe-health`) at planning level; execution remains owned by the
+  `route-apmpr`, `probe-health`) at planning level; execution remains owned by the
   existing generated-Compose runtime. Trusted host execution is explicitly deferred and
   guarded by a registry test.
-- `switchyard-planner` validation resolves sources, executions, probes, provider
+- `apmpr-planner` validation resolves sources, executions, probes, provider
   capabilities, and route slots through the built-in registry while keeping the
   deployment YAML, diagnostics style, and deterministic artifact generation unchanged.
   A regression test proves worktree sources still require an existing repository and a
@@ -1384,23 +1428,23 @@ implemented shape and the evidence used to close a phase.
 - `cargo fmt --all -- --check`: passed.
 - `cargo test --workspace --all-features`: passed on this host (all suites, including
   the socket-based router integration tests unavailable to the implementation sandbox).
-- `cargo test -p switchyard-planner --test planner`: 12 passed, including the new
+- `cargo test -p apmpr-planner --test planner`: 12 passed, including the new
   worktree adapter-path regression test.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passed.
 - `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps`: passed.
 
 ## Phase 7 import/export and collaboration — Part 4
 
-- `switchyard-planner` owns the portable bundle contract in `bundle.rs`, because it is
+- `apmpr-planner` owns the portable bundle contract in `bundle.rs`, because it is
   the crate that already owns strict deployment/overlay parsing and validation. The CLI
   keeps only local-machine conflict checks and presentation.
-- `switchyard bundle export <deployment.yaml> [--with <overlay.yaml>]... [--output
+- `apmpr bundle export <deployment.yaml> [--with <overlay.yaml>]... [--output
   <file>]` writes one deterministic, reviewable
-  `switchyard.dev/bundle/v1alpha1` JSON file with a SHA-256 content hash over the
+  `apmpr.dev/bundle/v1alpha1` JSON file with a SHA-256 content hash over the
   canonical payload. Export embeds deployment and overlay definitions, replaces local
   source/file/dotenv inputs with `requiredLocalInputs`, preserves secret references, and
   warns/replaces credential-looking literal keys.
-- `switchyard bundle import <bundle-file> --into <directory> [--force]` verifies
+- `apmpr bundle import <bundle-file> --into <directory> [--force]` verifies
   apiVersion and content hash, rejects machine-state paths in typed host-path fields,
   writes the deployment and overlay YAML without overwriting unless forced, scaffolds
   placeholder local inputs, validates through the existing planner path, prints the
@@ -1419,27 +1463,27 @@ implemented shape and the evidence used to close a phase.
 ### Phase 7 Part 4 verification
 
 - `cargo fmt --all --check`: passed.
-- `cargo test -p switchyard-planner`: passed, including export/import validation,
+- `cargo test -p apmpr-planner`: passed, including export/import validation,
   tampered-hash rejection, and unsupported-apiVersion rejection.
-- `cargo test -p switchyard-planner -p switchyard-cli`: compiled and passed all planner
+- `cargo test -p apmpr-planner -p apmpr-cli`: compiled and passed all planner
   tests and the new CLI parser test, then hit the pre-existing
   `host_runtime::tests::failed_startup_cleanup_allows_a_clean_retry` Unix-socket bind
   sandbox failure (`Operation not permitted`). This is the same class of socket
   restriction recorded earlier and not a bundle regression.
-- `cargo test -p switchyard-cli cli::tests::parses_bundle_commands`: passed.
+- `cargo test -p apmpr-cli cli::tests::parses_bundle_commands`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
-- CLI smoke: `switchyard bundle export examples/routing-matrix/deployment.yaml` to
-  `/tmp`, followed by `switchyard bundle import ... --into /tmp/... --force`, passed.
+- CLI smoke: `apmpr bundle export examples/routing-matrix/deployment.yaml` to
+  `/tmp`, followed by `apmpr bundle import ... --into /tmp/... --force`, passed.
   Import produced placeholder local inputs, a create-artifacts mutation preview, and
   read-only conflict diagnostics; Docker probing degraded to `docker_unavailable` in
   this sandbox.
 
 ### Source and worktree management (Part 2)
 
-- `switchyard-sources` is a synchronous, daemon-neutral library: read-only Git
+- `apmpr-sources` is a synchronous, daemon-neutral library: read-only Git
   inspection (repository root, linked-worktree detection, branch/detached HEAD, commit,
   staged/unstaged/untracked summary, ahead/behind), managed worktree/clone creation
-  under `.switchyard/worktrees` and `.switchyard/clones`, and non-destructive removal.
+  under `.apmpr/worktrees` and `.apmpr/clones`, and non-destructive removal.
   Non-repo paths and a missing git binary degrade to explicit unknown codes.
 - Every mutating operation passes one `guard_mutation` gate: unmanaged sources are
   never mutated (deregistration only forgets the record), canonicalized paths must stay
@@ -1455,7 +1499,7 @@ implemented shape and the evidence used to close a phase.
   cannot stall async workers.
 - CLI: `source list [--json]`, `source register/deregister`, `worktree create/remove
   [--allow-dirty]` with daemon-first execution and byte-stable one-shot fallback.
-- Plans, manifests, and `switchyard status` now carry per-instance live source
+- Plans, manifests, and `apmpr status` now carry per-instance live source
   identities (path, repository, ref, commit, dirty) captured at plan time; definition
   and resource hashes still derive only from desired state.
 - Documentation: `docs/control-plane-api.md` endpoints and a sources/worktrees section
@@ -1484,14 +1528,14 @@ implemented shape and the evidence used to close a phase.
   key, honors `unset`, and records an origin trace with full shadowing history for
   every resolved environment value, parameter, file, and route.
 - Injected files materialize only under
-  `.switchyard/generated/<deployment>/overlays/<instance>/<content-hash>/` and are
+  `.apmpr/generated/<deployment>/overlays/<instance>/<content-hash>/` and are
   bind-mounted read-only; targets reject relative paths and `..` traversal and must
   fall under controlled container mount roots. Templates support only fixed-namespace
   `${...}` lookup (overlay variables, instance/deployment names, parameters) with
   unknown variables rejected — no execution of any kind.
 - Secret overlay values are environment-variable or file references; previews, origin
   traces, resolved YAML, manifests, and Compose show only placeholders. Generated
-  Compose interpolates `${SWITCHYARD_OVERLAY_SECRET_<hash>:?}` and the runtime injects
+  Compose interpolates `${APMPR_OVERLAY_SECRET_<hash>:?}` and the runtime injects
   real values solely into the `docker compose` process environment at apply time.
   Secret file injection is explicitly rejected as unsupported.
 - `overlay validate` and `overlay diff --with ...` provide stable diagnostics and a
@@ -1520,7 +1564,7 @@ implemented shape and the evidence used to close a phase.
   except that operation SSE additionally accepts the credential via `access_token`
   query parameter because EventSource cannot set headers (loopback-only rationale
   documented).
-- `switchyard gui` prints and best-effort-opens `http://127.0.0.1:<port>/gui/#token=…`
+- `apmpr gui` prints and best-effort-opens `http://127.0.0.1:<port>/gui/#token=…`
   using daemon discovery; the credential travels only in the URL fragment, which the
   web client captures into memory and strips from the location immediately.
 - `packages/web` (Vite + React 19 + TypeScript, committed scaffold with pre-installed
@@ -1566,7 +1610,7 @@ implemented shape and the evidence used to close a phase.
 - Routing panel: custom domains, browser identity routes, and managed profiles are
   edited through the authored definition with a full line diff, validate-first gating,
   and optional plan/up follow-through — the CLI/API equivalent is the definition file
-  plus `switchyard validate`.
+  plus `apmpr validate`.
 - Per-instance log access from instance cards passes the existing `target` command
   field (review addition), completing combined and per-service logs in the GUI.
 
@@ -1607,7 +1651,7 @@ implemented shape and the evidence used to close a phase.
 
 ### Phase 6 Part 5 verification
 
-- `cargo test -p switchyard-planner --all-features`: passed (21 tests including the
+- `cargo test -p apmpr-planner --all-features`: passed (21 tests including the
   four new fixture tests).
 - `cargo fmt --all -- --check`, workspace clippy `-D warnings`, rustdoc `-D warnings`:
   passed.
@@ -1625,7 +1669,7 @@ implemented shape and the evidence used to close a phase.
   complete automation from partial automation; criteria 1, 3, 7, 14, and 18 carry
   documented manual procedures for their remaining manual portions. The CLI/API/GUI
   parity matrix covers every common operation; the two gaps it found were closed
-  during review: `switchyard operation cancel <id>` (daemon-backed arbitrary
+  during review: `apmpr operation cancel <id>` (daemon-backed arbitrary
   operation cancellation from the CLI) and an instance-card **Open** button for
   managed-profile instances in the GUI.
 - `docs/upgrade-recovery.md` documents test-backed upgrade (ordered migrations,
@@ -1648,7 +1692,7 @@ implemented shape and the evidence used to close a phase.
   clippy `-D warnings`, rustdoc `-D warnings`, GUI clean install/build and 12 Vitest
   tests, and the complete live jas-base smoke (topology, worktree sources, live group
   switching, task initialization, volume persistence, ownership-scoped cleanup).
-- `cargo test -p switchyard-cli --all-features`: passed (35 unit tests including the
+- `cargo test -p apmpr-cli --all-features`: passed (35 unit tests including the
   new `parses_operation_cancel`, plus the daemon-parity integration test).
 - Earlier per-part verification is recorded in the Part 1–5 sections above; the
   routing proof remains covered by `scripts/phase4-proof.sh`.
@@ -1674,7 +1718,7 @@ implemented shape and the evidence used to close a phase.
   `definition_absence_and_validation_failures_have_stable_structured_errors`.
 - Follow-up review fixes: `api_for_tests` now prepares the daemon with empty runtime
   observations (production `start_with_backend` still observes Docker), so the daemon
-  test suite is hermetic against Switchyard-labeled resources on the host — proven by
+  test suite is hermetic against APM ProjectRunner-labeled resources on the host — proven by
   rerunning the empty-state test with a live decoy-labeled container. `check.sh audit`
   now names the toolchain-compatible install (`cargo install cargo-audit --locked
   --version 0.22.1`; 0.22.2+ needs rustc 1.88, the workspace pins 1.85).
@@ -1761,13 +1805,13 @@ implemented shape and the evidence used to close a phase.
   include the publisher log tail in immediate-exit errors.
 - `./scripts/check.sh`: PASSED end to end after the fixes.
 - Live proof (radxa 192.168.1.10 publishing, poco-f1-nixos 192.168.1.167
-  observing): `switchyard up` on the LAN-enabled routing-matrix fixture published
+  observing): `apmpr up` on the LAN-enabled routing-matrix fixture published
   `ui-1.routing-matrix.local -> 192.168.1.10` with the full check report (pass:
   avahi binary, avahi-daemon, lan-interface; warn: vpn-interface for tailscale0,
   firewall indeterminate under nftables, network-boundaries, name-resolution
   without nss-mdns). A unicast mDNS query from the second machine returned the
   correct A record and a curl through the published name returned 200 via the
-  gateway. `switchyard down` stopped the owned publisher, removed the state file,
+  gateway. `apmpr down` stopped the owned publisher, removed the state file,
   and the name stopped answering.
 - Environmental limitation observed and documented: this Wi-Fi network does not
   propagate the radxa host's outbound multicast (its own hostname `.local` record
@@ -1793,7 +1837,7 @@ implemented shape and the evidence used to close a phase.
 - Daemon deployment list/detail project the guarded state as optional
   `tailscalePublication`. Router documentation covers checks, custom-domain resolution
   through MagicDNS split DNS or client-side resolution, and the strict boundary that
-  Switchyard never runs Tailscale mutation commands or Funnel/public exposure.
+  APM ProjectRunner never runs Tailscale mutation commands or Funnel/public exposure.
 - Hermetic adapter tests cover running, stopped, and missing-binary status through the
   command seam. `cargo fmt --all --check`, workspace/all-target clippy with
   `-D warnings`, and the requested package tests pass except for the pre-existing
@@ -1806,13 +1850,13 @@ implemented shape and the evidence used to close a phase.
 
 - `./scripts/check.sh`: PASSED end to end.
 - Live tailnet proof (radxa publishing, poco-f1-nixos on the same tailnet):
-  `switchyard up` with `publishTailscale: true` reported
+  `apmpr up` with `publishTailscale: true` reported
   `radxa-dragon-q6a.warg-firefighter.ts.net via 100.106.209.100, fd7a:...` with all
   four checks passing. From the second machine over the tailnet, a request to the
   raw ts.net name failed closed with structured `route_not_found` (custom domains
   are not tailnet-resolvable by default, as documented), and a Host-resolved
   request to the custom domain through the tailscale address returned 200.
-  `switchyard down` removed the owner-only publication state file.
+  `apmpr down` removed the owner-only publication state file.
 
 ### Part 4 reviewer verification (2026-07-16)
 
@@ -1849,7 +1893,7 @@ implemented shape and the evidence used to close a phase.
 ## Phase 7 reliability — Part 6: upgrade and heavy reliability tests
 
 - Added fast SQLite upgrade-matrix tests for schema versions 1, 2, and 3 in
-  `switchyard-state`. The fixtures are built through the actual historical DDL
+  `apmpr-state`. The fixtures are built through the actual historical DDL
   embedded in `src/migrations` rather than committed binary databases; this keeps
   the rows readable in review, avoids SQLite-file portability churn, and still
   exercises the production migration and backup path. Each version inserts
@@ -1861,7 +1905,7 @@ implemented shape and the evidence used to close a phase.
   original version-2 database intact after a transaction failure, restores the
   backup to a new path, and verifies the normal current migration succeeds.
 - Added schema compatibility goldens: router-config pins a Phase-7 host-router
-  JSON fixture with `exposure` LAN/Tailscale fields; switchyard-planner pins
+  JSON fixture with `exposure` LAN/Tailscale fields; apmpr-planner pins
   copied compat deployments for `examples/routing-matrix` and `examples/jas-base`
   with expected definition/resource hashes and deterministic generated router
   configs.
@@ -1902,18 +1946,18 @@ implemented shape and the evidence used to close a phase.
 ## Phase 7 reliability — Part 7: release packaging and diagnostics
 
 - Added native host release assembly in `scripts/release.sh`: Rust release builds for
-  `switchyard`, `switchyard-daemon`, and `switchyard-router`; a clean Node.js 24 GUI
+  `apmpr`, `apmpr-daemon`, and `apmpr-router`; a clean Node.js 24 GUI
   build; a version derived from the workspace version plus `git describe`; a platform
   tarball; generated release notes; mandatory SHA-256 checksums; and optional SSH
-  signatures in the fixed `switchyard-release` namespace. No cross-compilation or
+  signatures in the fixed `apmpr-release` namespace. No cross-compilation or
   host-dependent GPG tooling is used.
 - The archive contains ownership-aware prefix installation and uninstallation. Upgrade
   replacement and deletion require the prior installed-files manifest plus matching
-  per-file hashes, non-Switchyard paths are never overwritten, the default prefix is
+  per-file hashes, non-APM ProjectRunner paths are never overwritten, the default prefix is
   user-writable `~/.local`, and the daemon discovers the GUI installed below that
   prefix. `scripts/release-smoke.sh` provides the fast no-Docker artifact checksum,
   extraction, install, executable, uninstall, and clean-prefix proof.
-- Added `switchyard diagnostics <deployment.yaml> [--output <path>]`. Its one-file JSON
+- Added `apmpr diagnostics <deployment.yaml> [--output <path>]`. Its one-file JSON
   report gathers host/tool/runtime versions, planner validation and definition identity,
   daemon detail or deployment-scoped generated/runtime state, host-gateway logs, live
   router events when authenticated locally, and best-effort read-only Docker ownership
@@ -1936,13 +1980,13 @@ implemented shape and the evidence used to close a phase.
 - `cargo clippy --workspace --all-targets -- -D warnings`: PASSED.
 - `bash -n scripts/release.sh scripts/release-smoke.sh`: PASSED; the packaged install
   and uninstall assets also pass `bash -n`.
-- `cargo test -p switchyard-cli -p switchyard-planner`: the new diagnostics/parser
+- `cargo test -p apmpr-cli -p apmpr-planner`: the new diagnostics/parser
   tests and all planner tests pass. The unfiltered command reaches the pre-existing
   `host_runtime::tests::failed_startup_cleanup_allows_a_clean_retry` sandbox failure
   (`Operation not permitted` while exercising process signaling); rerunning with that
   one host-permission test skipped passes 43 CLI unit tests, daemon parity, all 26
   planner unit/integration tests, and planner doc tests.
-- A real `target/debug/switchyard diagnostics` run against `routing-matrix` wrote an
+- A real `target/debug/apmpr diagnostics` run against `routing-matrix` wrote an
   owner-only (`0600`) JSON report, captured generated/runtime/log state, and represented
   unavailable Docker access as best-effort structured data. A synthetic package using
   the built executables passed fresh install, manifest-owned upgrade with obsolete GUI
@@ -1966,8 +2010,8 @@ implemented shape and the evidence used to close a phase.
 - `./scripts/release-smoke.sh`: PASSED (checksum verification, temp-prefix
   install, installed binaries invoke, ownership-checked uninstall, clean
   prefix).
-- Live `switchyard diagnostics` against the running routing-matrix deployment
-  with a planted `SWITCHYARD_ROUTER_TOKEN`: token absent from the report,
+- Live `apmpr diagnostics` against the running routing-matrix deployment
+  with a planted `APMPR_ROUTER_TOKEN`: token absent from the report,
   output mode 0600, all sections present, paths still readable after the
   scoped-redaction fix.
 - `/dist/` added to `.gitignore` so release artifacts cannot be committed.
@@ -2044,10 +2088,10 @@ implemented shape and the evidence used to close a phase.
 ## 2026-07-16 — GUI Up router credential propagation
 
 - Fixed daemon-backed `Up` operations failing with
-  `SWITCHYARD_ROUTER_TOKEN must be set when starting routers`: the real CLI backend now
+  `APMPR_ROUTER_TOKEN must be set when starting routers`: the real CLI backend now
   receives a persistent project router credential and injects it into daemon-spawned
   commands alongside the recursion guard.
-- The daemon loads or creates `.switchyard/router-token` as an owner-only regular file.
+- The daemon loads or creates `.apmpr/router-token` as an owner-only regular file.
   It reuses the value across daemon restarts, accepts an environment value only when
   seeding a missing file or matching the existing value, and does not expose the token
   through its API, GUI, or debug output.
@@ -2059,27 +2103,27 @@ implemented shape and the evidence used to close a phase.
   denied, and the rebuilt CLI succeeds. New tests cover child credential injection,
   persistence, owner-only permissions, and mismatched-override refusal.
 
-## 2026-07-16 — `switchyard init` reference-template scaffolding
+## 2026-07-16 — `apmpr init` reference-template scaffolding
 
-- New `switchyard init <directory> [--name <project-name>] [--force]` command scaffolds
+- New `apmpr init <directory> [--name <project-name>] [--force]` command scaffolds
   a base project from templates embedded in the binary: a minimal but real
   `deployment.yaml` (one nginx container service with provides/probe/publish plus
   commented sources/consumer examples), `overlays/dev.yaml`, `README.md` with the
-  standard command sequence, and a `.gitignore` covering `.switchyard/`.
+  standard command sequence, and a `.gitignore` covering `.apmpr/`.
 - Project names default to the sanitized directory basename (DNS-label rules) and can
   be overridden with `--name`; existing scaffold files are enumerated and refused
   without `--force`. After writing, the command validates the generated deployment
-  through the same `load_and_plan` path as `switchyard validate`, so the template
+  through the same `load_and_plan` path as `apmpr validate`, so the template
   cannot silently rot.
-- Verification: all 47 `switchyard-cli` unit tests plus the daemon-parity integration
+- Verification: all 47 `apmpr-cli` unit tests plus the daemon-parity integration
   test pass locally; workspace clippy with `-D warnings` passes. End-to-end proof on
   this machine: `init` → `validate` → `plan` (dev overlay origin attributed) →
   `up` (container reaches healthy under Docker) → `down` (zero leftover resources),
   plus conflict refusal on re-run and `--force` overwrite.
 
-## 2026-07-16 — Interactive `switchyard init`
+## 2026-07-16 — Interactive `apmpr init`
 
-- `switchyard init` now starts a guided initializer when no directory is supplied. It
+- `apmpr init` now starts a guided initializer when no directory is supplied. It
   asks for a valid deployment name and an optional destination (defaulting to a new
   folder named after the project), then creates and validates the complete reference
   template. The existing directory-based command remains available for automation.
@@ -2087,9 +2131,9 @@ implemented shape and the evidence used to close a phase.
 ## 2026-07-17 — TUI control plane Phase A: architecture and contracts
 
 - Documented in `DESIGN.md`: the retained-Ratatui-TUI decision and the shared
-  `switchyard-ops` operations/projection crate boundary; a retroactive device model
+  `apmpr-ops` operations/projection crate boundary; a retroactive device model
   (project-scoped SSH records, implicit `local`, placement is validated never ignored,
-  global config deferred); the `switchyard-profiles.yaml` source-local startup-profile
+  global config deferred); the `apmpr-profiles.yaml` source-local startup-profile
   manifest with explicit import, content-hash trust, and project-over-source
   precedence; the final user-facing terminology table (the handwritten
   "project / project instance" naming was rejected); and the scoped limited remote
@@ -2107,9 +2151,9 @@ implemented shape and the evidence used to close a phase.
 
 ## 2026-07-18 — TUI control plane Phase B: guided configuration
 
-- `switchyard-ops` crate extracted from the TUI (execution, run scripts, projections)
+- `apmpr-ops` crate extracted from the TUI (execution, run scripts, projections)
   with zero behavior change; TUI now consumes it (commit cc3bc88).
-- Source-local startup-profile domain per DESIGN.md: `switchyard-profiles.yaml`
+- Source-local startup-profile domain per DESIGN.md: `apmpr-profiles.yaml`
   discovery (read-only, planner-validated), state schema v6 `imported_profiles` with
   canonical content hashes, trust/shadowing projections (commit 016a408).
 - New Profiles TUI tab: origin/trust/services table, per-source manifest diagnostics,
@@ -2129,10 +2173,10 @@ implemented shape and the evidence used to close a phase.
 
 - Connections tab: consumer×slot route matrix with compatible-group drafting,
   old/new provider preview via `plan_with_binding`, atomic apply through the
-  existing `switchyard bind` operation, and route version/transition/error status
+  existing `apmpr bind` operation, and route version/transition/error status
   projected from `router_bindings` and `route_history` (commit 6533a16).
 - Review fixes: stored deployments whose authored definition lives outside the
-  project now fall back to `.switchyard/generated/<name>/resolved-deployment.yaml`
+  project now fall back to `.apmpr/generated/<name>/resolved-deployment.yaml`
   so the matrix and bind work at the dogfooding repo root; connection-matrix load
   errors are surfaced in the view instead of being swallowed into an empty state;
   `[`/`]` deployment switching now also works in the Connections view.
@@ -2156,7 +2200,7 @@ implemented shape and the evidence used to close a phase.
   network-label fix (9791e8c) was required by this run. Bridged container networking
   is broken in that device's vendor kernel (host↔container traffic never passes;
   its resident Home Assistant container runs host-networked), so routed traffic
-  cannot terminate there; this is a device limitation, not a Switchyard defect.
+  cannot terminate there; this is a device limitation, not an APM ProjectRunner defect.
 - Full routed proof over a real SSH device at the local machine's LAN address:
   local consumer with fixed 127.0.0.1:8080 + sidecar router + remote provider
   started via `DOCKER_HOST=ssh://` — traffic reached nginx on the provider through
@@ -2192,13 +2236,13 @@ implemented shape and the evidence used to close a phase.
   concrete failure reason; the instance form labels remote devices and states the
   cut's requirements; instance/service rows show true placement and unreachable
   devices are rendered explicitly.
-- Live verification: `switchyard device check poco` reports "eligible for remote
+- Live verification: `apmpr device check poco` reports "eligible for remote
   container execution (docker 28.5.1)" against the real LAN device and the TUI
   Devices tab renders the same over a pty.
 
 ## 2026-07-18 — TUI control plane Phase E complete: milestone closed
 
-- Expanded the `switchyard init` AI skill to 198 lines implementing every section-7
+- Expanded the `apmpr init` AI skill to 198 lines implementing every section-7
   requirement: ordered inspection, read-only repository analysis, project and
   source-local profile authoring with the import trust boundary, complete
   groups/bindings, device placement rules for the limited remote cut, the
@@ -2211,7 +2255,7 @@ implemented shape and the evidence used to close a phase.
 - Final verification on the closing tree: scripts/check.sh fully green (fmt,
   clippy all-features -D warnings, workspace tests, rustdoc -D warnings); pty
   sweep rendered all six TUI tabs; release assembly produced
-  dist/switchyard-0.1.0+2c6a3df-dirty-linux-aarch64.tar.gz with verified
+  dist/apmpr-0.1.0+2c6a3df-dirty-linux-aarch64.tar.gz with verified
   SHA256SUMS.
 
 ## 2026-07-18 — TUI local device visibility
@@ -2323,7 +2367,7 @@ implemented shape and the evidence used to close a phase.
   child environment for one attempt. A private owner-only temp directory holds an
   owner-only askpass script containing no secret material and is removed on return;
   configured credential helpers are disabled for that submitted-credential retry so
-  Git cannot ask one to persist the value. No credential reaches SQLite, `.switchyard/`, operation results/errors, SSE events,
+  Git cannot ask one to persist the value. No credential reaches SQLite, `.apmpr/`, operation results/errors, SSE events,
   logs, or API responses. Clone events are fixed lifecycle messages rather than raw Git
   output because the general planner line redactor cannot guarantee removal of an
   arbitrary submitted token.
@@ -2355,7 +2399,7 @@ implemented shape and the evidence used to close a phase.
   rejects same-domain/different-slot or same-origin/different-provider conflicts. Group-address
   backend checks still emit `BackendGroupInvariant` at `spec.groups.<name>.address`, retain the
   "duplicate the backend instance" guidance, and reject groups with zero or multiple UI candidates.
-- Extended `switchyard migrate` as a second transform in the Part 1 seam. It converts a legacy
+- Extended `apmpr migrate` as a second transform in the Part 1 seam. It converts a legacy
   `uiRoutes` origin to the downstream group's address, adds the named UI and backend to that group,
   removes only custom-domain and Origin entries that can be proved redundant from the UI provider
   and explicit-header template, preserves unrelated authored routes sharing the same Origin,
@@ -2398,8 +2442,8 @@ read off the schema.
   the planner calls `create_worktree`, so directories must pre-exist. Planned: a
   `repositories:` section (`url:` managed, `clone:` adopted), sources always
   `{ repository, ref, path }`, and `up` creating what is missing. Notes that
-  `validate_containment` must be re-scoped from `.switchyard/worktrees` to the project
-  directory, and that migration must produce the adopted form so a directory Switchyard was
+  `validate_containment` must be re-scoped from `.apmpr/worktrees` to the project
+  directory, and that migration must produce the adopted form so a directory APM ProjectRunner was
   reading never becomes one it manages. Unresolved: plain-path sources used as build context
   (`{ path: . }`, `{ path: ../.. }`) are not worktrees.
 - **Part 2d — `bindings:` and `routes:` deleted.** Removing `bindings:` from a
@@ -2408,16 +2452,16 @@ read off the schema.
   in several groups, but the later product decision removed that unmeasurable distinction:
   every instance belongs to at most one group. `routes:` goes in the same pass.
 - **Part 2e — external instances.** `{ name, external, ports }` for things already running
-  outside Switchyard. `ports:` takes integers and inclusive range strings, mapping
+  outside APM ProjectRunner. `ports:` takes integers and inclusive range strings, mapping
   port-for-port; ranges expand before the Part 2a collision check so a clash names the port
   rather than the range.
 - **Part 4 deferred to V3.** A run action is `$SHELL -c` in the project directory
   (`run-actions/src/lib.rs:403`), and it cannot reach the deployment it is about: `publish:`
   emits `127.0.0.1::8080` so host ports are ephemeral, the group localhost exists only inside
   sidecars, and the promised environment is absent (`run-actions` never calls `.env()`;
-  `SWITCHYARD_BUNDLE` appears nowhere in the workspace). Landing the flat map first would
+  `APMPR_BUNDLE` appears nowhere in the workspace). Landing the flat map first would
   migrate everyone onto a shape that then changes again. Candidates recorded: export group
-  addresses, `switchyard exec <instance> -- <cmd>`, and a group-scoped script form.
+  addresses, `apmpr exec <instance> -- <cmd>`, and a group-scoped script form.
 - One-time exception noted in Part 2a stands; no other vision file was edited. Verification
   for this entry was CLI experiments against scratch deployments only — no test suite was run,
   because no code changed.

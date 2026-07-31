@@ -1,4 +1,4 @@
-# About Switchyard
+# About APM ProjectRunner
 
 The goal of this project is to run multiple source-backed instances at once, so you can
 work on different branches independently and test them in groups with other already
@@ -16,7 +16,7 @@ Normally you get one of each. If you want to work on the backend in a feature br
 while someone else's UI change is also in flight, you switch branches, restart things,
 and lose whatever state you had.
 
-With Switchyard (the APM project manager), you run **multiple source-backed instances**.
+With APM ProjectRunner, you run **multiple source-backed instances**.
 Several UIs, several backends, several databases — each instance built from a selected
 branch — all alive on the same machine at the same time. Instances in different groups
 may use the same branch.
@@ -51,7 +51,7 @@ rebuilding or restarting them. For example, after testing `backend-1`, reorder t
 or disable it temporarily and the same callers reach `backend-2`.
 
 Those alternatives may listen on the same port because every instance has its own
-namespace and localhost. Switchyard warns when more than one active group member listens
+namespace and localhost. APM ProjectRunner warns when more than one active group member listens
 on a requested port and routes to the first listed instance.
 
 Use `disabled: [instance-name]` to temporarily exclude a member from one group. The
@@ -87,7 +87,7 @@ group address can optionally be exposed on a LAN or private network.
 
 ## Instances on more than one device
 
-A registered device with SSH and Docker can run a container-backed provider. Switchyard
+A registered device with SSH and Docker can run a container-backed provider. APM ProjectRunner
 manages it and routes local consumers to its published address without application
 changes. Remote consumers, routers, and cross-device sidecars are not yet supported.
 

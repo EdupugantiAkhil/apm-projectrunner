@@ -1,6 +1,6 @@
 [package]
 name = "router-config"
-description = "Versioned Switchyard router configuration contracts"
+description = "Versioned APM ProjectRunner router configuration contracts"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

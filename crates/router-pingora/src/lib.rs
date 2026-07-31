@@ -1,6 +1,6 @@
 //! Pingora-backed HTTP-family data plane.
 //!
-//! Pingora is an implementation detail: the public API accepts only Switchyard
+//! Pingora is an implementation detail: the public API accepts only APM ProjectRunner
 //! configuration and routing types.
 
 use std::{
@@ -173,7 +173,7 @@ fn load_proxy_credential(
         ));
     }
 
-    let mut cleartext = b"switchyard:".to_vec();
+    let mut cleartext = b"apmpr:".to_vec();
     cleartext.extend_from_slice(&token);
     token.fill(0);
     let encoded = BASE64_STANDARD.encode(&cleartext);
@@ -384,7 +384,7 @@ impl HttpDataPlane {
             .zip(self.proxy_credentials)
             .enumerate()
         {
-            let app = SwitchyardProxy {
+            let app = ApmprProxy {
                 engine: self.engine.clone(),
                 listener: listener.clone(),
                 proxy_credential,
@@ -395,7 +395,7 @@ impl HttpDataPlane {
             let mut server_options = HttpServerOptions::default();
             server_options.h2c = matches!(listener.protocol, Protocol::Grpc);
             let mut service = ProxyServiceBuilder::new(&server.configuration, app)
-                .name(format!("switchyard-http-{index}"))
+                .name(format!("apmpr-http-{index}"))
                 .server_options(server_options)
                 .build();
             let address = format!("{}:{}", listener.bind.host, listener.bind.port);
@@ -427,7 +427,7 @@ impl HttpDataPlane {
         let shutdown = Arc::new(Notify::new());
         let signal = NotifyShutdown(shutdown.clone());
         let join = thread::Builder::new()
-            .name("switchyard-pingora".into())
+            .name("apmpr-pingora".into())
             .spawn(move || {
                 server.run(RunArgs {
                     #[cfg(unix)]
@@ -519,7 +519,7 @@ struct RequestContext {
     error_counted: bool,
 }
 
-struct SwitchyardProxy {
+struct ApmprProxy {
     engine: Arc<RouteEngine>,
     listener: Listener,
     proxy_credential: Option<ProxyCredential>,
@@ -528,7 +528,7 @@ struct SwitchyardProxy {
     telemetry: DataPlaneTelemetry,
 }
 
-impl SwitchyardProxy {
+impl ApmprProxy {
     async fn reject_proxy_authentication(
         &self,
         session: &mut Session,
@@ -591,7 +591,7 @@ impl SwitchyardProxy {
 }
 
 #[async_trait]
-impl ProxyHttp for SwitchyardProxy {
+impl ProxyHttp for ApmprProxy {
     type CTX = RequestContext;
 
     fn new_ctx(&self) -> Self::CTX {
@@ -1040,7 +1040,7 @@ async fn respond_proxy_authentication_required(session: &mut Session) -> Pingora
     let mut header = ResponseHeader::build(407, Some(4))?;
     header.insert_header("content-type", "application/json")?;
     header.insert_header("content-length", body.len().to_string())?;
-    header.insert_header("proxy-authenticate", "Basic realm=\"Switchyard\"")?;
+    header.insert_header("proxy-authenticate", "Basic realm=\"apmpr\"")?;
     session
         .write_response_header(Box::new(header), false)
         .await?;
@@ -1500,7 +1500,7 @@ mod tests {
         };
 
         let directory = std::env::temp_dir().join(format!(
-            "switchyard-invalid-proxy-auth-{}-{}",
+            "apmpr-invalid-proxy-auth-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

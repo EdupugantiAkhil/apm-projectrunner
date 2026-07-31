@@ -1,4 +1,4 @@
-# Switchyard implementation plan
+# APM ProjectRunner implementation plan
 
 This file is the execution checklist for the architecture in [DESIGN.md](DESIGN.md).
 It deliberately separates implementation progress from design discussion so completed
@@ -67,7 +67,7 @@ Goal: establish stable contracts and test fixtures before implementing network b
 - [x] Specify the `routing-matrix` fixture with three UIs, two backend instances, two
       five-service groups, and at least one shared service.
 - [x] Ensure fixture applications use fixed localhost addresses and require no
-      Switchyard-specific code.
+      APM ProjectRunner-specific code.
 - [x] Define observable responses that identify the selected backend and every selected
       downstream service.
 
@@ -101,7 +101,7 @@ Entry gate: Phase 0 is complete.
 - [x] Implement HTTP/1.1 reverse proxying.
 - [x] Implement HTTP/2 and gRPC proxying.
 - [x] Implement WebSocket upgrade and long-lived connection proxying.
-- [x] Preserve required forwarding metadata while removing internal Switchyard headers
+- [x] Preserve required forwarding metadata while removing internal APM ProjectRunner headers
       before provider delivery where configured.
 - [x] Implement upstream connection timeouts, request limits, and structured errors.
 - [x] Implement provider readiness and health checks.
@@ -146,7 +146,7 @@ Entry gate: the Phase 1 router engine is stable.
       and missing providers before mutation.
 - [x] Resolve a deployment into deterministic container, network, volume, DNS, and route
       names.
-- [x] Generate Docker Compose as an internal artifact under `.switchyard/generated`.
+- [x] Generate Docker Compose as an internal artifact under `.apmpr/generated`.
 - [x] Create one private bridge network per deployment.
 - [x] Add stable ownership labels to every generated Docker resource.
 - [x] Publish human-facing container ports only on host loopback using dynamically
@@ -167,13 +167,13 @@ Entry gate: the Phase 1 router engine is stable.
 
 ### One-shot CLI
 
-- [x] Implement `switchyard validate`.
-- [x] Implement `switchyard plan` with a complete mutation and route preview.
-- [x] Implement `switchyard up` with build and health progress.
-- [x] Implement `switchyard bind` with validation and atomic snapshot application.
-- [x] Implement `switchyard status` and route inspection.
-- [x] Implement combined and per-instance `switchyard logs`.
-- [x] Implement `switchyard down` without deleting persistent volumes by default.
+- [x] Implement `apmpr validate`.
+- [x] Implement `apmpr plan` with a complete mutation and route preview.
+- [x] Implement `apmpr up` with build and health progress.
+- [x] Implement `apmpr bind` with validation and atomic snapshot application.
+- [x] Implement `apmpr status` and route inspection.
+- [x] Implement combined and per-instance `apmpr logs`.
+- [x] Implement `apmpr down` without deleting persistent volumes by default.
 - [x] Implement explicit destructive cleanup with confirmation and ownership checks.
 
 ### Recovery without SQLite
@@ -188,7 +188,7 @@ Entry gate: the Phase 1 router engine is stable.
 - [x] Two unchanged backend containers both call the same localhost ports and reach
       different provider groups.
 - [x] Switching one backend's five-service group does not restart either backend.
-- [x] Persistent application data survives `switchyard down` and a later `up`.
+- [x] Persistent application data survives `apmpr down` and a later `up`.
 
 ## Phase 3 — Native host gateway and browser routing
 
@@ -199,7 +199,7 @@ Entry gate: Docker instances and sidecar routing work end to end.
 
 ### Host gateway
 
-- [x] Add native host-gateway mode to the Switchyard Router binary.
+- [x] Add native host-gateway mode to the APM ProjectRunner Router binary.
 - [x] Bind configured custom-domain and legacy localhost listeners on the host.
 - [x] Route custom domains to loopback-only container upstream ports.
 - [x] Add configurable local HTTP and HTTPS modes.
@@ -221,16 +221,16 @@ Entry gate: Docker instances and sidecar routing work end to end.
 
 ### Explicit per-tab identity
 
-- [x] Specify the `X-Switchyard-Route` header format and trust boundary.
+- [x] Specify the `X-Apmpr-Route` header format and trust boundary.
 - [x] Build a minimal Chromium extension that associates an allowed route with a tab.
-- [x] Ensure extension rules cannot target undeclared Switchyard deployments.
+- [x] Ensure extension rules cannot target undeclared APM ProjectRunner deployments.
 - [x] Strip the identity header before forwarding unless a provider explicitly opts in.
 - [x] Document extension installation, permissions, and disable/remove behavior.
 - [x] Test multiple UI tabs making identical localhost requests concurrently.
 
 ### Managed profile fallback
 
-- [x] Implement `switchyard open <ui>`.
+- [x] Implement `apmpr open <ui>`.
 - [x] Allocate a dedicated authenticated forward-proxy listener per managed profile.
 - [x] Launch Chromium with the required proxy and loopback-bypass arguments.
 - [x] Store browser data in deployment-scoped, removable profile directories.
@@ -293,7 +293,7 @@ Entry gate: Phases 0–3 are complete.
 
 - [x] The complete routing-matrix scenario passes from a clean checkout with one
       documented command.
-- [x] The test requires no changes or Switchyard libraries inside fixture applications.
+- [x] The test requires no changes or APM ProjectRunner libraries inside fixture applications.
 - [x] The routing proof is reproducible on every initially supported host platform.
 - [x] Known limitations and the backend-group invariant are visible in CLI diagnostics
       and documentation.
@@ -307,7 +307,7 @@ Entry gate: the routing proof release is complete.
 
 ### Daemon and API
 
-- [x] Implement the long-running Switchyard control-plane daemon.
+- [x] Implement the long-running APM ProjectRunner control-plane daemon.
 - [x] Define a versioned HTTP API shared by the CLI and future GUI.
 - [x] Add Server-Sent Events for operations, builds, health, routes, and logs.
 - [x] Serialize mutations per deployment and enforce a global concurrency limit.
@@ -568,9 +568,9 @@ Goal: let a developer adopt an existing code folder and enter its project-scoped
 dashboard without first scaffolding a deployment, starting a daemon manually, or using
 the TUI.
 
-- [x] Add a non-destructive, idempotent `switchyard project register [directory]`
+- [x] Add a non-destructive, idempotent `apmpr project register [directory]`
       command with a versioned project marker and initial project-root source.
-- [x] Let `switchyard gui [project]` start the selected project's loopback daemon when
+- [x] Let `apmpr gui [project]` start the selected project's loopback daemon when
       needed and preserve the existing fragment-to-memory authentication boundary.
 - [x] Expose authenticated project identity through the control API and render it in
       the dashboard so users can see which folder they are managing.
@@ -587,7 +587,7 @@ with no TUI step and no manual daemon lifecycle step.
 ## macOS support track
 
 Goal: promote Apple Silicon on macOS 26 or newer with Docker Desktop Linux containers
-from workspace-only use to a verified local Switchyard platform without weakening
+from workspace-only use to a verified local APM ProjectRunner platform without weakening
 routing isolation, authenticated control, ownership-aware recovery, or cleanup
 guarantees. Intel Macs and older macOS releases are intentionally outside the product
 support scope, rather than deferred verification targets.

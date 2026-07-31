@@ -1,0 +1,2165 @@
+#![cfg(unix)]
+
+mod browser;
+mod cli;
+mod daemon_service;
+mod diagnostics;
+mod host_runtime;
+mod init;
+mod lan_preflight;
+mod migrate;
+mod project;
+mod runtime;
+mod tailscale_publication;
+
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env, fmt, fs, io,
+    net::{SocketAddr, TcpListener, ToSocketAddrs},
+    path::{Path, PathBuf},
+    process::{Command, ExitCode, Stdio},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use apmpr_planner::{Bundle, Plan};
+use cli::{CliCommand, DeploymentOptions, USAGE};
+use router_config::RouterConfig;
+use runtime::{DeploymentStatus, DockerRuntime, DriftState, RemoteRuntimeProject, RuntimePlan};
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("apmpr: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Reports every `SWITCHYARD_*` variable still set in the environment.
+///
+/// The rename to APM ProjectRunner moved these to `APMPR_*`. A stale variable would otherwise
+/// be silently ignored, which for `SWITCHYARD_ROUTER_TOKEN` reads as an unexplained "must be
+/// set" failure while the value sits right there under its old name.
+fn renamed_environment_variables<I>(variables: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut stale: Vec<String> = variables
+        .into_iter()
+        .filter(|name| name.starts_with("SWITCHYARD_"))
+        .map(|name| {
+            let renamed = name.replacen("SWITCHYARD_", "APMPR_", 1);
+            format!("{name} -> {renamed}")
+        })
+        .collect();
+    stale.sort();
+    stale
+}
+
+fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let stale = renamed_environment_variables(env::vars().map(|(name, _)| name));
+    if !stale.is_empty() {
+        return Err(Box::new(MessageError(format!(
+            "Switchyard was renamed to APM ProjectRunner, so these environment variables are no longer read; rename them and retry:\n  {}",
+            stale.join("\n  ")
+        ))));
+    }
+    let command = cli::parse(env::args_os().skip(1))?;
+    if command == CliCommand::Help {
+        print!("{USAGE}");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let mut workspace_root = env::current_dir()?;
+    if let CliCommand::Init {
+        directory,
+        name,
+        force,
+    } = &command
+    {
+        let (directory, name) = match directory {
+            Some(directory) => (directory.clone(), name.clone()),
+            None => {
+                let stdin = io::stdin();
+                let mut input = stdin.lock();
+                let stdout = io::stdout();
+                let mut output = stdout.lock();
+                let (directory, name) = init::prompt(&mut input, &mut output, &workspace_root)?;
+                (directory, Some(name))
+            }
+        };
+        let scaffold = init::scaffold(&directory, name.as_deref(), *force)?;
+        let (_, plan) = load_and_plan(&scaffold.deployment)?;
+        println!(
+            "initialized deployment `{}` in {}",
+            scaffold.project_name,
+            scaffold.directory.display()
+        );
+        println!("deployment is valid (definition {})", plan.definition_hash);
+        return Ok(ExitCode::SUCCESS);
+    }
+    if let CliCommand::ProjectRegister { directory, name } = &command {
+        let registration = project::register(directory, name.as_deref())?;
+        println!(
+            "{} APM ProjectRunner project `{}` at {}",
+            if registration.already_registered {
+                "found"
+            } else {
+                "registered"
+            },
+            registration.metadata.name,
+            registration.root.display()
+        );
+        println!("code source: {}", registration.source_name);
+        println!(
+            "open the dashboard with `apmpr gui {}`",
+            registration.root.display()
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    if let CliCommand::Gui { project_dir } | CliCommand::DaemonInstall { project_dir } = &command {
+        workspace_root = project_dir.canonicalize().map_err(|error| {
+            MessageError(format!(
+                "could not open project folder `{}`: {error}",
+                project_dir.display()
+            ))
+        })?;
+        let registered = apmpr_state::load_project_metadata(&workspace_root)?.is_some();
+        let legacy = workspace_root.join("deployment.yaml").is_file()
+            || workspace_root.join("deployments").is_dir();
+        if !registered && !legacy {
+            return Err(MessageError(format!(
+                "`{}` is not an APM ProjectRunner project; run `apmpr project register {}` first",
+                workspace_root.display(),
+                workspace_root.display()
+            ))
+            .into());
+        }
+    }
+    if let CliCommand::Diagnostics { deployment, output } = &command {
+        let path = diagnostics::write_bundle(&workspace_root, deployment, output.as_deref())?;
+        println!(
+            "wrote diagnostics to {}; review the file before sharing",
+            path.display()
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    if let CliCommand::Migrate { deployment } = &command {
+        let result = migrate::migrate(deployment, || {
+            eprintln!(
+                "warning: {}: {}",
+                deployment.display(),
+                migrate::FORMAT_WARNING
+            );
+        })?;
+        if result.changed {
+            println!(
+                "migrated {} to {}",
+                deployment.display(),
+                apmpr_planner::API_VERSION
+            );
+            println!("changes:");
+            for change in result.changes {
+                println!("  - {change}");
+            }
+        } else {
+            println!("{} is already up to date", deployment.display());
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    if let CliCommand::Tui { project_dir } = &command {
+        apmpr_tui::run(project_dir)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    if let Some(code) = handle_daemon_command(&workspace_root, &command)? {
+        return Ok(code);
+    }
+    if let Some(code) = handle_source_command(&workspace_root, &command)? {
+        return Ok(code);
+    }
+    if env::var_os("APMPR_BYPASS_DAEMON").is_none() && daemon_compatible(&command) {
+        let (kind, request) = daemon_request(&command);
+        match apmpr_daemon::client::execute_if_running(&workspace_root, kind, &request)? {
+            apmpr_daemon::client::DaemonExecution::NotRunning => {}
+            apmpr_daemon::client::DaemonExecution::Completed(operation) => {
+                let result = operation.result.ok_or_else(|| {
+                    MessageError("daemon completed the operation without a command result".into())
+                })?;
+                print!("{}", result.stdout);
+                eprint!("{}", result.stderr);
+                if matches!(
+                    command,
+                    CliCommand::Status { .. } | CliCommand::Routes { .. }
+                ) {
+                    if let Some(routes) = apmpr_daemon::client::deployment_routes(
+                        &workspace_root,
+                        &operation.deployment,
+                    )? {
+                        print_route_versions(&routes);
+                    }
+                }
+                let code = u8::try_from(result.exit_code).unwrap_or(1);
+                return Ok(ExitCode::from(code));
+            }
+        }
+    }
+    let runtime = DockerRuntime::default();
+    match command {
+        CliCommand::BundleExport {
+            deployment,
+            overlays,
+            output,
+        } => {
+            let export = apmpr_planner::export_portable_bundle(
+                &deployment,
+                &apmpr_planner::ExportBundleOptions { overlays },
+            )?;
+            let output = output.unwrap_or_else(|| {
+                PathBuf::from(format!(
+                    "{}.apmpr-bundle.json",
+                    export.bundle.metadata.deployment_name
+                ))
+            });
+            apmpr_planner::write_portable_bundle(&output, &export.bundle)?;
+            println!(
+                "exported deployment `{}` to {}",
+                export.bundle.metadata.deployment_name,
+                output.display()
+            );
+            println!("content hash: {}", export.bundle.content_hash);
+            if !export.bundle.required_local_inputs.is_empty() {
+                println!("required local inputs:");
+                for input in &export.bundle.required_local_inputs {
+                    println!(
+                        "  {} [{}]: {}",
+                        input.name,
+                        required_input_kind(&input.kind),
+                        input.description
+                    );
+                }
+            }
+            for warning in export.warnings {
+                println!(
+                    "Warning [{}] {}: {}",
+                    bundle_warning_code(&warning.code),
+                    warning.path,
+                    warning.message
+                );
+            }
+        }
+        CliCommand::BundleImport {
+            bundle,
+            into,
+            force,
+        } => {
+            let imported = apmpr_planner::import_portable_bundle(
+                &bundle,
+                &into,
+                &apmpr_planner::ImportBundleOptions { force },
+            )?;
+            println!(
+                "imported deployment `{}` into {}",
+                imported.deployment_name,
+                into.display()
+            );
+            println!("Compatibility: ok");
+            if imported.required_local_inputs.is_empty() {
+                println!("Required local inputs: none");
+            } else {
+                println!("Required local inputs:");
+                for input in &imported.required_local_inputs {
+                    println!(
+                        "  {} [{}]: replace {} ({})",
+                        input.name,
+                        required_input_kind(&input.kind),
+                        into.join("required-local-inputs")
+                            .join(&input.name)
+                            .display(),
+                        input.expected_shape
+                    );
+                }
+            }
+            let (_, plan) = load_and_plan(&imported.definition_path)?;
+            let imported_workspace = definition_workspace_root(&imported.definition_path);
+            print_plan(&imported_workspace, &plan)?;
+            print_import_conflicts(&imported_workspace, &plan)?;
+        }
+        CliCommand::Validate { bundle } => {
+            let (_, plan) = load_and_plan(&bundle)?;
+            print_planner_warnings(&plan);
+            println!(
+                "deployment `{}` is valid (definition {})",
+                plan.deployment, plan.definition_hash
+            );
+        }
+        CliCommand::Plan { bundle, options } => {
+            let (_, plan) = load_and_plan_options(&bundle, &options)?;
+            print_planner_warnings(&plan);
+            print_plan(&workspace_root, &plan)?;
+        }
+        CliCommand::Up { bundle, options } => {
+            let (authored, _) = load_and_plan_options(&bundle, &options)?;
+            ensure_deployment_sources(&authored)?;
+            let (_, plan) = load_and_plan_options(&bundle, &options)?;
+            print_planner_warnings(&plan);
+            let runtime_plan = runtime_plan(&workspace_root, &plan);
+            runtime.check_remote_eligibility(&runtime_plan)?;
+            refuse_runtime_drift(&runtime.status(&runtime_plan)?)?;
+            let host_runtime = host_runtime::HostRuntime::new(&workspace_root, &plan);
+            let host_needs_token = host_runtime.requires_token_for_start()?;
+            if (!plan.sidecars.is_empty() || host_needs_token)
+                && env::var_os("APMPR_ROUTER_TOKEN").is_none()
+            {
+                return Err(MessageError(
+                    "APMPR_ROUTER_TOKEN must be set when starting routers".into(),
+                )
+                .into());
+            }
+            let artifact_dir = apmpr_planner::write_plan(&workspace_root, &plan)?;
+            println!("wrote {}", artifact_dir.display());
+            println!("building `{}`", plan.deployment);
+            runtime.up(&runtime_plan)?;
+            let host = host_runtime.start().map_err(|error| {
+                    MessageError(format!(
+                        "{error}; Compose resources may still be running for inspection—run `apmpr down {}` or `apmpr cleanup {} --yes`",
+                        bundle.display(),
+                        bundle.display()
+                    ))
+                })?;
+            println!("host gateway: {host}");
+            let mdns = lan_preflight::LanRuntime::new(&workspace_root, &plan).start()?;
+            print_mdns_status(&mdns);
+            let tailscale =
+                tailscale_publication::TailscaleRuntime::new(&workspace_root, &plan).start()?;
+            print_tailscale_status(&tailscale);
+            println!("deployment `{}` is healthy", plan.deployment);
+        }
+        CliCommand::Move {
+            bundle,
+            instance,
+            group,
+            transition,
+        } => {
+            let bundle = load_membership_base(&workspace_root, &bundle)?;
+            let devices = planning_devices(&workspace_root)?;
+            let current =
+                apmpr_planner::plan_with_devices(&bundle, &devices).map_err(diagnostics)?;
+            let mut plan = plan_with_membership(&workspace_root, &bundle, &instance, &group)?;
+            if plan.resource_hash != current.resource_hash {
+                return Err(MessageError(
+                    "moving this instance changes runtime resources; edit the membership and run `apmpr up`"
+                        .into(),
+                )
+                .into());
+            }
+            apply_membership_move(&workspace_root, &mut plan, transition)?;
+            apmpr_planner::write_plan(&workspace_root, &plan)?;
+            println!("moved `{instance}` into group `{group}`");
+        }
+        CliCommand::Status {
+            bundle,
+            routes,
+            options,
+        } => {
+            let (_, plan) = load_and_plan_options(&bundle, &options)?;
+            let status = runtime.status(&runtime_plan(&workspace_root, &plan))?;
+            print_status(&status);
+            println!(
+                "Host gateway: {}",
+                host_runtime::HostRuntime::new(&workspace_root, &plan).status()?
+            );
+            print_mdns_status(&lan_preflight::LanRuntime::new(&workspace_root, &plan).status()?);
+            print_tailscale_status(
+                &tailscale_publication::TailscaleRuntime::new(&workspace_root, &plan).status()?,
+            );
+            print_source_identities(&plan);
+            if routes {
+                print_routes(&plan)?;
+            }
+        }
+        CliCommand::Routes { bundle } => {
+            let (_, plan) = load_and_plan(&bundle)?;
+            print_routes(&plan)?;
+        }
+        CliCommand::Logs { bundle, target } => {
+            let (_, plan) = load_and_plan(&bundle)?;
+            let services = target
+                .as_deref()
+                .map(|target| log_targets(&plan, target))
+                .transpose()?
+                .unwrap_or_default();
+            runtime.logs(&runtime_plan(&workspace_root, &plan), &services)?;
+        }
+        CliCommand::Open { bundle, instance } => {
+            let (_, plan) = load_and_plan(&bundle)?;
+            let profile = browser::load_managed_profile(
+                &workspace_root,
+                &plan.artifact_dir,
+                &plan.deployment,
+                &instance,
+            )?;
+            let profile_dir = browser::open_managed_profile(&workspace_root, &profile)?;
+            println!(
+                "opened `{instance}` through route `{}` using profile {}",
+                profile.route,
+                profile_dir.display()
+            );
+        }
+        CliCommand::Down { bundle, options } => {
+            let (_, plan) = load_and_plan_options(&bundle, &options)?;
+            host_runtime::HostRuntime::new(&workspace_root, &plan).stop()?;
+            runtime.down(&runtime_plan(&workspace_root, &plan))?;
+            println!(
+                "deployment `{}` stopped; volumes were preserved",
+                plan.deployment
+            );
+        }
+        CliCommand::OverlayValidate { overlay } => {
+            let overlay = apmpr_planner::load_overlay(&overlay)?;
+            apmpr_planner::validate_overlay(&overlay).map_err(diagnostics)?;
+            println!("overlay `{}` is valid", overlay.metadata.name);
+        }
+        CliCommand::OverlayDiff { bundle, options } => {
+            let (_, plan) = load_and_plan_options(&bundle, &options)?;
+            print_overlay_diff(&workspace_root, &plan)?;
+        }
+        CliCommand::Cleanup { bundle, confirmed } => {
+            let (_, plan) = load_and_plan(&bundle)?;
+            if !confirmed {
+                runtime.cleanup(&runtime_plan(&workspace_root, &plan), false)?;
+                unreachable!("unconfirmed cleanup always returns an error");
+            }
+            host_runtime::HostRuntime::new(&workspace_root, &plan).cleanup()?;
+            runtime.cleanup(&runtime_plan(&workspace_root, &plan), true)?;
+            println!(
+                "deployment `{}` stopped and its owned volumes were deleted",
+                plan.deployment
+            );
+        }
+        CliCommand::Help
+        | CliCommand::Init { .. }
+        | CliCommand::DaemonRun
+        | CliCommand::DaemonInstall { .. }
+        | CliCommand::DaemonStatus
+        | CliCommand::DaemonStop
+        | CliCommand::OperationCancel { .. }
+        | CliCommand::Gui { .. }
+        | CliCommand::ProjectRegister { .. }
+        | CliCommand::Tui { .. }
+        | CliCommand::SourceList { .. }
+        | CliCommand::SourceRegister { .. }
+        | CliCommand::SourceDeregister { .. }
+        | CliCommand::DeviceList { .. }
+        | CliCommand::DeviceAdd { .. }
+        | CliCommand::DeviceRemove { .. }
+        | CliCommand::DeviceCheck { .. }
+        | CliCommand::WorktreeCreate { .. }
+        | CliCommand::WorktreeRemove { .. }
+        | CliCommand::Diagnostics { .. }
+        | CliCommand::Migrate { .. } => unreachable!("handled before command dispatch"),
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn print_mdns_status(status: &lan_preflight::MdnsStatus) {
+    if status.is_empty() {
+        println!("mDNS publication: not configured");
+        return;
+    }
+    for publication in &status.publications {
+        println!(
+            "mDNS publication: {} {} -> {} ({})",
+            publication.outcome, publication.name, publication.address, publication.detail
+        );
+    }
+    for check in &status.checks {
+        println!(
+            "LAN check [{}] {}: {}",
+            check.outcome, check.name, check.detail
+        );
+    }
+}
+
+fn print_tailscale_status(status: &tailscale_publication::TailscaleStatus) {
+    if !status.configured {
+        println!("tailnet publication: not configured");
+        return;
+    }
+    if let Some(record) = &status.record {
+        println!(
+            "tailnet publication: {} via {} on ports {}",
+            record.names.join(", "),
+            record.addresses.join(", "),
+            record
+                .ports
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    } else {
+        println!("tailnet publication: unavailable");
+    }
+    for check in &status.checks {
+        println!(
+            "tailnet check [{}] {}: {}",
+            check.outcome, check.name, check.detail
+        );
+    }
+}
+
+fn daemon_compatible(command: &CliCommand) -> bool {
+    match command {
+        CliCommand::Plan { options, .. }
+        | CliCommand::Up { options, .. }
+        | CliCommand::Down { options, .. }
+        | CliCommand::Status { options, .. } => options == &DeploymentOptions::default(),
+        CliCommand::OverlayValidate { .. }
+        | CliCommand::OverlayDiff { .. }
+        | CliCommand::BundleExport { .. }
+        | CliCommand::BundleImport { .. } => false,
+        CliCommand::Diagnostics { .. } | CliCommand::Migrate { .. } => false,
+        _ => true,
+    }
+}
+
+fn handle_source_command(
+    workspace_root: &Path,
+    command: &CliCommand,
+) -> Result<Option<ExitCode>, Box<dyn std::error::Error>> {
+    use apmpr_daemon::contract::{
+        CreateWorktreeRequestV1, RegisterDeviceRequestV1, RegisterSourceRequestV1,
+    };
+    let bypass = env::var_os("APMPR_BYPASS_DAEMON").is_some();
+    let state = || {
+        apmpr_state::StateStore::open(workspace_root.join(".apmpr/state.sqlite3"))
+            .map(|value| value.0)
+    };
+    let manager = apmpr_sources::SourceManager::new(workspace_root);
+    match command {
+        CliCommand::SourceList { json } => {
+            let daemon_sources = if !bypass {
+                apmpr_daemon::client::sources(workspace_root)?
+            } else {
+                None
+            };
+            let sources = match daemon_sources {
+                Some(sources) => sources,
+                None => manager.list(&state()?)?,
+            };
+            print_sources(&sources, *json)?;
+        }
+        CliCommand::SourceRegister { name, path } => {
+            let path = absolute_from(workspace_root, path);
+            let request = RegisterSourceRequestV1 {
+                name: name.clone(),
+                path: path.clone(),
+            };
+            let source = if !bypass {
+                apmpr_daemon::client::register_source(workspace_root, &request)?
+            } else {
+                None
+            }
+            .map_or_else(
+                || {
+                    let store = state()?;
+                    let source = manager.register_unmanaged(&store, name, &path)?;
+                    let inspection = manager.inspect(&source.path, source.requested_ref.as_deref());
+                    Ok::<_, Box<dyn std::error::Error>>(apmpr_sources::RegisteredSourceInspection {
+                        source,
+                        inspection,
+                    })
+                },
+                Ok,
+            )?;
+            println!(
+                "registered unmanaged source `{}` at {}",
+                source.source.name,
+                source.source.path.display()
+            );
+        }
+        CliCommand::SourceDeregister { name } => {
+            if bypass || apmpr_daemon::client::deregister_source(workspace_root, name)?.is_none() {
+                manager.deregister(&state()?, name)?;
+            }
+            println!("deregistered source `{name}`; no files were changed");
+        }
+        CliCommand::DeviceList { json } => {
+            let devices = if !bypass {
+                apmpr_daemon::client::devices(workspace_root)?
+            } else {
+                None
+            }
+            .map_or_else(
+                || -> Result<_, Box<dyn std::error::Error>> { Ok(state()?.devices()?) },
+                Ok,
+            )?;
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&devices)?);
+            } else if devices.is_empty() {
+                println!("no devices registered");
+            } else {
+                for device in devices {
+                    println!(
+                        "{}\t{}@{}:{}\t{}",
+                        device.name,
+                        device.user,
+                        device.host,
+                        device.port,
+                        device.last_check_status
+                    );
+                }
+            }
+        }
+        CliCommand::DeviceAdd {
+            name,
+            target,
+            identity,
+        } => {
+            let (user, host, port) = parse_device_target(target)?;
+            let request = RegisterDeviceRequestV1 {
+                name: name.clone(),
+                host: host.clone(),
+                port,
+                user: user.clone(),
+                identity_file: identity.clone(),
+            };
+            let device = if !bypass {
+                apmpr_daemon::client::register_device(workspace_root, &request)?
+            } else {
+                None
+            }
+            .map_or_else(
+                || {
+                    let device = apmpr_state::RegisteredDevice {
+                        name: name.clone(),
+                        host,
+                        port,
+                        user,
+                        identity_file: identity.clone(),
+                        created_at: unix_millis(),
+                        last_checked_at: None,
+                        last_check_status: apmpr_state::DeviceCheckStatus::Never,
+                        last_check_detail: None,
+                    };
+                    state()?.register_device(&device)?;
+                    Ok::<_, Box<dyn std::error::Error>>(device)
+                },
+                Ok,
+            )?;
+            println!(
+                "registered device `{}` at {}@{}:{}",
+                device.name, device.user, device.host, device.port
+            );
+        }
+        CliCommand::DeviceRemove { name } => {
+            if bypass || apmpr_daemon::client::deregister_device(workspace_root, name)?.is_none() {
+                state()?.deregister_device(name)?;
+            }
+            println!("removed device `{name}`");
+        }
+        CliCommand::DeviceCheck { name } => {
+            let store = state()?;
+            let device = store
+                .device(name)?
+                .ok_or_else(|| MessageError(format!("device `{name}` is not registered")))?;
+            let (status, detail) = apmpr_ops::devices::check_device_eligibility(&device);
+            store.record_device_check(name, unix_millis(), status, Some(&detail))?;
+            println!("{}: {detail}", device.name);
+        }
+        CliCommand::WorktreeCreate {
+            repository,
+            r#ref,
+            path,
+            name,
+        } => {
+            let name = name.clone().unwrap_or_else(|| sanitize_source_name(r#ref));
+            let path = path
+                .as_ref()
+                .map(|path| absolute_from(workspace_root, path));
+            let request = CreateWorktreeRequestV1 {
+                repository: repository.clone(),
+                r#ref: r#ref.clone(),
+                path: path.clone(),
+                name: Some(name.clone()),
+            };
+            let source = if !bypass {
+                apmpr_daemon::client::create_worktree(workspace_root, &request)?
+            } else {
+                None
+            }
+            .map_or_else(
+                || {
+                    let store = state()?;
+                    let source = manager.create_worktree(
+                        &store,
+                        repository,
+                        r#ref,
+                        &name,
+                        path.as_deref(),
+                    )?;
+                    let inspection = manager.inspect(&source.path, source.requested_ref.as_deref());
+                    Ok::<_, Box<dyn std::error::Error>>(apmpr_sources::RegisteredSourceInspection {
+                        source,
+                        inspection,
+                    })
+                },
+                Ok,
+            )?;
+            println!(
+                "created managed worktree `{}` at {}",
+                source.source.name,
+                source.source.path.display()
+            );
+        }
+        CliCommand::WorktreeRemove { name, allow_dirty } => {
+            let daemon_dirty = if !bypass {
+                apmpr_daemon::client::remove_worktree(workspace_root, name, *allow_dirty)?
+            } else {
+                None
+            };
+            let dirty = match daemon_dirty {
+                Some(dirty) => dirty,
+                None => manager.remove(&state()?, name, *allow_dirty)?,
+            };
+            println!(
+                "removed managed worktree `{name}` (staged={}, unstaged={}, untracked={})",
+                dirty.staged, dirty.unstaged, dirty.untracked
+            );
+        }
+        _ => return Ok(None),
+    }
+    Ok(Some(ExitCode::SUCCESS))
+}
+
+fn unix_millis() -> i64 {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX)
+}
+
+fn parse_device_target(target: &str) -> Result<(String, String, u16), MessageError> {
+    let (user, address) = target
+        .split_once('@')
+        .ok_or_else(|| MessageError("device target must use user@host[:port]".into()))?;
+    if user.is_empty() || address.is_empty() {
+        return Err(MessageError(
+            "device target must use user@host[:port]".into(),
+        ));
+    }
+    let (host, port) = match address.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() && !port.is_empty() && !host.contains(':') => (
+            host,
+            port.parse::<u16>()
+                .map_err(|_| MessageError("device port must be between 1 and 65535".into()))?,
+        ),
+        _ => (address, 22),
+    };
+    if port == 0 {
+        return Err(MessageError(
+            "device port must be between 1 and 65535".into(),
+        ));
+    }
+    Ok((user.into(), host.into(), port))
+}
+
+fn print_sources(
+    sources: &[apmpr_sources::RegisteredSourceInspection],
+    json: bool,
+) -> Result<(), serde_json::Error> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(sources)?);
+        return Ok(());
+    }
+    println!("NAME\tKIND\tPATH\tREF\tCOMMIT\tDIRTY\tAHEAD/BEHIND");
+    for entry in sources {
+        let inspection = &entry.inspection;
+        let commit = inspection
+            .identity
+            .commit
+            .as_deref()
+            .map(|value| &value[..value.len().min(12)])
+            .unwrap_or("-");
+        let reference = inspection
+            .branch
+            .as_deref()
+            .or(inspection.identity.r#ref.as_deref())
+            .unwrap_or("-");
+        let dirty = inspection
+            .identity
+            .dirty
+            .map_or("?", |value| if value { "*" } else { "-" });
+        let ahead_behind = match (inspection.ahead, inspection.behind) {
+            (Some(ahead), Some(behind)) => format!("{ahead}/{behind}"),
+            _ => "-".into(),
+        };
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            entry.source.name,
+            match entry.source.kind {
+                apmpr_state::RegisteredSourceKind::Managed => "managed",
+                apmpr_state::RegisteredSourceKind::Unmanaged => "unmanaged",
+            },
+            entry.source.path.display(),
+            reference,
+            commit,
+            dirty,
+            ahead_behind
+        );
+    }
+    Ok(())
+}
+
+fn absolute_from(root: &Path, path: &Path) -> std::path::PathBuf {
+    if path.is_absolute() {
+        path.to_owned()
+    } else {
+        root.join(path)
+    }
+}
+
+fn sanitize_source_name(reference: &str) -> String {
+    reference
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+fn print_route_versions(routes: &apmpr_daemon::contract::DeploymentRoutesV1) {
+    if routes.bindings.is_empty() {
+        return;
+    }
+    println!("Route versions:");
+    for binding in &routes.bindings {
+        let version =
+            |value: Option<i64>| value.map_or_else(|| "-".into(), |value| value.to_string());
+        println!(
+            "  {} {} desired={} current={} previous={} observed={} status={}",
+            binding.router,
+            binding.binding,
+            version(binding.desired_version),
+            version(binding.current_version),
+            version(binding.previous_version),
+            version(binding.observed_version),
+            binding.status,
+        );
+    }
+}
+
+fn print_source_identities(plan: &Plan) {
+    if plan.source_identities.is_empty() {
+        return;
+    }
+    println!("Source identities (plan time):");
+    for (instance, identity) in &plan.source_identities {
+        println!(
+            "  {} path={} repository={} ref={} commit={} dirty={}",
+            instance,
+            identity.path,
+            identity.repository.as_deref().unwrap_or("-"),
+            identity.r#ref.as_deref().unwrap_or("-"),
+            identity.commit.as_deref().unwrap_or("-"),
+            identity
+                .dirty
+                .map_or("unknown", |dirty| if dirty { "yes" } else { "no" }),
+        );
+    }
+}
+
+fn handle_daemon_command(
+    workspace_root: &Path,
+    command: &CliCommand,
+) -> Result<Option<ExitCode>, Box<dyn std::error::Error>> {
+    match command {
+        CliCommand::DaemonRun => {
+            let mut config =
+                apmpr_daemon::DaemonConfig::new(workspace_root.to_owned(), env::current_exe()?);
+            if let Some(bind) = env::var_os("APMPR_DAEMON_BIND") {
+                config.bind = bind.to_string_lossy().parse::<SocketAddr>()?;
+            }
+            if let Some(limit) = env::var_os("APMPR_DAEMON_MAX_HEAVY") {
+                config.max_heavy_operations = limit.to_string_lossy().parse()?;
+            }
+            if let Some(path) = env::var_os("APMPR_GUI_DIST") {
+                config.gui_dist = path.into();
+            } else if let Some(path) = installed_gui_dist() {
+                config.gui_dist = path;
+            }
+            apmpr_daemon::run_blocking(config)?;
+            Ok(Some(ExitCode::SUCCESS))
+        }
+        CliCommand::DaemonInstall { .. } => {
+            if apmpr_daemon::client::daemon_status(workspace_root)?.is_some() {
+                apmpr_daemon::client::daemon_stop(workspace_root)?;
+                for _ in 0..100 {
+                    if apmpr_daemon::client::daemon_status(workspace_root)?.is_none() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                if apmpr_daemon::client::daemon_status(workspace_root)?.is_some() {
+                    return Err(MessageError(
+                        "the running project daemon did not stop before service installation"
+                            .into(),
+                    )
+                    .into());
+                }
+            }
+            let installed = daemon_service::install(workspace_root, &env::current_exe()?)?;
+            let log = workspace_root.join(".apmpr/daemon.log");
+            for _ in 0..100 {
+                if apmpr_daemon::client::daemon_status(workspace_root)?.is_some() {
+                    println!(
+                        "installed and started {} ({})",
+                        installed.manager,
+                        installed.definition.display()
+                    );
+                    println!("daemon log: {}", log.display());
+                    return Ok(Some(ExitCode::SUCCESS));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(MessageError(format!(
+                "daemon service was installed but did not become ready; inspect {}",
+                log.display()
+            ))
+            .into())
+        }
+        CliCommand::DaemonStatus => {
+            match apmpr_daemon::client::daemon_status(workspace_root)? {
+                Some(status) => println!(
+                    "daemon running (API {}, pid {}, active {}, heavy limit {})",
+                    status.api_version,
+                    status.pid,
+                    status.active_operations,
+                    status.max_heavy_operations
+                ),
+                None => println!("daemon not running"),
+            }
+            Ok(Some(ExitCode::SUCCESS))
+        }
+        CliCommand::OperationCancel { id } => {
+            match apmpr_daemon::client::cancel_operation(workspace_root, id)? {
+                Some(operation) => println!(
+                    "operation {} ({}) is now {:?}",
+                    operation.id,
+                    operation.kind.segment(),
+                    operation.status
+                ),
+                None => println!(
+                    "daemon not running; operations only exist while the daemon is running"
+                ),
+            }
+            Ok(Some(ExitCode::SUCCESS))
+        }
+        CliCommand::DaemonStop => {
+            if apmpr_daemon::client::daemon_stop(workspace_root)? {
+                println!("daemon stop requested");
+            } else {
+                println!("daemon not running");
+            }
+            Ok(Some(ExitCode::SUCCESS))
+        }
+        CliCommand::Gui { .. } => {
+            require_daemon_for_gui(workspace_root)?;
+            let url = gui_url(workspace_root)?;
+            println!("{url}");
+            let opener = if cfg!(target_os = "macos") {
+                "open"
+            } else {
+                "xdg-open"
+            };
+            let _ = Command::new(opener)
+                .arg(&url)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+            Ok(Some(ExitCode::SUCCESS))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn installed_gui_dist() -> Option<PathBuf> {
+    let executable = env::current_exe().ok()?;
+    let prefix = executable.parent()?.parent()?;
+    let candidate = prefix.join("share/apmpr/web");
+    candidate.is_dir().then_some(candidate)
+}
+
+fn require_daemon_for_gui(workspace_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if apmpr_daemon::client::daemon_status(workspace_root)?.is_some() {
+        Ok(())
+    } else {
+        Err(MessageError(format!(
+            "daemon not running; install and start it with `apmpr daemon install {}`",
+            shell_path(workspace_root)
+        ))
+        .into())
+    }
+}
+
+fn gui_url(workspace_root: &Path) -> Result<String, MessageError> {
+    let discovery = apmpr_daemon::client::load_discovery(workspace_root)
+        .map_err(|error| MessageError(error.to_string()))?
+        .ok_or_else(|| {
+            MessageError(format!(
+                "daemon not running; install and start it with `apmpr daemon install {}`",
+                shell_path(workspace_root)
+            ))
+        })?;
+    let port = discovery
+        .address
+        .to_socket_addrs()
+        .map_err(|error| MessageError(format!("invalid daemon address: {error}")))?
+        .next()
+        .ok_or_else(|| MessageError("daemon address did not resolve".into()))?
+        .port();
+    Ok(format!(
+        "http://127.0.0.1:{port}/gui/#token={}",
+        discovery.token
+    ))
+}
+
+fn shell_path(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn daemon_request(
+    command: &CliCommand,
+) -> (
+    apmpr_daemon::contract::CommandKind,
+    apmpr_daemon::contract::CommandRequestV1,
+) {
+    use apmpr_daemon::contract::{CommandKind, CommandRequestV1};
+    let empty = |bundle| CommandRequestV1 {
+        bundle,
+        instance: None,
+        group: None,
+        transition: None,
+        target: None,
+        ui: None,
+        routes: false,
+        confirmed: false,
+    };
+    match command {
+        CliCommand::Validate { bundle } => (CommandKind::Validate, empty(bundle.clone())),
+        CliCommand::Plan { bundle, .. } => (CommandKind::Plan, empty(bundle.clone())),
+        CliCommand::Up { bundle, .. } => (CommandKind::Apply, empty(bundle.clone())),
+        CliCommand::Move {
+            bundle,
+            instance,
+            group,
+            transition,
+        } => {
+            let mut request = empty(bundle.clone());
+            request.instance = Some(instance.clone());
+            request.group = Some(group.clone());
+            request.transition = transition.map(|transition| match transition {
+                cli::TransitionArgument::Close => apmpr_daemon::contract::TransitionPolicyV1::Close,
+                cli::TransitionArgument::Drain { timeout_ms } => {
+                    apmpr_daemon::contract::TransitionPolicyV1::Drain { timeout_ms }
+                }
+                cli::TransitionArgument::Pin => apmpr_daemon::contract::TransitionPolicyV1::Pin,
+            });
+            (CommandKind::Membership, request)
+        }
+        CliCommand::Status { bundle, routes, .. } => {
+            let mut request = empty(bundle.clone());
+            request.routes = *routes;
+            (CommandKind::Status, request)
+        }
+        CliCommand::Routes { bundle } => (CommandKind::Routes, empty(bundle.clone())),
+        CliCommand::Logs { bundle, target } => {
+            let mut request = empty(bundle.clone());
+            request.target = target.clone();
+            (CommandKind::Logs, request)
+        }
+        CliCommand::Open { bundle, instance } => {
+            let mut request = empty(bundle.clone());
+            request.instance = Some(instance.clone());
+            (CommandKind::Open, request)
+        }
+        CliCommand::Down { bundle, .. } => (CommandKind::Down, empty(bundle.clone())),
+        CliCommand::Cleanup { bundle, confirmed } => {
+            let mut request = empty(bundle.clone());
+            request.confirmed = *confirmed;
+            (CommandKind::Cleanup, request)
+        }
+        CliCommand::Help
+        | CliCommand::Init { .. }
+        | CliCommand::DaemonRun
+        | CliCommand::DaemonInstall { .. }
+        | CliCommand::DaemonStatus
+        | CliCommand::DaemonStop
+        | CliCommand::OperationCancel { .. }
+        | CliCommand::Gui { .. }
+        | CliCommand::ProjectRegister { .. }
+        | CliCommand::Tui { .. }
+        | CliCommand::SourceList { .. }
+        | CliCommand::SourceRegister { .. }
+        | CliCommand::SourceDeregister { .. }
+        | CliCommand::DeviceList { .. }
+        | CliCommand::DeviceAdd { .. }
+        | CliCommand::DeviceRemove { .. }
+        | CliCommand::DeviceCheck { .. }
+        | CliCommand::WorktreeCreate { .. }
+        | CliCommand::WorktreeRemove { .. }
+        | CliCommand::BundleExport { .. }
+        | CliCommand::BundleImport { .. }
+        | CliCommand::Diagnostics { .. }
+        | CliCommand::Migrate { .. }
+        | CliCommand::OverlayValidate { .. }
+        | CliCommand::OverlayDiff { .. } => unreachable!("not delegated"),
+    }
+}
+
+fn load_and_plan(path: &Path) -> Result<(Bundle, Plan), Box<dyn std::error::Error>> {
+    load_and_plan_options(path, &DeploymentOptions::default())
+}
+
+fn definition_workspace_root(path: &Path) -> PathBuf {
+    let definition_dir = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let canonical = definition_dir
+        .canonicalize()
+        .unwrap_or_else(|_| definition_dir.to_owned());
+    let definition_dir = canonical.as_path();
+    definition_dir
+        .ancestors()
+        .find(|ancestor| ancestor.join(".git").exists())
+        .unwrap_or(definition_dir)
+        .to_owned()
+}
+
+fn load_and_plan_options(
+    path: &Path,
+    options: &DeploymentOptions,
+) -> Result<(Bundle, Plan), Box<dyn std::error::Error>> {
+    let bundle = apmpr_planner::load_bundle(path)?;
+    let options = apmpr_planner::OverlayOptions {
+        overlays: options.overlays.clone(),
+        variation: options.variation.clone(),
+        set: options.set.iter().cloned().collect(),
+    };
+    let devices = if bundle.spec.instances.iter().any(|instance| {
+        instance
+            .device
+            .as_deref()
+            .is_some_and(|device| device != "local")
+    }) {
+        planning_devices(&definition_workspace_root(path))?
+    } else {
+        BTreeMap::new()
+    };
+    let plan = apmpr_planner::plan_with_overlays_and_devices(&bundle, &options, &devices)
+        .map_err(diagnostics)?;
+    Ok((bundle, plan))
+}
+
+fn ensure_deployment_sources(bundle: &Bundle) -> Result<(), Box<dyn std::error::Error>> {
+    let manager = apmpr_sources::SourceManager::new(bundle.workspace_root());
+    let mut repositories = BTreeMap::new();
+    for (name, repository) in &bundle.spec.repositories {
+        let path = match (&repository.url, &repository.clone) {
+            (Some(url), None) => {
+                let local = Path::new(url);
+                let resolved_url = if local.is_absolute() {
+                    url.clone()
+                } else {
+                    let candidate = bundle.definition_dir().join(local);
+                    if candidate.exists() {
+                        candidate.to_string_lossy().into_owned()
+                    } else {
+                        url.clone()
+                    }
+                };
+                manager.ensure_managed_clone(name, &resolved_url)?
+            }
+            (None, Some(path)) => {
+                let path = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    bundle.definition_dir().join(path)
+                };
+                path.canonicalize().map_err(|error| {
+                    MessageError(format!(
+                        "adopted repository `{name}` clone `{}` is unavailable: {error}",
+                        path.display()
+                    ))
+                })?
+            }
+            _ => {
+                return Err(MessageError(format!(
+                    "repository `{name}` must declare exactly one of `url` or `clone`"
+                ))
+                .into());
+            }
+        };
+        repositories.insert(name.as_str(), path);
+    }
+    for (name, source) in &bundle.spec.sources {
+        let repository = repositories
+            .get(source.repository.as_str())
+            .ok_or_else(|| {
+                MessageError(format!(
+                    "source `{name}` names unknown repository `{}`",
+                    source.repository
+                ))
+            })?;
+        let target = bundle.definition_dir().join(&source.path);
+        manager
+            .ensure_deployment_worktree(repository, &source.r#ref, &target)
+            .map_err(|error| {
+                MessageError(format!(
+                    "could not prepare source `{name}` at `{}`: {error}",
+                    source.path.display()
+                ))
+            })?;
+    }
+    Ok(())
+}
+
+fn plan_with_membership(
+    workspace_root: &Path,
+    bundle: &Bundle,
+    consumer: &str,
+    group: &str,
+) -> Result<Plan, Box<dyn std::error::Error>> {
+    let devices = planning_devices(workspace_root)?;
+    apmpr_planner::plan_with_membership_and_devices(bundle, consumer, group, &devices)
+        .map_err(diagnostics)
+        .map_err(Into::into)
+}
+
+fn planning_devices(
+    workspace_root: &Path,
+) -> Result<BTreeMap<String, apmpr_planner::PlanningDevice>, Box<dyn std::error::Error>> {
+    let (store, _) = apmpr_state::StateStore::open(workspace_root.join(".apmpr/state.sqlite3"))?;
+    Ok(store
+        .devices()?
+        .into_iter()
+        .map(|device| {
+            (
+                device.name,
+                apmpr_planner::PlanningDevice {
+                    user: device.user,
+                    host: device.host,
+                    port: device.port,
+                    identity_file: device.identity_file,
+                },
+            )
+        })
+        .collect())
+}
+
+fn load_membership_base(
+    workspace_root: &Path,
+    bundle_path: &Path,
+) -> Result<Bundle, Box<dyn std::error::Error>> {
+    let mut authored = apmpr_planner::load_bundle(bundle_path)?;
+    let devices = planning_devices(workspace_root)?;
+    let authored_plan =
+        apmpr_planner::plan_with_devices(&authored, &devices).map_err(diagnostics)?;
+    let artifact_dir = workspace_root.join(&authored_plan.artifact_dir);
+    let manifest_path = artifact_dir.join("manifest.json");
+    let resolved_path = artifact_dir.join("resolved-deployment.yaml");
+    if !manifest_path.exists() && !resolved_path.exists() {
+        return Ok(authored);
+    }
+    let manifest: serde_json::Value = serde_json::from_slice(&fs::read(&manifest_path)?)?;
+    let applied_deployment = manifest["deployment"].as_str();
+    let applied_resource_hash = manifest["resourceHash"].as_str();
+    if applied_deployment != Some(authored_plan.deployment.as_str())
+        || applied_resource_hash != Some(authored_plan.resource_hash.as_str())
+    {
+        return Err(MessageError(
+            "generated membership state does not match this deployment; run status and reconcile drift"
+                .into(),
+        )
+        .into());
+    }
+    let resolved = apmpr_planner::load_bundle(&resolved_path)?;
+    if resolved.metadata.name != authored.metadata.name {
+        return Err(MessageError("resolved deployment identity does not match".into()).into());
+    }
+    authored.spec.groups = resolved.spec.groups;
+    Ok(authored)
+}
+
+fn diagnostics(diagnostics: Vec<apmpr_planner::Diagnostic>) -> MessageError {
+    MessageError(
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+fn print_planner_warnings(plan: &Plan) {
+    for warning in &plan.warnings {
+        println!(
+            "Warning [{}] {}: {}",
+            warning.code, warning.path, warning.message
+        );
+    }
+}
+
+fn runtime_plan(workspace_root: &Path, plan: &Plan) -> RuntimePlan {
+    RuntimePlan {
+        deployment: plan.deployment.clone(),
+        compose_project: plan.compose_project.clone(),
+        project_directory: workspace_root.to_owned(),
+        artifact_dir: workspace_root.join(&plan.artifact_dir),
+        requires_router_token: !plan.sidecars.is_empty(),
+        local_service_count: plan.local_service_count,
+        runtime_secrets: plan.runtime_secrets.clone(),
+        external_probes: plan.external_probes.clone(),
+        remote_projects: plan
+            .remote_projects
+            .iter()
+            .map(|(name, remote)| RemoteRuntimeProject {
+                name: name.clone(),
+                user: remote.device.user.clone(),
+                host: remote.device.host.clone(),
+                port: remote.device.port,
+                identity_file: remote.device.identity_file.clone(),
+                compose_project: remote.compose_project.clone(),
+                compose_file: remote.compose_file.clone(),
+                services: remote.services.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn required_input_kind(kind: &apmpr_planner::RequiredLocalInputKind) -> &'static str {
+    match kind {
+        apmpr_planner::RequiredLocalInputKind::SourceDirectory => "source-directory",
+        apmpr_planner::RequiredLocalInputKind::File => "file",
+        apmpr_planner::RequiredLocalInputKind::DotenvFile => "dotenv-file",
+        apmpr_planner::RequiredLocalInputKind::EnvironmentValue => "environment-value",
+        apmpr_planner::RequiredLocalInputKind::ParameterValue => "parameter-value",
+    }
+}
+
+fn bundle_warning_code(code: &apmpr_planner::BundleWarningCode) -> &'static str {
+    match code {
+        apmpr_planner::BundleWarningCode::CredentialLikeKey => "credential_like_key",
+        apmpr_planner::BundleWarningCode::LocalPathReplaced => "local_path_replaced",
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ImportConflict {
+    code: &'static str,
+    detail: String,
+}
+
+fn print_import_conflicts(
+    workspace_root: &Path,
+    plan: &Plan,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conflicts = collect_import_conflicts(workspace_root, plan)?;
+    conflicts.sort_by(|left, right| {
+        left.code
+            .cmp(right.code)
+            .then_with(|| left.detail.cmp(&right.detail))
+    });
+    conflicts.dedup_by(|left, right| left.code == right.code && left.detail == right.detail);
+    if conflicts.is_empty() {
+        println!("Conflicts: none");
+    } else {
+        println!("Conflicts:");
+        for conflict in conflicts {
+            println!("  [{}] {}", conflict.code, conflict.detail);
+        }
+    }
+    Ok(())
+}
+
+fn collect_import_conflicts(
+    workspace_root: &Path,
+    plan: &Plan,
+) -> Result<Vec<ImportConflict>, Box<dyn std::error::Error>> {
+    let mut conflicts = Vec::new();
+    let generated_root = workspace_root.join(".apmpr/generated");
+    let generated_deployment = generated_root.join(&plan.deployment);
+    if generated_deployment.exists() {
+        conflicts.push(ImportConflict {
+            code: "name_conflict",
+            detail: format!(
+                "generated deployment directory already exists: {}",
+                generated_deployment.display()
+            ),
+        });
+    }
+    if let Some(deployments) = apmpr_daemon::client::deployments(workspace_root)? {
+        for deployment in deployments.deployments {
+            if deployment.name == plan.deployment {
+                conflicts.push(ImportConflict {
+                    code: "name_conflict",
+                    detail: format!(
+                        "daemon state already contains deployment `{}`",
+                        plan.deployment
+                    ),
+                });
+            }
+            for domain in deployment.custom_domains {
+                if current_domains(plan).contains(&domain) && deployment.name != plan.deployment {
+                    conflicts.push(ImportConflict {
+                        code: "domain_conflict",
+                        detail: format!(
+                            "domain `{domain}` is claimed by daemon deployment `{}`",
+                            deployment.name
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    let current_domains = current_domains(plan);
+    let current_ports = current_ports(plan);
+    for manifest in generated_host_router_configs(&generated_root)? {
+        if manifest.deployment == plan.deployment {
+            continue;
+        }
+        for domain in manifest.domains {
+            if current_domains.contains(&domain) {
+                conflicts.push(ImportConflict {
+                    code: "domain_conflict",
+                    detail: format!(
+                        "domain `{domain}` is claimed by generated deployment `{}`",
+                        manifest.deployment
+                    ),
+                });
+            }
+        }
+        for listener in manifest.listeners {
+            if current_ports.contains(&listener) {
+                conflicts.push(ImportConflict {
+                    code: "port_conflict",
+                    detail: format!(
+                        "{}:{} is claimed by generated deployment `{}`",
+                        listener.0, listener.1, manifest.deployment
+                    ),
+                });
+            }
+        }
+    }
+    for (host, port) in &current_ports {
+        if *port == 0 {
+            continue;
+        }
+        let address = format!("{host}:{port}");
+        let bindable = address
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut addresses| addresses.next())
+            .is_some_and(|address| TcpListener::bind(address).is_ok());
+        if !bindable {
+            conflicts.push(ImportConflict {
+                code: "live_port_conflict",
+                detail: format!("{address} is not currently bindable"),
+            });
+        }
+    }
+    conflicts.extend(docker_resource_conflicts(plan));
+    Ok(conflicts)
+}
+
+#[derive(Clone, Debug)]
+struct GeneratedClaims {
+    deployment: String,
+    domains: BTreeSet<String>,
+    listeners: BTreeSet<(String, u16)>,
+}
+
+fn generated_host_router_configs(root: &Path) -> io::Result<Vec<GeneratedClaims>> {
+    let mut claims = Vec::new();
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(claims),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let deployment = entry.file_name().to_string_lossy().into_owned();
+        let path = entry.path().join("host-router.json");
+        let Ok(config) = fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&config) else {
+            continue;
+        };
+        claims.push(GeneratedClaims {
+            deployment,
+            domains: router_domains(&value),
+            listeners: router_listeners(&value),
+        });
+    }
+    Ok(claims)
+}
+
+fn current_router_value(plan: &Plan) -> Option<serde_json::Value> {
+    plan.host_router_config
+        .as_deref()
+        .and_then(|config| serde_json::from_str(config).ok())
+}
+
+fn current_domains(plan: &Plan) -> BTreeSet<String> {
+    current_router_value(plan)
+        .as_ref()
+        .map(router_domains)
+        .unwrap_or_default()
+}
+
+fn current_ports(plan: &Plan) -> BTreeSet<(String, u16)> {
+    current_router_value(plan)
+        .as_ref()
+        .map(router_listeners)
+        .unwrap_or_default()
+}
+
+fn router_domains(config: &serde_json::Value) -> BTreeSet<String> {
+    config
+        .pointer("/spec/listeners")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|listener| {
+            listener
+                .get("destinations")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter(|destination| {
+            destination.get("kind").and_then(serde_json::Value::as_str) == Some("custom_domain")
+        })
+        .filter_map(|destination| {
+            destination
+                .get("domain")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .collect()
+}
+
+fn router_listeners(config: &serde_json::Value) -> BTreeSet<(String, u16)> {
+    config
+        .pointer("/spec/listeners")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|listener| {
+            let bind = listener.get("bind")?;
+            let host = bind.get("host")?.as_str()?.to_owned();
+            let port = bind
+                .get("port")?
+                .as_u64()
+                .and_then(|port| u16::try_from(port).ok())?;
+            Some((host, port))
+        })
+        .collect()
+}
+
+fn docker_resource_conflicts(plan: &Plan) -> Vec<ImportConflict> {
+    let Ok(output) = Command::new("docker")
+        .args(["version", "--format", "{{.Server.Version}}"])
+        .output()
+    else {
+        return vec![ImportConflict {
+            code: "docker_unavailable",
+            detail: "Docker CLI is unavailable; external resource checks were skipped".into(),
+        }];
+    };
+    if !output.status.success() {
+        return vec![ImportConflict {
+            code: "docker_unavailable",
+            detail: "Docker daemon is unavailable; external resource checks were skipped".into(),
+        }];
+    }
+
+    let mut conflicts = Vec::new();
+    for (kind, name) in expected_docker_names(plan) {
+        let output = Command::new("docker")
+            .args([kind, "inspect", name.as_str()])
+            .output();
+        let Ok(output) = output else {
+            conflicts.push(ImportConflict {
+                code: "docker_unavailable",
+                detail: "Docker inspect failed; external resource checks were incomplete".into(),
+            });
+            break;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let labels = docker_labels(&output.stdout);
+        let owner = labels
+            .get(runtime::DEPLOYMENT_LABEL)
+            .map(String::as_str)
+            .unwrap_or("<unlabeled>");
+        if owner != plan.deployment {
+            conflicts.push(ImportConflict {
+                code: "external_resource_conflict",
+                detail: format!("{kind} `{name}` already exists with owner `{owner}`"),
+            });
+        }
+    }
+    conflicts
+}
+
+fn expected_docker_names(plan: &Plan) -> BTreeSet<(&'static str, String)> {
+    let mut names = BTreeSet::new();
+    for (kind, values) in apmpr_planner::planned_docker_resource_names(plan) {
+        let kind = match kind.as_str() {
+            "container" => "container",
+            "network" => "network",
+            "volume" => "volume",
+            _ => continue,
+        };
+        for name in values {
+            names.insert((kind, name));
+        }
+    }
+    names
+}
+
+fn docker_labels(stdout: &[u8]) -> BTreeMap<String, String> {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(stdout) else {
+        return BTreeMap::new();
+    };
+    let Some(first) = value.as_array().and_then(|items| items.first()) else {
+        return BTreeMap::new();
+    };
+    let labels = first
+        .pointer("/Config/Labels")
+        .or_else(|| first.get("Labels"))
+        .and_then(serde_json::Value::as_object);
+    labels
+        .into_iter()
+        .flatten()
+        .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_owned())))
+        .collect()
+}
+
+fn print_plan(workspace_root: &Path, plan: &Plan) -> io::Result<()> {
+    let manifest_path = workspace_root
+        .join(&plan.artifact_dir)
+        .join("manifest.json");
+    let mutation = match fs::read_to_string(manifest_path) {
+        Ok(current) if current == plan.manifest_json => "no generated artifact changes",
+        Ok(_) => "replace generated deployment artifacts",
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            "create generated deployment artifacts"
+        }
+        Err(error) => return Err(error),
+    };
+    println!("Deployment: {}", plan.deployment);
+    println!("Mutation: {mutation}");
+    println!("Compose project: {}", plan.compose_project);
+    println!("Artifact directory: {}", plan.artifact_dir.display());
+    if plan.has_overrides {
+        print_impacts(workspace_root, plan)?;
+        print_origins(plan);
+    }
+    println!("\nGenerated Compose:\n{}", plan.compose_yaml.trim_end());
+    for (device, remote) in &plan.remote_projects {
+        println!(
+            "\nRemote Compose [{device}] (project {}, file {}):\n{}",
+            remote.compose_project,
+            remote.compose_file.display(),
+            remote.compose_yaml.trim_end()
+        );
+    }
+    if plan.route_configs.is_empty() {
+        println!("\nRoutes: none");
+    } else {
+        println!("\nRoute snapshots:");
+        for (consumer, config) in &plan.route_configs {
+            println!("\n[{consumer}]\n{}", config.trim_end());
+        }
+    }
+    Ok(())
+}
+
+fn print_overlay_diff(workspace_root: &Path, plan: &Plan) -> io::Result<()> {
+    println!("Deployment: {}", plan.deployment);
+    print_impacts(workspace_root, plan)?;
+    print_origins(plan);
+    Ok(())
+}
+
+fn print_impacts(workspace_root: &Path, plan: &Plan) -> io::Result<()> {
+    let changes = apmpr_planner::classify_changes(workspace_root, plan)?;
+    if changes.is_empty() {
+        println!("Impact: none");
+    } else {
+        println!("Impact:");
+        for change in changes {
+            println!(
+                "  {}: {}",
+                change.service,
+                format!("{:?}", change.impact).to_ascii_lowercase()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn print_origins(plan: &Plan) {
+    if plan.origins.is_empty() {
+        return;
+    }
+    println!("Origins:");
+    for origin in &plan.origins {
+        println!(
+            "  {}/{} {}={}  ← {}",
+            origin.instance, origin.category, origin.key, origin.value, origin.layer
+        );
+        for shadowed in &origin.shadowed {
+            println!(
+                "    warning: shadows {} from {}",
+                shadowed.value, shadowed.layer
+            );
+        }
+    }
+}
+
+fn refuse_runtime_drift(status: &DeploymentStatus) -> Result<(), MessageError> {
+    let has_active_topology = status
+        .resources
+        .iter()
+        .any(|resource| resource.kind != runtime::ResourceKind::Volume);
+    if !has_active_topology {
+        return Ok(());
+    }
+    match status.drift {
+        DriftState::NotRunning | DriftState::InSync => Ok(()),
+        DriftState::Drifted | DriftState::Unknown => Err(MessageError(format!(
+            "runtime drift detected for `{}`: {}; run `apmpr status` and reconcile it before up",
+            status.deployment, status.detail
+        ))),
+    }
+}
+
+fn print_status(status: &DeploymentStatus) {
+    println!("Deployment: {}", status.deployment);
+    println!("Drift: {:?} ({})", status.drift, status.detail);
+    for observation in &status.device_observations {
+        println!(
+            "Device {}: {:?} ({})",
+            observation.device, observation.state, observation.detail
+        );
+    }
+    if status.resources.is_empty() {
+        println!("Resources: none");
+        return;
+    }
+    println!("Resources:");
+    for resource in &status.resources {
+        println!(
+            "  {:9} {:32} {:16} {}",
+            resource.kind,
+            resource.name,
+            resource.device,
+            resource.state.as_deref().unwrap_or("present")
+        );
+    }
+}
+
+fn apply_membership_move(
+    workspace_root: &Path,
+    plan: &mut Plan,
+    transition: Option<cli::TransitionArgument>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let token = env::var("APMPR_ROUTER_TOKEN")
+        .map_err(|_| MessageError("APMPR_ROUTER_TOKEN must be set for membership moves".into()))?;
+    let route_dir = workspace_root.join(&plan.artifact_dir).join("routes");
+    let candidates = plan.route_configs.clone();
+    let mut applied = 0;
+    for (instance, encoded) in candidates {
+        let old: RouterConfig =
+            serde_json::from_slice(&fs::read(route_dir.join(format!("{instance}.json")))?)?;
+        let mut config: RouterConfig = serde_json::from_str(&encoded)?;
+        let mut comparable = config.clone();
+        comparable.spec.snapshot = old.spec.snapshot.clone();
+        if comparable == old {
+            plan.route_configs
+                .insert(instance, serde_json::to_string_pretty(&old)?);
+            continue;
+        }
+        if let Some(transition) = transition {
+            let policy = match transition {
+                cli::TransitionArgument::Close => router_config::ConnectionTransitionPolicy::Close,
+                cli::TransitionArgument::Drain { timeout_ms } => {
+                    router_config::ConnectionTransitionPolicy::Drain { timeout_ms }
+                }
+                cli::TransitionArgument::Pin => router_config::ConnectionTransitionPolicy::Pin,
+            };
+            config.spec.snapshot.transitions = router_config::ConnectionTransitionPolicies {
+                http: policy.clone(),
+                https: policy.clone(),
+                websocket: policy.clone(),
+                grpc: policy.clone(),
+                tcp: policy,
+            };
+        }
+        let sidecar = plan.sidecars.get(&instance).ok_or_else(|| {
+            MessageError(format!(
+                "no router sidecar exists for group member `{instance}`"
+            ))
+        })?;
+        let endpoint = apmpr_router_admin::AdminEndpoint::docker_exec(
+            &sidecar.service,
+            &sidecar.admin_socket,
+            &plan.deployment,
+            &instance,
+            &plan.resource_hash,
+        );
+        let next_version = apmpr_router_admin::current_snapshot(&endpoint, &token)?
+            .version
+            .checked_add(1)
+            .ok_or_else(|| MessageError("router snapshot version is exhausted".into()))?;
+        config.spec.snapshot.version = next_version;
+        config.spec.snapshot.id =
+            router_config::RouteSnapshotId::new(format!("{instance}-membership-{next_version}"));
+        let acknowledgement = apmpr_router_admin::apply_snapshot(&endpoint, &token, &config)?;
+        plan.route_configs
+            .insert(instance, serde_json::to_string_pretty(&config)?);
+        println!(
+            "router acknowledgement: {}",
+            serde_json::to_string(&acknowledgement)?
+        );
+        applied += 1;
+    }
+    if applied == 0 {
+        return Err(MessageError("membership move did not change a live router".into()).into());
+    }
+    Ok(())
+}
+
+fn print_routes(plan: &Plan) -> Result<(), Box<dyn std::error::Error>> {
+    if plan.sidecars.is_empty() {
+        println!("Routes: none");
+        return Ok(());
+    }
+    let token = env::var("APMPR_ROUTER_TOKEN")
+        .map_err(|_| MessageError("APMPR_ROUTER_TOKEN must be set to inspect routes".into()))?;
+    for (consumer, sidecar) in &plan.sidecars {
+        let endpoint = apmpr_router_admin::AdminEndpoint::docker_exec(
+            &sidecar.service,
+            &sidecar.admin_socket,
+            &plan.deployment,
+            consumer,
+            &plan.resource_hash,
+        );
+        let routes = apmpr_router_admin::inspect_routes(&endpoint, &token)?;
+        println!("[{consumer}]\n{}", serde_json::to_string_pretty(&routes)?);
+    }
+    Ok(())
+}
+
+fn log_targets(plan: &Plan, target: &str) -> Result<Vec<String>, MessageError> {
+    let (instance, component) = target
+        .split_once('/')
+        .map_or((target, None), |(instance, component)| {
+            (instance, Some(component))
+        });
+    let manifest: serde_json::Value = serde_json::from_str(&plan.manifest_json)
+        .map_err(|error| MessageError(error.to_string()))?;
+    let mut services = Vec::new();
+    for entry in manifest["services"].as_array().into_iter().flatten() {
+        if entry["instance"].as_str() != Some(instance)
+            || component.is_some() && entry["component"].as_str() != component
+        {
+            continue;
+        }
+        if let Some(service) = entry["service"].as_str() {
+            services.push(service.to_owned());
+        }
+        if component.is_none() {
+            if let Some(sidecar) = entry["sidecar"].as_str() {
+                services.push(sidecar.to_owned());
+            }
+        }
+    }
+    services.sort();
+    services.dedup();
+    if services.is_empty() {
+        return Err(MessageError(format!(
+            "no generated service matches log target `{target}`"
+        )));
+    }
+    Ok(services)
+}
+
+#[derive(Debug)]
+struct MessageError(String);
+
+impl fmt::Display for MessageError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl std::error::Error for MessageError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renamed_environment_variables_name_their_apmpr_replacement() {
+        let stale = renamed_environment_variables(
+            ["SWITCHYARD_ROUTER_TOKEN", "PATH", "SWITCHYARD_BUNDLE"]
+                .into_iter()
+                .map(str::to_owned),
+        );
+        assert_eq!(
+            stale,
+            vec![
+                "SWITCHYARD_BUNDLE -> APMPR_BUNDLE".to_owned(),
+                "SWITCHYARD_ROUTER_TOKEN -> APMPR_ROUTER_TOKEN".to_owned(),
+            ]
+        );
+        // An environment already using the new names is not reported.
+        assert!(
+            renamed_environment_variables(
+                ["APMPR_ROUTER_TOKEN", "PATH"]
+                    .into_iter()
+                    .map(str::to_owned)
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn up_source_preparation_clones_one_store_and_creates_all_worktrees() {
+        let directory = tempfile::tempdir().unwrap();
+        let origin = directory.path().join("origin");
+        let project = directory.path().join("project");
+        fs::create_dir(&origin).unwrap();
+        fs::create_dir(&project).unwrap();
+        for arguments in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.email", "tests@apmpr.invalid"],
+            vec!["config", "user.name", "APM ProjectRunner Tests"],
+        ] {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&origin)
+                .args(arguments)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        }
+        fs::write(origin.join("tracked"), "initial\n").unwrap();
+        for arguments in [vec!["add", "tracked"], vec!["commit", "-m", "initial"]] {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&origin)
+                .args(arguments)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        }
+        let deployment = project.join("deployment.yaml");
+        fs::write(
+            &deployment,
+            format!(
+                "apiVersion: apmpr.dev/v1alpha2\nkind: Deployment\nmetadata: {{ name: demo }}\nspec:\n  repositories:\n    app: {{ url: {} }}\n  sources:\n    main: {{ repository: app, ref: main, path: sources/main }}\n    other: {{ repository: app, ref: main, path: sources/other }}\n",
+                origin.display()
+            ),
+        )
+        .unwrap();
+        let bundle = apmpr_planner::load_bundle(&deployment).unwrap();
+
+        ensure_deployment_sources(&bundle).unwrap();
+
+        let store = project.join(".apmpr/clones/app");
+        assert_eq!(
+            command_output(&store, &["rev-parse", "--is-bare-repository"]),
+            "true"
+        );
+        for source in ["main", "other"] {
+            let worktree = project.join("sources").join(source);
+            assert_eq!(
+                fs::read_to_string(worktree.join("tracked")).unwrap(),
+                "initial\n"
+            );
+            assert_eq!(command_output(&worktree, &["rev-parse", "HEAD"]).len(), 40);
+        }
+        ensure_deployment_sources(&bundle).unwrap();
+    }
+
+    fn command_output(directory: &Path, arguments: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().into()
+    }
+
+    #[test]
+    fn device_target_defaults_and_validates_port() {
+        assert_eq!(
+            parse_device_target("dev@host.test").unwrap(),
+            ("dev".into(), "host.test".into(), 22)
+        );
+        assert_eq!(
+            parse_device_target("dev@host.test:2222").unwrap(),
+            ("dev".into(), "host.test".into(), 2222)
+        );
+        assert!(parse_device_target("host.test").is_err());
+        assert!(parse_device_target("dev@host.test:0").is_err());
+    }
+
+    #[test]
+    fn log_target_resolves_all_instance_services_from_manifest() {
+        let plan: Plan = serde_json::from_value(serde_json::json!({
+            "deployment": "demo",
+            "definitionHash": "definition",
+            "resourceHash": "resources",
+            "composeProject": "sy--demo",
+            "artifactDir": ".apmpr/generated/demo",
+            "composeYaml": "",
+            "resolvedDeploymentYaml": "",
+            "manifestJson": "{\"services\":[{\"instance\":\"backend\",\"component\":\"api\",\"service\":\"demo--backend--api--app\",\"sidecar\":\"demo--backend--api--router\"}]}",
+            "routeConfigs": {},
+            "sidecars": {}
+        }))
+        .unwrap();
+        assert_eq!(
+            log_targets(&plan, "backend").unwrap(),
+            vec![
+                "demo--backend--api--app".to_owned(),
+                "demo--backend--api--router".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn drift_blocks_up_without_mutating_it() {
+        let status = DeploymentStatus {
+            deployment: "demo".into(),
+            drift: DriftState::Drifted,
+            detail: "hash mismatch".into(),
+            device_observations: Vec::new(),
+            resources: vec![runtime::OwnedResource {
+                kind: runtime::ResourceKind::Container,
+                id: "id".into(),
+                name: "demo".into(),
+                labels: Default::default(),
+                state: None,
+                device: "local".into(),
+            }],
+        };
+        assert!(refuse_runtime_drift(&status).is_err());
+    }
+
+    #[test]
+    fn gui_without_daemon_returns_actionable_error() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            gui_url(temp.path()).unwrap_err().to_string(),
+            format!(
+                "daemon not running; install and start it with `apmpr daemon install {}`",
+                shell_path(temp.path())
+            )
+        );
+    }
+
+    #[test]
+    fn service_install_guidance_shell_quotes_project_paths() {
+        assert_eq!(
+            shell_path(Path::new("/tmp/Akhil's Project")),
+            "'/tmp/Akhil'\\''s Project'"
+        );
+    }
+
+    #[test]
+    fn init_scaffolds_valid_project_and_enforces_force() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("My Demo_Project");
+        let scaffold = init::scaffold(&project, None, false).unwrap();
+
+        assert_eq!(scaffold.project_name, "my-demo-project");
+        for relative in [
+            "deployment.yaml",
+            "overlays/dev.yaml",
+            "README.md",
+            ".gitignore",
+            ".agents/skills/apmpr-project/SKILL.md",
+            ".agents/skills/apmpr-project/agents/openai.yaml",
+        ] {
+            let contents = fs::read_to_string(project.join(relative)).unwrap();
+            assert!(
+                !contents.contains("{{"),
+                "placeholder remained in {relative}"
+            );
+        }
+        load_and_plan(&scaffold.deployment).unwrap();
+
+        let skill =
+            fs::read_to_string(project.join(".agents/skills/apmpr-project/SKILL.md")).unwrap();
+        for required in [
+            "apmpr source list",
+            "apmpr device check <name>",
+            "apmpr-profiles.yaml",
+            "Never edit `.apmpr/generated/` or `.apmpr/state.sqlite3`",
+            "best-guess configuration",
+            "apmpr cleanup deployment.yaml --yes",
+        ] {
+            assert!(skill.contains(required), "skill omitted `{required}`");
+        }
+
+        let error = init::scaffold(&project, None, false).unwrap_err();
+        let message = error.to_string();
+        for relative in [
+            "deployment.yaml",
+            "overlays/dev.yaml",
+            "README.md",
+            ".gitignore",
+            ".agents/skills/apmpr-project/SKILL.md",
+            ".agents/skills/apmpr-project/agents/openai.yaml",
+        ] {
+            assert!(message.contains(relative));
+        }
+        fs::write(project.join("README.md"), "user content {{").unwrap();
+        init::scaffold(&project, None, true).unwrap();
+        assert!(
+            !fs::read_to_string(project.join("README.md"))
+                .unwrap()
+                .contains("{{")
+        );
+        load_and_plan(&scaffold.deployment).unwrap();
+    }
+}

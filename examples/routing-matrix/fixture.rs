@@ -67,8 +67,8 @@ fn run() -> Result<(), String> {
             },
         ),
         [mode, listen, service] if mode == "provider-instance" => {
-            let instance = env::var("SWITCHYARD_INSTANCE")
-                .map_err(|_| "SWITCHYARD_INSTANCE must be set".to_owned())?;
+            let instance = env::var("APMPR_INSTANCE")
+                .map_err(|_| "APMPR_INSTANCE must be set".to_owned())?;
             let suite = instance
                 .strip_suffix(&format!("-{service}"))
                 .ok_or_else(|| format!("instance {instance} must end with -{service}"))?;
@@ -90,8 +90,8 @@ fn run() -> Result<(), String> {
         [mode, listen, state_file] if mode == "backend-instance" => serve(
             listen,
             Role::Backend {
-                backend: env::var("SWITCHYARD_INSTANCE")
-                    .map_err(|_| "SWITCHYARD_INSTANCE must be set".to_owned())?,
+                backend: env::var("APMPR_INSTANCE")
+                    .map_err(|_| "APMPR_INSTANCE must be set".to_owned())?,
                 counter: Arc::new(Mutex::new(Counter::load(state_file)?)),
             },
         ),

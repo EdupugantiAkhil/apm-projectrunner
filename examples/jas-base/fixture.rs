@@ -174,8 +174,8 @@ fn common_identity(service: &str) -> String {
 fn common_fields(service: &str) -> String {
     format!(
         "\"deployment\":{},\"instance\":{},\"service\":{},\"source\":{}",
-        json(&required_env("SWITCHYARD_DEPLOYMENT")),
-        json(&required_env("SWITCHYARD_INSTANCE")),
+        json(&required_env("APMPR_DEPLOYMENT")),
+        json(&required_env("APMPR_INSTANCE")),
         json(service),
         json(&required_env("FIXTURE_SOURCE"))
     )

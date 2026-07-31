@@ -1,5 +1,5 @@
 {
-  "apiVersion": "switchyard.dev/router/v1alpha1",
+  "apiVersion": "apmpr.dev/router/v1alpha1",
   "kind": "RouterConfiguration",
   "metadata": { "deployment": "comparison" },
   "spec": {
@@ -13,11 +13,11 @@
         "tcp": { "strategy": "close" }
       }
     },
-    "identity": { "explicitHeader": "X-Switchyard-Route", "stripBeforeForwarding": true },
+    "identity": { "explicitHeader": "X-Apmpr-Route", "stripBeforeForwarding": true },
     "listeners": [
       {
         "bind": { "host": "127.0.0.1", "port": 8443 }, "protocol": "https",
-        "tls": { "certificate": ".switchyard/certs/comparison.pem", "privateKey": ".switchyard/certs/comparison-key.pem" },
+        "tls": { "certificate": ".apmpr/certs/comparison.pem", "privateKey": ".apmpr/certs/comparison-key.pem" },
         "destinations": [
           { "kind": "custom_domain", "slot": "ui-1-domain", "domain": "ui-1.comparison.localhost" },
           { "kind": "custom_domain", "slot": "ui-2-domain", "domain": "ui-2.comparison.localhost" },

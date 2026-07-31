@@ -1,4 +1,4 @@
-//! The `switchyard.dev/router/v1alpha1` router configuration schema.
+//! The `apmpr.dev/router/v1alpha1` router configuration schema.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -9,7 +9,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-pub const API_VERSION: &str = "switchyard.dev/router/v1alpha1";
+pub const API_VERSION: &str = "apmpr.dev/router/v1alpha1";
 pub const KIND: &str = "RouterConfiguration";
 
 macro_rules! identifier {
@@ -755,7 +755,7 @@ pub struct TransparentProxy {
 pub struct TransparentMember {
     pub component: ComponentId,
     pub host: String,
-    /// Authored listener ports for a member without a Switchyard listener registry.
+    /// Authored listener ports for a member without an APM ProjectRunner listener registry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ports: Option<Vec<u16>>,
 }
@@ -844,7 +844,7 @@ pub struct IdentityPolicy {
 impl Default for IdentityPolicy {
     fn default() -> Self {
         Self {
-            explicit_header: "X-Switchyard-Route".into(),
+            explicit_header: "X-Apmpr-Route".into(),
             strip_before_forwarding: true,
         }
     }

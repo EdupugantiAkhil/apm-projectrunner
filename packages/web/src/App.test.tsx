@@ -13,17 +13,17 @@ const deployment = {
   apiVersion: 'v1', deployment: 'comparison', definitionHash: 'definition123', resourceHash: 'resource123', appliedAt: 1,
   snapshot: { spec: { instances: [{ name: 'ui-feature', device: 'build-host', address: 'ui.comparison.localhost' }, { name: 'backend-a', block: 'java' }, { name: 'backend-b', block: 'java' }, { name: 'python-a', block: 'python' }, { name: 'python-b', block: 'python' }, { name: 'shared-db', block: 'database' }], blocks: connectionBlocks, groups: { base: { instances: ['backend-b', 'python-b', 'shared-db'] }, feature: { instances: ['ui-feature', 'backend-a', 'python-a'] } } } }, manifest: {},
   sourceIdentities: { 'ui-feature': { path: '/worktrees/ui-a', ref: 'feature/ui-redesign', commit: '35ad2abcdef', dirty: true } },
-  reconciliation: { deployment: 'comparison', diagnostics: [] }, resources: [{ kind: 'container', id: 'one', name: 'comparison-ui-feature', labels: { 'dev.switchyard.instance': 'ui-feature' }, state: 'healthy', device: 'build-host' }],
+  reconciliation: { deployment: 'comparison', diagnostics: [] }, resources: [{ kind: 'container', id: 'one', name: 'comparison-ui-feature', labels: { 'dev.apmpr.instance': 'ui-feature' }, state: 'healthy', device: 'build-host' }],
   customDomains: ['ui.comparison.localhost'], customDomainLinks: [{ domain: 'ui.comparison.localhost', url: 'http://ui.comparison.localhost:18432' }], memberships: { 'ui-feature': 'feature', 'backend-a': 'feature', 'python-a': 'feature', 'backend-b': 'base', 'python-b': 'base', 'shared-db': 'base' },
 }
-const source: SourceRecord = { source: { name: 'feature-ui', kind: 'managed', path: '/project/worktrees/ui-a', requestedRef: 'feature/ui-redesign' }, inspection: { identity: { path: '/project/worktrees/ui-a', repository: '/project/.switchyard/clones/monorepo', ref: 'feature/ui-redesign', commit: '35ad2abcdef', dirty: true }, linkedWorktree: true, branch: 'feature/ui-redesign', changes: { staged: 1, unstaged: 2, untracked: 3 }, ahead: 2, behind: 0, unknownCode: null } }
+const source: SourceRecord = { source: { name: 'feature-ui', kind: 'managed', path: '/project/worktrees/ui-a', requestedRef: 'feature/ui-redesign' }, inspection: { identity: { path: '/project/worktrees/ui-a', repository: '/project/.apmpr/clones/monorepo', ref: 'feature/ui-redesign', commit: '35ad2abcdef', dirty: true }, linkedWorktree: true, branch: 'feature/ui-redesign', changes: { staged: 1, unstaged: 2, untracked: 3 }, ahead: 2, behind: 0, unknownCode: null } }
 const unmanagedSource = { source: { name: 'shared-app', kind: 'unmanaged' as const, path: '/code/shared-app' }, inspection: { identity: { path: '/code/shared-app', ref: 'main', commit: '123456789ab', dirty: true }, branch: 'main', changes: { staged: 4, unstaged: 5, untracked: 6 }, ahead: 0, behind: 0, unknownCode: null } }
 const sourceProfile = { apiVersion: 'v1', name: 'api', deployment: 'comparison', origin: { kind: 'discovered-in-source' as const, source: 'feature-ui', commit: '35ad2abcdef' }, trust: 'not-imported' as const, shadowed: false, services: [{ name: 'web', adapterKind: 'container' as const }] }
 const trustedProfile = { apiVersion: 'v1', name: 'worker-profile', deployment: 'comparison', origin: { kind: 'project' as const }, trust: 'trusted' as const, shadowed: false, services: [{ name: 'web', adapterKind: 'container' as const }] }
 const localDevice: DeviceRecord = { name: 'local', kind: 'local', host: null, port: null, user: null, identityFile: null, createdAt: null, lastCheckedAt: null, lastCheckStatus: 'eligible', lastCheckDetail: null, reachability: 'reachable', eligibility: 'eligible', eligibilityReason: 'local execution is always eligible', placedInstances: [] }
 const remoteDevice: DeviceRecord = { name: 'build-host', kind: 'ssh', host: 'host.test', port: 22, user: 'dev', identityFile: null, createdAt: 1, lastCheckedAt: null, lastCheckStatus: 'never', lastCheckDetail: null, reachability: 'unchecked', eligibility: 'ineligible', eligibilityReason: 'unchecked', placedInstances: [{ deployment: 'comparison', instance: 'ui-feature' }] }
 const authoredSpec = { instances: [{ name: 'ui-feature', block: 'web-ui' }, { name: 'ui-unbound', block: 'web-ui' }, { name: 'backend-a', block: 'java' }, { name: 'backend-b', block: 'java' }, { name: 'python-a', block: 'python' }, { name: 'python-b', block: 'python' }, { name: 'shared-db', block: 'database' }], blocks: { ...connectionBlocks, 'web-ui': { services: { web: {} } } }, groups: { base: { instances: ['backend-b', 'python-b', 'shared-db'] }, feature: { instances: ['ui-feature', 'backend-a', 'python-a'] } } }
-const authoredYaml = 'apiVersion: switchyard.dev/v1alpha2\nkind: Deployment\nmetadata:\n  name: comparison\nspec:\n  instances: []\n  blocks: {}\n  groups:\n    base:\n      instances: [backend-b, python-b, shared-db]\n    feature:\n      instances: [ui-feature, backend-a, python-a]\n'
+const authoredYaml = 'apiVersion: apmpr.dev/v1alpha2\nkind: Deployment\nmetadata:\n  name: comparison\nspec:\n  instances: []\n  blocks: {}\n  groups:\n    base:\n      instances: [backend-b, python-b, shared-db]\n    feature:\n      instances: [ui-feature, backend-a, python-a]\n'
 const authoredDefinition = { apiVersion: 'v1', name: 'comparison', path: '/project/deployments/comparison.yaml', hash: 'hash-one', yaml: authoredYaml }
 const routeState: RouteState = {
   apiVersion: 'v1', deployment: 'comparison', bindings: [{ router: 'host', binding: 'ui-feature', desiredVersion: 5, desiredChecksum: 'desired-five', currentVersion: 4, currentChecksum: 'current-four', previousVersion: 3, previousChecksum: 'previous-three', observedVersion: 4, observedChecksum: 'observed-four', status: 'pending', transition: { state: 'draining', strategy: 'drain', timeoutMs: 2500 }, lastErrorCode: null, updatedAt: 1700000000300 }],
@@ -75,7 +75,7 @@ function installFetch() {
   return fetchMock
 }
 
-describe('Switchyard GUI', () => {
+describe('APM ProjectRunner GUI', () => {
   beforeEach(() => { MockEventSource.instances = []; vi.stubGlobal('EventSource', MockEventSource); installFetch() })
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
@@ -118,11 +118,11 @@ describe('Switchyard GUI', () => {
     expect(command).not.toHaveBeenCalled()
 
     await user.click(screen.getByRole('button', { name: 'Open ui-feature in a managed Chromium profile' }))
-    await waitFor(() => expect(command).toHaveBeenCalledWith('open', '.switchyard/generated/comparison/resolved-deployment.yaml', { instance: 'ui-feature' }))
+    await waitFor(() => expect(command).toHaveBeenCalledWith('open', '.apmpr/generated/comparison/resolved-deployment.yaml', { instance: 'ui-feature' }))
   })
 
   it('shows one honest per-instance inspector with placement, services, connections, and instance-scoped operations', async () => {
-    const user = userEvent.setup(); const client = new ApiClient('test'); const inspected = { ...deployment, snapshot: { spec: { ...deployment.snapshot.spec, instances: deployment.snapshot.spec.instances.map((instance) => instance.name === 'ui-feature' ? { ...instance, block: 'web-ui', source: 'feature-ui' } : instance), blocks: { ...deployment.snapshot.spec.blocks, 'web-ui': { services: { web: {}, worker: {} } } } } }, resources: [{ kind: 'container', id: 'web', name: 'opaque-runtime-name', labels: { 'dev.switchyard.instance': 'ui-feature', 'dev.switchyard.service': 'web' }, state: 'running (healthy)', device: 'build-host' }, { kind: 'container', id: 'worker', name: 'comparison-ui-feature-worker', labels: {} as Record<string, string>, state: 'running (unhealthy)', device: 'local' }] }
+    const user = userEvent.setup(); const client = new ApiClient('test'); const inspected = { ...deployment, snapshot: { spec: { ...deployment.snapshot.spec, instances: deployment.snapshot.spec.instances.map((instance) => instance.name === 'ui-feature' ? { ...instance, block: 'web-ui', source: 'feature-ui' } : instance), blocks: { ...deployment.snapshot.spec.blocks, 'web-ui': { services: { web: {}, worker: {} } } } } }, resources: [{ kind: 'container', id: 'web', name: 'opaque-runtime-name', labels: { 'dev.apmpr.instance': 'ui-feature', 'dev.apmpr.service': 'web' }, state: 'running (healthy)', device: 'build-host' }, { kind: 'container', id: 'worker', name: 'comparison-ui-feature-worker', labels: {} as Record<string, string>, state: 'running (unhealthy)', device: 'local' }] }
     const instanceOperation: Operation = { apiVersion: 'v1', id: 'op-ui-feature', deployment: 'comparison', instance: 'ui-feature', kind: 'logs', destructive: false, status: 'succeeded', startedAt: 8, finishedAt: 9, error: null, result: null }; vi.spyOn(client, 'deployment').mockResolvedValue(inspected); const operations = vi.spyOn(client, 'operations').mockImplementation(async (filters = {}) => ({ apiVersion: 'v1', operations: filters.instance === 'ui-feature' ? [instanceOperation] : [], nextCursor: null }))
     vi.spyOn(client, 'profiles').mockResolvedValue({ apiVersion: 'v1', profiles: [{ ...trustedProfile, name: 'web-ui' }], sourceErrors: [] })
     render(<App client={client} />); await screen.findByRole('heading', { name: 'comparison', level: 1 }); await user.click(screen.getByRole('button', { name: 'Inspect ui-feature' }))
@@ -238,7 +238,7 @@ describe('Switchyard GUI', () => {
         { name: 'shell status', description: 'Legacy terminal command', type: 'shell', command: 'git status --short' },
       ],
     }
-    const structuredPreview: RunActionPreview = { apiVersion: 'v1', name: 'dev plan', description: 'Plan development', target: { kind: 'deployment', name: 'comparison', bundle: '.switchyard/generated/comparison/resolved-deployment.yaml' }, execution: { type: 'structured', argv: ['plan', '.switchyard/generated/comparison/resolved-deployment.yaml', '--with', 'overlays/dev.yaml', '--variation', 'fast', '--set', 'LOG_LEVEL=debug'] }, shellNoticeAcknowledged: false, shellAcknowledgementRequired: false, previewHash: 'structured-preview' }
+    const structuredPreview: RunActionPreview = { apiVersion: 'v1', name: 'dev plan', description: 'Plan development', target: { kind: 'deployment', name: 'comparison', bundle: '.apmpr/generated/comparison/resolved-deployment.yaml' }, execution: { type: 'structured', argv: ['plan', '.apmpr/generated/comparison/resolved-deployment.yaml', '--with', 'overlays/dev.yaml', '--variation', 'fast', '--set', 'LOG_LEVEL=debug'] }, shellNoticeAcknowledged: false, shellAcknowledgementRequired: false, previewHash: 'structured-preview' }
     const shellPreview: RunActionPreview = { apiVersion: 'v1', name: 'shell status', description: 'Legacy terminal command', target: { kind: 'project-shell-context', root: '/project' }, execution: { type: 'shell', command: 'git status --short' }, shellNoticeAcknowledged: false, shellAcknowledgementRequired: true, previewHash: 'shell-preview' }
     const operation: Operation = { apiVersion: 'v1', id: 'op-run', deployment: 'comparison', instance: null, kind: 'run-action', destructive: false, status: 'running', startedAt: 10, finishedAt: null, error: null, result: null }
     vi.spyOn(client, 'runActions').mockResolvedValue(actions)
@@ -256,7 +256,7 @@ describe('Switchyard GUI', () => {
     await user.click(screen.getByRole('button', { name: 'Preview and run' }))
     const structuredDialog = await screen.findByRole('dialog', { name: 'Confirm run action · dev plan' })
     expect(within(structuredDialog).getByText('Argument vector')).toBeInTheDocument()
-    expect(within(structuredDialog).getByText('plan .switchyard/generated/comparison/resolved-deployment.yaml --with overlays/dev.yaml --variation fast --set LOG_LEVEL=debug')).toBeInTheDocument()
+    expect(within(structuredDialog).getByText('plan .apmpr/generated/comparison/resolved-deployment.yaml --with overlays/dev.yaml --variation fast --set LOG_LEVEL=debug')).toBeInTheDocument()
     await user.click(within(structuredDialog).getByRole('button', { name: 'Confirm and run' }))
     await waitFor(() => expect(execute).toHaveBeenCalledWith('dev plan', structuredPreview, false))
 
@@ -442,7 +442,7 @@ describe('Switchyard GUI', () => {
     const select = screen.getByLabelText('Group for ui-feature'); select.focus(); await user.selectOptions(select, 'base')
     const dialog = screen.getByRole('dialog', { name: 'Preview membership move' }); expect(within(dialog).getByText(/Snapshot v4/)).toBeInTheDocument(); expect(within(dialog).getAllByRole('row')).toHaveLength(7); expect(within(dialog).getAllByText('backend-b').length).toBeGreaterThan(0)
     await user.click(within(dialog).getByRole('button', { name: 'Move instance' }))
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/commands/membership', expect.objectContaining({ body: JSON.stringify({ bundle: '.switchyard/generated/comparison/resolved-deployment.yaml', instance: 'ui-feature', group: 'base', transition: { strategy: 'close' } }) })))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/commands/membership', expect.objectContaining({ body: JSON.stringify({ bundle: '.apmpr/generated/comparison/resolved-deployment.yaml', instance: 'ui-feature', group: 'base', transition: { strategy: 'close' } }) })))
     const result = await screen.findByRole('dialog', { name: 'Membership move result' }); expect(within(result).getByText('Atomic membership operation succeeded.')).toBeInTheDocument(); expect(within(result).getByText(/Exit code 0\. applied v5/)).toBeInTheDocument(); expect(within(result).getByText(/desired v5; observed v4; status pending; transition draining; error none; rollback recorded at v4/)).toBeInTheDocument()
   })
 
@@ -461,7 +461,7 @@ describe('Switchyard GUI', () => {
     const select = screen.getByLabelText('Group for ui-unbound'); expect(within(select).getByRole('option', { name: 'Not in a group' })).toBeInTheDocument(); await user.selectOptions(select, 'base')
     const dialog = screen.getByRole('dialog', { name: 'Preview membership move' }); expect(within(dialog).getByText(/will join base/)).toBeInTheDocument(); expect(within(dialog).getAllByText('backend-b').length).toBeGreaterThan(0)
     await user.click(within(dialog).getByRole('button', { name: 'Move instance' }))
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/commands/membership', expect.objectContaining({ body: JSON.stringify({ bundle: '.switchyard/generated/comparison/resolved-deployment.yaml', instance: 'ui-unbound', group: 'base', transition: { strategy: 'close' } }) })))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/commands/membership', expect.objectContaining({ body: JSON.stringify({ bundle: '.apmpr/generated/comparison/resolved-deployment.yaml', instance: 'ui-unbound', group: 'base', transition: { strategy: 'close' } }) })))
   })
 
   it('adds an instance to an existing deployment with checkout-filtered profiles, eligibility gating, SchemaForm parameters, and expansion preview', async () => {

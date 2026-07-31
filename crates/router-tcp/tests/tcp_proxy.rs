@@ -254,12 +254,12 @@ async fn idle_and_shutdown_timeouts_bound_long_lived_connections() -> io::Result
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "socket-bound reliability test; run via scripts/reliability.sh"]
 async fn reload_storm_under_concurrent_clients_has_no_partial_tcp_responses_or_leaks() {
-    let duration = std::env::var("SWITCHYARD_RELOAD_STORM_SECONDS")
+    let duration = std::env::var("APMPR_RELOAD_STORM_SECONDS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(30));
-    let clients = std::env::var("SWITCHYARD_CONCURRENCY")
+    let clients = std::env::var("APMPR_CONCURRENCY")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(16);

@@ -10,19 +10,19 @@ npm run build
 Adopt an existing code folder once, then launch its GUI from anywhere:
 
 ```text
-switchyard project register path/to/code --name my-project
-switchyard daemon install path/to/code
-switchyard gui path/to/code
+apmpr project register path/to/code --name my-project
+apmpr daemon install path/to/code
+apmpr gui path/to/code
 ```
 
-Registration preserves existing files, creates project-local Switchyard state and an
+Registration preserves existing files, creates project-local APM ProjectRunner state and an
 empty `deployments/` directory, and registers the folder itself as the first code
-source. Repeating the same registration is safe. `switchyard daemon install [project]`
+source. Repeating the same registration is safe. `apmpr daemon install [project]`
 writes and starts a project-specific launchd LaunchAgent on macOS or systemd user unit on
-Linux. `switchyard gui [project]` requires that daemon to be running, prints the local URL,
+Linux. `apmpr gui [project]` requires that daemon to be running, prints the local URL,
 and makes a best-effort attempt to open it with `xdg-open` on Linux or `open` on macOS. If
 the daemon is stopped, `gui` reports the exact install command instead of starting it.
-Daemon output is appended to `.switchyard/daemon.log`. Failure to start the desktop opener
+Daemon output is appended to `.apmpr/daemon.log`. Failure to start the desktop opener
 does not fail the command.
 
 ## Supported scope
@@ -48,11 +48,11 @@ page load before the JavaScript client has consumed its fragment credential. It 
 not weaken API authentication: all `/api/v1` endpoints remain protected.
 
 GUI operations that start or update routers use a separate project router credential.
-The daemon loads or creates `.switchyard/router-token` as an owner-only regular file
+The daemon loads or creates `.apmpr/router-token` as an owner-only regular file
 and injects it only into its CLI subprocesses and local router-administration calls; it
 is never returned to browser code. The credential persists across daemon restarts so
 already-running routers remain manageable. An explicitly supplied
-`SWITCHYARD_ROUTER_TOKEN` seeds a missing credential file and must match an existing
+`APMPR_ROUTER_TOKEN` seeds a missing credential file and must match an existing
 one, preventing an accidental credential rotation while routers may still be running.
 
 Git clone keeps the same loopback-only bearer boundary: `/api/v1/sources/clone` is an
@@ -66,7 +66,7 @@ The API contract is deserialize-only for these fields and never echoes them.
 
 Credentials pass through memory only: browser form/fetch memory, the daemon request and
 clone-task values, Git's child environment, and the one-attempt askpass process. They are
-not written to SQLite, `.switchyard/`, operation results, SSE events, or logs. Each
+not written to SQLite, `.apmpr/`, operation results, SSE events, or logs. Each
 attempt creates an owner-only private temporary directory and an executable owner-only
 `GIT_ASKPASS` shell helper containing only environment-variable lookups, never secret
 material. Configured Git credential helpers are disabled for the submitted-credential
@@ -74,7 +74,7 @@ retry so Git cannot ask one to persist the value; the directory is removed when 
 briefly be written there as a mode-0600 `known_hosts` file. Clone Git output is not
 streamed: the normal operation timeline receives only fixed start/completion messages,
 so submitted values cannot become event lines. The general
-`switchyard_planner::redact_event_line` filter remains useful for ordinary commands but
+`apmpr_planner::redact_event_line` filter remains useful for ordinary commands but
 cannot guarantee removal of an arbitrary password or token; this clone path therefore
 does not rely on it.
 
@@ -98,7 +98,7 @@ automatically.
 Select an instance to move it to another group. Selection prepares a modal preview of
 the old and new complete ordered memberships and the route snapshots being superseded.
 Nothing changes until **Apply membership move** is activated. Close, drain (with
-timeout), and pin connection policies map directly to the `switchyard move` CLI options. The resulting
+timeout), and pin connection policies map directly to the `apmpr move` CLI options. The resulting
 operation acknowledgement or structured rollback failure appears in Operations and
 the event drawer.
 
@@ -106,7 +106,7 @@ The Routing panel loads the authored YAML with its optimistic hash. Group and in
 `address`, host-listener, and managed-profile changes show a full line diff and planner diagnostics.
 Apply performs a dry-run validation before the definition PUT; an optional follow-up
 can plan or run Up. This is deliberately the same portable workflow available without
-the GUI: edit `deployments/<name>.yaml`, run `switchyard validate`, then plan or apply.
+the GUI: edit `deployments/<name>.yaml`, run `apmpr validate`, then plan or apply.
 
 While a deployment is running, its HTTP/HTTPS custom domains are normal links in the
 deployment inspector. Their targets include the active host-listener port and open with
@@ -146,5 +146,5 @@ Without an explicit identity, device authentication uses the daemon user's exist
 configuration and agent. When an identity path is selected, it is used exclusively for
 the SSH probe and Docker operations, preventing unrelated agent keys from being tried
 first. The GUI and API do not accept passwords or key contents, and SQLite stores only
-the optional identity file path exactly as entered. Switchyard does not modify the
+the optional identity file path exactly as entered. APM ProjectRunner does not modify the
 user's persistent SSH configuration.

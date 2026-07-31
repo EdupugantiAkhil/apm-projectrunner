@@ -34,7 +34,7 @@ say we have 1 node js service that interacts with 5 python services(all 5 are in
 Status: accepted — implemented through Phase E
 
 The handwritten requirements above are intentionally preserved verbatim. This plan
-translates their intent into Switchyard's existing architecture.
+translates their intent into APM ProjectRunner's existing architecture.
 
 ## 0. Decision: keep the Ratatui TUI
 
@@ -42,7 +42,7 @@ The handwritten note proposed switching to egui. After review, the plan keeps th
 existing Ratatui terminal UI and extends it instead, because:
 
 - The TUI must remain usable over plain SSH to headless LAN devices, which is a real
-  Switchyard workflow today. egui has no terminal backend, so a native GUI would end
+  APM ProjectRunner workflow today. egui has no terminal backend, so a native GUI would end
   that workflow rather than improve it.
 - The recently landed clone-authentication work (terminal handoff to git and ephemeral
   SSH credential prompts) depends on owning a real terminal. A native app would need an
@@ -75,7 +75,7 @@ Extend the TUI so a developer can:
 The representative acceptance scenario is the one in the handwritten requirements:
 run multiple instances of a Node.js consumer and independently choose which complete
 five-service Python group each consumer uses. Applications may continue using fixed
-loopback or network addresses; Switchyard performs the routing without source changes.
+loopback or network addresses; APM ProjectRunner performs the routing without source changes.
 
 ## 2. User-facing terminology
 
@@ -86,7 +86,7 @@ decision to be made explicitly during Phase A, including whether the handwritten
 
 | UI label | Architecture term | Meaning |
 |---|---|---|
-| Switchyard project | Workspace/project directory | Authored deployment, overlays, and project state |
+| APM ProjectRunner project | Workspace/project directory | Authored deployment, overlays, and project state |
 | Code | Sources | Code made available from a local path, repository, or worktree |
 | Repository | Repository | The Git repository and its relationship to linked worktrees |
 | Checkout | Source path/worktree | The exact code tree selected for an instance |
@@ -108,7 +108,7 @@ existing block and execution-adapter model so planning, isolation, health, owner
 routing, recovery, logs, and cleanup continue to work.
 
 A project run action invokes deployment-level commands or a smoke test. Existing
-`.switchyard/run-scripts.yaml` entries remain project operations and must not become a
+`.apmpr/run-scripts.yaml` entries remain project operations and must not become a
 second instance execution format.
 
 This is a deliberate reframing of the handwritten "runner scripts" idea: anything that
@@ -127,7 +127,7 @@ Add code -> choose checkout -> choose startup profile -> configure instance
 
 The TUI must be able to list startup profiles declared in either:
 
-- the Switchyard project; or
+- the APM ProjectRunner project; or
 - an explicitly supported manifest in the selected source repository.
 
 Source-local discovery must be declarative and deterministic. It must not execute or
@@ -157,7 +157,7 @@ deferral:
 
 ## 4. Client and architecture direction
 
-- The Ratatui TUI is Switchyard's primary local interactive control plane. `switchyard
+- The Ratatui TUI is APM ProjectRunner's primary local interactive control plane. `apmpr
   tui [project]` keeps its name.
 - Extract application operations and state projection from the view/widget code where
   they are currently entangled, so the TUI, CLI, and daemon share one operations layer.
@@ -191,7 +191,7 @@ support policy.
 - Register an existing local directory, clone a repository, refresh inspection, create
   a managed worktree, open a directory, and safely remove managed entries.
 - Preserve the existing terminal-handoff and ephemeral-credential behavior for Git and
-  SSH; never collect passwords or private-key material into Switchyard state.
+  SSH; never collect passwords or private-key material into APM ProjectRunner state.
 
 ### Startup profiles (new view)
 
@@ -260,7 +260,7 @@ support policy.
 
 ## 7. Initialized AI skill
 
-`switchyard init` should install a project-local skill that can help a user reach the
+`apmpr init` should install a project-local skill that can help a user reach the
 same valid desired state as the UI. Expand the skill so an agent knows how to:
 
 1. Inspect the project deployment, overlays, registered sources, and repository layout.
@@ -279,7 +279,7 @@ same valid desired state as the UI. Expand the skill so an agent knows how to:
    intent.
 
 The skill should include concise examples and point to the authoritative local schemas
-and documentation. It must not edit `.switchyard/generated`, embed credentials, or
+and documentation. It must not edit `.apmpr/generated`, embed credentials, or
 silently execute newly discovered repository scripts.
 
 ## 8. Delivery phases
@@ -377,7 +377,7 @@ workflow coverage, the limited remote cut, and no ambiguous duplicate product mo
 - [x] A coordinated five-service profile duplicates as a complete suite.
 - [x] A profile can expand a subset of a project's services ("parts of it"), and such
       partial instances participate in groups and routing like any other.
-- [x] A Node.js consumer can continue using its fixed addresses while Switchyard
+- [x] A Node.js consumer can continue using its fixed addresses while APM ProjectRunner
       routes them to the selected Python provider group.
 - [x] Two Node.js consumer instances can independently select different Python groups.
 - [x] Switching one consumer replaces its complete route table atomically and does not

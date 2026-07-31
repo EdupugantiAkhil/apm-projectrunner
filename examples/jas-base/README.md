@@ -2,7 +2,7 @@
 
 This directory is a self-contained stand-in for the deployment shape historically
 represented by the JAS workspace. It contains no real application code or host-specific
-paths. Its purpose is to prove that Switchyard models a mixed legacy topology entirely
+paths. Its purpose is to prove that APM ProjectRunner models a mixed legacy topology entirely
 through generic source, execution, supervision, routing, and lifecycle contracts.
 
 | Block | Generic mechanism exercised |
@@ -41,7 +41,7 @@ members, and source path.
 `ai-feature` authors its complete ordered member list. The checked-in
 `sources/main` and `sources/feature` paths make ordinary offline planning deterministic.
 The smoke proof creates an isolated Git repository from the untouched main fixture
-tree, registers it, creates the feature source with `switchyard worktree create`, and
+tree, registers it, creates the feature source with `apmpr worktree create`, and
 generates a smoke-only deployment pointing the feature instances at that worktree. It
 compares the repository status before and after the run.
 
@@ -55,7 +55,7 @@ From the repository root:
 
 The script requires Docker, Compose, Cargo, Git, curl, and Python 3. It builds and
 starts the fixture, verifies both addressed instances and all fixed ports, confirms worktree
-source identities in `switchyard status`, switches `jas-main` from `ai-feature` to
+source identities in `apmpr status`, switches `jas-main` from `ai-feature` to
 `ai-main` without restarting its application container, and performs a down/up cycle.
 The schema task increments state in both named volumes, so the second initialization
 proves the prior state survived `down`. Final cleanup verifies that no owned containers
@@ -64,9 +64,9 @@ or volumes remain.
 Two overlay/variation plans can be previewed without touching either source tree:
 
 ```sh
-switchyard plan examples/jas-base/deployment.yaml \
+apmpr plan examples/jas-base/deployment.yaml \
   --with examples/jas-base/overlays/main.yaml --variation main
-switchyard plan examples/jas-base/deployment.yaml \
+apmpr plan examples/jas-base/deployment.yaml \
   --with examples/jas-base/overlays/feature.yaml --variation feature
 ```
 

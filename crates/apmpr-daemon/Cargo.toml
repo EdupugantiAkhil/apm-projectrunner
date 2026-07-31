@@ -1,0 +1,39 @@
+[package]
+name = "apmpr-daemon"
+description = "Local authenticated HTTP control plane for APM ProjectRunner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "apmpr-daemon"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8.8"
+futures-util = "0.3.32"
+local-ip-address = "0.6.13"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+serde_yaml = { package = "yaml_serde", version = "0.10.4" }
+router-config = { path = "../router-config" }
+sha2 = "0.10.8"
+apmpr-state = { path = "../apmpr-state" }
+apmpr-adapters = { path = "../apmpr-adapters" }
+apmpr-devices = { path = "../apmpr-devices" }
+apmpr-docker-ssh = { path = "../apmpr-docker-ssh" }
+apmpr-planner = { path = "../apmpr-planner" }
+apmpr-profiles = { path = "../apmpr-profiles" }
+apmpr-router-admin = { path = "../apmpr-router-admin" }
+apmpr-run-actions = { path = "../apmpr-run-actions" }
+apmpr-sources = { path = "../apmpr-sources" }
+tokio = { version = "1.45.1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+
+[dev-dependencies]
+http-body-util = "0.1.3"
+tempfile = "3.20.0"
+tower = "0.5.3"
+
+[lints]
+workspace = true

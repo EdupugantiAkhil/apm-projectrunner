@@ -133,6 +133,222 @@ dependencies = [
 ]
 
 [[package]]
+name = "apmpr-adapter-sdk"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "apmpr-adapters"
+version = "0.1.0"
+dependencies = [
+ "apmpr-adapter-sdk",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "apmpr-cli"
+version = "0.1.0"
+dependencies = [
+ "apmpr-adapter-sdk",
+ "apmpr-adapters",
+ "apmpr-daemon",
+ "apmpr-docker-ssh",
+ "apmpr-ops",
+ "apmpr-planner",
+ "apmpr-router-admin",
+ "apmpr-sources",
+ "apmpr-state",
+ "apmpr-tui",
+ "axum",
+ "http",
+ "http-body-util",
+ "local-ip-address",
+ "router-config",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tower",
+ "ureq",
+ "yaml_serde",
+]
+
+[[package]]
+name = "apmpr-daemon"
+version = "0.1.0"
+dependencies = [
+ "apmpr-adapters",
+ "apmpr-devices",
+ "apmpr-docker-ssh",
+ "apmpr-planner",
+ "apmpr-profiles",
+ "apmpr-router-admin",
+ "apmpr-run-actions",
+ "apmpr-sources",
+ "apmpr-state",
+ "axum",
+ "futures-util",
+ "http-body-util",
+ "local-ip-address",
+ "router-config",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tower",
+ "yaml_serde",
+]
+
+[[package]]
+name = "apmpr-devices"
+version = "0.1.0"
+dependencies = [
+ "apmpr-docker-ssh",
+ "apmpr-state",
+]
+
+[[package]]
+name = "apmpr-docker-ssh"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
+name = "apmpr-ops"
+version = "0.1.0"
+dependencies = [
+ "apmpr-daemon",
+ "apmpr-devices",
+ "apmpr-planner",
+ "apmpr-profiles",
+ "apmpr-run-actions",
+ "apmpr-sources",
+ "apmpr-state",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "yaml_serde",
+]
+
+[[package]]
+name = "apmpr-planner"
+version = "0.1.0"
+dependencies = [
+ "apmpr-adapter-sdk",
+ "apmpr-adapters",
+ "apmpr-sources",
+ "http",
+ "router-config",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "yaml_serde",
+]
+
+[[package]]
+name = "apmpr-profiles"
+version = "0.1.0"
+dependencies = [
+ "apmpr-planner",
+ "apmpr-sources",
+ "apmpr-state",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "yaml_serde",
+]
+
+[[package]]
+name = "apmpr-router"
+version = "0.1.0"
+dependencies = [
+ "apmpr-planner",
+ "bytes",
+ "h2",
+ "http",
+ "local-ip-address",
+ "rcgen",
+ "router-config",
+ "router-core",
+ "router-pingora",
+ "router-tcp",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "time",
+ "tokio",
+]
+
+[[package]]
+name = "apmpr-router-admin"
+version = "0.1.0"
+dependencies = [
+ "router-config",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "apmpr-run-actions"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tempfile",
+ "yaml_serde",
+]
+
+[[package]]
+name = "apmpr-sources"
+version = "0.1.0"
+dependencies = [
+ "apmpr-adapter-sdk",
+ "apmpr-adapters",
+ "apmpr-state",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "apmpr-state"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "apmpr-tui"
+version = "0.1.0"
+dependencies = [
+ "apmpr-adapters",
+ "apmpr-ops",
+ "apmpr-sources",
+ "apmpr-state",
+ "appcui",
+ "serde_json",
+ "signal-hook",
+ "yaml_serde",
+]
+
+[[package]]
 name = "appcui"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3291,222 +3507,6 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
-name = "switchyard-adapter-sdk"
-version = "0.1.0"
-dependencies = [
- "jsonschema",
- "schemars",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "switchyard-adapters"
-version = "0.1.0"
-dependencies = [
- "schemars",
- "serde",
- "serde_json",
- "switchyard-adapter-sdk",
-]
-
-[[package]]
-name = "switchyard-cli"
-version = "0.1.0"
-dependencies = [
- "axum",
- "http",
- "http-body-util",
- "local-ip-address",
- "router-config",
- "serde",
- "serde_json",
- "sha2",
- "switchyard-adapter-sdk",
- "switchyard-adapters",
- "switchyard-daemon",
- "switchyard-docker-ssh",
- "switchyard-ops",
- "switchyard-planner",
- "switchyard-router-admin",
- "switchyard-sources",
- "switchyard-state",
- "switchyard-tui",
- "tempfile",
- "tokio",
- "tower",
- "ureq",
- "yaml_serde",
-]
-
-[[package]]
-name = "switchyard-daemon"
-version = "0.1.0"
-dependencies = [
- "axum",
- "futures-util",
- "http-body-util",
- "local-ip-address",
- "router-config",
- "serde",
- "serde_json",
- "sha2",
- "switchyard-adapters",
- "switchyard-devices",
- "switchyard-docker-ssh",
- "switchyard-planner",
- "switchyard-profiles",
- "switchyard-router-admin",
- "switchyard-run-actions",
- "switchyard-sources",
- "switchyard-state",
- "tempfile",
- "tokio",
- "tower",
- "yaml_serde",
-]
-
-[[package]]
-name = "switchyard-devices"
-version = "0.1.0"
-dependencies = [
- "switchyard-docker-ssh",
- "switchyard-state",
-]
-
-[[package]]
-name = "switchyard-docker-ssh"
-version = "0.1.0"
-dependencies = [
- "tempfile",
-]
-
-[[package]]
-name = "switchyard-ops"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "sha2",
- "switchyard-daemon",
- "switchyard-devices",
- "switchyard-planner",
- "switchyard-profiles",
- "switchyard-run-actions",
- "switchyard-sources",
- "switchyard-state",
- "tempfile",
- "yaml_serde",
-]
-
-[[package]]
-name = "switchyard-planner"
-version = "0.1.0"
-dependencies = [
- "http",
- "router-config",
- "serde",
- "serde_json",
- "sha2",
- "switchyard-adapter-sdk",
- "switchyard-adapters",
- "switchyard-sources",
- "tempfile",
- "yaml_serde",
-]
-
-[[package]]
-name = "switchyard-profiles"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "sha2",
- "switchyard-planner",
- "switchyard-sources",
- "switchyard-state",
- "tempfile",
- "yaml_serde",
-]
-
-[[package]]
-name = "switchyard-router"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "h2",
- "http",
- "local-ip-address",
- "rcgen",
- "router-config",
- "router-core",
- "router-pingora",
- "router-tcp",
- "rustls",
- "serde",
- "serde_json",
- "sha2",
- "switchyard-planner",
- "tempfile",
- "time",
- "tokio",
-]
-
-[[package]]
-name = "switchyard-router-admin"
-version = "0.1.0"
-dependencies = [
- "router-config",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "switchyard-run-actions"
-version = "0.1.0"
-dependencies = [
- "serde",
- "tempfile",
- "yaml_serde",
-]
-
-[[package]]
-name = "switchyard-sources"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "switchyard-adapter-sdk",
- "switchyard-adapters",
- "switchyard-state",
- "tempfile",
-]
-
-[[package]]
-name = "switchyard-state"
-version = "0.1.0"
-dependencies = [
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "switchyard-tui"
-version = "0.1.0"
-dependencies = [
- "appcui",
- "serde_json",
- "signal-hook",
- "switchyard-adapters",
- "switchyard-ops",
- "switchyard-sources",
- "switchyard-state",
- "yaml_serde",
-]
 
 [[package]]
 name = "syn"

@@ -119,7 +119,7 @@ function buildYaml(name: string, instance: string, block: string, sourceName: st
   const source = sources.find((item) => item.source.name === sourceName)
   const checkout = source ? deploymentSource(source, projectRoot) : null
   const execution = Object.keys(configuration).length ? configuration : { type: 'container', image: 'replace-me:local' }
-  return JSON.stringify({ apiVersion: 'switchyard.dev/v1alpha2', kind: 'Deployment', metadata: { name }, spec: { repositories: sourceName && checkout ? { [sourceName]: { clone: checkout.repository } } : {}, sources: sourceName && checkout ? { [sourceName]: { repository: sourceName, ref: checkout.ref, path: checkout.path } } : {}, blocks: block ? { [block]: { services: { main: { execution } } } } : {}, instances: instance && block && sourceName ? [{ name: instance, block, source: sourceName, parameters: {} }] : [], groups: {}, managedProfiles: {} } }, null, 2)
+  return JSON.stringify({ apiVersion: 'apmpr.dev/v1alpha2', kind: 'Deployment', metadata: { name }, spec: { repositories: sourceName && checkout ? { [sourceName]: { clone: checkout.repository } } : {}, sources: sourceName && checkout ? { [sourceName]: { repository: sourceName, ref: checkout.ref, path: checkout.path } } : {}, blocks: block ? { [block]: { services: { main: { execution } } } } : {}, instances: instance && block && sourceName ? [{ name: instance, block, source: sourceName, parameters: {} }] : [], groups: {}, managedProfiles: {} } }, null, 2)
 }
 
 export function BlockLibrary({ adapters }: { adapters: AdapterRecord[] }) {

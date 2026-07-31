@@ -1,11 +1,11 @@
-# Switchyard terminal UI
+# APM ProjectRunner terminal UI
 
-Launch the keyboard-first AppCUI control plane from a Switchyard project:
+Launch the keyboard-first AppCUI control plane from an APM ProjectRunner project:
 
 ```sh
-switchyard tui
+apmpr tui
 # Or point it at another project:
-switchyard tui path/to/project
+apmpr tui path/to/project
 ```
 
 The TUI uses one project snapshot across seven workflow-ordered tabs:
@@ -40,7 +40,7 @@ The bottom command bar always shows actions valid for the active tab:
 - `Esc` leaves a dialog or quits from the shell. `Ctrl+Q` quits from anywhere.
 
 AppCUI reserves `Insert`, `Space`, `Ctrl+Space`, `Shift+arrows`, and plain letters while
-a list or tree has focus. Switchyard therefore puts application actions only on
+a list or tree has focus. APM ProjectRunner therefore puts application actions only on
 F-keys, `Delete`, and `Enter`. Lists intentionally have no implicit SearchBar; the
 Operations log uses an explicit text filter instead.
 
@@ -66,10 +66,10 @@ its F-key actions without an initial arrow press.
 
 Code's `F2` dialog can register a local directory or clone a Git address. A clone may
 need native credential helpers, SSH agents, host confirmation, or an interactive
-password/passphrase prompt. Switchyard therefore exits the alternate-screen UI, restores
+password/passphrase prompt. APM ProjectRunner therefore exits the alternate-screen UI, restores
 the real terminal, and runs Git directly without collecting credentials itself.
 
-After Git finishes, Switchyard **re-execs the current process** rather than constructing a
+After Git finishes, APM ProjectRunner **re-execs the current process** rather than constructing a
 second AppCUI application in-process. The restarted TUI returns to Code and displays the
 clone result. Failed or interrupted clones pause for Enter before the same restart so the
 Git error remains readable.
@@ -80,9 +80,9 @@ A **startup profile** defines the long-running services for an instance. Profile
 in a source remain untrusted until their manifest is reviewed and imported, and changed
 content must be reviewed again.
 
-A **run action** is a project operation stored in `.switchyard/run-scripts.yaml`; it is
+A **run action** is a project operation stored in `.apmpr/run-scripts.yaml`; it is
 not a startup profile and never becomes part of an instance. Operations can be structured
-Switchyard commands or reviewed shell commands. `Enter` always shows a confirmation, and
+APM ProjectRunner commands or reviewed shell commands. `Enter` always shows a confirmation, and
 the first shell action also requires a project-local warning acknowledgement.
 
 The implicit local device is always eligible. An SSH device becomes eligible for the
@@ -100,8 +100,8 @@ python3 -m pip install pyte
 python3 scripts/tui-smoke.py
 ```
 
-The script builds `switchyard` offline, creates a temporary initialized project, and
-drives AppCUI through a 35x120 PTY. Set `SWITCHYARD_BIN=/path/to/switchyard` to test an
+The script builds `apmpr` offline, creates a temporary initialized project, and
+drives AppCUI through a 35x120 PTY. Set `APMPR_BIN=/path/to/apmpr` to test an
 existing binary. If `pyte` is missing, the script reports a skip and exits successfully.
 The sandbox used for normal repository checks cannot provide the required PTY/socket
 behavior, so run this suite on a local terminal.

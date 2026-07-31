@@ -1,4 +1,4 @@
-//! Raw TCP forwarding for Switchyard.
+//! Raw TCP forwarding for APM ProjectRunner.
 //!
 //! [`TcpProxy`] owns one listener. Runtime orchestration can compose as many listeners
 //! as it needs and atomically reload each listener's target without depending on any
@@ -282,7 +282,7 @@ async fn forward_transparent(
         .collect::<Vec<_>>();
     if active.len() > 1 {
         eprintln!(
-            "switchyard: port {port} has {} active group members: {}; routing to {}, the first listed",
+            "apmpr: port {port} has {} active group members: {}; routing to {}, the first listed",
             active.len(),
             active
                 .iter()

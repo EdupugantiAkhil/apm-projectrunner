@@ -11,7 +11,7 @@ on a real Linux/aarch64 NixOS host and while driving that host from macOS.
 
 Resolved on 2026-07-23. Platform-specific short test roots now preserve macOS socket
 limits without assuming `/private/tmp` on Linux. Docker SSH operations use the shared
-`switchyard-docker-ssh` process-scoped transport, which applies an explicit identity as
+`apmpr-docker-ssh` process-scoped transport, which applies an explicit identity as
 a distinct argument with `BatchMode=yes` and `IdentitiesOnly=yes`. Full locked workspace
 tests pass on macOS and the real Linux/aarch64 host; the macOS-to-device lifecycle also
 passes with no usable agent and an identity path containing spaces. Details are in
@@ -31,9 +31,9 @@ passes with no usable agent and an identity path containing spaces. Details are 
 
 Two test helpers unconditionally create temporary directories below `/private/tmp`:
 
-- `crates/switchyard-cli/src/host_runtime.rs`, in
+- `crates/apmpr-cli/src/host_runtime.rs`, in
   `failed_startup_cleanup_allows_a_clean_retry`.
-- `crates/switchyard-router/src/host_gateway.rs`, in `test_directory`.
+- `crates/apmpr-router/src/host_gateway.rs`, in `test_directory`.
 
 `/private/tmp` is the short canonical macOS temporary root. It does not exist on a
 normal Linux installation. These hard-coded paths were introduced in commit `5080179`
@@ -74,13 +74,13 @@ socket path remains bounded in all tests.
 
 ## Issue 2: registered `--identity` is ignored by Docker's SSH transport
 
-Switchyard correctly passes the registered identity to its direct SSH reachability
+APM ProjectRunner correctly passes the registered identity to its direct SSH reachability
 probe with `ssh -i <path>`. It then invokes Docker using `DOCKER_HOST=ssh://...` and
 sets `DOCKER_SSH_OPTS` in these paths:
 
-- `crates/switchyard-ops/src/devices.rs::docker_environment`
-- `crates/switchyard-cli/src/runtime.rs::project_environment`
-- `crates/switchyard-daemon/src/server.rs` in the generated-device Docker check
+- `crates/apmpr-ops/src/devices.rs::docker_environment`
+- `crates/apmpr-cli/src/runtime.rs::project_environment`
+- `crates/apmpr-daemon/src/server.rs` in the generated-device Docker check
 
 Docker Desktop's Docker CLI does not consume `DOCKER_SSH_OPTS`. The live command it
 executed was equivalent to:
@@ -90,7 +90,7 @@ ssh -l akhil -p 22 -o ConnectTimeout=30 -T -- 192.168.1.167 docker system dial-s
 ```
 
 There was no `-i` argument. With several unrelated agent keys available, Docker failed
-with `Too many authentication failures`, even though Switchyard's immediately preceding
+with `Too many authentication failures`, even though APM ProjectRunner's immediately preceding
 direct SSH probe succeeded with the registered identity.
 
 The same device check and complete remote lifecycle succeeded after loading only the
@@ -153,14 +153,14 @@ Using a clean SSH agent, the macOS client successfully performed:
 1. device registration and Docker eligibility (`docker 28.5.1`);
 2. deployment validation and remote Compose generation;
 3. remote provider startup to Compose `healthy`;
-4. `switchyard status`, reporting `InSync` and the correct device/ownership labels;
-5. `switchyard down` and ownership-aware `cleanup`;
+4. `apmpr status`, reporting `InSync` and the correct device/ownership labels;
+5. `apmpr down` and ownership-aware `cleanup`;
 6. an orphan check showing zero labeled containers and zero labeled networks.
 
 The generated remote project used a deterministic device-scoped network and complete
-Switchyard ownership labels.
+APM ProjectRunner ownership labels.
 
-## Hardware limitation that is not a Switchyard regression
+## Hardware limitation that is not an APM ProjectRunner regression
 
 The Snapdragon host's vendor kernel does not pass traffic between the host and Docker
 bridge containers. Its container reached internal `healthy`, but macOS could not reach
@@ -177,11 +177,11 @@ Local/macOS:
 
 ```sh
 cargo fmt --all -- --check
-cargo test -p switchyard-ops devices
-cargo test -p switchyard-cli host_runtime
-cargo test -p switchyard-cli runtime
-cargo test -p switchyard-daemon
-cargo test -p switchyard-router host_gateway
+cargo test -p apmpr-ops devices
+cargo test -p apmpr-cli host_runtime
+cargo test -p apmpr-cli runtime
+cargo test -p apmpr-daemon
+cargo test -p apmpr-router host_gateway
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
@@ -194,9 +194,9 @@ cargo test --locked --workspace --all-features
 
 Real macOS-to-Linux device proof, without preloading the identity into `ssh-agent`:
 
-1. register a disposable key through `switchyard device add ... --identity <path>`;
+1. register a disposable key through `apmpr device add ... --identity <path>`;
 2. ensure the agent contains unrelated keys, or use an empty agent;
-3. require `switchyard device check` to report eligible;
+3. require `apmpr device check` to report eligible;
 4. run a provider-only remote deployment through up/status/logs/down/cleanup;
 5. verify zero labeled remote containers, networks, and volumes remain;
 6. repeat with an identity path containing spaces;

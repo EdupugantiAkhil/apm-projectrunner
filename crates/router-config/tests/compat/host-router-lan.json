@@ -1,5 +1,5 @@
 {
-  "apiVersion": "switchyard.dev/router/v1alpha1",
+  "apiVersion": "apmpr.dev/router/v1alpha1",
   "kind": "RouterConfiguration",
   "metadata": { "deployment": "compat-lan" },
   "spec": {
@@ -20,7 +20,7 @@
       "publishTailscale": true
     },
     "identity": {
-      "explicitHeader": "X-Switchyard-Route",
+      "explicitHeader": "X-Apmpr-Route",
       "stripBeforeForwarding": true
     },
     "listeners": [

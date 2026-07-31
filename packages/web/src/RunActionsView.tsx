@@ -31,7 +31,7 @@ export default function RunActionsView({ client, response, deployments, reload, 
     const deployment = targets[action.name] || deployments[0]?.name
     if (action.type === 'structured' && !deployment) return
     setBusy(`preview:${action.name}`)
-    try { setPreview(await client.previewRunAction(action.name, action.type === 'structured' ? `.switchyard/generated/${deployment}/resolved-deployment.yaml` : undefined)) } catch (error) { report(error) } finally { setBusy('') }
+    try { setPreview(await client.previewRunAction(action.name, action.type === 'structured' ? `.apmpr/generated/${deployment}/resolved-deployment.yaml` : undefined)) } catch (error) { report(error) } finally { setBusy('') }
   }
   const execute = async () => {
     if (!preview) return

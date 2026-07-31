@@ -1,6 +1,6 @@
 # Support and deprecation policy
 
-Switchyard is pre-1.0. Its alpha schemas can change in a minor release, but a supported
+APM ProjectRunner is pre-1.0. Its alpha schemas can change in a minor release, but a supported
 format or API is never changed silently. This policy applies to released builds; a build
 from an untagged development commit is supported only with artifacts produced by that
 same commit.
@@ -38,21 +38,21 @@ require all three records plus the security reason and safest available recovery
 
 The currently published schemas include:
 
-- `switchyard.dev/v1alpha2` for `Deployment` documents and `switchyard.dev/v1alpha1` for
+- `apmpr.dev/v1alpha2` for `Deployment` documents and `apmpr.dev/v1alpha1` for
   `Overlay` documents;
-- `switchyard.dev/router/v1alpha1` for router snapshots;
-- `switchyard.dev/bundle/v1alpha1` for portable bundles;
-- local state/artifact formats including `switchyard.dev/host-process/v1alpha1`,
-  `switchyard.dev/mdns-publication/v1alpha1`,
-  `switchyard.dev/tailscale-publication/v1alpha1`,
-  `switchyard.dev/managed-profile/v1alpha1`, and
-  `switchyard.dev/diagnostics/v1alpha1`.
+- `apmpr.dev/router/v1alpha1` for router snapshots;
+- `apmpr.dev/bundle/v1alpha1` for portable bundles;
+- local state/artifact formats including `apmpr.dev/host-process/v1alpha1`,
+  `apmpr.dev/mdns-publication/v1alpha1`,
+  `apmpr.dev/tailscale-publication/v1alpha1`,
+  `apmpr.dev/managed-profile/v1alpha1`, and
+  `apmpr.dev/diagnostics/v1alpha1`.
 
 `alpha` means the shape is usable and tested but not stable enough for a 1.0 promise.
 Fields may be added, renamed, or removed in a minor release. Alpha does **not** mean an
 existing version string may be reinterpreted incompatibly.
 
-Within one exact version string, Switchyard promises:
+Within one exact version string, APM ProjectRunner promises:
 
 - previously valid documents continue to parse and retain their field meanings;
 - omitted optional fields retain compatible defaults;
@@ -61,7 +61,7 @@ Within one exact version string, Switchyard promises:
 - unknown/new required behavior is not backported under the old string.
 
 The deployment goldens in
-[`crates/switchyard-planner/tests/compat.rs`](../crates/switchyard-planner/tests/compat.rs)
+[`crates/apmpr-planner/tests/compat.rs`](../crates/apmpr-planner/tests/compat.rs)
 pin accepted definitions, definition/resource hashes, route counts, and deterministic
 generation. Router compatibility is pinned by
 [`crates/router-config/tests/contracts.rs`](../crates/router-config/tests/contracts.rs),
@@ -73,9 +73,43 @@ A breaking schema change requires a new version string (for example `v1alpha2` o
 examples, and new goldens. Existing goldens are regenerated only after reviewing both
 the source fixture and all derived hash/artifact changes.
 
+### The `switchyard.dev` to `apmpr.dev` rename
+
+Switchyard was renamed to APM ProjectRunner before its first release. Every API group moved
+from `switchyard.dev/*` to `apmpr.dev/*`; the schemas themselves are unchanged, so this is a
+prefix rename rather than a new schema version. The affected user-visible strings are:
+
+| Surface | Before | After |
+| --- | --- | --- |
+| API groups | `switchyard.dev/*` | `apmpr.dev/*` |
+| Binaries | `switchyard`, `switchyard-daemon`, `switchyard-router` | `apmpr`, `apmpr-daemon`, `apmpr-router` |
+| Project state directory | `.switchyard/` | `.apmpr/` |
+| Environment variables | `SWITCHYARD_*` | `APMPR_*` |
+| Browser route header | `X-Switchyard-Route` | `X-Apmpr-Route` |
+| Docker ownership labels | `dev.switchyard.*` | `dev.apmpr.*` |
+| Profile manifest | `switchyard-profiles.yaml` | `apmpr-profiles.yaml` |
+
+This is a hard cut, taken deliberately because the project is unreleased and therefore has
+no supported-version window to honor. Nothing is silently reinterpreted:
+
+- a deployment whose `apiVersion` still carries the `switchyard.dev/` prefix is rejected
+  with an error naming the replacement prefix, and `apmpr migrate` rewrites it;
+- any `SWITCHYARD_*` variable still set in the environment fails the command up front,
+  listing each stale name beside its `APMPR_*` replacement rather than ignoring it;
+- Docker resources labeled `dev.switchyard.*` by a pre-rename build are **not** adopted.
+  Discovery and cleanup filter on the new labels only, so containers, networks, and volumes
+  from a pre-rename build must be removed manually
+  (`docker ps -aq --filter label=dev.switchyard.managed=true`).
+
+The compatibility goldens in
+[`crates/apmpr-planner/tests/compat.rs`](../crates/apmpr-planner/tests/compat.rs) were
+regenerated for this change: the API group and ownership labels feed the definition and
+resource hashes, so all four hashes moved. The fixture diff was reviewed alongside them and
+contains only renamed strings.
+
 When a new configuration or state-file version supersedes an old one, the previous
 version remains readable for at least one subsequent minor release and at least 90 days
-after the replacement release, whichever is longer. During that window Switchyard may
+after the replacement release, whichever is longer. During that window APM ProjectRunner may
 write only the new version after an explicit migration. Removal must be announced in the
 first replacement release and again in the removal release. Portable bundles get the
 same parsing window so teams can exchange bundles across a rolling upgrade.
@@ -89,12 +123,12 @@ regeneration instruction; it must not be misread as the new shape.
 ## HTTP API
 
 The daemon contract is `/api/v1`, with response `apiVersion: "v1"`, defined in
-[`contract.rs`](../crates/switchyard-daemon/src/contract.rs) and documented in
+[`contract.rs`](../crates/apmpr-daemon/src/contract.rs) and documented in
 [`control-plane-api.md`](control-plane-api.md).
 
 Within v1, compatible changes may add endpoints, optional request fields, optional
 response fields, event data, and error codes. Clients must ignore unknown response fields
-and unknown event data. Switchyard will not remove or rename an endpoint/field, add a new
+and unknown event data. APM ProjectRunner will not remove or rename an endpoint/field, add a new
 required request field, narrow a previously valid value, change an existing enum value's
 meaning, or change success/error semantics incompatibly within v1.
 
@@ -108,7 +142,7 @@ An incompatible change requires `/api/v2`. The release that introduces v2 must:
 - migrate the bundled CLI and GUI before v1 removal; and
 - test v1 and v2 independently throughout the overlap.
 
-The supported CLI/daemon pairing is the CLI and daemon from the same Switchyard release.
+The supported CLI/daemon pairing is the CLI and daemon from the same APM ProjectRunner release.
 Because v1 permits additive responses, an older v1 client should tolerate a newer v1
 daemon, but cross-minor skew is not a release guarantee until that exact pair appears in
 compatibility CI. A discovery/API version mismatch must fail with an actionable error;
@@ -120,9 +154,9 @@ the user which component to upgrade.
 
 SQLite uses forward-only, ordered, embedded migrations. The current implementation and
 schema number are in
-[`switchyard-state/src/lib.rs`](../crates/switchyard-state/src/lib.rs#L59-L73).
+[`apmpr-state/src/lib.rs`](../crates/apmpr-state/src/lib.rs#L59-L73).
 
-Before pending migrations modify an existing database, Switchyard creates a consistent
+Before pending migrations modify an existing database, APM ProjectRunner creates a consistent
 side-by-side backup named from the old schema version. Migrations run in order in one
 transaction and each version is recorded only after its SQL succeeds. This is proved by
 `migrations_are_ordered_and_existing_database_is_backed_up` and the all-historical-
@@ -132,7 +166,7 @@ A binary refuses a database whose recorded schema is newer than it supports, wit
 modifying it or creating a misleading backup. Test:
 `newer_schema_is_refused_without_a_backup`.
 
-There are no reverse migrations. Downgrade is supported only by stopping Switchyard and
+There are no reverse migrations. Downgrade is supported only by stopping APM ProjectRunner and
 restoring the appropriate pre-migration backup, as documented in
 [`upgrade-recovery.md`](upgrade-recovery.md). The restored database represents the
 migration boundary; generated manifests and Docker resources may be newer and must be

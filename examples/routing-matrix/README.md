@@ -11,7 +11,7 @@ ui-3 ──► backend-1 ──► feature-services ──┘
 `contract.yaml` is the golden contract. `deployment.yaml` is the complete generated
 Compose and native-gateway proof; `compose.yaml` remains the smaller Phase 2 sidecar
 fixture. The applications use ordinary command-line/environment identity configuration,
-but contain no Switchyard APIs, headers, libraries, or routing-aware behavior.
+but contain no APM ProjectRunner APIs, headers, libraries, or routing-aware behavior.
 
 Every UI always requests `http://localhost:10081/identity`. Every backend always
 requests the same five downstream addresses:
@@ -59,15 +59,15 @@ deployment named `routing-matrix`.
 The equivalent planner workflow is:
 
 ```sh
-export SWITCHYARD_ROUTER_TOKEN="$(openssl rand -hex 32)"
-cargo run -p switchyard-cli --bin switchyard -- validate examples/routing-matrix/deployment.yaml
-cargo run -p switchyard-cli --bin switchyard -- up examples/routing-matrix/deployment.yaml
-cargo run -p switchyard-cli --bin switchyard -- move examples/routing-matrix/deployment.yaml backend-1 main-services
-cargo run -p switchyard-cli --bin switchyard -- status examples/routing-matrix/deployment.yaml --routes
-cargo run -p switchyard-cli --bin switchyard -- down examples/routing-matrix/deployment.yaml
+export APMPR_ROUTER_TOKEN="$(openssl rand -hex 32)"
+cargo run -p apmpr-cli --bin apmpr -- validate examples/routing-matrix/deployment.yaml
+cargo run -p apmpr-cli --bin apmpr -- up examples/routing-matrix/deployment.yaml
+cargo run -p apmpr-cli --bin apmpr -- move examples/routing-matrix/deployment.yaml backend-1 main-services
+cargo run -p apmpr-cli --bin apmpr -- status examples/routing-matrix/deployment.yaml --routes
+cargo run -p apmpr-cli --bin apmpr -- down examples/routing-matrix/deployment.yaml
 ```
 
-`down` preserves the named data volumes. Delete them only with `switchyard cleanup
+`down` preserves the named data volumes. Delete them only with `apmpr cleanup
 examples/routing-matrix/deployment.yaml --yes`.
 
 ## Instance-group boundary

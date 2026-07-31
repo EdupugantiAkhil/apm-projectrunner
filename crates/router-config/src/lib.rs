@@ -1,4 +1,4 @@
-//! Versioned configuration contracts for the Switchyard router.
+//! Versioned configuration contracts for the APM ProjectRunner router.
 //!
 //! Consumers should name the schema module they support. The root re-exports are only
 //! conveniences for code which intentionally follows the current schema.

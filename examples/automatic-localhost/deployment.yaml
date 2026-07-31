@@ -1,10 +1,10 @@
-apiVersion: switchyard.dev/v1alpha2
+apiVersion: apmpr.dev/v1alpha2
 kind: Deployment
 metadata:
   name: automatic-localhost
 
 spec:
-  routerImage: switchyard-routing-matrix:local
+  routerImage: apmpr-routing-matrix:local
 
   repositories:
     fixture: { url: ../.. }
@@ -21,7 +21,7 @@ spec:
         app:
           execution:
             type: container
-            image: switchyard-routing-matrix:local
+            image: apmpr-routing-matrix:local
             command:
               - /usr/local/bin/routing-fixture
               - provider
@@ -34,7 +34,7 @@ spec:
         app:
           execution:
             type: container
-            image: switchyard-routing-matrix:local
+            image: apmpr-routing-matrix:local
             command: [/usr/local/bin/routing-fixture, hold]
 
   instances:

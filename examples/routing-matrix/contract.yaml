@@ -1,10 +1,10 @@
-apiVersion: switchyard.dev/v1alpha1
+apiVersion: apmpr.dev/v1alpha1
 kind: FixtureContract
 metadata:
   name: routing-matrix
 spec:
   applicationContract:
-    switchyardAware: false
+    apmprAware: false
     uiBackendRequest:
       method: GET
       url: http://localhost:10081/identity

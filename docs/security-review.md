@@ -8,7 +8,7 @@ This is a source and test review, not a penetration-test certification. The atta
 models used below include an untrusted LAN/browser client, a local process running as
 another user, a malicious or mistaken deployment definition, a compromised container,
 and tampered project-local state. A process that can control the Docker daemon is already
-host-authoritative: Switchyard ownership labels prevent accidents, but cannot defend
+host-authoritative: APM ProjectRunner ownership labels prevent accidents, but cannot defend
 against another Docker-authorized process that can forge those labels or mount the host
 filesystem.
 
@@ -80,9 +80,9 @@ and live container capabilities.
 
 - Host preflight, LAN acknowledgement, provider restriction, claim reservation, and
   certificate/credential lifecycle:
-  [`host_gateway.rs`](../crates/switchyard-router/src/host_gateway.rs#L81-L385) and its
+  [`host_gateway.rs`](../crates/apmpr-router/src/host_gateway.rs#L81-L385) and its
   managed-path checks at
-  [`host_gateway.rs`](../crates/switchyard-router/src/host_gateway.rs#L506-L737).
+  [`host_gateway.rs`](../crates/apmpr-router/src/host_gateway.rs#L506-L737).
 - Router schema enforcement for acknowledged LAN exposure and loopback providers:
   [`v1alpha1.rs`](../crates/router-config/src/v1alpha1.rs#L67-L122) and
   [`v1alpha1.rs`](../crates/router-config/src/v1alpha1.rs#L232-L253).
@@ -90,8 +90,8 @@ and live container capabilities.
   [`lib.rs`](../crates/router-pingora/src/lib.rs#L619-L860) and
   [`lib.rs`](../crates/router-pingora/src/lib.rs#L1040-L1170).
 - Managed forward-proxy request parsing and target restriction:
-  [`forward_proxy.rs`](../crates/switchyard-router/src/forward_proxy.rs#L116-L220) and
-  [`forward_proxy.rs`](../crates/switchyard-router/src/forward_proxy.rs#L220-L445).
+  [`forward_proxy.rs`](../crates/apmpr-router/src/forward_proxy.rs#L116-L220) and
+  [`forward_proxy.rs`](../crates/apmpr-router/src/forward_proxy.rs#L220-L445).
 - Operator-facing exposure and trust guidance in
   [`router.md`](router.md) and [`browser-routing.md`](browser-routing.md).
 
@@ -118,7 +118,7 @@ certificate writes or cleanup through symlinks.
   normalized domain collisions before writing certificates. Tests:
   `preflight_reports_an_occupied_port_without_writing_certificates` and
   `preflight_rejects_a_domain_claimed_by_different_slots`.
-- Explicit `X-Switchyard-Route` identity is ignored on non-loopback listeners even when
+- Explicit `X-Apmpr-Route` identity is ignored on non-loopback listeners even when
   LAN exposure is acknowledged. The proving integration test is
   `explicit_identity_is_rejected_on_non_loopback_listener`. Identity is stripped unless
   both the router-wide policy and selected provider opt in; proof:
@@ -152,14 +152,14 @@ operator's responsibility.
 ### Examined
 
 - Manifest permissions and host access:
-  [`manifest.json`](../extensions/switchyard-route/manifest.json#L1-L21).
+  [`manifest.json`](../extensions/apmpr-route/manifest.json#L1-L21).
 - Endpoint/route validation, per-tab session rules, header modification, and cleanup:
-  [`service-worker.js`](../extensions/switchyard-route/service-worker.js#L1-L131).
+  [`service-worker.js`](../extensions/apmpr-route/service-worker.js#L1-L131).
 - Checked-in route declarations and popup messaging:
-  [`routes.js`](../extensions/switchyard-route/routes.js) and
-  [`popup.js`](../extensions/switchyard-route/popup.js).
+  [`routes.js`](../extensions/apmpr-route/routes.js) and
+  [`popup.js`](../extensions/apmpr-route/popup.js).
 - Installation, disable, and removal instructions:
-  [`extensions/switchyard-route/README.md`](../extensions/switchyard-route/README.md) and
+  [`extensions/apmpr-route/README.md`](../extensions/apmpr-route/README.md) and
   [`browser-routing.md`](browser-routing.md#explicit-tab-header).
 
 ### Threat model
@@ -202,22 +202,22 @@ authority only at an endpoint whose active router declares that ID.
 ### Examined
 
 - Router Unix socket creation, token validation, framing, and event redaction:
-  [`lib.rs`](../crates/switchyard-router/src/lib.rs#L201-L290),
-  [`lib.rs`](../crates/switchyard-router/src/lib.rs#L341-L480), and
-  [`lib.rs`](../crates/switchyard-router/src/lib.rs#L871-L947).
+  [`lib.rs`](../crates/apmpr-router/src/lib.rs#L201-L290),
+  [`lib.rs`](../crates/apmpr-router/src/lib.rs#L341-L480), and
+  [`lib.rs`](../crates/apmpr-router/src/lib.rs#L871-L947).
 - Daemon bind enforcement, route middleware, GUI serving, SSE exception, and discovery
   lifecycle:
-  [`server.rs`](../crates/switchyard-daemon/src/server.rs#L1040-L1264),
-  [`server.rs`](../crates/switchyard-daemon/src/server.rs#L2262-L2284),
-  [`server.rs`](../crates/switchyard-daemon/src/server.rs#L2911-L2940), and
-  [`server.rs`](../crates/switchyard-daemon/src/server.rs#L3066-L3109).
+  [`server.rs`](../crates/apmpr-daemon/src/server.rs#L1040-L1264),
+  [`server.rs`](../crates/apmpr-daemon/src/server.rs#L2262-L2284),
+  [`server.rs`](../crates/apmpr-daemon/src/server.rs#L2911-L2940), and
+  [`server.rs`](../crates/apmpr-daemon/src/server.rs#L3066-L3109).
 - Host process state and signal identity:
-  [`host_runtime.rs`](../crates/switchyard-cli/src/host_runtime.rs#L439-L499) and
-  [`host_runtime.rs`](../crates/switchyard-cli/src/host_runtime.rs#L703-L845).
+  [`host_runtime.rs`](../crates/apmpr-cli/src/host_runtime.rs#L439-L499) and
+  [`host_runtime.rs`](../crates/apmpr-cli/src/host_runtime.rs#L703-L845).
 - mDNS and Tailscale state paths:
-  [`lan_preflight.rs`](../crates/switchyard-cli/src/lan_preflight.rs#L370-L445),
-  [`lan_preflight.rs`](../crates/switchyard-cli/src/lan_preflight.rs#L850-L932), and
-  [`tailscale_publication.rs`](../crates/switchyard-cli/src/tailscale_publication.rs#L140-L280).
+  [`lan_preflight.rs`](../crates/apmpr-cli/src/lan_preflight.rs#L370-L445),
+  [`lan_preflight.rs`](../crates/apmpr-cli/src/lan_preflight.rs#L850-L932), and
+  [`tailscale_publication.rs`](../crates/apmpr-cli/src/tailscale_publication.rs#L140-L280).
 
 ### Threat model
 
@@ -257,10 +257,10 @@ and symlink traversal, discovery/state replacement, and PID reuse before a stop 
 #### SR-1 — Public GUI serving follows symlinks outside its root (medium)
 
 `serve_gui` rejects non-`Normal` lexical components at
-[`server.rs`](../crates/switchyard-daemon/src/server.rs#L1225-L1239), but then calls
+[`server.rs`](../crates/apmpr-daemon/src/server.rs#L1225-L1239), but then calls
 `is_file` and `tokio::fs::read` on the joined path. Both follow a symlink inside
 `gui_dist`. Because `/gui/*` deliberately bypasses bearer authentication, a symlink such
-as `packages/web/dist/assets/state -> ../../../../.switchyard/daemon.json` can expose a
+as `packages/web/dist/assets/state -> ../../../../.apmpr/daemon.json` can expose a
 readable file to any local HTTP client. The existing GUI test covers public assets and
 API/SSE auth, but not `..` or symlink traversal.
 
@@ -274,15 +274,15 @@ no-follow semantics to reduce check/use races.
 ### Examined
 
 - Generated ownership labels and loopback publishing:
-  [`lib.rs`](../crates/switchyard-planner/src/lib.rs#L1364-L1578),
-  [`lib.rs`](../crates/switchyard-planner/src/lib.rs#L1996-L2002), and
-  [`lib.rs`](../crates/switchyard-planner/src/lib.rs#L2354-L2361).
+  [`lib.rs`](../crates/apmpr-planner/src/lib.rs#L1364-L1578),
+  [`lib.rs`](../crates/apmpr-planner/src/lib.rs#L1996-L2002), and
+  [`lib.rs`](../crates/apmpr-planner/src/lib.rs#L2354-L2361).
 - Docker discovery, inspection, down, and cleanup:
-  [`runtime.rs`](../crates/switchyard-cli/src/runtime.rs#L205-L310) and
-  [`runtime.rs`](../crates/switchyard-cli/src/runtime.rs#L452-L502).
+  [`runtime.rs`](../crates/apmpr-cli/src/runtime.rs#L205-L310) and
+  [`runtime.rs`](../crates/apmpr-cli/src/runtime.rs#L452-L502).
 - Host-provider published-port parsing:
-  [`host_runtime.rs`](../crates/switchyard-cli/src/host_runtime.rs#L499-L583) and
-  [`host_runtime.rs`](../crates/switchyard-cli/src/host_runtime.rs#L754-L782).
+  [`host_runtime.rs`](../crates/apmpr-cli/src/host_runtime.rs#L499-L583) and
+  [`host_runtime.rs`](../crates/apmpr-cli/src/host_runtime.rs#L754-L782).
 
 ### Threat model
 
@@ -295,7 +295,7 @@ authority, not as a sandbox boundary.
 ### Verified protections
 
 - Every generated container, network, and named volume carries
-  `dev.switchyard.managed=true`, the deployment label, and a resource hash. Application
+  `dev.apmpr.managed=true`, the deployment label, and a resource hash. Application
   ports are generated as `127.0.0.1::<container-port>`.
 - `down` discovers both deployment- and Compose-project resources and calls
   `verify_ownership` before Compose mutation. `cleanup` adds an explicit `--yes` gate and
@@ -315,17 +315,17 @@ limited like root-equivalent host access.
 #### SR-2 — Apply can remove orphans before ownership proof (high)
 
 `DockerRuntime::up` at
-[`runtime.rs`](../crates/switchyard-cli/src/runtime.rs#L205-L223) runs `docker compose up
+[`runtime.rs`](../crates/apmpr-cli/src/runtime.rs#L205-L223) runs `docker compose up
 --remove-orphans` without first discovering the Compose project and calling
 `verify_ownership`. In contrast, `down` and `cleanup` perform that proof. A container
-carrying the same `com.docker.compose.project` label but not matching Switchyard's
+carrying the same `com.docker.compose.project` label but not matching APM ProjectRunner's
 ownership labels can therefore be considered an orphan and deleted during apply. The
 `up_builds_then_waits_for_health` test asserts that the destructive flag is present but
 does not assert ownership preflight.
 
 Proposed remediation: before any `up --remove-orphans`, discover resources by both
 deployment and Compose project and refuse unless every existing resource has matching
-Switchyard labels. Add a test with an unowned Compose-project orphan and consider
+APM ProjectRunner labels. Add a test with an unowned Compose-project orphan and consider
 dropping `--remove-orphans` when no prior owned manifest proves it is safe.
 
 **Remediated during review sign-off:** `DockerRuntime::up` now performs the same
@@ -338,21 +338,21 @@ any compose invocation, proven by
 ### Examined
 
 - Source, volume, and execution model validation:
-  [`lib.rs`](../crates/switchyard-planner/src/lib.rs#L313-L470) and
-  [`model.rs`](../crates/switchyard-planner/src/model.rs#L130-L250).
+  [`lib.rs`](../crates/apmpr-planner/src/lib.rs#L313-L470) and
+  [`model.rs`](../crates/apmpr-planner/src/model.rs#L130-L250).
 - Overlay target validation, controlled roots, content-addressed paths, and
   materialization:
-  [`overlay.rs`](../crates/switchyard-planner/src/overlay.rs#L323-L417),
-  [`overlay.rs`](../crates/switchyard-planner/src/overlay.rs#L931-L1094), and
-  [`overlay.rs`](../crates/switchyard-planner/src/overlay.rs#L1130-L1146).
+  [`overlay.rs`](../crates/apmpr-planner/src/overlay.rs#L323-L417),
+  [`overlay.rs`](../crates/apmpr-planner/src/overlay.rs#L931-L1094), and
+  [`overlay.rs`](../crates/apmpr-planner/src/overlay.rs#L1130-L1146).
 - Compose source/volume/injected mounts:
-  [`lib.rs`](../crates/switchyard-planner/src/lib.rs#L1861-L1993) and
-  [`lib.rs`](../crates/switchyard-planner/src/lib.rs#L2078-L2099).
+  [`lib.rs`](../crates/apmpr-planner/src/lib.rs#L1861-L1993) and
+  [`lib.rs`](../crates/apmpr-planner/src/lib.rs#L2078-L2099).
 - Portable import conflict handling:
-  [`bundle.rs`](../crates/switchyard-planner/src/bundle.rs#L274-L359) and
-  [`bundle.rs`](../crates/switchyard-planner/src/bundle.rs#L439-L492).
+  [`bundle.rs`](../crates/apmpr-planner/src/bundle.rs#L274-L359) and
+  [`bundle.rs`](../crates/apmpr-planner/src/bundle.rs#L439-L492).
 - Diagnostics output creation:
-  [`diagnostics.rs`](../crates/switchyard-cli/src/diagnostics.rs#L110-L136).
+  [`diagnostics.rs`](../crates/apmpr-cli/src/diagnostics.rs#L110-L136).
 
 ### Threat model
 
@@ -386,10 +386,10 @@ symlinks.
 #### SR-3 — Broad host source mounts are accepted, including writable root (high)
 
 Planner source validation at
-[`lib.rs`](../crates/switchyard-planner/src/lib.rs#L337-L470) checks that a source is a
+[`lib.rs`](../crates/apmpr-planner/src/lib.rs#L337-L470) checks that a source is a
 directory and that referenced build/Process Compose files exist. It does not reject the
 filesystem root, a home directory, or another broad/sensitive host path. Compose
-generation at [`lib.rs`](../crates/switchyard-planner/src/lib.rs#L1910-L1974) mounts that
+generation at [`lib.rs`](../crates/apmpr-planner/src/lib.rs#L1910-L1974) mounts that
 path into script containers and removes `:ro` when `writable: true`. A mistaken or
 malicious definition can therefore expose, and in writable mode modify, a broad host
 tree from a container. This violates DESIGN.md section 8's broad-bind-mount commitment.
@@ -402,13 +402,13 @@ symlink, and writable-root negative tests.
 #### SR-4 — Generated and imported writes lack symlink-safe containment (high)
 
 `write_plan` at
-[`lib.rs`](../crates/switchyard-planner/src/lib.rs#L222-L269) creates and replaces files
+[`lib.rs`](../crates/apmpr-planner/src/lib.rs#L222-L269) creates and replaces files
 beneath a path assembled from the workspace and deployment, but does not reject a
-symlinked `.switchyard`, `generated`, deployment, or `routes` ancestor. Its
-[`write_atomic`](../crates/switchyard-planner/src/lib.rs#L303-L307) uses `fs::write` on a
+symlinked `.apmpr`, `generated`, deployment, or `routes` ancestor. Its
+[`write_atomic`](../crates/apmpr-planner/src/lib.rs#L303-L307) uses `fs::write` on a
 predictable temporary path, which follows an existing symlink. Overlay materialization
 similarly uses `create_dir_all` and that writer without no-follow checks. Portable import
-at [`bundle.rs`](../crates/switchyard-planner/src/bundle.rs#L283-L340) uses `exists`
+at [`bundle.rs`](../crates/apmpr-planner/src/bundle.rs#L283-L340) uses `exists`
 followed by `fs::write`; a dangling destination symlink reports non-existent and can
 redirect the write outside `--into` even without `--force`. A malicious checkout or
 concurrent local process can therefore redirect disposable artifact or import writes to
@@ -422,7 +422,7 @@ dangling-leaf, and check/use-race tests for generated routes/overlays and bundle
 #### SR-5 — Container-symlink target boundary is not enforced (medium)
 
 `target_is_controlled` at
-[`overlay.rs`](../crates/switchyard-planner/src/overlay.rs#L1070-L1094) performs lexical
+[`overlay.rs`](../crates/apmpr-planner/src/overlay.rs#L1070-L1094) performs lexical
 `Path::starts_with` checks only. It cannot establish whether a target component is a
 symlink in the selected image or mounted source, yet DESIGN.md section 8 promises to
 reject traversal through symlinks. The same overlay file is attached to each application
@@ -431,16 +431,16 @@ the check is not tied to the actual target service filesystem either.
 
 Proposed remediation: make injected-file targets service-specific and declared by the
 execution adapter. Reject targets whose image path cannot be proven non-symlink, or
-materialize them into a dedicated Switchyard-owned mount tree whose components are
-created by Switchyard. Add an image fixture containing an escaping symlink and a
+materialize them into a dedicated APM ProjectRunner-owned mount tree whose components are
+created by APM ProjectRunner. Add an image fixture containing an escaping symlink and a
 multi-service block with different mount roots.
 
 #### SR-6 — Script containers have no enforced non-root default (medium)
 
 The script and Process Compose branches at
-[`lib.rs`](../crates/switchyard-planner/src/lib.rs#L1910-L1975) set no Compose `user`, so
+[`lib.rs`](../crates/apmpr-planner/src/lib.rs#L1910-L1975) set no Compose `user`, so
 the image default applies and is commonly root. Only the router sidecar sets the host
-UID/GID at [`lib.rs`](../crates/switchyard-planner/src/lib.rs#L2180-L2209). The schema has
+UID/GID at [`lib.rs`](../crates/apmpr-planner/src/lib.rs#L2180-L2209). The schema has
 no explicit user/justification field for script execution. This leaves DESIGN.md section
 8's non-root script-container commitment unimplemented and increases the impact of
 SR-3.
@@ -455,19 +455,19 @@ generated Compose paths.
 
 - Overlay reference parsing, secret-safe provenance, Compose placeholders, and runtime
   resolution:
-  [`overlay.rs`](../crates/switchyard-planner/src/overlay.rs#L100-L239),
-  [`overlay.rs`](../crates/switchyard-planner/src/overlay.rs#L538-L812),
-  [`lib.rs`](../crates/switchyard-planner/src/lib.rs#L2040-L2075), and
-  [`runtime.rs`](../crates/switchyard-cli/src/runtime.rs#L323-L361).
+  [`overlay.rs`](../crates/apmpr-planner/src/overlay.rs#L100-L239),
+  [`overlay.rs`](../crates/apmpr-planner/src/overlay.rs#L538-L812),
+  [`lib.rs`](../crates/apmpr-planner/src/lib.rs#L2040-L2075), and
+  [`runtime.rs`](../crates/apmpr-cli/src/runtime.rs#L323-L361).
 - SQLite secret-value admission:
-  [`switchyard-state/src/lib.rs`](../crates/switchyard-state/src/lib.rs#L216-L345).
+  [`apmpr-state/src/lib.rs`](../crates/apmpr-state/src/lib.rs#L216-L345).
 - Portable-bundle sanitization and line redaction:
-  [`bundle.rs`](../crates/switchyard-planner/src/bundle.rs#L512-L746).
+  [`bundle.rs`](../crates/apmpr-planner/src/bundle.rs#L512-L746).
 - Daemon output capture, router events, and diagnostics:
-  [`server.rs`](../crates/switchyard-daemon/src/server.rs#L142-L203),
-  [`server.rs`](../crates/switchyard-daemon/src/server.rs#L853-L882),
-  [`switchyard-router/src/lib.rs`](../crates/switchyard-router/src/lib.rs#L120-L161), and
-  [`diagnostics.rs`](../crates/switchyard-cli/src/diagnostics.rs#L285-L365).
+  [`server.rs`](../crates/apmpr-daemon/src/server.rs#L142-L203),
+  [`server.rs`](../crates/apmpr-daemon/src/server.rs#L853-L882),
+  [`apmpr-router/src/lib.rs`](../crates/apmpr-router/src/lib.rs#L120-L161), and
+  [`diagnostics.rs`](../crates/apmpr-cli/src/diagnostics.rs#L285-L365).
 - Release archive inputs:
   [`release.sh`](../scripts/release.sh#L38-L67).
 
@@ -500,7 +500,7 @@ secret file injection can silently materialize content.
   replace any output line containing authorization/password/secret/token/private-key
   terms. The proving router test is `token_comparison_and_redaction_are_safe`.
 - Daemon-driven router operations use a separate persistent
-  `.switchyard/router-token`, created as an owner-only regular file and injected only
+  `.apmpr/router-token`, created as an owner-only regular file and injected only
   into child commands and local administration calls. The API and GUI never receive
   it, and mismatched environment overrides are rejected instead of silently rotating
   the credential beneath running routers.
@@ -511,7 +511,7 @@ secret file injection can silently materialize content.
   router/daemon token, and authorization-line removal.
 - Release assembly includes only the three built executables, freshly built GUI assets,
   install/uninstall scripts, and license/notice files. It does not copy deployment YAML,
-  `.switchyard`, process environment, credentials, or diagnostics into the archive.
+  `.apmpr`, process environment, credentials, or diagnostics into the archive.
 
 ### Findings
 
@@ -520,7 +520,7 @@ secret file injection can silently materialize content.
 The ordinary deployment execution and instance environment maps contain plain strings.
 Validation accepts them without applying `credential_like_key`, and
 `add_runtime_fields` at
-[`lib.rs`](../crates/switchyard-planner/src/lib.rs#L2005-L2037) serializes them into
+[`lib.rs`](../crates/apmpr-planner/src/lib.rs#L2005-L2037) serializes them into
 Compose. Overlay `set` also permits a literal at a key such as `DB_PASSWORD`; references
 are optional. Such a value consequently appears in authored YAML, generated Compose,
 resolved YAML, daemon validation previews, and Docker container configuration. Portable
@@ -537,10 +537,10 @@ logs, or diagnostics.
 #### SR-8 — Daemon API retains raw command output (medium)
 
 `read_output` at
-[`server.rs`](../crates/switchyard-daemon/src/server.rs#L853-L882) emits a redacted event
+[`server.rs`](../crates/apmpr-daemon/src/server.rs#L853-L882) emits a redacted event
 line but appends the original line to `captured`. `CliBackend::run` returns that raw
 stdout/stderr in `CommandResultV1` at
-[`server.rs`](../crates/switchyard-daemon/src/server.rs#L168-L203), and recent terminal
+[`server.rs`](../crates/apmpr-daemon/src/server.rs#L168-L203), and recent terminal
 operations retain it in memory for authenticated API/CLI retrieval. This is documented
 as raw output because arbitrary application logs cannot be classified reliably, but it
 does not meet DESIGN.md section 8's unconditional redaction promise.
@@ -554,7 +554,7 @@ result test, not only an SSE-event test.
 #### SR-9 — Diagnostics cannot recognize every secret (informational)
 
 The redactor at
-[`diagnostics.rs`](../crates/switchyard-cli/src/diagnostics.rs#L296-L365) intentionally
+[`diagnostics.rs`](../crates/apmpr-cli/src/diagnostics.rs#L296-L365) intentionally
 uses credential-looking names and known daemon/router values. A secret stored under an
 ordinary application key, in a file not represented by such a key, or already emitted
 without a sensitive word/value match can survive. [`release.md`](release.md#diagnostics-bundle)

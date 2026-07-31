@@ -10,7 +10,7 @@ The Phase 7 source audit and its tracked findings are in
 [`security-review.md`](security-review.md). Configuration, HTTP API, state-file, and
 SQLite compatibility commitments are in [`support-policy.md`](support-policy.md).
 
-Switchyard supports native Linux on `x86_64` or `aarch64` and Apple Silicon on macOS
+APM ProjectRunner supports native Linux on `x86_64` or `aarch64` and Apple Silicon on macOS
 26 or newer. Linux uses Docker Engine; macOS uses Docker Desktop configured for Linux
 containers. The runtime relies on Docker-provided Linux network namespaces for
 consumer/router sidecar isolation; developers do not need to create namespaces or run
@@ -38,15 +38,15 @@ Follow any reported remediation and rerun it until all checks pass.
 Create a minimal project from the embedded reference template with:
 
 ```sh
-switchyard init
+apmpr init
 cd my-project
-switchyard validate deployment.yaml
+apmpr validate deployment.yaml
 ```
 
 The guided initializer asks for a lowercase deployment name and destination directory,
 then creates the folder with the deployment, development overlay, README, gitignore,
-and a project-local `.agents/skills/switchyard-project` workflow skill.
-For scripts, `switchyard init <directory>` remains available; use `--name <project-name>`
+and a project-local `.agents/skills/apmpr-project` workflow skill.
+For scripts, `apmpr init <directory>` remains available; use `--name <project-name>`
 to override the directory-derived deployment name. Existing scaffold files are preserved
 unless `--force` is explicitly supplied.
 
@@ -54,9 +54,9 @@ To adopt an existing non-empty code folder without adding template files, regist
 and open its browser dashboard:
 
 ```sh
-switchyard project register path/to/code --name my-project
-switchyard daemon install path/to/code
-switchyard gui path/to/code
+apmpr project register path/to/code --name my-project
+apmpr daemon install path/to/code
+apmpr gui path/to/code
 ```
 
 The folder becomes its own initial registered source. The install command registers and
@@ -67,7 +67,7 @@ The initialized skill follows the same authoring boundaries as the TUI: it inspe
 registered sources and devices, can propose project or reviewed source-local startup
 profiles, validates after authored edits, plans before start, and refuses to guess when
 a repository has no safely identifiable supported configuration. It never executes
-repository scripts during discovery or edits `.switchyard` generated/runtime state.
+repository scripts during discovery or edits `.apmpr` generated/runtime state.
 
 ## Routing-proof platforms
 
@@ -117,7 +117,7 @@ cargo install cargo-audit --locked
 The shared command and CI temporarily ignore these narrowly scoped advisories:
 
 - `RUSTSEC-2024-0437`: Pingora 0.8.1 uses the affected protobuf crate only through
-  Prometheus metrics encoding, so Switchyard does not expose the vulnerable protobuf
+  Prometheus metrics encoding, so APM ProjectRunner does not expose the vulnerable protobuf
   decoder to untrusted input. Remove this exception when Pingora upgrades its Prometheus
   dependency.
 - `RUSTSEC-2026-0194` / `RUSTSEC-2026-0195`: `quick-xml` 0.39 is reached only through
@@ -146,8 +146,8 @@ The heavy reliability tests are opt-in and are not called by `scripts/check.sh`:
 The script builds the needed test binaries, then runs only `#[ignore]` tests with
 `--ignored`. It does not require Docker, but several tests bind loopback sockets and
 must be run on a host where local socket binding is permitted. The default runtime is
-short for review loops: `SWITCHYARD_RELOAD_STORM_SECONDS=30`,
-`SWITCHYARD_SOAK_SECONDS=30`, and `SWITCHYARD_CONCURRENCY=16`. Increase those
+short for review loops: `APMPR_RELOAD_STORM_SECONDS=30`,
+`APMPR_SOAK_SECONDS=30`, and `APMPR_CONCURRENCY=16`. Increase those
 environment variables for longer soak or higher client-load runs.
 
 The suite covers router-core snapshot reload storms, TCP and HTTP data-plane reload
@@ -163,29 +163,29 @@ resource-metric gate.
 
 ## Sources and worktrees
 
-Switchyard distinguishes ownership at registration time. An existing developer path is
+APM ProjectRunner distinguishes ownership at registration time. An existing developer path is
 always `unmanaged`: registration records its canonical path and live-inspects Git, but
-never grants Switchyard permission to reset, clean, checkout, remove, or otherwise
+never grants APM ProjectRunner permission to reset, clean, checkout, remove, or otherwise
 modify it. Deregistration only forgets that database record. A source cannot later be
 promoted from unmanaged to managed.
 
-Managed linked worktrees are created below `.switchyard/worktrees/`; managed clones
-created through the library are below `.switchyard/clones/`. Every mutation verifies
+Managed linked worktrees are created below `.apmpr/worktrees/`; managed clones
+created through the library are below `.apmpr/clones/`. Every mutation verifies
 the canonical target remains below its matching root and never passes Git `--force`.
 Removal refuses staged, unstaged, and untracked changes by default. The explicit
 `--allow-dirty` flag is the only override and still cannot remove an unmanaged or
 out-of-root path.
 
 ```sh
-switchyard source register product /code/product
-switchyard source list
-switchyard source list --json
-switchyard worktree create product feature/api --name feature-api
-switchyard worktree remove feature-api
+apmpr source register product /code/product
+apmpr source list
+apmpr source list --json
+apmpr worktree create product feature/api --name feature-api
+apmpr worktree remove feature-api
 # only after reviewing the exact dirty counts:
-switchyard worktree remove feature-api --allow-dirty
-switchyard source deregister feature-api
-switchyard source deregister product
+apmpr worktree remove feature-api --allow-dirty
+apmpr source deregister feature-api
+apmpr source deregister product
 ```
 
 These commands manage the project-level registered-source catalog used for discovery and
@@ -193,7 +193,7 @@ guided authoring. A deployment's own `sources:` are separate and are always
 `{ repository, ref, path }` worktrees; there is no plain-path source kind. They use the
 authenticated daemon when it is running and the same synchronous state/source libraries
 as a one-shot fallback otherwise. Git absence degrades to explicit unknown inspection
-fields. Generated manifests and `switchyard status` append the source path,
+fields. Generated manifests and `apmpr status` append the source path,
 repository, requested ref, commit, and dirty flag captured for each instance at plan
 time. Live commit and dirty observations are never persisted as registry truth.
 
@@ -201,24 +201,24 @@ Registered SSH devices can host container instances that others reach but which 
 themselves originate routed calls. Set an instance's `device` to the registered name and
 publish every port other members must reach explicitly.
 Planning emits `compose.<device>.yaml`; lifecycle and log commands use Docker's SSH
-transport with batch authentication. `switchyard status` includes each resource's
+transport with batch authentication. `apmpr status` includes each resource's
 device and reports an unreachable remote explicitly while retaining its last observed
 resources for reconciliation. Remote consumers, process adapters, remote routers, and
 cross-device sidecars remain outside this limited cut.
 
 ```sh
-switchyard device add builder dev@192.168.1.40 --identity ~/.ssh/id_ed25519
-switchyard device check builder
-switchyard device list
+apmpr device add builder dev@192.168.1.40 --identity ~/.ssh/id_ed25519
+apmpr device check builder
+apmpr device list
 ```
 
 The check first verifies SSH, then asks the remote Docker server for its version through
 `DOCKER_HOST=ssh://...`; it records eligibility or a concrete SSH, Docker availability,
 or permission failure without storing credentials. When `--identity` is present,
-Switchyard applies that key with `BatchMode=yes` and `IdentitiesOnly=yes` to both the
+APM ProjectRunner applies that key with `BatchMode=yes` and `IdentitiesOnly=yes` to both the
 probe and every Docker lifecycle, status, log, recovery, and cleanup operation. The
 launcher used to supply Docker's SSH helper is private, process-scoped, and removed
-after each operation; Switchyard does not edit persistent OpenSSH configuration. With
+after each operation; APM ProjectRunner does not edit persistent OpenSSH configuration. With
 no explicit identity, normal OpenSSH configuration and agent selection remain in use.
 Use a device host that the local
 router's containers can resolve and reach. A LAN IP is preferable to `localhost` or an

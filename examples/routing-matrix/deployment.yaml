@@ -1,9 +1,9 @@
-apiVersion: switchyard.dev/v1alpha2
+apiVersion: apmpr.dev/v1alpha2
 kind: Deployment
 metadata:
   name: routing-matrix
 spec:
-  routerImage: &fixture-image switchyard-routing-matrix:local
+  routerImage: &fixture-image apmpr-routing-matrix:local
   repositories:
     fixture: { url: ../.. }
   sources:
@@ -183,7 +183,7 @@ spec:
         - services-feature-audit/app
         - backend-1/app
   hostRouter:
-    apiVersion: switchyard.dev/router/v1alpha1
+    apiVersion: apmpr.dev/router/v1alpha1
     kind: RouterConfiguration
     metadata: { deployment: routing-matrix }
     spec:
@@ -197,7 +197,7 @@ spec:
           grpc: { strategy: drain, timeoutMs: 5000 }
           tcp: { strategy: close }
       identity:
-        explicitHeader: X-Switchyard-Route
+        explicitHeader: X-Apmpr-Route
         stripBeforeForwarding: true
       listeners:
         - consumer: gateway

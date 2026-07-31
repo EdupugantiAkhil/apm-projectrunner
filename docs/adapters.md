@@ -1,9 +1,9 @@
 # Adapter SDK
 
-Switchyard keeps product concepts generic by putting source inspection, execution,
+APM ProjectRunner keeps product concepts generic by putting source inspection, execution,
 supervision, routing, and health observation behind versioned adapter contracts. The
-contracts live in `switchyard-adapter-sdk`; the adapters which express the existing
-generated-Compose behavior live in `switchyard-adapters`.
+contracts live in `apmpr-adapter-sdk`; the adapters which express the existing
+generated-Compose behavior live in `apmpr-adapters`.
 
 The SDK boundary is framework-neutral. User configuration, execution recovery handles,
 and route handles cross it as serializable JSON. State, events, logs, claims, source
@@ -16,7 +16,7 @@ runtime.
 
 ## Versioning and compatibility
 
-The current contract is `switchyard.dev/adapter-sdk/v1alpha1`. Every adapter declaration
+The current contract is `apmpr.dev/adapter-sdk/v1alpha1`. Every adapter declaration
 contains:
 
 - a stable lowercase identifier;
@@ -42,7 +42,7 @@ contract-version declaration.
 ## Configuration schemas
 
 Every adapter configuration is a Serde type with a `schemars` 1.2.1 `JsonSchema`
-implementation. `switchyard_adapter_sdk::schema_for` deliberately generates draft
+implementation. `apmpr_adapter_sdk::schema_for` deliberately generates draft
 2020-12 and every published schema declares that dialect. The SDK compiles and validates
 schemas with `jsonschema` 0.47 with its default features disabled, keeping validation
 offline and preventing schema resolution from becoming an implicit network operation.
@@ -63,10 +63,10 @@ The built-in registry contains:
 | Execution | `execution-container` | Compose image or Dockerfile build |
 | Execution | `execution-runner-script` | Service or task in a runner container |
 | Supervisor | `supervisor-process-compose` | Process Compose suite in a runner container |
-| Route | `route-switchyard` | Sidecar or host-gateway HTTP, HTTPS, WebSocket, gRPC, and raw TCP loopback route |
+| Route | `route-apmpr` | Sidecar or host-gateway HTTP, HTTPS, WebSocket, gRPC, and raw TCP loopback route |
 | Probe | `probe-health` | HTTP, TCP, or command healthcheck |
 
-The deployment YAML remains stable. `switchyard-planner` maps its existing source,
+The deployment YAML remains stable. `apmpr-planner` maps its existing source,
 execution, probe, and group-membership model types to these adapter configurations during
 validation, then continues through the unchanged deterministic artifact generator.
 Filesystem existence, topology completeness, naming, collision, and ownership checks
@@ -78,7 +78,7 @@ Each adapter ships at least one valid and one invalid example. Adapter tests sho
 the public suite:
 
 ```rust
-use switchyard_adapter_sdk::conformance;
+use apmpr_adapter_sdk::conformance;
 
 conformance::assert_adapter(&my_adapter);
 ```

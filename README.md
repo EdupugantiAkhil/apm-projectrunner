@@ -1,6 +1,6 @@
-# Switchyard
+# APM ProjectRunner
 
-Switchyard is a local development topology orchestrator for running multiple instances
+APM ProjectRunner is a local development topology orchestrator for running multiple instances
 of unchanged application components and selecting how they connect.
 
 You declare a group as an ordered list of instances, and its members share one localhost:
@@ -11,7 +11,7 @@ regression:   [ui-2, backend-2, db-main]
 ```
 
 That list is the whole configuration. Applications may keep calling fixed addresses such
-as `localhost:8001`; Switchyard uses Docker network namespaces and a Rust router sidecar
+as `localhost:8001`; APM ProjectRunner uses Docker network namespaces and a Rust router sidecar
 per member to intercept those addresses without source-code changes, forwarding each call
 to the first active member of the caller's group listening on that same port. Every
 instance gets its own namespace, so alternatives can stay running on the same ports and a
@@ -30,14 +30,14 @@ in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 Alignment with the product vision in [docs/vision](docs/vision) is tracked in
 [docs/v2-roadmap.md](docs/v2-roadmap.md). V2 replaced the original capability, slot,
 binding, and direct-route topology with one model: an ordered group membership list whose
-members share one localhost, routed port-for-port. The remaining V2 work is the full
-lifecycle gate for the vision sample and the final mechanical rename to **APM
-ProjectRunner** (`apmpr`); until then the tree uses the `switchyard` name.
+members share one localhost, routed port-for-port. Part 7 renamed the tree from its
+development-era name `Switchyard` to **APM ProjectRunner** (`apmpr`). The remaining V2 work
+is the full lifecycle gate for the vision sample.
 
 The implementation target is:
 
 - Docker Engine with generated Docker Compose for container lifecycle management.
-- A Rust `switchyard-router` built on Pingora for HTTP-family traffic and Tokio for raw
+- A Rust `apmpr-router` built on Pingora for HTTP-family traffic and Tokio for raw
   TCP.
 - Native host-gateway and container-sidecar modes from one router codebase.
 - Versioned YAML desired state plus SQLite-backed applied snapshots, control state, and

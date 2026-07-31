@@ -124,10 +124,8 @@ struct CredentialFile(PathBuf);
 
 impl CredentialFile {
     fn create(port: u16) -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "switchyard-proxy-auth-{}-{port}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("apmpr-proxy-auth-{}-{port}", std::process::id()));
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -152,7 +150,7 @@ impl Drop for CredentialFile {
 
 fn config(proxy_port: u16, upstream_port: u16) -> RouterConfig {
     serde_json::from_value(json!({
-        "apiVersion": "switchyard.dev/router/v1alpha1",
+        "apiVersion": "apmpr.dev/router/v1alpha1",
         "kind": "RouterConfiguration",
         "metadata": { "deployment": "proxy-test" },
         "spec": {
@@ -179,7 +177,7 @@ fn config(proxy_port: u16, upstream_port: u16) -> RouterConfig {
                 "healthCheck": { "protocol": "http", "path": "/health", "intervalMs": 1000, "timeoutMs": 500 }
             }],
             "routes": [{ "consumer": "test-client", "slot": "api", "provider": "test-upstream" }],
-            "identity": { "explicitHeader": "X-Switchyard-Route", "stripBeforeForwarding": true }
+            "identity": { "explicitHeader": "X-Apmpr-Route", "stripBeforeForwarding": true }
         }
     }))
     .unwrap()
@@ -187,7 +185,7 @@ fn config(proxy_port: u16, upstream_port: u16) -> RouterConfig {
 
 fn browser_config(proxy_port: u16, upstream_port: u16) -> RouterConfig {
     serde_json::from_value(json!({
-        "apiVersion": "switchyard.dev/router/v1alpha1",
+        "apiVersion": "apmpr.dev/router/v1alpha1",
         "kind": "RouterConfiguration",
         "metadata": { "deployment": "browser-test" },
         "spec": {
@@ -238,7 +236,7 @@ fn browser_config(proxy_port: u16, upstream_port: u16) -> RouterConfig {
                     "provider": "backend-two"
                 }
             ],
-            "identity": { "explicitHeader": "X-Switchyard-Route", "stripBeforeForwarding": true }
+            "identity": { "explicitHeader": "X-Apmpr-Route", "stripBeforeForwarding": true }
         }
     }))
     .unwrap()
@@ -396,7 +394,7 @@ fn storm_config_with_health(
     health: Option<(u64, u64)>,
 ) -> RouterConfig {
     serde_json::from_value(json!({
-        "apiVersion": "switchyard.dev/router/v1alpha1",
+        "apiVersion": "apmpr.dev/router/v1alpha1",
         "kind": "RouterConfiguration",
         "metadata": { "deployment": "http-storm" },
         "spec": {
@@ -436,7 +434,7 @@ fn storm_config_with_health(
                 }
             ],
             "routes": [{ "consumer": "client", "slot": "api", "provider": provider }],
-            "identity": { "explicitHeader": "X-Switchyard-Route", "stripBeforeForwarding": true }
+            "identity": { "explicitHeader": "X-Apmpr-Route", "stripBeforeForwarding": true }
         }
     }))
     .unwrap()
@@ -463,14 +461,14 @@ fn proxies_http_and_websocket_and_rejects_unhealthy_provider() {
 
     let response = request(
         proxy,
-        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nX-Switchyard-Route: secret\r\nConnection: close\r\n\r\n",
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nX-Apmpr-Route: secret\r\nConnection: close\r\n\r\n",
     );
     let response = String::from_utf8(response).unwrap().to_ascii_lowercase();
     assert!(response.starts_with("http/1.1 200"));
     assert!(response.contains("x-forwarded-host: localhost"));
     assert!(response.contains("x-forwarded-proto: http"));
     assert!(response.contains("x-forwarded-for:"));
-    assert!(!response.contains("x-switchyard-route"));
+    assert!(!response.contains("x-apmpr-route"));
 
     let mut websocket = TcpStream::connect(proxy).unwrap();
     websocket
@@ -590,26 +588,26 @@ fn browser_routes_enforce_origin_and_answer_cors_preflight() {
 
     let response = String::from_utf8(request(
         proxy,
-        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nX-Switchyard-Route: tab-one\r\nConnection: close\r\n\r\n",
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nX-Apmpr-Route: tab-one\r\nConnection: close\r\n\r\n",
     ))
     .unwrap()
     .to_ascii_lowercase();
     assert!(response.starts_with("http/1.1 200"));
-    assert!(!response.contains("x-switchyard-route"));
+    assert!(!response.contains("x-apmpr-route"));
 
     let response = String::from_utf8(request(
         proxy,
-        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://unknown.test\r\nX-Switchyard-Route: tab-one\r\nConnection: close\r\n\r\n",
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://unknown.test\r\nX-Apmpr-Route: tab-one\r\nConnection: close\r\n\r\n",
     ))
     .unwrap()
     .to_ascii_lowercase();
     assert!(response.starts_with("http/1.1 200"));
     assert!(!response.contains("access-control-allow-origin"));
-    assert!(!response.contains("x-switchyard-route"));
+    assert!(!response.contains("x-apmpr-route"));
 
     let response = String::from_utf8(request(
         proxy,
-        b"OPTIONS /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://unknown.test\r\nX-Switchyard-Route: tab-one\r\nAccess-Control-Request-Method: GET\r\nConnection: close\r\n\r\n",
+        b"OPTIONS /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://unknown.test\r\nX-Apmpr-Route: tab-one\r\nAccess-Control-Request-Method: GET\r\nConnection: close\r\n\r\n",
     ))
     .unwrap()
     .to_ascii_lowercase();
@@ -618,7 +616,7 @@ fn browser_routes_enforce_origin_and_answer_cors_preflight() {
 
     let response = String::from_utf8(request(
         proxy,
-        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nX-Switchyard-Route: unknown\r\nConnection: close\r\n\r\n",
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nX-Apmpr-Route: unknown\r\nConnection: close\r\n\r\n",
     ))
     .unwrap();
     assert!(response.starts_with("HTTP/1.1 403"));
@@ -626,7 +624,7 @@ fn browser_routes_enforce_origin_and_answer_cors_preflight() {
 
     let response = String::from_utf8(request(
         proxy,
-        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nX-Switchyard-Route: tab-two\r\nConnection: close\r\n\r\n",
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nX-Apmpr-Route: tab-two\r\nConnection: close\r\n\r\n",
     ))
     .unwrap();
     assert!(response.starts_with("HTTP/1.1 400"));
@@ -657,19 +655,19 @@ fn identity_header_preservation_requires_selected_provider_opt_in() {
 
     let opted_in = String::from_utf8(request(
         proxy,
-        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nX-Switchyard-Route: tab-one\r\nConnection: close\r\n\r\n",
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nX-Apmpr-Route: tab-one\r\nConnection: close\r\n\r\n",
     ))
     .unwrap()
     .to_ascii_lowercase();
-    assert!(opted_in.contains("x-switchyard-route: tab-one"));
+    assert!(opted_in.contains("x-apmpr-route: tab-one"));
 
     let not_opted_in = String::from_utf8(request(
         proxy,
-        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nX-Switchyard-Route: tab-two\r\nConnection: close\r\n\r\n",
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nX-Apmpr-Route: tab-two\r\nConnection: close\r\n\r\n",
     ))
     .unwrap()
     .to_ascii_lowercase();
-    assert!(!not_opted_in.contains("x-switchyard-route"));
+    assert!(!not_opted_in.contains("x-apmpr-route"));
 
     running.shutdown();
 }
@@ -701,7 +699,7 @@ fn explicit_identity_is_rejected_on_non_loopback_listener() {
 
     let response = String::from_utf8(request(
         SocketAddr::from(([127, 0, 0, 1], proxy_port)),
-        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nX-Switchyard-Route: tab-one\r\nConnection: close\r\n\r\n",
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nX-Apmpr-Route: tab-one\r\nConnection: close\r\n\r\n",
     ))
     .unwrap()
     .to_ascii_lowercase();
@@ -742,7 +740,7 @@ fn managed_profile_listener_requires_and_strips_proxy_credentials() {
     .unwrap()
     .to_ascii_lowercase();
     assert!(response.starts_with("http/1.1 407"));
-    assert!(response.contains("proxy-authenticate: basic realm=\"switchyard\""));
+    assert!(response.contains("proxy-authenticate: basic realm=\"apmpr\""));
 
     let response = String::from_utf8(request(
         proxy,
@@ -754,7 +752,7 @@ fn managed_profile_listener_requires_and_strips_proxy_credentials() {
 
     let response = String::from_utf8(request(
         proxy,
-        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nProxy-Authorization: Basic c3dpdGNoeWFyZDp0ZXN0LXRva2Vu\r\nConnection: close\r\n\r\n",
+        b"GET /echo HTTP/1.1\r\nHost: localhost\r\nOrigin: https://ui-one.test\r\nProxy-Authorization: Basic YXBtcHI6dGVzdC10b2tlbg==\r\nConnection: close\r\n\r\n",
     ))
     .unwrap()
     .to_ascii_lowercase();
@@ -767,12 +765,12 @@ fn managed_profile_listener_requires_and_strips_proxy_credentials() {
 #[test]
 #[ignore = "socket-bound reliability test; run via scripts/reliability.sh"]
 fn reload_storm_under_concurrent_http_clients_returns_complete_provider_responses() {
-    let duration = std::env::var("SWITCHYARD_RELOAD_STORM_SECONDS")
+    let duration = std::env::var("APMPR_RELOAD_STORM_SECONDS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(30));
-    let clients = std::env::var("SWITCHYARD_CONCURRENCY")
+    let clients = std::env::var("APMPR_CONCURRENCY")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(16);
@@ -906,7 +904,7 @@ fn reload_storm_under_concurrent_http_clients_returns_complete_provider_response
 #[test]
 #[ignore = "socket-bound soak test; run via scripts/reliability.sh"]
 fn long_running_http_soak_correlates_health_flaps_and_has_no_resource_leak() {
-    let duration = std::env::var("SWITCHYARD_SOAK_SECONDS")
+    let duration = std::env::var("APMPR_SOAK_SECONDS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .map(Duration::from_secs)

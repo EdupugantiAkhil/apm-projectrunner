@@ -42,12 +42,12 @@ case "$os:$machine" in
   *:aarch64|*:arm64) arch=aarch64 ;;
   *) arch=$machine ;;
 esac
-archive_base="switchyard-${release_version}-${os}-${arch}"
+archive_base="apmpr-${release_version}-${os}-${arch}"
 
 cargo build --release \
-  -p switchyard-cli \
-  -p switchyard-daemon \
-  -p switchyard-router
+  -p apmpr-cli \
+  -p apmpr-daemon \
+  -p apmpr-router
 (
   cd packages/web
   npm ci
@@ -60,7 +60,7 @@ cargo build --release \
 
 rm -rf dist
 mkdir -p "dist/$archive_base/bin" "dist/$archive_base/web"
-for binary in switchyard switchyard-daemon switchyard-router; do
+for binary in apmpr apmpr-daemon apmpr-router; do
   install -m 0755 "target/release/$binary" "dist/$archive_base/bin/$binary"
 done
 cp -R packages/web/dist/. "dist/$archive_base/web/"
@@ -96,19 +96,19 @@ sed \
   cd dist
   sha256_files "$archive_base.tar.gz" RELEASE_NOTES.md > SHA256SUMS
 )
-if [[ -n ${SWITCHYARD_SIGNING_KEY:-} ]]; then
+if [[ -n ${APMPR_SIGNING_KEY:-} ]]; then
   command -v ssh-keygen >/dev/null || {
-    echo "release: ssh-keygen is required when SWITCHYARD_SIGNING_KEY is set" >&2
+    echo "release: ssh-keygen is required when APMPR_SIGNING_KEY is set" >&2
     exit 1
   }
-  [[ -f $SWITCHYARD_SIGNING_KEY ]] || {
-    echo "release: SWITCHYARD_SIGNING_KEY does not name a private key file" >&2
+  [[ -f $APMPR_SIGNING_KEY ]] || {
+    echo "release: APMPR_SIGNING_KEY does not name a private key file" >&2
     exit 1
   }
   rm -f dist/SHA256SUMS.sig
-  ssh-keygen -Y sign -f "$SWITCHYARD_SIGNING_KEY" -n switchyard-release dist/SHA256SUMS
+  ssh-keygen -Y sign -f "$APMPR_SIGNING_KEY" -n apmpr-release dist/SHA256SUMS
   echo "release: signed dist/SHA256SUMS"
 else
-  echo "release: unsigned release; set SWITCHYARD_SIGNING_KEY to an SSH private key to sign SHA256SUMS"
+  echo "release: unsigned release; set APMPR_SIGNING_KEY to an SSH private key to sign SHA256SUMS"
 fi
 echo "release: wrote dist/$archive_base.tar.gz, dist/RELEASE_NOTES.md, and dist/SHA256SUMS"

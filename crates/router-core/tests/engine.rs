@@ -129,7 +129,7 @@ fn lookups_never_observe_partial_group_reload() {
 #[test]
 #[ignore = "duration-based reliability test; run via scripts/reliability.sh"]
 fn reload_storm_preserves_group_atomicity_and_version_order() {
-    let duration = std::env::var("SWITCHYARD_RELOAD_STORM_SECONDS")
+    let duration = std::env::var("APMPR_RELOAD_STORM_SECONDS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .map(Duration::from_secs)
@@ -144,7 +144,7 @@ fn reload_storm_preserves_group_atomicity_and_version_order() {
     let highest_seen = Arc::new(AtomicU64::new(1));
 
     let mut threads = Vec::new();
-    let workers = std::env::var("SWITCHYARD_CONCURRENCY")
+    let workers = std::env::var("APMPR_CONCURRENCY")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(8);

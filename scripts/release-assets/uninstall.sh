@@ -33,8 +33,8 @@ require_safe_parent() {
     }
   done
 }
-manifest="$prefix/share/switchyard/installed-files.manifest"
-require_safe_parent "share/switchyard/installed-files.manifest"
+manifest="$prefix/share/apmpr/installed-files.manifest"
+require_safe_parent "share/apmpr/installed-files.manifest"
 [[ -f $manifest && ! -L $manifest ]] || {
   echo "uninstall: no owned installation manifest at $manifest" >&2
   exit 1
@@ -66,8 +66,8 @@ for file in "${files[@]}"; do
 done
 rm -- "$manifest"
 echo "removed $manifest"
-find "$prefix/share/switchyard/web" -depth -type d -empty -delete 2>/dev/null || true
-rmdir "$prefix/share/switchyard" 2>/dev/null || true
+find "$prefix/share/apmpr/web" -depth -type d -empty -delete 2>/dev/null || true
+rmdir "$prefix/share/apmpr" 2>/dev/null || true
 rmdir "$prefix/share" 2>/dev/null || true
 rmdir "$prefix/bin" 2>/dev/null || true
 rmdir "$prefix" 2>/dev/null || true

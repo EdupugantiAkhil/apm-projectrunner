@@ -1,28 +1,28 @@
-# Switchyard: composable development deployments
+# APM ProjectRunner: composable development deployments
 
 Status: authoritative implementation architecture. Where this document and
 [`docs/vision`](docs/vision) differ, the vision controls the intended product and
 [`docs/v2-roadmap.md`](docs/v2-roadmap.md) records the work to close the gap.
 
-Working name: **Switchyard**. The intended product name is **APM ProjectRunner**
-(`apmpr`); V2 Part 7 renames the tree in one mechanical sweep.
+Product name: **APM ProjectRunner** (`apmpr`). V2 Part 7 renamed the tree from the
+development-era working name `Switchyard`.
 
 Audience: developers testing combinations of services from monorepo worktrees and
 independent Git repositories.
 
 ## 1. Purpose
 
-Switchyard is a local-first deployment and topology orchestrator. It lets a developer
+APM ProjectRunner is a local-first deployment and topology orchestrator. It lets a developer
 define reusable startup blocks, create multiple instances from different source trees,
 and combine instances into named service groups. Group membership is the connection; the
 authored topology has no separate capability, slot, binding, or direct-route layer.
 
 Existing application code must not require modification. A containerized consumer may
-continue calling fixed dependency addresses such as `localhost:8001`; Switchyard routes
+continue calling fixed dependency addresses such as `localhost:8001`; APM ProjectRunner routes
 those calls through the instance's group inside its isolated network
 namespace.
 
-Switchyard's core is solution-agnostic. Java, Python, JAS, UI, and database are example
+APM ProjectRunner's core is solution-agnostic. Java, Python, JAS, UI, and database are example
 instance or service names in the first reference fixture, not measurable roles. The runtime must work with
 any executable, container image, repository layout, language, framework, protocol, or
 service grouping that can satisfy the generic contracts below.
@@ -40,7 +40,7 @@ The system must support sources from:
 - Worktrees in the same monorepo.
 - Normal directories in the same monorepo.
 - Existing checkouts of unrelated Git repositories.
-- Optionally, repositories and worktrees created by Switchyard in a managed workspace.
+- Optionally, repositories and worktrees created by APM ProjectRunner in a managed workspace.
 
 ## 2. Design principles
 
@@ -105,7 +105,7 @@ live route control, schema-driven GUI, and managed Git/worktrees. They are core 
 capabilities, but they are not prerequisites for validating the routing model.
 
 Phase 1 is a vertical routing proof built as a one-shot CLI over generated Compose,
-Docker network namespaces, and the Switchyard Router in native-host and per-consumer
+Docker network namespaces, and the APM ProjectRunner Router in native-host and per-consumer
 sidecar modes. The router, rather than Portless, is the authoritative routing layer.
 Phase 2 promotes that proven behavior into the persistent control plane and GUI without
 changing the human-authored topology model.
@@ -115,8 +115,8 @@ changing the human-authored topology model.
 ### Repository and source
 
 A repository names Git object and linked-worktree metadata storage once. Exactly one of
-`url:` (a bare repository created and managed by Switchyard) or `clone:` (an adopted bare
-repository or ordinary clone) is required. Switchyard never runs code from a repository
+`url:` (a bare repository created and managed by APM ProjectRunner) or `clone:` (an adopted bare
+repository or ordinary clone) is required. APM ProjectRunner never runs code from a repository
 checkout. A source is always an editable and runnable worktree backed by that repository,
 with an authored ref and project-relative path.
 
@@ -139,7 +139,7 @@ sources:
     path: ./sources/backend-feature-a
 ```
 
-Managed clones live under `.switchyard/clones/<repository>`. `up` creates a missing
+Managed clones live under `.apmpr/clones/<repository>`. `up` creates a missing
 managed clone and any missing source worktree. Existing paths are validated against the
 named repository and ref. There is no plain-path source kind, and repository clones and
 source worktrees may not overlap or contain one another.
@@ -147,10 +147,10 @@ source worktrees may not overlap or contain one another.
 ### Device
 
 A device is a project-scoped execution host. Registered devices are records in the
-project's `.switchyard/state.sqlite3` database. Each record contains a name, SSH user,
+project's `.apmpr/state.sqlite3` database. Each record contains a name, SSH user,
 host, port, an optional identity-file path, and the status, detail, and time of the last
-connectivity check. Switchyard stores neither passwords nor private keys; SSH uses the
-credentials and agent available to the Switchyard process.
+connectivity check. APM ProjectRunner stores neither passwords nor private keys; SSH uses the
+credentials and agent available to the APM ProjectRunner process.
 
 `local` is an implicit, always-available device and is not stored as a database row.
 Connectivity checks for registered SSH devices are explicit background operations.
@@ -161,7 +161,7 @@ non-local device is a validation error until the limited remote execution cut is
 implemented. A client or planner must never accept and then ignore a placement field.
 
 User-level device configuration is deliberately outside the current scope. A future
-design may add `~/.config/switchyard/devices.yaml`, with project records taking
+design may add `~/.config/apmpr/devices.yaml`, with project records taking
 precedence over same-named global records and every client displaying the effective
 record's origin. No client should imply that such global configuration exists today.
 
@@ -190,7 +190,7 @@ Phase 1 implements `container` and `script`. The `host` mode below is part of th
 Container-backed block:
 
 ```yaml
-apiVersion: switchyard.dev/v1alpha1
+apiVersion: apmpr.dev/v1alpha1
 kind: Block
 metadata:
   name: java-backend
@@ -208,7 +208,7 @@ spec:
 Script-backed block:
 
 ```yaml
-apiVersion: switchyard.dev/v1alpha1
+apiVersion: apmpr.dev/v1alpha1
 kind: Block
 metadata:
   name: ui-dev-server
@@ -240,7 +240,7 @@ containers.
 Phase 2 trusted host script:
 
 ```yaml
-apiVersion: switchyard.dev/v1alpha1
+apiVersion: apmpr.dev/v1alpha1
 kind: Block
 metadata:
   name: jas-service
@@ -272,7 +272,7 @@ script.
 Process Compose suite:
 
 ```yaml
-apiVersion: switchyard.dev/v1alpha1
+apiVersion: apmpr.dev/v1alpha1
 kind: Block
 metadata:
   name: ai-services
@@ -302,16 +302,16 @@ spec:
 ```
 
 The `process-compose` adapter treats the command as one block instance while importing
-its child-process names, dependency states, readiness probes, and logs into Switchyard.
+its child-process names, dependency states, readiness probes, and logs into APM ProjectRunner.
 Process Compose remains responsible for its internal startup and ordered shutdown.
 
-Host commands run in a new process group. Switchyard sends the declared stop signal to
+Host commands run in a new process group. APM ProjectRunner sends the declared stop signal to
 the group, waits for the timeout, and only then escalates. It records the PID, executable,
 working directory, definition hash, start time, and child processes so it never stops an
 unrelated process that happens to reuse a port.
 
 ```yaml
-apiVersion: switchyard.dev/v1alpha1
+apiVersion: apmpr.dev/v1alpha1
 kind: Block
 metadata:
   name: python-suite
@@ -359,7 +359,7 @@ Example block categories in the reference fixture:
 - `generic`: any other component or coordinated suite.
 
 These categories are tags and templates, not a closed enum. Users can create any block
-name and any number of components. Switchyard does not branch on these values.
+name and any number of components. APM ProjectRunner does not branch on these values.
 
 Execution mode is independent of block type: Java, Python, UI, and generic blocks may
 use containers, containerized scripts, or explicitly trusted host commands.
@@ -367,7 +367,7 @@ use containers, containerized scripts, or explicitly trusted host commands.
 ### Source-local startup profiles
 
 A registered source checkout may declare startup profiles in exactly one well-known
-file at its root: `switchyard-profiles.yaml`. Discovery reads only that file. It does
+file at its root: `apmpr-profiles.yaml`. Discovery reads only that file. It does
 not search for likely scripts, inspect other filenames, or execute repository content.
 An absent file is not an error.
 
@@ -398,7 +398,7 @@ probes, parameters, and lifecycle. The manifest does not
 introduce another execution format, and a source-local profile has the same validation,
 planning, isolation, ownership, health, and cleanup contracts as a project block.
 Project run actions remain separate operations declared in
-`.switchyard/run-scripts.yaml`; they are not profiles and do not own instance services.
+`.apmpr/run-scripts.yaml`; they are not profiles and do not own instance services.
 
 Discovery does not make a profile executable. Import is explicit and records the source
 name, source commit, and a deterministic content hash of the selected profile definition
@@ -417,15 +417,15 @@ ports, writable directories, and exclusive resources. Planning fails when two in
 claim the same resource.
 
 The current JAS and AI Process Compose scripts use fixed ports. Consequently, multiple
-copies cannot run on the same host unchanged. Before Switchyard starts two copies, one of
+copies cannot run on the same host unchanged. Before APM ProjectRunner starts two copies, one of
 the following must be true:
 
 - The scripts and Process Compose file accept per-instance port parameters.
-- Switchyard renders a per-instance Process Compose file with unique ports and matching
+- APM ProjectRunner renders a per-instance Process Compose file with unique ports and matching
   dependency URLs.
 - Each copy moves into its own container or network namespace.
 
-Switchyard must never silently offset ports because service-to-service URLs may be
+APM ProjectRunner must never silently offset ports because service-to-service URLs may be
 embedded in scripts, environment files, or application configuration.
 
 ### Adapter contracts
@@ -551,7 +551,7 @@ services:
         - http: { url: "http://127.0.0.1:${ports.opensearch}" }
       cleanupCommand: ["./stop-jas-databases.sh"]
       ownedResources:
-        dockerProject: "switchyard-${deployment.name}-${instance.name}"
+        dockerProject: "apmpr-${deployment.name}-${instance.name}"
   initialize-tenant:
     execution:
       type: host
@@ -681,7 +681,7 @@ ordered member view. Reusing the same source or block in another group requires 
 instance. Validation rejects multi-group membership and names both groups before any
 runtime mutation.
 
-`switchyard move <deployment> <instance> <group>` and the control-plane
+`apmpr move <deployment> <instance> <group>` and the control-plane
 `commands/membership` endpoint update this authored relationship. A live-compatible move
 replaces every affected sidecar snapshot across the source and destination groups and
 rolls back already-applied snapshots if a later router fails. Moving a previously
@@ -711,7 +711,7 @@ group's transparent shared localhost.
 The desired combination of sources, instances, parameters, and groups.
 
 ```yaml
-apiVersion: switchyard.dev/v1alpha2
+apiVersion: apmpr.dev/v1alpha2
 kind: Deployment
 metadata:
   name: comparison
@@ -748,7 +748,7 @@ stated once in the deployment. This keeps the connection model single-sourced, m
 the removal of `bindings:` and `routes:` from the deployment schema.
 
 ```yaml
-apiVersion: switchyard.dev/v1alpha1
+apiVersion: apmpr.dev/v1alpha1
 kind: Overlay
 metadata:
   name: mongodb-development
@@ -802,7 +802,7 @@ Maps merge by key. `unset` removes an inherited environment key. File targets mu
 unique after resolution unless a later overlay explicitly declares `replace: true`. Lists
 do not merge implicitly unless their schema explicitly declares append or keyed semantics.
 
-Switchyard must render and display the fully resolved deployment and an origin trace for
+APM ProjectRunner must render and display the fully resolved deployment and an origin trace for
 every value:
 
 ```text
@@ -813,11 +813,11 @@ PORT=8001        ← block default ai-services
 
 #### File injection
 
-Injected files never modify a source repository or worktree by default. Switchyard
+Injected files never modify a source repository or worktree by default. APM ProjectRunner
 materializes them under:
 
 ```text
-.switchyard/generated/<deployment>/overlays/<instance>/<content-hash>/
+.apmpr/generated/<deployment>/overlays/<instance>/<content-hash>/
 ```
 
 Execution adapters decide how the materialized file is presented:
@@ -866,8 +866,8 @@ claims do not collide.
           │
           ▼
  ┌─────────────────────────────────────────────────────────┐
- │ Native Switchyard Router                               │
- │ custom domains + TLS + legacy localhost listeners      │
+ │ Native APM ProjectRunner Router                         │
+ │ custom domains + TLS + legacy localhost listeners       │
  │ Origin/header/profile identity + CORS/preflight         │
  └──────────────────────────┬──────────────────────────────┘
                             │ loopback-only published ports
@@ -877,7 +877,7 @@ claims do not collide.
  │ UI instances     backend instances       service groups │
  │                         │                               │
  │                         ▼                               │
- │              Switchyard Router sidecar                  │
+ │           APM ProjectRunner Router sidecar              │
  │              shared consumer network namespace          │
  │              owns localhost:8001, ...                   │
  └──────────────────────────┬──────────────────────────────┘
@@ -885,7 +885,7 @@ claims do not collide.
                             ▼
              selected group members / shared services
 
- TUI / CLI / Web GUI ──HTTP+SSE──► Switchyard control plane
+ TUI / CLI / Web GUI ──HTTP+SSE──► APM ProjectRunner control plane
                               ├── planner + Compose generator
                               ├── router configuration
                               ├── Git/worktrees
@@ -894,7 +894,7 @@ claims do not collide.
 
 ### Runtime and isolation
 
-Docker Engine is the Phase 1 container runtime. Switchyard generates Docker Compose as
+Docker Engine is the Phase 1 container runtime. APM ProjectRunner generates Docker Compose as
 an internal lifecycle artifact; users do not have to author Compose and the domain model
 does not depend on it. Every deployment receives a private Docker bridge network.
 Provider instances receive deterministic internal DNS aliases, while host exposure is
@@ -943,8 +943,8 @@ The initial stack is therefore:
 | --- | --- |
 | Container lifecycle | Docker Engine through generated Docker Compose |
 | Container isolation | Docker-provided Linux network namespaces |
-| Internal fixed-port routing | Switchyard Router sidecars |
-| Browser, custom-domain, and TLS routing | Native Switchyard Router |
+| Internal fixed-port routing | APM ProjectRunner Router sidecars |
+| Browser, custom-domain, and TLS routing | Native APM ProjectRunner Router |
 | Desired state | Versioned YAML |
 | Observed/control state | Generated manifests and Docker labels; SQLite in Phase 2 |
 | Application data | Docker named volumes or explicitly declared external services |
@@ -978,17 +978,17 @@ Recommended implementation:
 ### Interactive clients and shared operations
 
 The React dashboard is the default local interactive control plane. An existing folder
-can be adopted non-destructively with `switchyard project register`, after which
-`switchyard daemon install [project]` installs and starts its project-scoped per-user
-service, and `switchyard gui [project]` only opens the authenticated dashboard exposed by
+can be adopted non-destructively with `apmpr project register`, after which
+`apmpr daemon install [project]` installs and starts its project-scoped per-user
+service, and `apmpr gui [project]` only opens the authenticated dashboard exposed by
 that running service. The installer emits a launchd LaunchAgent on macOS or systemd user
 unit on Linux, both keyed by canonical project path and configured to append output to
-`.switchyard/daemon.log`. The Ratatui TUI remains supported as an optional headless and
+`.apmpr/daemon.log`. The Ratatui TUI remains supported as an optional headless and
 SSH-friendly client, including terminal handoff for Git and ephemeral SSH credential
-prompts. `switchyard tui [project]` retains its command name.
+prompts. `apmpr tui [project]` retains its command name.
 
 Application behavior shared by interactive and command-line clients belongs in a new
-`switchyard-ops` crate. It owns operations that validate, plan, apply, and mutate
+`apmpr-ops` crate. It owns operations that validate, plan, apply, and mutate
 sources, devices, profiles, instances, and group membership. It also owns read-model projections
 such as the rows, summaries, validation diagnostics, and operation states rendered by a
 view. It does not render widgets or parse command-line arguments and must not depend on
@@ -1003,7 +1003,7 @@ fields:
 
 | UI label | Architecture term | Meaning |
 | --- | --- | --- |
-| Switchyard project | Workspace/project directory | Authored deployment, overlays, and project state |
+| APM ProjectRunner project | Workspace/project directory | Authored deployment, overlays, and project state |
 | Code | Sources | Code made available through repository-backed worktrees |
 | Repository | Repository | The Git repository and its relationship to linked worktrees |
 | Checkout | Source path/worktree | The exact code tree selected for an instance |
@@ -1015,7 +1015,7 @@ fields:
 | Device | Registered device | A known execution host; `local` plus registered SSH hosts |
 
 The handwritten alternative "project / project instance" is rejected because
-"Switchyard project" already means the workspace. Reusing `project` for source code
+"APM ProjectRunner project" already means the workspace. Reusing `project` for source code
 would make project state, code checkouts, and running instances ambiguous. Persisted
 `source`, `block`, `instance`, and `group` field names remain unchanged.
 
@@ -1031,7 +1031,7 @@ The generator expands every block instance into concrete Compose services. It as
 - Ephemeral loopback-only host ports used as native-router upstreams.
 - Read-only or read-write source mounts for script runners, as explicitly declared.
 - One-shot dependency conditions for successful `task` scripts.
-- One namespace anchor and Switchyard Router sidecar for each local group member or
+- One namespace anchor and APM ProjectRunner Router sidecar for each local group member or
   explicitly routed instance. Every service of the instance joins the anchor namespace.
   Transparent sidecars receive `NET_ADMIN`, drop every other capability, and run with
   `no-new-privileges`.
@@ -1045,15 +1045,15 @@ They must be separate generated services.
 Generated output belongs under:
 
 ```text
-.switchyard/generated/<deployment>/compose.yaml
-.switchyard/generated/<deployment>/resolved-deployment.yaml
-.switchyard/generated/<deployment>/manifest.json
-.switchyard/generated/<deployment>/routes/<instance>.cfg
+.apmpr/generated/<deployment>/compose.yaml
+.apmpr/generated/<deployment>/resolved-deployment.yaml
+.apmpr/generated/<deployment>/manifest.json
+.apmpr/generated/<deployment>/routes/<instance>.cfg
 ```
 
-Only human-authored definitions are committed. `.switchyard/generated` is ignored.
+Only human-authored definitions are committed. `.apmpr/generated` is ignored.
 
-### Switchyard Router
+### APM ProjectRunner Router
 
 One Rust codebase provides three modes with the same configuration and route-table
 semantics:
@@ -1066,7 +1066,7 @@ semantics:
 3. **Forward proxy** gives a managed browser profile an explicit routing identity when
    neither a request header nor `Origin` is sufficient.
 
-The router's own configuration contract (`switchyard.dev/router/v1alpha1`) still names
+The router's own configuration contract (`apmpr.dev/router/v1alpha1`) still names
 listener destinations with a `slot` key. That is an identifier inside a generated
 artifact, not authored topology: the planner derives it, and no deployment schema, client
 form, or diagnostic asks a developer for one. It survives the removal of authored
@@ -1109,7 +1109,7 @@ close, or remain pinned while new connections use the new group.
 Browser JavaScript calling `localhost:<port>` connects to the native host router, not
 the UI container. The router selects a backend using this precedence:
 
-1. `X-Switchyard-Route`, injected per tab by the optional Switchyard browser extension.
+1. `X-Apmpr-Route`, injected per tab by the optional APM ProjectRunner browser extension.
 2. The request's `Origin`, mapped from the UI's custom domain.
 3. The identity of a dedicated forward-proxy listener used by a managed browser profile.
 
@@ -1143,7 +1143,7 @@ rejected with a diagnostic response instead of being routed arbitrarily.
 The extension can associate routing rules with tabs and attach the explicit header
 without application changes; see Chrome's
 [declarative request API](https://developer.chrome.com/docs/extensions/reference/api/declarativeNetRequest).
-For an extension-free guaranteed mode, `switchyard open <deployment> <instance>` launches an isolated
+For an extension-free guaranteed mode, `apmpr open <deployment> <instance>` launches an isolated
 browser profile with `--proxy-server=<listener>` and
 `--proxy-bypass-list=<-loopback>`, as supported by
 [Chromium's proxy configuration](https://chromium.googlesource.com/chromium/src/+/HEAD/net/docs/proxy.md).
@@ -1307,7 +1307,7 @@ Interaction rules:
 - Present repositories as parents and linked worktrees as selectable checkouts, rather
   than flattening both into an unexplained list of sources.
 - Actions: inspect, refresh, open directory, create worktree, remove managed worktree.
-- Destructive Git actions are excluded. Switchyard never resets or discards changes.
+- Destructive Git actions are excluded. APM ProjectRunner never resets or discards changes.
 
 #### Block library
 
@@ -1350,32 +1350,32 @@ The full patch bay targets desktop widths of 1280 px and above. At smaller width
 
 ## 6. CLI and API
 
-The topology-facing CLI commands. `crates/switchyard-cli/src/cli.rs` holds the complete
+The topology-facing CLI commands. `crates/apmpr-cli/src/cli.rs` holds the complete
 surface, including `init`, `bundle export`/`import`, `diagnostics`, `operation cancel`,
 and `worktree remove`:
 
 ```text
-switchyard validate <deployment>
-switchyard plan <deployment>
-switchyard migrate <deployment>
-switchyard overlay validate <overlay>
-switchyard overlay diff <deployment> --with <overlay...>
-switchyard up <deployment>
-switchyard status <deployment> [--routes]
-switchyard routes <deployment>
-switchyard move <deployment> <instance> <group> [--transition close|drain|pin]
-switchyard logs <deployment> [instance[/service]]
-switchyard open <deployment> <instance>
-switchyard down <deployment>
-switchyard cleanup <deployment> --yes
-switchyard source list | register | deregister
-switchyard worktree create <repository-source> <ref> [--path <path>] [--name <name>]
-switchyard device list | add | remove | check
-switchyard project register [<directory>] [--name <project-name>]
-switchyard gui [<project-directory>]
-switchyard tui [<project-directory>]
-switchyard daemon install [<project-directory>]
-switchyard daemon run | status | stop
+apmpr validate <deployment>
+apmpr plan <deployment>
+apmpr migrate <deployment>
+apmpr overlay validate <overlay>
+apmpr overlay diff <deployment> --with <overlay...>
+apmpr up <deployment>
+apmpr status <deployment> [--routes]
+apmpr routes <deployment>
+apmpr move <deployment> <instance> <group> [--transition close|drain|pin]
+apmpr logs <deployment> [instance[/service]]
+apmpr open <deployment> <instance>
+apmpr down <deployment>
+apmpr cleanup <deployment> --yes
+apmpr source list | register | deregister
+apmpr worktree create <repository-source> <ref> [--path <path>] [--name <name>]
+apmpr device list | add | remove | check
+apmpr project register [<directory>] [--name <project-name>]
+apmpr gui [<project-directory>]
+apmpr tui [<project-directory>]
+apmpr daemon install [<project-directory>]
+apmpr daemon run | status | stop
 ```
 
 Group membership is changed with `move`, which names one instance and its destination
@@ -1386,7 +1386,7 @@ The CLI calls the same API as the GUI. It must also support a one-shot mode for 
 recovery when the daemon is not running.
 
 The control-plane contract is `/api/v1`, defined in
-[`contract.rs`](crates/switchyard-daemon/src/contract.rs) and documented in
+[`contract.rs`](crates/apmpr-daemon/src/contract.rs) and documented in
 [`docs/control-plane-api.md`](docs/control-plane-api.md). Its groups are deployments,
 commands, operations, events, sources, repositories, devices, profiles, run actions,
 adapters, and project metadata.
@@ -1419,7 +1419,7 @@ immediately and stream progress separately.
 
 Stopping preserves named volumes by default. Deleting volumes, images, managed
 worktrees, or clones requires separate explicit actions. Cleanup operates only on
-resources carrying matching Switchyard ownership labels.
+resources carrying matching APM ProjectRunner ownership labels.
 
 ## 8. Security and safety
 
@@ -1460,7 +1460,7 @@ resources carrying matching Switchyard ownership labels.
 Sharing a database between branches is risky when schemas differ. Each database block
 must declare a migration policy:
 
-- `none`: Switchyard never runs migrations.
+- `none`: APM ProjectRunner never runs migrations.
 - `owner`: exactly one selected instance owns migrations.
 - `isolated-schema`: each consumer set receives a separate schema in one server.
 - `isolated-database`: each consumer set receives a separate database.
@@ -1470,14 +1470,14 @@ with different migration fingerprints share a schema.
 
 ## 10. Remote access
 
-Local mode uses custom `*.localhost` names through the native Switchyard Router. The
+Local mode uses custom `*.localhost` names through the native APM ProjectRunner Router. The
 router may use an unprivileged HTTP port by default or a locally trusted certificate and
 platform-specific privileged-port setup for HTTPS. Domain and certificate ownership is
 explicit desired state and can be inspected from the CLI and GUI.
 
 Optional LAN mode uses `*.local` and mDNS:
 
-- A future publication adapter advertises Switchyard gateway instance names.
+- A future publication adapter advertises APM ProjectRunner gateway instance names.
 - The configured gateway TCP port and mDNS UDP port `5353` must be permitted.
 - Linux requires `avahi-publish-address` from `avahi-utils`.
 - The GUI shows whether mDNS publication and remote reachability checks pass.
@@ -1489,29 +1489,29 @@ network. It must not silently expose deployments to the public internet.
 ### Limited remote container execution
 
 The first remote execution cut supports only container-adapter instances on a
-registered SSH device. Switchyard invokes the Docker client against
+registered SSH device. APM ProjectRunner invokes the Docker client against
 `ssh://user@host`, using Docker's native SSH transport. Image builds send the selected
 local checkout's build context to that daemon over the same transport, so the cut does
 not require an image registry or a managed remote checkout.
 
-The Switchyard Router remains local. A remotely placed service must declare explicit
+The APM ProjectRunner Router remains local. A remotely placed service must declare explicit
 published ports, and routes address it as `device-host:published-port`. Remote routers,
 cross-device sidecar routing, process-adapter instances on remote devices, and
 drift-tracked remote checkouts are unsupported by this cut. Validation reports these
 boundaries rather than attempting a partial placement.
 
-Remote containers receive the same Switchyard ownership labels as local containers.
+Remote containers receive the same APM ProjectRunner ownership labels as local containers.
 Inspection, reconciliation, and cleanup enumerate resources with those labels on the
 selected remote Docker daemon.
 
-Before start, Switchyard verifies SSH reachability, runs `docker version` through the
+Before start, APM ProjectRunner verifies SSH reachability, runs `docker version` through the
 SSH transport, and records the reported platform information. A device is eligible only
 when both checks succeed and the requested container workload satisfies the cut.
 Validation fails with the concrete reason when the host is unreachable, Docker is
 absent, access is denied, or another eligibility check fails.
 
 If a device is unreachable during stop or cleanup, the operation fails with the reason
-and guidance to restore access and retry. Switchyard does not report success or silently
+and guidance to restore access and retry. APM ProjectRunner does not report success or silently
 orphan the workload. Its ownership records remain intact, and the labeled remote
 resources remain discoverable for later reconciliation and cleanup.
 
@@ -1548,7 +1548,7 @@ crates/
   router-pingora/             HTTP/TLS/gRPC/WebSocket gateway implementation
   router-tcp/                 Tokio raw TCP forwarding
   router-config/              versioned router configuration protocol
-  switchyard-docker-ssh/      process-scoped explicit-identity Docker SSH transport
+  apmpr-docker-ssh/      process-scoped explicit-identity Docker SSH transport
 packages/
   core/                       schemas, planner, naming, validation
   compose-runtime/            Compose generation and execution
@@ -1563,14 +1563,14 @@ adapters/
   execution-runner-script/    scripts isolated in runner containers
   execution-host/             explicitly trusted host commands
   supervisor-process-compose/ Process Compose inspection and lifecycle
-  route-switchyard/           native gateway and sidecar lifecycle
+  route-apmpr/           native gateway and sidecar lifecycle
 examples/
   routing-matrix/             3 UIs, 2 backends, and switchable service groups
   jas-base/                   containerized legacy parent-workspace fixture
 old/
   shared-database-portless-demo/ archived hostname/database proof-of-concept
 scripts/                      bootstrap and development scripts
-.switchyard/                  ignored generated state
+.apmpr/                  ignored generated state
 ```
 
 The existing three-container Portless demonstration is archived under `old/`. It remains
@@ -1588,7 +1588,7 @@ the implementation plan is the markable execution checklist.
 - Container and containerized-script execution only, including Process Compose inside a
   runner container.
 - Deterministic planning and generated Compose as an internal runtime implementation.
-- Rust Switchyard Router in native host-gateway and per-consumer sidecar modes.
+- Rust APM ProjectRunner Router in native host-gateway and per-consumer sidecar modes.
 - Pingora HTTP/TLS/gRPC/WebSocket proxying plus Tokio raw TCP forwarding.
 - Custom local domains and browser legacy-localhost routing by explicit header, Origin,
   or managed-profile proxy identity.
@@ -1622,7 +1622,7 @@ Phase 1 is a technical proof, not the complete product MVP.
 
 ### Phase 3: LAN and team workflows
 
-- Switchyard gateway LAN/mDNS preflight and publication.
+- APM ProjectRunner gateway LAN/mDNS preflight and publication.
 - Import/exportable deployment bundles without secrets.
 - Optional Tailscale or private-DNS adapter.
 
@@ -1650,7 +1650,7 @@ The first complete version is successful when a developer can:
     provider groups.
 11. Move a sender between complete groups without restarting the application container.
 12. Assign and persist custom domains for human-facing instances through the native
-    Switchyard Router.
+    APM ProjectRunner Router.
 13. Recover observed deployment and route state through SQLite and Docker labels after a
     control-plane restart.
 14. View combined and per-service logs.

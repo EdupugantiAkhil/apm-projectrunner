@@ -1,0 +1,10 @@
+apiVersion: apmpr.dev/v1alpha2
+kind: Deployment
+metadata:
+  name: {{project_name}}
+spec:
+  repositories: {}
+  sources: {}
+  blocks: {}
+  instances: []
+  groups: {}

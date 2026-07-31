@@ -1,0 +1,20 @@
+[package]
+name = "apmpr-tui"
+description = "Terminal control plane for APM ProjectRunner projects"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+appcui = "=0.4.13"
+serde_json = "1.0.140"
+serde_yaml = { package = "yaml_serde", version = "0.10.4" }
+signal-hook = "0.3.18"
+apmpr-adapters = { path = "../apmpr-adapters" }
+apmpr-ops = { path = "../apmpr-ops" }
+apmpr-sources = { path = "../apmpr-sources" }
+apmpr-state = { path = "../apmpr-state" }
+
+[lints]
+workspace = true

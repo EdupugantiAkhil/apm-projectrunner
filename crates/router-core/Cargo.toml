@@ -1,6 +1,6 @@
 [package]
 name = "router-core"
-description = "Route matching, snapshots, and transition policy for Switchyard"
+description = "Route matching, snapshots, and transition policy for APM ProjectRunner"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

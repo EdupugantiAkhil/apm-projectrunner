@@ -1,4 +1,4 @@
-apiVersion: switchyard.dev/v1alpha1
+apiVersion: apmpr.dev/v1alpha1
 kind: Overlay
 metadata: { name: main-observation }
 spec:
