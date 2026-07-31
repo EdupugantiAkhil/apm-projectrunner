@@ -51,7 +51,7 @@ verification evidence.
 | ✅ | 2e — External instances: things already running outside Switchyard | `d0fcdd0` |
 | ⬜ | 3 — Serving a whole group from one address (router) | |
 | ✅ | 4 — Vocabulary and documentation alignment | `db52a71` |
-| ⬜ | 5 — Daemon-as-service posture | |
+| ✅ | 5 — Daemon-as-service posture | `08e86d1` |
 | ⬜ | 6 — Release usability items | |
 | ⬜ | 7 — Rename to APM ProjectRunner (`apmpr`) | |
 
@@ -565,16 +565,28 @@ today's schema would falsify the log.
 
 ---
 
-### Part 5 — Daemon-as-service posture
+### Part 5 — Daemon-as-service posture ✅
 
 user_flow step 2 states the intended split plainly: the daemon is a service, and
-`switchyard gui` only opens a window onto it. Today `gui` auto-starts the daemon as a
-fallback, and the doc itself calls that "a fallback, not the design".
+`switchyard gui` only opens a window onto it. Before this part, `gui` auto-started the
+daemon as a fallback, and the doc itself called that "a fallback, not the design".
 
-- [ ] A launchd plist and a systemd unit
-- [ ] A command that installs them
-- [ ] `gui` against a stopped daemon becomes an actionable error naming that command,
+- [x] A launchd plist and a systemd unit
+- [x] A command that installs them
+- [x] `gui` against a stopped daemon becomes an actionable error naming that command,
       rather than silently starting one
+
+Landed in `08e86d1`; the complete workspace check passes with the five declared
+reliability tests ignored. `switchyard daemon install [project]` generates and immediately
+loads a per-user, path-keyed launchd LaunchAgent or systemd user unit. Both definitions use
+the canonical project root, exact current CLI executable, captured tool `PATH`, failure
+restart policy, login startup, and the owner-only project daemon log. Reinstall replaces
+the same definition atomically; service-definition and log symlinks are refused.
+
+The implementation remains project-scoped, matching today's daemon and the explicit
+current limitation in user-flow step 3. The single service and in-window multi-project
+switcher are separate V2.1 work; Phase 5 does not pretend that architecture is already
+present.
 
 ---
 
