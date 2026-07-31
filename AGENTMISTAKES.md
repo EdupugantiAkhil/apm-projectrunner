@@ -814,3 +814,36 @@ audit shell startup files as well as the requested cache directories.
 - A throwaway zsh script assigned a temporary filename to `path`, which is a special array tied to
   `PATH`; subsequent commands became unavailable. Correction: use a neutral variable such as
   `file`. Lesson: avoid zsh special parameter names in verification scripts.
+
+## 2026-07-31 — The product promise must be an acceptance test, not an inferred future property
+
+- Earlier phases thoroughly proved configured fixed-port routing, isolated namespaces, live route
+  replacement, browser identity, and recovery. They did not prove the vision's deal-breaking
+  promise that group membership alone combines localhosts. Because zero-slot deployments merely
+  produced no sidecars, the implementation could pass hundreds of tests while omitting the
+  product's primary behavior.
+- The first Part 2b design repeated the mistake in a subtler form by planning to infer ports from
+  `publish`, probes, and image `EXPOSE`. That still required advance port knowledge and made image
+  metadata resolution an architectural blocker. Correction: validate the promise at the network
+  boundary first. Disposable containers proved transparent original-destination interception,
+  runtime listener discovery, duplicate priority, self-listener preservation, IPv4/IPv6, and
+  loopback-only receivers before the planner was changed.
+- Lesson: every sentence that explains why the product exists needs a direct end-to-end acceptance
+  test. Supporting machinery is necessary evidence, but it is not a substitute for exercising the
+  user-visible invariant with all optional declarations removed.
+
+## 2026-07-31 — Linux-only routing paths must compile and run on Linux before completion
+
+- Host tests on macOS did not compile the Linux `SO_ORIGINAL_DST` implementation, so they missed
+  both the workspace's `forbid(unsafe_code)` policy and an nftables rejection of a rule containing
+  two destination matches. Correction: use socket2's safe original-destination APIs and express the
+  Docker DNS exception as an earlier `RETURN` rule. The rebuilt Linux image then started cleanly.
+- The first priority implementation tried a sender's own listener before its group. That contradicted
+  the vision's unconditional first-listed rule. Moving it into group priority exposed a second edge:
+  connecting to the sender's own bridge alias does not traverse `PREROUTING`, so neither listener
+  observation nor forwarding reached its loopback-only process. Correction: mark the local member
+  explicitly, read its namespace listener table directly, and connect to its loopback with the same
+  bypass mark. The live collision proof now warns about both members and selects either one when
+  their authored order is reversed.
+- Lesson: target-specific code needs a target-native build, and routing-order proofs must include
+  the caller itself as a colliding candidate rather than only distinct receiver containers.

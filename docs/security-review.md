@@ -50,6 +50,30 @@ oversized admin frames, full bridged operations, crash and Docker Desktop restar
 recovery, fixed-address routing, persisted volumes, and empty ownership-labelled
 cleanup. The pre-existing cross-platform findings below remain applicable.
 
+## 2026-07-31 transparent-localhost delta
+
+Automatic shared localhost gives each routed instance one Linux network namespace and a
+router sidecar with `NET_ADMIN`; every other Linux capability is dropped and
+`no-new-privileges` remains enabled. The capability is required only to maintain
+namespace-local IPv4 and IPv6 NAT chains. Those chains intercept TCP loopback traffic
+and deployment-network traffic addressed to the instance, while router-created sockets
+carry an `SO_MARK` value that bypasses interception. No host namespace, Docker socket,
+host network, or published administration port is exposed.
+
+The sidecar's internal listener registry reports only numeric TCP ports already visible
+in `/proc/net/tcp{,6}`. It is reachable solely on the deployment's private bridge and
+does not expose process metadata or application data. Group members are already inside
+the same trust boundary and can originate traffic to one another; a compromised member
+could therefore lie about its port set or exhaust peers with connections, but this does
+not grant authority outside the deployment. The two internal ports used by the proxy
+and registry are reserved from cross-member application routing. UDP is not intercepted.
+
+The new privilege is confined to the sidecar rather than application containers, but a
+compromised sidecar could alter that instance namespace's network policy. Generated
+Compose tests enforce `cap_drop: [ALL]`, `cap_add: [NET_ADMIN]`, and
+`no-new-privileges`; release verification should additionally inspect the built image
+and live container capabilities.
+
 ## 1. Host listeners
 
 ### Examined

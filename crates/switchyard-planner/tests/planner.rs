@@ -93,6 +93,7 @@ fn consumer_slot_warns_and_routes_to_the_first_listed_candidate() {
 #[test]
 fn reordering_colliding_group_members_changes_the_selected_provider() {
     let mut deployment = provider_collision_bundle("base");
+    let initial = plan(&deployment).expect("initial collision should plan");
     deployment
         .spec
         .groups
@@ -102,6 +103,8 @@ fn reordering_colliding_group_members_changes_the_selected_provider() {
         .reverse();
 
     let generated = plan(&deployment).expect("reordered collision should plan");
+    assert_eq!(generated.resource_hash, initial.resource_hash);
+    assert_eq!(generated.compose_yaml, initial.compose_yaml);
     assert!(
         generated.warnings[0]
             .message
@@ -153,8 +156,16 @@ fn unconsumed_duplicate_capabilities_do_not_warn() {
     let generated = plan(&deployment).expect("two UIs should be legal group members");
     assert!(generated.warnings.is_empty());
     let compose: serde_json::Value = serde_yaml::from_str(&generated.compose_yaml).unwrap();
-    assert!(compose["services"].get("comparison--ui-a--api").is_some());
-    assert!(compose["services"].get("comparison--ui-b--api").is_some());
+    assert!(
+        compose["services"]
+            .get("comparison--ui-a--api--app")
+            .is_some()
+    );
+    assert!(
+        compose["services"]
+            .get("comparison--ui-b--api--app")
+            .is_some()
+    );
 }
 
 #[test]
@@ -695,16 +706,24 @@ fn compose_and_manifest_are_deterministic_and_owned() {
     );
     let compose: serde_json::Value =
         serde_yaml::from_str(&first.compose_yaml).expect("generated Compose should parse");
+    let sidecar_dependencies = compose["services"]["comparison--consumer-a--router"]["depends_on"]
+        .as_object()
+        .unwrap();
     assert_eq!(
-        compose["services"]["comparison--consumer-a--api--router"]["depends_on"]["comparison--provider-main--api"]
-            ["condition"],
-        "service_healthy"
+        sidecar_dependencies["comparison--consumer-a--namespace"]["condition"],
+        "service_started"
     );
-    for service in [
-        "comparison--consumer-a--api",
-        "comparison--consumer-a--api--app",
-        "comparison--consumer-a--api--router",
-        "comparison--provider-main--api",
+    assert!(
+        !sidecar_dependencies.contains_key("comparison--provider-main--api--app"),
+        "transparent routing must tolerate providers that start later"
+    );
+    for (service, expected_component) in [
+        ("comparison--consumer-a--namespace", "namespace"),
+        ("comparison--consumer-a--api--app", "api"),
+        ("comparison--consumer-a--router", "router"),
+        ("comparison--provider-main--namespace", "namespace"),
+        ("comparison--provider-main--api--app", "api"),
+        ("comparison--provider-main--router", "router"),
     ] {
         assert_eq!(
             compose["services"][service]["labels"]["dev.switchyard.instance"],
@@ -716,11 +735,15 @@ fn compose_and_manifest_are_deterministic_and_owned() {
         );
         assert_eq!(
             compose["services"][service]["labels"]["dev.switchyard.service"],
-            "api"
+            expected_component
         );
     }
-    assert_eq!(first.sidecars.len(), 2);
-    assert_eq!(first.route_configs.len(), 2);
+    assert_eq!(
+        compose["services"]["comparison--consumer-a--router"]["cap_add"][0],
+        "NET_ADMIN"
+    );
+    assert_eq!(first.sidecars.len(), 3);
+    assert_eq!(first.route_configs.len(), 3);
     assert_ne!(first.definition_hash, "");
     assert_ne!(first.resource_hash, "");
     assert_eq!(first.source_identities.len(), bundle.spec.instances.len());
@@ -735,17 +758,130 @@ fn compose_and_manifest_are_deterministic_and_owned() {
 fn identical_loopback_ports_are_isolated_by_consumer_namespace() {
     let plan = plan(&bundle()).expect("fixture should plan");
     for consumer in ["consumer-a", "consumer-b"] {
-        let namespace = format!("comparison--{consumer}--api");
+        let namespace = format!("comparison--{consumer}--namespace");
         assert!(
             plan.compose_yaml
                 .contains(&format!("network_mode: service:{namespace}"))
         );
         assert!(
             plan.compose_yaml
-                .contains(&format!("comparison--{consumer}--api--router"))
+                .contains(&format!("comparison--{consumer}--router"))
         );
         assert!(plan.route_configs[consumer].contains("\"port\": 8001"));
     }
+}
+
+#[test]
+fn group_routes_without_any_provides_consumes_or_declared_ports() {
+    let mut deployment = bundle();
+    for block in deployment.spec.blocks.values_mut() {
+        for service in block.services.values_mut() {
+            service.provides.clear();
+            service.consumes.clear();
+            service.publish.clear();
+            service.probe = None;
+        }
+    }
+
+    let generated = plan(&deployment).expect("group membership alone should route");
+    for consumer in ["consumer-a", "consumer-b"] {
+        let config: serde_json::Value =
+            serde_json::from_str(&generated.route_configs[consumer]).unwrap();
+        assert_eq!(config["spec"]["listeners"], serde_json::json!([]));
+        assert_eq!(config["spec"]["providers"], serde_json::json!([]));
+        assert_eq!(
+            config["spec"]["transparentProxy"]["members"][0]["component"],
+            "provider-main/api"
+        );
+        assert_eq!(config["spec"]["transparentProxy"]["port"], 65_535);
+    }
+}
+
+#[test]
+fn disabled_group_member_is_omitted_without_losing_priority_position() {
+    let mut deployment = bundle();
+    for block in deployment.spec.blocks.values_mut() {
+        for service in block.services.values_mut() {
+            service.provides.clear();
+            service.consumes.clear();
+        }
+    }
+    deployment
+        .spec
+        .instances
+        .retain(|instance| matches!(instance.name.as_str(), "provider-main" | "consumer-a"));
+    let mut backup = deployment.spec.instances[0].clone();
+    backup.name = "provider-backup".into();
+    deployment.spec.instances.push(backup);
+    let group = deployment.spec.groups.get_mut("base").unwrap();
+    group.instances = vec!["provider-main/api".into(), "provider-backup/api".into()];
+    deployment.spec.groups.remove("feature");
+    deployment
+        .spec
+        .bindings
+        .retain(|consumer, _| consumer == "consumer-a");
+
+    let enabled = plan(&deployment).expect("both members should plan");
+    deployment.spec.groups.get_mut("base").unwrap().disabled = vec!["provider-main".into()];
+    let generated = plan(&deployment).expect("disabled member should be ignored");
+    assert_eq!(generated.resource_hash, enabled.resource_hash);
+    assert_eq!(generated.compose_yaml, enabled.compose_yaml);
+    assert_ne!(
+        generated.route_configs["consumer-a"],
+        enabled.route_configs["consumer-a"]
+    );
+    let config: serde_json::Value =
+        serde_json::from_str(&generated.route_configs["consumer-a"]).unwrap();
+    assert_eq!(
+        config["spec"]["transparentProxy"]["members"],
+        serde_json::json!([{
+            "component": "provider-backup/api",
+            "host": "comparison--provider-backup--api"
+        }])
+    );
+    let resolved: serde_json::Value =
+        serde_yaml::from_str(&generated.resolved_deployment_yaml).unwrap();
+    assert_eq!(
+        resolved["spec"]["groups"]["base"]["disabled"],
+        serde_json::json!(["provider-main"])
+    );
+}
+
+#[test]
+fn disabled_entry_must_name_a_resolved_group_member() {
+    let mut deployment = bundle();
+    deployment.spec.groups.get_mut("base").unwrap().disabled = vec!["not-a-member".into()];
+
+    let errors = plan(&deployment).expect_err("unknown disabled member should fail");
+    assert!(errors.iter().any(|error| {
+        error.path == "spec.groups.base.disabled[0]"
+            && error.code == DiagnosticCode::MissingReference
+    }));
+}
+
+#[test]
+fn disabled_membership_is_local_and_not_inherited() {
+    let mut deployment = bundle();
+    for block in deployment.spec.blocks.values_mut() {
+        for service in block.services.values_mut() {
+            service.provides.clear();
+            service.consumes.clear();
+        }
+    }
+    deployment.spec.groups.get_mut("base").unwrap().disabled = vec!["provider-main".into()];
+    deployment
+        .spec
+        .bindings
+        .insert("consumer-a".into(), "feature".into());
+    deployment.spec.bindings.remove("consumer-b");
+
+    let generated = plan(&deployment).expect("child group should reactivate inherited member");
+    let config: serde_json::Value =
+        serde_json::from_str(&generated.route_configs["consumer-a"]).unwrap();
+    assert_eq!(
+        config["spec"]["transparentProxy"]["members"][0]["component"],
+        "provider-main/api"
+    );
 }
 
 #[test]
@@ -1238,15 +1374,29 @@ fn rejects_source_paths_before_writing_any_artifact() {
 #[test]
 fn generated_route_configuration_matches_router_contract() {
     let plan = plan(&bundle()).expect("fixture should plan");
+    let mut actual: serde_json::Value =
+        serde_json::from_str(&plan.route_configs["consumer-a"]).unwrap();
     assert_eq!(
-        plan.route_configs["consumer-a"],
-        include_str!("golden/consumer-a-router.json").trim()
+        actual["spec"]["transparentProxy"]["members"][0]["component"],
+        "provider-main/api"
     );
+    actual["spec"]
+        .as_object_mut()
+        .unwrap()
+        .remove("transparentProxy");
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("golden/consumer-a-router.json")).unwrap();
+    assert_eq!(actual, expected);
     for config in plan.route_configs.values() {
         let value: serde_json::Value = serde_json::from_str(config).expect("config is JSON");
         assert_eq!(value["kind"], "RouterConfiguration");
-        assert_eq!(value["spec"]["listeners"][0]["bind"]["host"], "127.0.0.1");
-        assert_eq!(value["spec"]["providers"][0]["endpoint"]["port"], 8080);
+        if !value["spec"]["listeners"]
+            .as_array()
+            .is_some_and(Vec::is_empty)
+        {
+            assert_eq!(value["spec"]["listeners"][0]["bind"]["host"], "127.0.0.1");
+            assert_eq!(value["spec"]["providers"][0]["endpoint"]["port"], 8080);
+        }
         let router: router_config::RouterConfig =
             serde_json::from_str(config).expect("config matches router schema");
         router.validate().expect("generated route config validates");

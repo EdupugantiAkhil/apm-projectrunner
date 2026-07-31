@@ -23,8 +23,8 @@ fn current_example_deployments_remain_schema_compatible_and_deterministic() {
             path: "tests/compat/routing-matrix-deployment.yaml",
             deployment: "routing-matrix",
             definition_hash: "a09fe281c46524d20f47340b6d914fa9bcbf9350b5ebc9d08532d0b8725826e7",
-            resource_hash: "2ddbc912365d8126ee3cfe353e8bbb38c1643ba5e17a55a614842d626420de05",
-            route_configs: 2,
+            resource_hash: "869adad42ad1d3a88c783b0bac8db04fa042c47b9f73676b10bc1cf99a92f091",
+            route_configs: 11,
             has_host_router: true,
         },
         Golden {
@@ -32,7 +32,7 @@ fn current_example_deployments_remain_schema_compatible_and_deterministic() {
             deployment: "jas-base",
             definition_hash: "0a06182fe9337f4d580eebe3f2c0724e1854cb488e51e957d0db154a2cea11f9",
             resource_hash: "1f6e979ac8162d3480ac098ad9282b18ee36533fca273c6c57df674cbeba3e9e",
-            route_configs: 4,
+            route_configs: 6,
             has_host_router: true,
         },
     ];

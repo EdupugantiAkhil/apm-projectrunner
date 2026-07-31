@@ -6,7 +6,7 @@ mod forward_proxy;
 pub mod host_gateway;
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fmt, io,
     net::SocketAddr,
     os::unix::fs::{FileTypeExt, PermissionsExt},
@@ -23,7 +23,9 @@ use router_core::{ActivationStatus, BrowserLookup, RouteEngine};
 use router_pingora::{
     DataPlaneTelemetry, HttpDataPlane, ProxyOptions, RunningHttpDataPlane, readiness,
 };
-use router_tcp::{TcpProxy, TcpProxyOptions, TcpTarget, TransitionPolicy};
+use router_tcp::{
+    TcpProxy, TcpProxyOptions, TcpTarget, TransitionPolicy, TransparentTarget, TransparentTcpProxy,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{
@@ -170,7 +172,9 @@ struct ControlState {
     engine: Arc<RouteEngine>,
     initial_listeners: Vec<Listener>,
     initial_identity: router_config::IdentityPolicy,
+    initial_transparent_proxy: Option<(router_config::InstanceId, u16, u64)>,
     tcp: Vec<TcpBinding>,
+    transparent_tcp: Vec<Arc<TransparentTcpProxy>>,
     http_telemetry: DataPlaneTelemetry,
     apply_lock: AsyncMutex<()>,
     observations: Observability,
@@ -267,12 +271,44 @@ impl RouterProcess {
             });
         }
 
+        let mut transparent_tcp = Vec::new();
+        if let Some(proxy) = &config.spec.transparent_proxy {
+            let registry_excluded_ports = config
+                .spec
+                .listeners
+                .iter()
+                .map(|listener| listener.bind.port)
+                .chain(std::iter::once(proxy.port))
+                .collect::<BTreeSet<_>>();
+            transparent_tcp.push(Arc::new(
+                TransparentTcpProxy::bind(
+                    SocketAddr::from(([0, 0, 0, 0], proxy.port)),
+                    transparent_targets(proxy),
+                    registry_excluded_ports.clone(),
+                    Duration::from_millis(proxy.connect_timeout_ms),
+                )
+                .await?,
+            ));
+            transparent_tcp.push(Arc::new(TransparentTcpProxy::bind_v6_only(
+                SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], proxy.port)),
+                transparent_targets(proxy),
+                registry_excluded_ports,
+                Duration::from_millis(proxy.connect_timeout_ms),
+            )?));
+        }
+
         let listener = bind_admin(&admin.socket_path).await?;
         let state = Arc::new(ControlState {
             engine,
             initial_listeners: config.spec.listeners,
             initial_identity: config.spec.identity,
+            initial_transparent_proxy: config
+                .spec
+                .transparent_proxy
+                .as_ref()
+                .map(|proxy| (proxy.consumer.clone(), proxy.port, proxy.connect_timeout_ms)),
             tcp,
+            transparent_tcp,
             http_telemetry,
             apply_lock: AsyncMutex::new(()),
             observations: Observability::new(),
@@ -311,6 +347,9 @@ impl RouterProcess {
 
         for binding in &self.state.tcp {
             binding.proxy.shutdown().await?;
+        }
+        for proxy in &self.state.transparent_tcp {
+            proxy.shutdown().await?;
         }
         for binding in self.forward_proxies.drain(..) {
             binding.wait().await?;
@@ -621,6 +660,12 @@ async fn execute(command: AdminCommand, state: &Arc<ControlState>) -> (bool, Val
                                 }
                             }
                         }
+                        if let Some(configuration) = &snapshot.config().spec.transparent_proxy {
+                            let targets = transparent_targets(configuration);
+                            for proxy in &state.transparent_tcp {
+                                proxy.reload(targets.clone());
+                            }
+                        }
                     }
                     let status = match ack.status {
                         ActivationStatus::Activated => "activated",
@@ -735,11 +780,39 @@ fn events(state: &ControlState) -> Value {
 fn validate_candidate(state: &ControlState, config: &RouterConfig) -> Result<RouteEngine, String> {
     if config.spec.listeners != state.initial_listeners
         || config.spec.identity != state.initial_identity
+        || config
+            .spec
+            .transparent_proxy
+            .as_ref()
+            .map(|proxy| (proxy.consumer.clone(), proxy.port, proxy.connect_timeout_ms))
+            != state.initial_transparent_proxy
     {
-        return Err("listener and identity changes require a process restart".into());
+        return Err(
+            "listener, identity, and transparent interception changes require a process restart"
+                .into(),
+        );
     }
     validate_runtime_config(config).map_err(|error| error.to_string())?;
     RouteEngine::new(config.clone()).map_err(|error| error.to_string())
+}
+
+fn transparent_targets(proxy: &router_config::TransparentProxy) -> Vec<TransparentTarget> {
+    proxy
+        .members
+        .iter()
+        .map(|member| {
+            let (instance, _) = member
+                .component
+                .as_str()
+                .split_once('/')
+                .unwrap_or((member.component.as_str(), ""));
+            TransparentTarget::new(
+                member.component.as_str(),
+                member.host.as_str(),
+                instance == proxy.consumer.as_str(),
+            )
+        })
+        .collect()
 }
 
 fn validate_runtime_config(config: &RouterConfig) -> Result<(), ProcessError> {
@@ -855,6 +928,7 @@ fn inspect_routes(engine: &RouteEngine) -> Value {
         "version": snapshot.version(),
         "checksum": snapshot.checksum(),
         "consumerRoutes": routes,
+        "transparentProxy": snapshot.config().spec.transparent_proxy,
         "browserRoutes": snapshot.config().spec.browser_routes,
     })
 }

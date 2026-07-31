@@ -250,14 +250,23 @@ struct DocumentVersion {
 
 type ProviderMap = BTreeMap<String, BTreeMap<String, String>>;
 type CandidateMap = BTreeMap<String, BTreeMap<String, Vec<String>>>;
+type GroupMemberMap = BTreeMap<String, Vec<String>>;
 
 struct ResolvedGroups {
     providers: ProviderMap,
     candidates: CandidateMap,
+    members: GroupMemberMap,
+    declared_members: GroupMemberMap,
+}
+
+struct TransparentRoute<'a> {
+    enabled: bool,
+    group: Option<&'a str>,
+    groups: &'a ResolvedGroups,
 }
 
 struct ValidationResult {
-    groups: ProviderMap,
+    groups: ResolvedGroups,
     warnings: Vec<PlannerWarning>,
 }
 
@@ -795,7 +804,7 @@ fn validate(
             .sort_by(|left, right| (&left.path, &left.message).cmp(&(&right.path, &right.message)));
         warnings.dedup();
         Ok(ValidationResult {
-            groups: resolved_groups.providers,
+            groups: resolved_groups,
             warnings,
         })
     } else {
@@ -1163,11 +1172,7 @@ fn validate_local_dependencies(block_name: &str, block: &Block, errors: &mut Vec
 
 fn validate_listener_conflicts(instance: &Instance, block: &Block, errors: &mut Vec<Diagnostic>) {
     let mut listeners = BTreeMap::new();
-    let mut consumer_services = BTreeSet::new();
-    for (service_name, service) in &block.services {
-        if !service.consumes.is_empty() {
-            consumer_services.insert(service_name);
-        }
+    for service in block.services.values() {
         for (slot, route) in &service.consumes {
             let key = (&route.address.host, route.address.port);
             if let Some(first) = listeners.insert(key, slot) {
@@ -1178,13 +1183,6 @@ fn validate_listener_conflicts(instance: &Instance, block: &Block, errors: &mut 
                 ));
             }
         }
-    }
-    if consumer_services.len() > 1 {
-        errors.push(Diagnostic::new(
-            DiagnosticCode::ListenerConflict,
-            format!("spec.instances.{}", instance.name),
-            "one sidecar cannot share more than one application network namespace",
-        ));
     }
 }
 
@@ -1202,6 +1200,7 @@ fn resolve_groups(
     #[derive(Clone, Default)]
     struct ResolvedGroup {
         members: Vec<ResolvedMember>,
+        active_members: Vec<String>,
         providers: BTreeMap<String, String>,
         candidates: BTreeMap<String, Vec<String>>,
     }
@@ -1302,9 +1301,42 @@ fn resolve_groups(
         }
         members.extend(additions);
 
+        let resolved_instance_names = members
+            .iter()
+            .map(|member| provider_reference(&member.reference).0)
+            .collect::<BTreeSet<_>>();
+        let mut disabled = BTreeSet::new();
+        for (index, instance_name) in group.disabled.iter().enumerate() {
+            let path = format!("spec.groups.{name}.disabled[{index}]");
+            validate_name(instance_name, &path, errors);
+            if !resolved_instance_names.contains(instance_name.as_str()) {
+                errors.push(Diagnostic::new(
+                    DiagnosticCode::MissingReference,
+                    &path,
+                    format!(
+                        "disabled instance `{instance_name}` is not a resolved member of group `{name}`"
+                    ),
+                ));
+            }
+            if !disabled.insert(instance_name.as_str()) {
+                errors.push(Diagnostic::new(
+                    DiagnosticCode::DuplicateName,
+                    path,
+                    format!("disabled instance `{instance_name}` is listed more than once"),
+                ));
+            }
+        }
+        let active_members = members
+            .iter()
+            .filter(|member| !disabled.contains(provider_reference(&member.reference).0))
+            .map(|member| member.reference.clone())
+            .collect::<Vec<_>>();
         let mut providers = BTreeMap::new();
         let mut candidates = BTreeMap::<String, Vec<String>>::new();
-        for member in &members {
+        for member in members
+            .iter()
+            .filter(|member| !disabled.contains(provider_reference(&member.reference).0))
+        {
             for capability in &member.capabilities {
                 providers
                     .entry(capability.clone())
@@ -1318,6 +1350,7 @@ fn resolve_groups(
         stack.remove(name);
         let group = ResolvedGroup {
             members,
+            active_members,
             providers,
             candidates,
         };
@@ -1339,13 +1372,26 @@ fn resolve_groups(
     }
     let mut providers = BTreeMap::new();
     let mut candidates = BTreeMap::new();
+    let mut members = BTreeMap::new();
+    let mut declared_members = BTreeMap::new();
     for (name, group) in resolved {
         providers.insert(name.clone(), group.providers);
-        candidates.insert(name, group.candidates);
+        candidates.insert(name.clone(), group.candidates);
+        members.insert(name.clone(), group.active_members);
+        declared_members.insert(
+            name,
+            group
+                .members
+                .into_iter()
+                .map(|member| member.reference)
+                .collect(),
+        );
     }
     ResolvedGroups {
         providers,
         candidates,
+        members,
+        declared_members,
     }
 }
 
@@ -2102,7 +2148,7 @@ fn resolve_path(base: &Path, value: &Path) -> PathBuf {
 
 fn generate(
     bundle: &Bundle,
-    groups: &BTreeMap<String, BTreeMap<String, String>>,
+    groups: &ResolvedGroups,
     warnings: Vec<PlannerWarning>,
     overlay: Option<&OverlayResolution>,
     devices: &BTreeMap<String, PlanningDevice>,
@@ -2127,6 +2173,8 @@ fn generate(
     }
     for group in resource_definition.spec.groups.values_mut() {
         group.address = None;
+        group.disabled.clear();
+        group.instances.sort();
     }
     resource_definition.spec.managed_profiles.clear();
     resource_definition.spec.host_router = None;
@@ -2155,6 +2203,37 @@ fn generate(
         .iter()
         .map(|instance| (instance.name.as_str(), instance))
         .collect::<BTreeMap<_, _>>();
+    let routing_groups = bundle
+        .spec
+        .instances
+        .iter()
+        .filter_map(|instance| {
+            selected_group_for_instance(bundle, groups, &instance.name)
+                .map(|group| (instance.name.clone(), group.to_owned()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let routed_instances = bundle
+        .spec
+        .instances
+        .iter()
+        .filter(|instance| {
+            instance
+                .device
+                .as_deref()
+                .is_none_or(|device| device == "local")
+                && (groups.declared_members.values().any(|members| {
+                    members
+                        .iter()
+                        .any(|member| provider_reference(member).0 == instance.name.as_str())
+                }) || routing_groups.contains_key(&instance.name)
+                    || bundle.spec.routes.contains_key(&instance.name)
+                    || bundle.spec.blocks[&instance.block]
+                        .services
+                        .values()
+                        .any(|service| !service.consumes.is_empty()))
+        })
+        .map(|instance| instance.name.as_str())
+        .collect::<BTreeSet<_>>();
 
     let mut services = serde_json::Map::new();
     let mut volumes = serde_json::Map::new();
@@ -2190,11 +2269,43 @@ fn generate(
             .inspect(&source, source_definition.r#ref.as_deref())
             .identity;
         source_identities.insert(instance.name.clone(), identity);
-        let consumer_service = block
-            .services
-            .iter()
-            .find(|(_, service)| !service.consumes.is_empty())
-            .map(|(name, _)| name.as_str());
+        let transparent = routing_groups.contains_key(&instance.name)
+            || groups.declared_members.values().any(|members| {
+                members
+                    .iter()
+                    .any(|member| provider_reference(member).0 == instance.name.as_str())
+            });
+        let routed = remote_device.is_none() && routed_instances.contains(instance.name.as_str());
+        let namespace_name =
+            routed.then(|| resource_name(&[deployment, &instance.name, "namespace"]));
+        let sidecar_name = routed.then(|| resource_name(&[deployment, &instance.name, "router"]));
+        if let Some(namespace_name) = &namespace_name {
+            let mut namespace_labels = instance_labels.clone();
+            namespace_labels.insert(SERVICE_LABEL.into(), "namespace".into());
+            let mut namespace =
+                compose_namespace_service(namespace_name, &network, &namespace_labels);
+            let published = block
+                .services
+                .values()
+                .flat_map(|service| service.publish.iter().copied())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let object = namespace.as_object_mut().expect("namespace is an object");
+            if !published.is_empty() {
+                object.insert("ports".into(), compose_ports(&published));
+            }
+            let aliases = block
+                .services
+                .keys()
+                .map(|service| service_name_for(deployment, &instance.name, service))
+                .collect::<Vec<_>>();
+            object.insert(
+                "networks".into(),
+                json!({ network.clone(): { "aliases": aliases } }),
+            );
+            services.insert(namespace_name.clone(), namespace);
+        }
         for (service_name, service) in &block.services {
             let mut service_labels = instance_labels.clone();
             service_labels.insert(SERVICE_LABEL.into(), service_name.clone());
@@ -2214,7 +2325,7 @@ fn generate(
                 apply_overlay_environment(&mut app, overlay, instance);
                 let app_object = app.as_object_mut().expect("service is an object");
                 app_object.insert("ports".into(), compose_remote_ports(&service.publish));
-                add_compose_dependencies(app_object, bundle, instance, service);
+                add_compose_dependencies(app_object, bundle, instance, service, &routed_instances);
                 remote_services
                     .entry(device.to_owned())
                     .or_default()
@@ -2239,37 +2350,29 @@ fn generate(
                 }
                 continue;
             }
-            let is_consumer = consumer_service == Some(service_name.as_str());
-            if is_consumer {
-                let mut namespace =
-                    compose_namespace_service(&base_name, &network, &service_labels);
-                if !service.publish.is_empty() {
-                    namespace
-                        .as_object_mut()
-                        .expect("namespace is an object")
-                        .insert("ports".into(), compose_ports(&service.publish));
-                }
-                services.insert(base_name.clone(), namespace);
+            let mut app = compose_application(
+                service,
+                instance,
+                &source,
+                &network,
+                &service_labels,
+                bundle,
+                block,
+            );
+            add_injected_mounts(&mut app, overlay, &instance.name, &artifact_bind_dir);
+            apply_overlay_environment(&mut app, overlay, instance);
+            let app_object = app.as_object_mut().expect("service is an object");
+            add_compose_dependencies(app_object, bundle, instance, service, &routed_instances);
+            let generated_service = if routed {
                 let app_name = resource_name(&[&base_name, "app"]);
-                let sidecar_name = resource_name(&[&base_name, "router"]);
-                let mut app = compose_application(
-                    service,
-                    instance,
-                    &source,
-                    &network,
-                    &service_labels,
-                    bundle,
-                    block,
-                );
-                add_injected_mounts(&mut app, overlay, &instance.name, &artifact_bind_dir);
-                apply_overlay_environment(&mut app, overlay, instance);
-                let app_object = app.as_object_mut().expect("service is an object");
-                add_compose_dependencies(app_object, bundle, instance, service);
                 app_object.remove("networks");
                 app_object.remove("ports");
                 app_object.insert(
                     "network_mode".into(),
-                    Value::String(format!("service:{base_name}")),
+                    Value::String(format!(
+                        "service:{}",
+                        namespace_name.as_deref().expect("routed namespace")
+                    )),
                 );
                 app_object
                     .entry("depends_on")
@@ -2277,77 +2380,26 @@ fn generate(
                     .as_object_mut()
                     .expect("depends_on is an object")
                     .insert(
-                        sidecar_name.clone(),
+                        sidecar_name.as_ref().expect("routed sidecar").clone(),
                         json!({ "condition": "service_healthy" }),
                     );
-                services.insert(app_name.clone(), app);
-
-                let selected = selected_routes(bundle, groups, &instance.name);
-                let config =
-                    router_config(bundle, &instances, instance, block, &selected, devices)?;
-                let provider_dependencies =
-                    provider_dependencies(bundle, &instances, block, &selected)?;
-                let config_path = artifact_dir
-                    .join("routes")
-                    .join(format!("{}.json", instance.name));
-                let admin_socket = PathBuf::from("/tmp/switchyard-admin.socket");
-                let sidecar = compose_sidecar(
-                    &bundle.spec.router_image,
-                    &base_name,
-                    &sidecar_name,
-                    &artifact_bind_dir
-                        .join("routes")
-                        .join(format!("{}.json", instance.name)),
-                    &provider_dependencies,
-                    &service_labels,
-                );
-                services.insert(sidecar_name.clone(), sidecar);
-                route_configs.insert(
-                    instance.name.clone(),
-                    serde_json::to_string_pretty(&config)?,
-                );
-                sidecars.insert(
-                    instance.name.clone(),
-                    SidecarPlan {
-                        service: sidecar_name.clone(),
-                        admin_socket,
-                        config_path,
-                    },
-                );
-                manifest_services.push(json!({
-                    "instance": instance.name,
-                    "component": service_name,
-                    "service": app_name,
-                    "namespaceService": base_name,
-                    "sidecar": sidecar_name,
-                    "labels": service_labels,
-                }));
+                app_name
             } else {
-                let mut app = compose_application(
-                    service,
-                    instance,
-                    &source,
-                    &network,
-                    &service_labels,
-                    bundle,
-                    block,
-                );
-                add_injected_mounts(&mut app, overlay, &instance.name, &artifact_bind_dir);
-                apply_overlay_environment(&mut app, overlay, instance);
-                add_compose_dependencies(
-                    app.as_object_mut().expect("service is an object"),
-                    bundle,
-                    instance,
-                    service,
-                );
-                services.insert(base_name.clone(), app);
-                manifest_services.push(json!({
-                    "instance": instance.name,
-                    "component": service_name,
-                    "service": base_name,
-                    "labels": service_labels,
-                }));
+                base_name
+            };
+            services.insert(generated_service.clone(), app);
+            let mut manifest_service = json!({
+                "instance": instance.name,
+                "component": service_name,
+                "service": generated_service,
+                "labels": service_labels,
+            });
+            if routed {
+                manifest_service["namespaceService"] =
+                    json!(namespace_name.as_ref().expect("routed namespace"));
+                manifest_service["sidecar"] = json!(sidecar_name.as_ref().expect("routed sidecar"));
             }
+            manifest_services.push(manifest_service);
             for mount in &service.volumes {
                 let volume_name = resource_name(&[deployment, &instance.name, &mount.name]);
                 volumes.insert(
@@ -2355,6 +2407,60 @@ fn generate(
                     json!({ "labels": service_labels, "name": resource_name(&["sy", deployment, &instance.name, &mount.name]) }),
                 );
             }
+        }
+        if routed {
+            let namespace_name = namespace_name.as_ref().expect("routed namespace");
+            let sidecar_name = sidecar_name.as_ref().expect("routed sidecar");
+            let mut router_labels = instance_labels.clone();
+            router_labels.insert(SERVICE_LABEL.into(), "router".into());
+            let selected = selected_routes(bundle, &groups.providers, &instance.name);
+            let transparent_group = routing_groups.get(&instance.name).map(String::as_str);
+            let config = router_config(
+                bundle,
+                &instances,
+                instance,
+                block,
+                &selected,
+                TransparentRoute {
+                    enabled: transparent,
+                    group: transparent_group,
+                    groups,
+                },
+                devices,
+            )?;
+            let provider_dependencies = if transparent {
+                BTreeMap::new()
+            } else {
+                provider_dependencies(bundle, &instances, block, &selected, &routed_instances)?
+            };
+            let config_path = artifact_dir
+                .join("routes")
+                .join(format!("{}.json", instance.name));
+            let admin_socket = PathBuf::from("/tmp/switchyard-admin.socket");
+            let sidecar = compose_sidecar(
+                &bundle.spec.router_image,
+                namespace_name,
+                sidecar_name,
+                &artifact_bind_dir
+                    .join("routes")
+                    .join(format!("{}.json", instance.name)),
+                &provider_dependencies,
+                &router_labels,
+                transparent,
+            );
+            services.insert(sidecar_name.clone(), sidecar);
+            route_configs.insert(
+                instance.name.clone(),
+                serde_json::to_string_pretty(&config)?,
+            );
+            sidecars.insert(
+                instance.name.clone(),
+                SidecarPlan {
+                    service: sidecar_name.clone(),
+                    admin_socket,
+                    config_path,
+                },
+            );
         }
     }
 
@@ -3040,6 +3146,7 @@ fn add_compose_dependencies(
     bundle: &Bundle,
     instance: &Instance,
     service: &Service,
+    routed_instances: &BTreeSet<&str>,
 ) {
     if service.depends_on.is_empty() {
         return;
@@ -3053,15 +3160,7 @@ fn add_compose_dependencies(
                 .map_or((instance.name.as_str(), reference.as_str()), |parts| parts);
             let mut target =
                 service_name_for(&bundle.metadata.name, target_instance, target_service);
-            if bundle
-                .spec
-                .instances
-                .iter()
-                .find(|candidate| candidate.name == target_instance)
-                .and_then(|candidate| bundle.spec.blocks.get(&candidate.block))
-                .and_then(|block| block.services.get(target_service))
-                .is_some_and(|target| !target.consumes.is_empty())
-            {
+            if routed_instances.contains(target_instance) {
                 target = resource_name(&[&target, "app"]);
             }
             let condition = match condition {
@@ -3099,6 +3198,7 @@ fn compose_sidecar(
     config_path: &Path,
     providers: &BTreeMap<String, bool>,
     labels: &BTreeMap<String, String>,
+    transparent: bool,
 ) -> Value {
     let mut depends_on = serde_json::Map::new();
     depends_on.insert(
@@ -3117,7 +3217,7 @@ fn compose_sidecar(
             }),
         );
     }
-    json!({
+    let mut sidecar = json!({
         "image": image,
         "user": "${SWITCHYARD_UID:-1000}:${SWITCHYARD_GID:-1000}",
         "restart": "unless-stopped",
@@ -3142,7 +3242,15 @@ fn compose_sidecar(
         },
         "labels": labels,
         "container_name": sidecar_name,
-    })
+    });
+    if transparent {
+        let object = sidecar.as_object_mut().expect("sidecar is an object");
+        object.insert("user".into(), json!("0:0"));
+        object.insert("cap_drop".into(), json!(["ALL"]));
+        object.insert("cap_add".into(), json!(["NET_ADMIN"]));
+        object.insert("security_opt".into(), json!(["no-new-privileges:true"]));
+    }
+    sidecar
 }
 
 fn provider_dependencies(
@@ -3150,6 +3258,7 @@ fn provider_dependencies(
     instances: &BTreeMap<&str, &Instance>,
     block: &Block,
     selected: &BTreeMap<String, String>,
+    routed_instances: &BTreeSet<&str>,
 ) -> Result<BTreeMap<String, bool>, io::Error> {
     let mut dependencies = BTreeMap::new();
     for slot in block
@@ -3171,10 +3280,10 @@ fn provider_dependencies(
         let provider_definition =
             &bundle.spec.blocks[&instances[provider_instance].block].services[provider_service];
         let base = service_name_for(&bundle.metadata.name, provider_instance, provider_service);
-        let dependency = if provider_definition.consumes.is_empty() {
-            base
-        } else {
+        let dependency = if routed_instances.contains(provider_instance) {
             resource_name(&[&base, "app"])
+        } else {
+            base
         };
         dependencies.insert(dependency, provider_definition.probe.is_some());
     }
@@ -3199,12 +3308,75 @@ fn selected_routes(
     selected
 }
 
+const TRANSPARENT_INTERCEPTION_PORT: u16 = 65_535;
+
+fn selected_group_for_instance<'a>(
+    bundle: &'a Bundle,
+    groups: &'a ResolvedGroups,
+    instance: &str,
+) -> Option<&'a str> {
+    if let Some(group) = bundle.spec.bindings.get(instance) {
+        return Some(group);
+    }
+    let matching = groups
+        .members
+        .iter()
+        .filter(|(_, members)| {
+            members
+                .iter()
+                .any(|member| provider_reference(member).0 == instance)
+        })
+        .map(|(group, _)| group.as_str())
+        .collect::<Vec<_>>();
+    match matching.as_slice() {
+        [group] => Some(*group),
+        _ => None,
+    }
+}
+
+fn transparent_members(
+    bundle: &Bundle,
+    instances: &BTreeMap<&str, &Instance>,
+    groups: &ResolvedGroups,
+    group: &str,
+) -> Vec<Value> {
+    groups
+        .members
+        .get(group)
+        .into_iter()
+        .flatten()
+        .flat_map(|member| {
+            let (instance_name, requested_service) = provider_reference(member);
+            let Some(instance) = instances.get(instance_name) else {
+                return Vec::new();
+            };
+            let Some(block) = bundle.spec.blocks.get(&instance.block) else {
+                return Vec::new();
+            };
+            block
+                .services
+                .keys()
+                .filter(|service| {
+                    requested_service.is_none_or(|requested| requested == service.as_str())
+                })
+                .map(|service| {
+                    json!({
+                        "component": format!("{instance_name}/{service}"),
+                        "host": service_name_for(&bundle.metadata.name, instance_name, service),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 fn router_config(
     bundle: &Bundle,
     instances: &BTreeMap<&str, &Instance>,
     consumer: &Instance,
     block: &Block,
     selected: &BTreeMap<String, String>,
+    transparent: TransparentRoute<'_>,
     devices: &BTreeMap<String, PlanningDevice>,
 ) -> Result<Value, Box<dyn std::error::Error>> {
     let mut listeners = Vec::new();
@@ -3252,26 +3424,38 @@ fn router_config(
         routes.push(json!({ "consumer": consumer.name, "slot": slot, "provider": provider_id }));
     }
     let transition = json!({ "strategy": "close" });
+    let mut spec = json!({
+        "snapshot": {
+            "id": resource_name(&[&bundle.metadata.name, &consumer.name, "initial"]),
+            "version": 1,
+            "transitions": {
+                "http": transition,
+                "https": transition,
+                "websocket": transition,
+                "grpc": transition,
+                "tcp": transition,
+            }
+        },
+        "listeners": listeners,
+        "providers": providers,
+        "routes": routes,
+    });
+    if transparent.enabled {
+        spec["transparentProxy"] = json!({
+            "consumer": consumer.name,
+            "port": TRANSPARENT_INTERCEPTION_PORT,
+            "members": transparent.group.map_or_else(
+                Vec::new,
+                |group| transparent_members(bundle, instances, transparent.groups, group)
+            ),
+            "connectTimeoutMs": 250,
+        });
+    }
     Ok(json!({
         "apiVersion": "switchyard.dev/router/v1alpha1",
         "kind": "RouterConfiguration",
         "metadata": { "deployment": bundle.metadata.name },
-        "spec": {
-            "snapshot": {
-                "id": resource_name(&[&bundle.metadata.name, &consumer.name, "initial"]),
-                "version": 1,
-                "transitions": {
-                    "http": transition,
-                    "https": transition,
-                    "websocket": transition,
-                    "grpc": transition,
-                    "tcp": transition,
-                }
-            },
-            "listeners": listeners,
-            "providers": providers,
-            "routes": routes,
-        }
+        "spec": spec,
     }))
 }
 

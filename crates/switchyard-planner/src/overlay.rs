@@ -500,7 +500,7 @@ pub fn plan_with_overlays_and_devices(
     let validation = validate(&resolved, devices)?;
     for instance in &resolved.spec.instances {
         for (slot, provider) in
-            crate::selected_routes(&resolved, &validation.groups, &instance.name)
+            crate::selected_routes(&resolved, &validation.groups.providers, &instance.name)
         {
             if !resolution.origins.iter().any(|origin| {
                 origin.instance == instance.name && origin.category == "route" && origin.key == slot

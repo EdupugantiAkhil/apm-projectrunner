@@ -238,6 +238,53 @@ impl RouterConfig {
             }
         }
 
+        if let Some(proxy) = &self.spec.transparent_proxy {
+            validate_identifier(
+                proxy.consumer.as_str(),
+                false,
+                "spec.transparentProxy.consumer",
+                &mut errors,
+            );
+            if proxy.port == 0 {
+                errors.push(ValidationError::new(
+                    ValidationCode::InvalidListener,
+                    "spec.transparentProxy.port",
+                    "transparent interception port must be nonzero",
+                ));
+            }
+            if proxy.connect_timeout_ms == 0 {
+                errors.push(ValidationError::new(
+                    ValidationCode::InvalidListener,
+                    "spec.transparentProxy.connectTimeoutMs",
+                    "transparent connection timeout must be nonzero",
+                ));
+            }
+            let mut transparent_members = BTreeSet::new();
+            for (index, member) in proxy.members.iter().enumerate() {
+                let path = format!("spec.transparentProxy.members[{index}]");
+                validate_identifier(
+                    member.component.as_str(),
+                    true,
+                    &format!("{path}.component"),
+                    &mut errors,
+                );
+                if member.host.is_empty() {
+                    errors.push(ValidationError::new(
+                        ValidationCode::MissingProvider,
+                        &format!("{path}.host"),
+                        "transparent group member host must be nonempty",
+                    ));
+                }
+                if !transparent_members.insert(member.component.clone()) {
+                    errors.push(ValidationError::new(
+                        ValidationCode::DuplicateIdentifier,
+                        &format!("{path}.component"),
+                        "transparent group member is already listed",
+                    ));
+                }
+            }
+        }
+
         let mut providers = BTreeMap::new();
         for (index, provider) in self.spec.providers.iter().enumerate() {
             let path = format!("spec.providers[{index}]");
@@ -436,6 +483,11 @@ pub struct RouterSpec {
     pub routes: Vec<Route>,
     #[serde(default)]
     pub browser_routes: Vec<BrowserRoute>,
+    /// Sidecar-only interception of arbitrary loopback TCP destinations. The
+    /// original destination port is preserved and tried against members in
+    /// order, so authored route slots are not required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transparent_proxy: Option<TransparentProxy>,
     #[serde(default)]
     pub identity: IdentityPolicy,
 }
@@ -667,6 +719,30 @@ pub struct UpstreamEndpoint {
     pub protocol: Protocol,
     pub host: String,
     pub port: u16,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TransparentProxy {
+    pub consumer: InstanceId,
+    /// Internal interception port reserved inside the consumer namespace.
+    pub port: u16,
+    /// Ordered active group members. The first member accepting the original
+    /// destination port wins.
+    pub members: Vec<TransparentMember>,
+    #[serde(default = "default_transparent_connect_timeout_ms")]
+    pub connect_timeout_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TransparentMember {
+    pub component: ComponentId,
+    pub host: String,
+}
+
+const fn default_transparent_connect_timeout_ms() -> u64 {
+    250
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

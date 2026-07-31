@@ -32,6 +32,28 @@ fn v1alpha1_minimal_document_remains_compatible() {
 }
 
 #[test]
+fn transparent_proxy_carries_ordered_members_without_ports() {
+    let mut document: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/valid/v1alpha1-minimal.json")).unwrap();
+    document["spec"]["transparentProxy"] = serde_json::json!({
+        "consumer": "backend-1",
+        "port": 65535,
+        "connectTimeoutMs": 250,
+        "members": [
+            { "component": "db-main/app", "host": "comparison--db-main--app" },
+            { "component": "db-canary/app", "host": "comparison--db-canary--app" }
+        ]
+    });
+    let config: RouterConfig = serde_json::from_value(document).unwrap();
+    config
+        .validate()
+        .expect("transparent group should validate");
+    let proxy = config.spec.transparent_proxy.unwrap();
+    assert_eq!(proxy.members[0].component.as_str(), "db-main/app");
+    assert_eq!(proxy.members[1].component.as_str(), "db-canary/app");
+}
+
+#[test]
 fn compat_host_router_with_lan_exposure_remains_readable() {
     // This fixture is a Phase-7 compatibility golden. Regenerate it only as part
     // of a deliberate, versioned router schema change; update the fixture and

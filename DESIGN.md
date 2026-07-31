@@ -67,8 +67,9 @@ The core understands only these concepts:
 - A **block** expands into components.
 - An **execution adapter** starts and stops a component.
 - A **lifecycle** describes preparation, readiness, and cleanup.
-- A **capability** is something a component provides, identified by a user-defined name.
-- A **slot** consumes a compatible capability.
+- A **capability** is an optional name and protocol override for something a component
+  provides.
+- A **slot** is an optional address-remapping override for a consumed dependency.
 - A **route adapter** connects a slot to a provider.
 - A **service group** is a named, reusable selection of providers.
 - A **binding** selects one service group for a consumer instance.
@@ -888,11 +889,29 @@ does not depend on it. Every deployment receives a private Docker bridge network
 Provider instances receive deterministic internal DNS aliases, while host exposure is
 loopback-only.
 
-Every application instance runs in a container and therefore has its own Linux network
-namespace. A router sidecar uses `network_mode: service:<consumer>` to join the exact
-same namespace as its consumer. The sidecar can consequently bind
-`127.0.0.1:8001` for one backend while another sidecar independently binds the same
-address for another backend. No application-code or address changes are required.
+Every application instance receives one Linux network namespace. All services expanded
+from that instance join it, and a router sidecar uses
+`network_mode: service:<instance-namespace>` to join the same namespace. Different
+instances can consequently bind the same application ports without collision.
+
+The sidecar installs namespace-local IPv4 and IPv6 interception with only the
+`NET_ADMIN` capability. Outbound connections to any `127.0.0.0/8` or `::1` TCP port are
+redirected to a reserved internal proxy port. A second reserved port reports the
+namespace's listening TCP ports without probing application endpoints. The router
+recovers the original destination port and tries the active group members in authored
+order using that same port. No listener, `publish`, probe, image `EXPOSE`, capability,
+or slot declaration is required.
+
+Inbound deployment-network connections are redirected through the receiver's sidecar
+too. The sidecar then connects to that member's own loopback, so applications may bind
+only `127.0.0.1` or `::1`; they do not have to widen their bind address to
+`0.0.0.0`. Marked router-owned sockets bypass interception without recursion. Locally
+originated calls still follow authored group priority, including when the calling
+instance itself listens on the requested port.
+
+`provides` and `consumes` remain supported as explicit remapping overrides. Their fixed
+listeners sit behind the transparent layer, so an override can map a caller's port to a
+different provider port without becoming the default routing mechanism.
 
 The host router runs as a native process. Browser `localhost` refers to the developer
 host, and native execution gives consistent access to host listeners and Docker's
@@ -998,8 +1017,10 @@ The generator expands every block instance into concrete Compose services. It as
 - Ephemeral loopback-only host ports used as native-router upstreams.
 - Read-only or read-write source mounts for script runners, as explicitly declared.
 - One-shot dependency conditions for successful `task` scripts.
-- One Switchyard Router sidecar for each consumer with loopback-proxy slots. It uses
-  `network_mode: service:<consumer>` so it shares that consumer's isolated localhost.
+- One namespace anchor and Switchyard Router sidecar for each local group member or
+  explicitly routed instance. Every service of the instance joins the anchor namespace.
+  Transparent sidecars receive `NET_ADMIN`, drop every other capability, and run with
+  `no-new-privileges`.
 
 Host commands are not emitted as Compose services. The control plane supervises them in
 parallel with the Compose runtime and includes them in the same dependency graph.
@@ -1025,8 +1046,10 @@ semantics:
 
 1. **Host gateway** owns custom local domains, TLS, browser-facing legacy localhost
    ports, CORS/preflight handling, and routes to loopback-published container ports.
-2. **Container sidecar** shares a consumer's network namespace, binds fixed addresses
-   such as `127.0.0.1:8001`, and forwards to providers on the deployment network.
+2. **Container sidecar** shares an instance's network namespace, transparently captures
+   arbitrary loopback TCP destinations, and forwards the original port to the first
+   active group member listening there. Explicit fixed listeners remain available for
+   remapping overrides.
 3. **Forward proxy** gives a managed browser profile an explicit routing identity when
    neither a request header nor `Origin` is sufficient.
 

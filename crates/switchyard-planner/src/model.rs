@@ -305,6 +305,10 @@ pub struct ServiceGroup {
     pub extends: Option<String>,
     #[serde(default)]
     pub instances: Vec<String>,
+    /// Members excluded only from this group's routing while their authored
+    /// priority position and running instance are preserved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,
 }

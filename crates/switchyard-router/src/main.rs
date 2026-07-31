@@ -17,6 +17,9 @@ use switchyard_router::{
     },
 };
 
+#[path = "transparent_interception.rs"]
+mod transparent_interception;
+
 #[tokio::main]
 async fn main() -> ExitCode {
     match run().await {
@@ -62,6 +65,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let token =
         env::var("SWITCHYARD_ROUTER_TOKEN").map_err(|_| "SWITCHYARD_ROUTER_TOKEN must be set")?;
     let config = read_config(config_path).await?;
+    let mut interception = if host_mode {
+        None
+    } else {
+        config
+            .spec
+            .transparent_proxy
+            .as_ref()
+            .map(|proxy| transparent_interception::InterceptionGuard::install(proxy.port))
+            .transpose()?
+    };
     if host_mode {
         preflight(&config)?;
         let exposure = exposure_summary(&config)?;
@@ -106,6 +119,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         shutdown.request();
     });
     process.wait().await?;
+    if let Some(guard) = &mut interception {
+        guard.remove();
+    }
     Ok(())
 }
 

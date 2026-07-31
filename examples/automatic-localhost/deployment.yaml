@@ -1,0 +1,41 @@
+apiVersion: switchyard.dev/v1alpha2
+kind: Deployment
+metadata:
+  name: automatic-localhost
+
+spec:
+  routerImage: switchyard-routing-matrix:local
+
+  sources:
+    workspace:
+      path: ../..
+
+  blocks:
+    receiver:
+      services:
+        app:
+          execution:
+            type: container
+            image: switchyard-routing-matrix:local
+            command:
+              - /usr/local/bin/routing-fixture
+              - provider
+              - 127.0.0.1:18081
+              - automatic
+              - receiver
+
+    caller:
+      services:
+        app:
+          execution:
+            type: container
+            image: switchyard-routing-matrix:local
+            command: [/usr/local/bin/routing-fixture, hold]
+
+  instances:
+    - { name: receiver, block: receiver, source: workspace }
+    - { name: caller, block: caller, source: workspace }
+
+  groups:
+    automatic:
+      instances: [receiver, caller]

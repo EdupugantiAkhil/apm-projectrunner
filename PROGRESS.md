@@ -2141,3 +2141,46 @@ read off the schema.
 - One-time exception noted in Part 2a stands; no other vision file was edited. Verification
   for this entry was CLI experiments against scratch deployments only — no test suite was run,
   because no code changed.
+
+## 2026-07-31 — V2 Part 2b automatic shared localhost
+
+- Replaced the planned static port-discovery design with namespace-local transparent TCP
+  interception. A sidecar captures arbitrary IPv4 and IPv6 loopback connections, recovers the
+  original destination port, and routes that same port to active group members in authored order.
+  `publish`, probes, image `EXPOSE`, `provides`, and `consumes` are no longer prerequisites.
+- Added receiver-side interception. Deployment-network connections are redirected back to the
+  selected member's loopback, so a receiver bound only to `127.0.0.1` remains reachable without
+  widening its application bind address. Marked router sockets bypass interception without
+  recursion; a sender's own listeners participate at their authored group position.
+- Changed generated local topology to one namespace anchor per routed instance. Every expanded
+  service joins that namespace and its DNS alias points to the anchor. Transparent sidecars receive
+  only `NET_ADMIN`, drop all other capabilities, use `no-new-privileges`, and install ownership-
+  scoped IPv4/IPv6 rules that are idempotent across sidecar restarts and removed on clean shutdown.
+- Added passive runtime listener exchange on a second reserved internal port. Sidecars read their
+  namespace TCP listener tables, callers query all members concurrently, warn when more than one
+  active member owns the original port, and select the first listed without opening probe
+  connections to losing application ports. Direct connection attempts remain a startup-race
+  fallback.
+- Added `groups.<name>.disabled`. Disabled names must resolve to group members, are local rather
+  than inherited through `extends`, disappear from routing/collision candidates, retain their
+  authored list position, and do not affect the resource hash. Namespace/sidecar resources remain
+  present so re-enabling is a route update rather than an application restart.
+- Existing `provides`/`consumes`, bindings, and direct routes remain compatible as staged explicit
+  remapping and selection overrides. The router's fixed listeners sit behind transparent
+  interception, while a sender with one unambiguous active membership can already derive its group
+  without a binding ahead of Part 2d's schema removal.
+- Added `examples/automatic-localhost/deployment.yaml`, whose receiver and caller declare no
+  routing metadata or ports. Planner acceptance tests assert empty fixed listener/provider tables,
+  ordered transparent members, disabled behavior, local inheritance semantics, and schema
+  compatibility.
+- Disposable Docker proofs passed for undeclared ports, late-starting listeners, reordered
+  duplicate priority, self listeners at group priority, IPv4 loopback, IPv6 loopback, and a receiver
+  bound only to its own `127.0.0.1`.
+- The repository router image then built successfully on Docker Desktop's Linux VM. The complete
+  `automatic-localhost` deployment became healthy with no authored routing metadata or application
+  ports; its caller reached `localhost:18081` and `[::1]:18081`, both returning the receiver bound
+  only to `127.0.0.1`. Starting a second listener on the caller produced the two-member collision
+  warning and kept routing to the first member; reversing the authored order selected the caller.
+- Workspace tests, all-target/all-feature Clippy with `-D warnings`, and rustdoc with `-D warnings`
+  pass. Group priority order and `disabled` are excluded from the resource hash, so those route
+  changes do not require application-resource recreation.

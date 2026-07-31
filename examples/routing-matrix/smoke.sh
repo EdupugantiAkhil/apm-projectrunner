@@ -234,8 +234,8 @@ assert groups(feature) == {"services-feature"}
 assert main["services"]["audit"] == feature["services"]["audit"] == {"service": "audit", "provider": "services-shared/audit"}
 PY
 test "$application_ids_before" = "$("${compose[@]}" ps --quiet routing-matrix--ui-1--app routing-matrix--ui-2--app routing-matrix--ui-3--app routing-matrix--backend-1--app--app routing-matrix--backend-2--app--app)"
-echo "sidecar route snapshot: $(sidecar_admin_request routing-matrix--backend-1--app--router routes)"
-echo "sidecar routing decisions: $(sidecar_admin_request routing-matrix--backend-1--app--router events)"
+echo "sidecar route snapshot: $(sidecar_admin_request routing-matrix--backend-1--router routes)"
+echo "sidecar routing decisions: $(sidecar_admin_request routing-matrix--backend-1--router events)"
 
 "${compose[@]}" stop routing-matrix--services-main-catalog--app >/dev/null
 if "$switchyard" bind "$deployment" backend-1 main-services >"$runtime_dir/rejected-bind.log" 2>&1; then
@@ -267,11 +267,11 @@ fi
 "${compose[@]}" start routing-matrix--services-feature-catalog--app >/dev/null
 wait_http "$backend_1_url"
 
-sidecar_id="$("${compose[@]}" ps --quiet routing-matrix--backend-1--app--router)"
-"${compose[@]}" exec --no-TTY routing-matrix--backend-1--app--router \
+sidecar_id="$("${compose[@]}" ps --quiet routing-matrix--backend-1--router)"
+"${compose[@]}" exec --no-TTY routing-matrix--backend-1--router \
   sh -c 'kill -KILL 1' >/dev/null 2>&1 || true
 wait_http "$backend_1_url"
-test "$sidecar_id" = "$("${compose[@]}" ps --quiet routing-matrix--backend-1--app--router)"
+test "$sidecar_id" = "$("${compose[@]}" ps --quiet routing-matrix--backend-1--router)"
 
 backend_id="$("${compose[@]}" ps --quiet routing-matrix--backend-1--app--app)"
 "${compose[@]}" exec --no-TTY routing-matrix--backend-1--app--app \

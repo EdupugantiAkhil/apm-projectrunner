@@ -5,6 +5,7 @@
 //! router configuration types.
 
 use std::{
+    collections::BTreeSet,
     fmt, io,
     net::SocketAddr,
     sync::{
@@ -21,6 +22,469 @@ use tokio::{
     task::{JoinHandle, JoinSet},
     time::{Instant, timeout},
 };
+
+/// Packet mark used by the transparent proxy for loopback connections that
+/// must bypass namespace interception.
+pub const TRANSPARENT_BYPASS_MARK: u32 = 0x5359;
+/// Namespace-internal port used by sidecars to exchange passive listener
+/// observations. It is never application-facing.
+pub const TRANSPARENT_REGISTRY_PORT: u16 = 65_534;
+
+/// One ordered candidate for transparent same-port forwarding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransparentTarget {
+    component: Arc<str>,
+    host: Arc<str>,
+    local: bool,
+}
+
+impl TransparentTarget {
+    pub fn new(component: impl Into<Arc<str>>, host: impl Into<Arc<str>>, local: bool) -> Self {
+        Self {
+            component: component.into(),
+            host: host.into(),
+            local,
+        }
+    }
+
+    pub fn component(&self) -> &str {
+        &self.component
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub fn is_local(&self) -> bool {
+        self.local
+    }
+}
+
+#[derive(Debug)]
+struct TransparentState {
+    targets: Vec<TransparentTarget>,
+}
+
+/// A single listener receiving namespace-redirected loopback connections.
+///
+/// It recovers the original destination port and tries active group members in
+/// authored priority order.
+pub struct TransparentTcpProxy {
+    local_addr: SocketAddr,
+    state: Arc<StdMutex<TransparentState>>,
+    shutdown: watch::Sender<bool>,
+    task: Mutex<Option<JoinHandle<io::Result<()>>>>,
+}
+
+impl TransparentTcpProxy {
+    pub async fn bind(
+        bind: SocketAddr,
+        targets: Vec<TransparentTarget>,
+        registry_excluded_ports: BTreeSet<u16>,
+        connect_timeout: Duration,
+    ) -> io::Result<Self> {
+        if !cfg!(target_os = "linux") {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "transparent localhost interception requires Linux",
+            ));
+        }
+        let listener = TcpListener::bind(bind).await?;
+        Self::from_listener(listener, targets, registry_excluded_ports, connect_timeout)
+    }
+
+    /// Binds an IPv6-only listener so an IPv4 wildcard listener may own the
+    /// same reserved interception port.
+    pub fn bind_v6_only(
+        bind: SocketAddr,
+        targets: Vec<TransparentTarget>,
+        registry_excluded_ports: BTreeSet<u16>,
+        connect_timeout: Duration,
+    ) -> io::Result<Self> {
+        if !cfg!(target_os = "linux") {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "transparent localhost interception requires Linux",
+            ));
+        }
+        use socket2::{Domain, Protocol as SocketProtocol, Socket, Type};
+        let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(SocketProtocol::TCP))?;
+        socket.set_only_v6(true)?;
+        socket.set_reuse_address(true)?;
+        socket.set_nonblocking(true)?;
+        socket.bind(&bind.into())?;
+        socket.listen(1024)?;
+        let listener = TcpListener::from_std(socket.into())?;
+        Self::from_listener(listener, targets, registry_excluded_ports, connect_timeout)
+    }
+
+    fn from_listener(
+        listener: TcpListener,
+        targets: Vec<TransparentTarget>,
+        registry_excluded_ports: BTreeSet<u16>,
+        connect_timeout: Duration,
+    ) -> io::Result<Self> {
+        let local_addr = listener.local_addr()?;
+        let state = Arc::new(StdMutex::new(TransparentState { targets }));
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        let task = tokio::spawn(run_transparent_listener(
+            listener,
+            Arc::clone(&state),
+            Arc::new(registry_excluded_ports),
+            shutdown_rx,
+            connect_timeout,
+        ));
+        Ok(Self {
+            local_addr,
+            state,
+            shutdown,
+            task: Mutex::new(Some(task)),
+        })
+    }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
+    pub fn reload(&self, targets: Vec<TransparentTarget>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .targets = targets;
+    }
+
+    pub async fn shutdown(&self) -> io::Result<()> {
+        self.shutdown.send_replace(true);
+        let Some(task) = self.task.lock().await.take() else {
+            return Ok(());
+        };
+        join_result(task.await)
+    }
+}
+
+impl Drop for TransparentTcpProxy {
+    fn drop(&mut self) {
+        self.shutdown.send_replace(true);
+        if let Some(task) = self.task.get_mut().take() {
+            task.abort();
+        }
+    }
+}
+
+async fn run_transparent_listener(
+    listener: TcpListener,
+    state: Arc<StdMutex<TransparentState>>,
+    registry_excluded_ports: Arc<BTreeSet<u16>>,
+    mut shutdown: watch::Receiver<bool>,
+    connect_timeout: Duration,
+) -> io::Result<()> {
+    let mut connections = JoinSet::new();
+    loop {
+        tokio::select! {
+            biased;
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
+            }
+            Some(_) = connections.join_next(), if !connections.is_empty() => {}
+            accepted = listener.accept() => {
+                let (client, _) = accepted?;
+                let targets = state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .targets
+                    .clone();
+                let registry_excluded_ports = Arc::clone(&registry_excluded_ports);
+                connections.spawn(async move {
+                    let _ = forward_transparent(
+                        client,
+                        targets,
+                        &registry_excluded_ports,
+                        connect_timeout,
+                    )
+                    .await;
+                });
+            }
+        }
+    }
+    connections.abort_all();
+    while connections.join_next().await.is_some() {}
+    Ok(())
+}
+
+async fn forward_transparent(
+    mut client: TcpStream,
+    targets: Vec<TransparentTarget>,
+    registry_excluded_ports: &BTreeSet<u16>,
+    connect_timeout: Duration,
+) -> io::Result<()> {
+    let original = original_destination(&client)?;
+    let port = original.port();
+    if !original.ip().is_loopback() && port == TRANSPARENT_REGISTRY_PORT {
+        let ports = listening_ports(registry_excluded_ports)?;
+        let encoded = ports
+            .into_iter()
+            .map(|port| port.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        client.write_all(encoded.as_bytes()).await?;
+        client.shutdown().await?;
+        return Ok(());
+    }
+    let local_destinations = if original.is_ipv4() {
+        [
+            SocketAddr::from(([127, 0, 0, 1], port)),
+            SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], port)),
+        ]
+    } else {
+        [
+            SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], port)),
+            SocketAddr::from(([127, 0, 0, 1], port)),
+        ]
+    };
+
+    // Connections redirected from the deployment bridge are attempts to reach
+    // this member specifically. Only locally-originated loopback connections
+    // may fall through to other ordered group members.
+    if !original.ip().is_loopback() {
+        for local_destination in local_destinations {
+            if let Ok(mut local) = marked_loopback_connect(local_destination, connect_timeout).await
+            {
+                tokio::io::copy_bidirectional(&mut client, &mut local).await?;
+                return Ok(());
+            }
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            format!("this group member does not listen on port {port}"),
+        ));
+    }
+
+    let observed = observe_targets(&targets, port, registry_excluded_ports, connect_timeout).await;
+    let active = observed
+        .iter()
+        .enumerate()
+        .filter_map(|(index, listening)| listening.then_some(index))
+        .collect::<Vec<_>>();
+    if active.len() > 1 {
+        eprintln!(
+            "switchyard: port {port} has {} active group members: {}; routing to {}, the first listed",
+            active.len(),
+            active
+                .iter()
+                .map(|index| targets[*index].component())
+                .collect::<Vec<_>>()
+                .join(", "),
+            targets[active[0]].component(),
+        );
+    }
+    for index in active {
+        let target = &targets[index];
+        if let Ok(mut upstream) = connect_target(target, port, connect_timeout).await {
+            tokio::io::copy_bidirectional(&mut client, &mut upstream).await?;
+            return Ok(());
+        }
+    }
+    for (index, target) in targets.into_iter().enumerate() {
+        if observed.get(index).copied().unwrap_or(false) {
+            continue;
+        }
+        if let Ok(mut upstream) = connect_target(&target, port, connect_timeout).await {
+            tokio::io::copy_bidirectional(&mut client, &mut upstream).await?;
+            return Ok(());
+        }
+    }
+    // An instance with no active routing group must retain its own localhost.
+    // This also covers the short startup interval before its registry endpoint
+    // is reachable.
+    for local_destination in local_destinations {
+        if let Ok(mut local) = marked_loopback_connect(local_destination, connect_timeout).await {
+            tokio::io::copy_bidirectional(&mut client, &mut local).await?;
+            return Ok(());
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("no active group member listens on port {port}"),
+    ))
+}
+
+async fn observe_targets(
+    targets: &[TransparentTarget],
+    port: u16,
+    registry_excluded_ports: &BTreeSet<u16>,
+    connect_timeout: Duration,
+) -> Vec<bool> {
+    let mut checks = JoinSet::new();
+    for (index, target) in targets.iter().enumerate() {
+        let host = Arc::clone(&target.host);
+        let local = target.local;
+        let registry_excluded_ports = registry_excluded_ports.clone();
+        checks.spawn(async move {
+            let ports = if local {
+                listening_ports(&registry_excluded_ports).ok()
+            } else {
+                observed_listeners(&host, connect_timeout).await
+            };
+            (index, ports.is_some_and(|ports| ports.contains(&port)))
+        });
+    }
+    let mut observed = vec![false; targets.len()];
+    while let Some(Ok((index, listening))) = checks.join_next().await {
+        observed[index] = listening;
+    }
+    observed
+}
+
+async fn connect_target(
+    target: &TransparentTarget,
+    port: u16,
+    connect_timeout: Duration,
+) -> io::Result<TcpStream> {
+    if target.local {
+        for destination in [
+            SocketAddr::from(([127, 0, 0, 1], port)),
+            SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], port)),
+        ] {
+            if let Ok(stream) = marked_loopback_connect(destination, connect_timeout).await {
+                return Ok(stream);
+            }
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            format!("local group member does not listen on port {port}"),
+        ));
+    }
+    timeout(
+        connect_timeout,
+        TcpStream::connect((target.host.as_ref(), port)),
+    )
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "group member connect timed out"))?
+}
+
+async fn observed_listeners(host: &str, connect_timeout: Duration) -> Option<BTreeSet<u16>> {
+    let mut stream = timeout(
+        connect_timeout,
+        TcpStream::connect((host, TRANSPARENT_REGISTRY_PORT)),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let mut encoded = Vec::new();
+    timeout(connect_timeout, stream.read_to_end(&mut encoded))
+        .await
+        .ok()?
+        .ok()?;
+    let value = std::str::from_utf8(&encoded).ok()?;
+    value
+        .split(',')
+        .filter(|port| !port.is_empty())
+        .map(str::parse)
+        .collect::<Result<BTreeSet<_>, _>>()
+        .ok()
+}
+
+#[cfg(target_os = "linux")]
+fn listening_ports(excluded: &BTreeSet<u16>) -> io::Result<BTreeSet<u16>> {
+    let mut ports = BTreeSet::new();
+    for path in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        let table = std::fs::read_to_string(path)?;
+        for line in table.lines().skip(1) {
+            let columns = line.split_whitespace().collect::<Vec<_>>();
+            if columns.len() < 4 || columns[3] != "0A" {
+                continue;
+            }
+            let Some((_, encoded_port)) = columns[1].rsplit_once(':') else {
+                continue;
+            };
+            if let Ok(port) = u16::from_str_radix(encoded_port, 16)
+                && port != TRANSPARENT_REGISTRY_PORT
+                && !excluded.contains(&port)
+            {
+                ports.insert(port);
+            }
+        }
+    }
+    Ok(ports)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn listening_ports(_excluded: &BTreeSet<u16>) -> io::Result<BTreeSet<u16>> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "transparent localhost interception requires Linux",
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn original_destination(stream: &TcpStream) -> io::Result<SocketAddr> {
+    let socket = socket2::SockRef::from(stream);
+    let original = if stream.local_addr()?.is_ipv6() {
+        socket.original_dst_v6()?
+    } else {
+        socket.original_dst_v4()?
+    };
+    original.as_socket().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "original destination is not an IP socket address",
+        )
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn original_destination(_stream: &TcpStream) -> io::Result<SocketAddr> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "transparent localhost interception requires Linux",
+    ))
+}
+
+#[cfg(target_os = "linux")]
+async fn marked_loopback_connect(
+    destination: SocketAddr,
+    connect_timeout: Duration,
+) -> io::Result<TcpStream> {
+    use socket2::{Domain, Protocol as SocketProtocol, Socket, Type};
+
+    let socket = Socket::new(
+        Domain::for_address(destination),
+        Type::STREAM,
+        Some(SocketProtocol::TCP),
+    )?;
+    socket.set_mark(TRANSPARENT_BYPASS_MARK)?;
+    socket.set_nonblocking(true)?;
+    match socket.connect(&destination.into()) {
+        Ok(()) => {}
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(libc::EINPROGRESS) | Some(libc::EALREADY)
+            ) => {}
+        Err(error) => return Err(error),
+    }
+    let stream = TcpStream::from_std(socket.into())?;
+    timeout(connect_timeout, stream.writable())
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "local connect timed out"))??;
+    if let Some(error) = stream.take_error()? {
+        return Err(error);
+    }
+    Ok(stream)
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn marked_loopback_connect(
+    _destination: SocketAddr,
+    _connect_timeout: Duration,
+) -> io::Result<TcpStream> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "transparent localhost interception requires Linux",
+    ))
+}
 
 /// The upstream endpoint selected for new connections.
 #[derive(Clone, Debug, Eq, PartialEq)]

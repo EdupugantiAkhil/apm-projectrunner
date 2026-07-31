@@ -33,7 +33,7 @@ then committed. A part is only ticked once it is committed with verification evi
 | ✅ | 1 — Group membership becomes a list | `bae84bf` |
 | ✅ | 2 — Addresses on the group and on the instance | `5d14720` |
 | ✅ | 2a — Membership stops being policed by capability | `a24991b` |
-| ⬜ | 2b — A group shares one localhost; slots stop being required | |
+| ✅ | 2b — A group shares one localhost; slots stop being required | |
 | ⬜ | 2c — Repositories are declared once; sources are a repo and a ref | |
 | ⬜ | 2d — `bindings:` is deleted; membership is the connection | |
 | ⬜ | 2e — External instances: things already running outside Switchyard | |
@@ -151,41 +151,44 @@ requires you to restate every one of those addresses before anything is routed h
 the wiring rather than removed it. Reduced to that, Switchyard is SSH port forwarding with
 a YAML file.
 
-**The rule: everything in a group shares one localhost.** For each group, collect every
-port its members listen on. Inside each member's namespace, bind the other members' ports
-on loopback and forward them. `127.0.0.1:5432` inside the backend reaches whichever member
-of *that* group listens on 5432. No names, no addresses, nothing declared.
+**The rule: everything in a group shares one localhost.** Each member's namespace
+transparently intercepts arbitrary IPv4 and IPv6 loopback TCP connections. The router
+recovers the original destination port and tries active group members on that same port
+in authored order. Receiver-side interception forwards deployment-network traffic back
+to the receiver's own loopback, so an application may continue binding only
+`127.0.0.1`.
 
-This works because of an assumption that holds almost always: **your code calls the port
-the service actually listens on.** The backend dials `127.0.0.1:5432` because Postgres
-listens on 5432 — the consumer's expected address and the provider's real port are the same
-number. Where that holds there is nothing left to say, so you say nothing.
+This removes the false requirement that Switchyard predict every port before a program
+starts. `publish:`, probes, and image `EXPOSE` remain useful lifecycle and host-ingress
+metadata, but they are not routing prerequisites.
 
-- [ ] Discover listening ports without `provides:` — `publish:`, the `probe:` port, and
-      image `EXPOSE` metadata all already carry them
-- [ ] Generate each member's sidecar route table from the group's ports, not from
+- [x] Intercept arbitrary `127.0.0.0/8` and `::1` TCP destinations without a port list
+- [x] Preserve loopback-only receiver binds through receiver-side interception
+- [x] Generate each routed member's sidecar from the ordered group membership, not from
       `consumes:`
-- [ ] A deployment with **no** `provides:`/`consumes:` anywhere routes correctly — this is
+- [x] A deployment with **no** `provides:`/`consumes:` anywhere routes correctly — this is
       the acceptance test for the whole part
-- [ ] `provides:`/`consumes:` survive as **overrides**, for the genuine remap case where a
+- [x] `provides:`/`consumes:` survive as **overrides**, for the genuine remap case where a
       consumer calls a port the provider does not listen on
-- [ ] Capability names become optional labels for readability, not the wiring mechanism
-- [ ] Two members listening on one port in one group: **warn, first listed wins** — the
-      same rule Part 2a settled, applied to ports instead of capability names
-- [ ] Migration leaves existing `provides:`/`consumes:` working untouched; they simply
+- [x] Capability names become optional labels for readability, not the wiring mechanism
+- [x] Two members listening on one port in one group: **warn, first listed wins** —
+      sidecars passively report their namespace listener tables; callers warn from those
+      observations without opening probe connections to losing application ports
+- [x] Migration leaves existing `provides:`/`consumes:` working untouched; they simply
       stop being required
+- [x] `disabled:` removes a member from only that group's active routing while preserving
+      its running instance, namespace, and authored priority position
 
-**Why this is not "one namespace per group".** The obvious reading of "a group shares one
-localhost" is to put the group in one network namespace. That cannot work: a container
-joins exactly one namespace, and ABOUT.md explicitly promises an instance can belong to
-several groups ("both groups use the same UI instance and the same database"). It stays
-namespace-per-consumer with a sidecar — same visible behaviour, and it is what makes
-`127.0.0.1:5432` mean two different databases on one machine simultaneously, which is
-precisely what SSH forwarding cannot do.
+**Why this is not "one namespace per group".** Members may listen on the same port, and a
+receiver-only instance may be shared by several groups. One group namespace would make
+both legal cases collide. Switchyard therefore uses one namespace per instance and gives
+each sender its selected group's ordered receiver view.
 
-**Open question — port discovery.** Static sources (`publish`, `probe`, `EXPOSE`) are fully
-knowable at plan time. Runtime observation of a started container also catches ports nobody
-declared, at the cost of routing not being resolvable until things are up. Not yet decided.
+**Container proof completed.** Disposable Docker tests recovered undeclared original
+ports, routed late-starting listeners, changed the winner by reordering members, included
+self listeners in authored priority, intercepted both IPv4 and IPv6 loopback, and reached
+a receiver bound only to its own `127.0.0.1`. No test receiver published or exposed its
+application port.
 
 Touches the planner's route generation and the sidecar config, ahead of Part 3's host-router
 work. Schema-affecting, so it lands before the Part 8 rename and rides the same `v1alpha2`
