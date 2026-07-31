@@ -45,7 +45,7 @@ verification evidence.
 | ✅ | 1 — Group membership becomes a list | `bae84bf` |
 | ✅ | 2 — Addresses on the group and on the instance | `5d14720` |
 | ✅ | 2a — Membership stops being policed by capability | `a24991b` |
-| ⬜ | 2b — A group shares one localhost; capabilities and slots are removed | |
+| ✅ | 2b — A group shares one localhost; capabilities and slots are removed | `d2bdddf` |
 | ⬜ | 2c — Repositories are declared once; sources are a repo and a ref | |
 | ⬜ | 2d — `bindings:` is deleted; membership is the connection | |
 | ⬜ | 2e — External instances: things already running outside Switchyard | |
@@ -150,7 +150,10 @@ collisions and removes `provides:` and `consumes:` from the authored schema.
 
 ---
 
-### Part 2b — A group shares one localhost; capabilities and slots are removed
+### Part 2b — A group shares one localhost; capabilities and slots are removed ✅
+
+Landed in `d2bdddf`; workspace tests, Clippy, rustdoc, 49 web tests, and the TypeScript
+build pass.
 
 The largest correction in V2, and the one that decides whether the product earns its
 existence. Before this part, a deployment only routed if every profile declared
