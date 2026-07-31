@@ -98,5 +98,5 @@ their routing context is replaced.
 
 ---
 
-*This document describes the project as intended. Where the current implementation
-differs from this description, see [DEVIATION.md](DEVIATION.md).*
+*This document describes the project as intended. The
+[V2 roadmap](../v2-roadmap.md) tracks the work required to align the implementation.*

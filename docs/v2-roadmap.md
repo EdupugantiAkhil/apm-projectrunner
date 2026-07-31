@@ -3,8 +3,8 @@
 The vision is [docs/vision/ABOUT.md](vision/ABOUT.md),
 [docs/vision/user_flow.md](vision/user_flow.md), and the executable target shape in
 [docs/vision/sample-config.md](vision/sample-config.md). Those files are the source of
-truth. [DEVIATION.md](../DEVIATION.md) records where the implementation differs from them
-today; this file is the plan for closing those differences.
+truth. This file records where the implementation differs and the plan for closing those
+differences.
 
 Scope of V2 is **the shapes the product is authored and reasoned about in**: group
 membership, addresses, and the vocabulary. The security/acceptance backlog in
@@ -36,8 +36,9 @@ names throughout. Part 7 renames them all at once.
 
 ## Status at a glance
 
-Each part is one reviewable increment: written by one subagent, verified by a second,
-then committed. A part is only ticked once it is committed with verification evidence.
+Each part is one focused, reviewable increment, implemented directly in the current
+agent, verified, and then committed. A part is only ticked once it is committed with
+verification evidence.
 
 | | Part | Commit |
 | --- | --- | --- |
@@ -63,7 +64,6 @@ Baseline after Part 2a: 307 Rust tests passing, 49 web tests passing, four known
 
 ### Part 1 — Group membership becomes a list ✅
 
-Closes [DEVIATION §1b](../DEVIATION.md#1b-group-membership-is-a-mapping-where-a-list-would-do).
 Vision reference: user_flow step 8. Landed in `bae84bf`; 292 tests passing.
 
 - [x] `ServiceGroup.providers` map → `instances: Vec<String>`
@@ -90,7 +90,6 @@ final V2 model.
 
 ### Part 2 — Addresses on the group and on the instance ✅
 
-Closes [DEVIATION §1a](../DEVIATION.md#1a-addresses-on-the-group-and-on-the-instance).
 Vision reference: user_flow step 9. Landed in `5d14720`; 303 tests passing.
 
 One rule replaces two mechanisms: **anything addressable carries `address:`, declared on
@@ -488,7 +487,7 @@ Touches `router-pingora` and `router-config`, not only the schema.
       with generic instance/service/address/membership/listener rules; retain role words
       only in clearly labeled examples
 - [ ] Reconcile the user_flow glossary against the terms diagnostics and UI labels use
-- [ ] `DEVIATION.md` records which sections V2 closed
+- [ ] Current documentation distinguishes shipped behavior from remaining V2 work
 
 ---
 
@@ -520,8 +519,8 @@ wrong without them, not because they are security work:
 
 ### Part 7 — Rename to APM ProjectRunner (`apmpr`)
 
-Closes [DEVIATION §5](../DEVIATION.md#5-naming). One mechanical sweep over a settled tree,
-reviewed as a pure rename diff with no behaviour mixed in.
+One mechanical sweep over a settled tree, reviewed as a pure rename diff with no
+behaviour mixed in.
 
 - [ ] Crate names and paths → `apmpr-*`
 - [ ] Binary → `apmpr`

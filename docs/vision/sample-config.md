@@ -5,8 +5,9 @@ This is one complete deployment, annotated. It is the shape [ABOUT.md](ABOUT.md)
 reading the steps that introduce them one at a time.
 
 The scenario is the one from step 9: a UI and a backend, each with a main branch and a feature
-branch, sharing one database. Two named combinations — `feature-test` and `regression` — differ
-only in which checkouts they use, and you switch between them by opening a different address.
+branch, sharing one database. Two named combinations — `feature-test` and `regression` — compare
+different checkouts. The sample also includes a disabled canary and an external service so those
+group-membership behaviors are part of the acceptance fixture.
 
 ```yaml
 apiVersion: switchyard.dev/v1alpha2
@@ -201,9 +202,10 @@ or image metadata to learn from.
 open the group address to get the whole combination. Both are in
 [step 9](user_flow.md#step-9--addresses-open-a-group-or-an-instance-by-name).
 
-**The comparison is one click.** `feature-test` and `regression` differ only in which checkouts
-they name. Open both in a browser and you are looking at two builds of your product side by side,
-with one database underneath.
+**The comparison is one click.** Open `feature-test` and `regression` in a browser and you are
+looking at two builds of your product side by side, with one database underneath. The additional
+disabled canary and external member exercise routing behavior without changing which UI and
+backend checkout each address opens.
 
 ## What you do not write
 

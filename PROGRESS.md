@@ -10,6 +10,26 @@ Updated: 2026-07-31
 - Web UI plan (`docs/web-ui-plan.md`): complete. Parts 1 through 13, including follow-up
   Parts 11a–11c, and Part 13's security review with its two fixes.
 
+## 2026-07-31 Vision tracking cleanup and V2.1 roadmap
+
+- Deleted the stale `DEVIATION.md`. The V2 roadmap now directly records implementation
+  gaps instead of presenting a second, obsolete capability/binding product model as
+  current guidance.
+- Repaired relative links from `docs/vision`, and linked the vision directly to the V2
+  implementation roadmap and the new V2.1 multi-project roadmap.
+- Added `docs/v2.1-roadmap.md` for the one-service, one-window, multi-project experience,
+  covering the global registry, project-scoped daemon/API behavior, Web UI switcher,
+  migration, and end-to-end acceptance.
+- Corrected the sample configuration's scenario description: its groups compare UI and
+  backend checkouts while deliberately also exercising a disabled canary and an external
+  member.
+- Clarified `AGENTS.md`: the vision controls intended product behavior, `DESIGN.md`
+  controls implementation architecture while converging on it, and vision edits require
+  an owner decision or an internal-consistency correction. Removed the V2 roadmap's
+  conflicting subagent workflow.
+- Documentation-only phase. `git diff --check` passed, all relative Markdown link targets
+  under the root and `docs/` resolved, and no code tests were run.
+
 ## 2026-07-31 Vision vocabulary — remove unmeasurable part/segment roles
 
 - Removed `part` and `segment` as product-model vocabulary from the target vision.

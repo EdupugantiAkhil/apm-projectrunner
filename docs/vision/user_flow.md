@@ -5,8 +5,8 @@ group they can open in the browser by name.
 
 Read [ABOUT.md](ABOUT.md) first for *why* the project exists. This document is the *how*.
 Where the current implementation does not yet match the intent, this file says so inline
-and points at [DEVIATION.md](DEVIATION.md) rather than describing something that does not
-work yet.
+rather than describing something that does not work yet. The
+[V2 roadmap](../v2-roadmap.md) tracks the work needed to close those gaps.
 
 The vocabulary used below is defined in the [Glossary](#glossary) at the end. Two words are
 worth knowing before you start, because the UI uses them everywhere:
@@ -118,9 +118,10 @@ only.
 > project's daemon, and there is no project registry or in-window switcher in any client.
 > One browser session is currently one project. Multi-project support means a project
 > registry, a service that can hold more than one workspace, and a switcher in the window —
-> it is listed as "Not in scope" in [docs/web-ui-plan.md](docs/web-ui-plan.md), which is a
+> it is listed as "Not in scope" in [docs/web-ui-plan.md](../web-ui-plan.md), which is a
 > statement about that plan's boundary rather than a decision against the feature. Until it
-> lands, run `switchyard gui path/to/code` per project.
+> lands, run `switchyard gui path/to/code` per project. The
+> [V2.1 roadmap](../v2.1-roadmap.md) tracks the multi-project implementation.
 
 Everything below happens in that browser tab, scoped to the project you have selected. The
 left rail is the view switcher (**home, deployments, sources, devices, profiles, run actions,
@@ -204,7 +205,7 @@ import or re-import after review, and remove an imported profile.
 > **Not available:** editing a profile in the browser. Profile *save* is blocked in every
 > client — the shared operations layer does not expose the mutation — so authoring or editing
 > a profile means editing its YAML file directly. This is a known gap, not an oversight of the
-> Web UI. See "Sequencing constraints" in [docs/web-ui-plan.md](docs/web-ui-plan.md).
+> Web UI. See "Sequencing constraints" in [docs/web-ui-plan.md](../web-ui-plan.md).
 
 ## Step 6 — Run actions: project-level scripts
 
@@ -245,8 +246,8 @@ Execution appears in the operations timeline like any other operation.
 > above collapses that split: structured actions are already assembled into an argv for
 > Switchyard's own binary and run through the same `std::process::Command` as shell ones, so
 > they are a typed subset of what a shell string already expresses. Moving to it is a schema
-> change with a migration for existing `run-scripts.yaml` files. See the open question in
-> [DEVIATION.md](DEVIATION.md).
+> change with a migration for existing `run-scripts.yaml` files. This work is deferred
+> beyond V2.
 
 ## Step 7 — Create instances
 
@@ -288,8 +289,8 @@ remove a device that instances are placed on; the removal dialog lists them.
 > provider, and local consumers are routed to its published address without application
 > changes. Remote consumers, remote routers, and cross-device sidecars are not supported yet.
 > Selecting an unsupported placement is a validation error rather than a silent fallback —
-> deliberately, so a placement field is never accepted and then ignored. See
-> [DEVIATION.md](DEVIATION.md) §4.
+> deliberately, so a placement field is never accepted and then ignored. Remote execution
+> beyond this cut remains outside V2.
 
 ### Starting instances
 
@@ -502,7 +503,8 @@ onto the save.
 > `router-pingora`, not only a schema change. It also needs checking against browser identity
 > below: an `Origin` of `feature-test.comparison.localhost` is what currently identifies which
 > combination a request belongs to, so a domain that reaches several members must still
-> identify the group unambiguously. See [DEVIATION.md](DEVIATION.md) §1a.
+> identify the group unambiguously. This is tracked in
+> [V2 roadmap Part 3](../v2-roadmap.md#part-3--serving-a-whole-group-from-one-address-router).
 
 ### Reaching a specific instance from the browser
 
@@ -519,7 +521,7 @@ So a browser request needs an explicit identity, by one of three means:
 
 A browser request with none of these is **rejected**, not routed to whichever backend happens to
 be available. That is intentional: silently picking a backend would make an experiment
-untrustworthy. See [docs/browser-routing.md](docs/browser-routing.md).
+untrustworthy. See [docs/browser-routing.md](../browser-routing.md).
 
 ---
 
@@ -577,6 +579,5 @@ field name differ, both are given — the persisted YAML keeps the internal name
 
 ---
 
-*This document describes the flow as it works today. Where it differs from the intent stated
-in [ABOUT.md](ABOUT.md), the difference is called out inline and recorded in
-[DEVIATION.md](DEVIATION.md).*
+*This document describes the intended flow and calls out current limitations inline. The
+[V2 roadmap](../v2-roadmap.md) tracks the remaining implementation work.*

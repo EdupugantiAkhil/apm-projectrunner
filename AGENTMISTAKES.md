@@ -891,3 +891,14 @@ audit shell startup files as well as the requested cache directories.
   profile/block, instance, service, and group. UI/backend/database remain examples.
 - Lesson: if the planner cannot derive or validate a noun, do not put it in the glossary
   as a product concept or use it to explain schema relationships.
+
+## 2026-07-31 — A deviation log can become a competing source of truth
+
+- `DEVIATION.md` was linked as the current implementation-gap record after its provider
+  maps, capabilities, bindings, routes, segments, address status, and open decisions had
+  already been superseded.
+- Correction: delete the stale document and keep remaining implementation gaps beside
+  their planned work in the version roadmap. Current limitations stay inline in the user
+  flow where readers encounter them.
+- Lesson: a gap document needs continuous reconciliation or it becomes another product
+  model. Prefer one target vision plus versioned roadmaps and implementation progress.

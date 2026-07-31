@@ -1,11 +1,16 @@
-# Switchyard repository guidance
+# APM ProjectRunner repository guidance
 
-do note edit docs/vision/*.md as they are the original source of truth and we should strive to move towords it
+Treat `docs/vision/*.md` as the original product source of truth. Move the
+implementation and `DESIGN.md` toward that vision. Edit the vision only when the project
+owner changes a product decision or when an edit is required to remove an internal
+contradiction; do not rewrite it merely to describe the current implementation.
 
 ## Working model
 
 - Do not create or delegate work to subagents. Work directly in the current agent.
-- Treat `DESIGN.md` as the authoritative architecture and make updates to it to get closer tho the vision.
+- Treat `DESIGN.md` as the authoritative implementation architecture and update it to
+  converge on the vision. Where the two differ, the vision controls the intended product
+  and the roadmap records the work needed to close the gap.
 - Maintain `PROGRESS.md` with the current implementation and verification status, and
   maintain `AGENTMISTAKES.md` with mistakes, corrections, and lessons that should guide
   future work. Update both files as relevant while completing each phase.
