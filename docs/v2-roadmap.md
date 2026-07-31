@@ -53,7 +53,7 @@ verification evidence.
 | ✅ | 2c — Repositories are declared once; sources are a repo and a ref | `4e6969a` |
 | ✅ | 2d — `bindings:` is deleted; membership is the connection | `6616583` |
 | ✅ | 2e — External instances: things already running outside APM ProjectRunner | `d0fcdd0` |
-| ⬜ | 3 — Serving a whole group from one address (router) | |
+| ✅ | 3 — Serving a whole group from one address (router) | `91f2ebd` |
 | ✅ | 4 — Vocabulary and documentation alignment | `db52a71` |
 | ✅ | 5 — Daemon-as-service posture | `08e86d1` |
 | ✅ | 6 — Release usability items | `494f7a0` |
@@ -481,7 +481,7 @@ literal host resolution and port-for-port forwarding from the expanded external 
 
 ---
 
-### Part 3 — Serving a whole group from one address (router)
+### Part 3 — Serving a whole group from one address (router) ✅
 
 The substantial piece of step 9, and the reason Part 2 stopped at the schema. Before this part, a
 `custom_domain` destination maps to exactly one provider, resolved at config-render time.
@@ -501,22 +501,28 @@ request**.
 - [x] Checked against browser identity — an `Origin` serving several members must still
       identify the group unambiguously
 - [x] A fixture that actually exercises a group address end to end
-- [ ] Materialize `docs/vision/sample-config.md` as the acceptance fixture, excluding only
+- [x] Materialize `docs/vision/sample-config.md` as the acceptance fixture, excluding only
       its deferred `scripts:` section: validate, plan, create its missing clone/worktrees,
       start both groups, open both group addresses, prove their different backends and
       separate database instances reusing one source/profile, reach the external instance,
       exercise `disabled:`, then stop and clean up without compatibility-only schema fields
 
-The sample now validates, plans, and passes a live planner-to-router gate without authored
-`hostRouter` or `hostUpstreams`: both bare group domains select their distinct UI and Origin
-selects the matching backend, while the disabled canary is absent. The remaining full lifecycle
-gate needs execution work outside the router before it can honestly be ticked: the sample invokes
-source commands inside plain `container` images, while the execution contract mounts source only
-for `script`.
-The fixture also needs local substitutes for its illustrative Git and external-service hosts.
-Because the vision is authoritative, the implementation must converge on source-backed container
-execution unless the project owner explicitly changes that product decision. That work is not a
-router implementation detail.
+`examples/vision-sample/smoke.sh` extracts the sample, removes only deferred `scripts:`, and
+creates local substitutes for its illustrative Git and external-service hosts. Plain container
+execution now mounts the selected checkout read-only at `/workspace` by default, so the sample's
+authored Node and Java commands run against their selected worktrees. The gate validates, plans,
+starts both groups, opens both group addresses, selects distinct backends by Origin, checks two
+database containers reuse one source while owning separate volumes, reaches the external member,
+keeps the disabled canary out of routing, and verifies stop and cleanup.
+
+The lifecycle review also fixed two integration assumptions hidden by the earlier planner-only
+gate: host upstream ports for routed instances belong to the generated namespace anchor, and TCP
+healthchecks must not assume every application image contains `nc`.
+
+Completed in `91f2ebd`; the full workspace suite with its five declared reliability ignores,
+all-target/all-feature Clippy, warnings-denied rustdoc, formatting, 51 Web tests, TypeScript/Vite
+build, and Web lint pass. `PROGRESS.md` records the live Docker evidence and the two environmental
+limits encountered while attempting the terminal fixture run.
 
 Uses the existing `router-config` direct-route and browser-route contracts and changes
 `router-pingora` so a trusted explicit identity can select a member on an otherwise static
