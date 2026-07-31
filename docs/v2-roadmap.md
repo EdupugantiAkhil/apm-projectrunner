@@ -62,13 +62,6 @@ Vision reference: user_flow step 8. Landed in `bae84bf`; 292 tests passing.
 - [x] In-repo definitions and compat fixtures migrated
 - [ ] ~~Two members providing one capability rejected~~ — reversed by Part 2a
 
-`ServiceGroup.providers: BTreeMap<slot, instanceRef>` becomes `instances: Vec<instanceRef>`.
-The slot→provider mapping is *derived* by the same `provider_for` search that already
-resolves it, run the other direction: for each consumed slot, find the member whose block
-declares a service `provides`ing that capability.
-
-- `provides`/`consumes` already carry everything needed, so the map restates a
-  relationship the profiles declare. Deriving it removes the restatement.
 The slot→provider mapping is derived by the same `provider_for` search run the other
 direction, so the map no longer restates what the profiles already declare. Touched
 `switchyard-planner`, `switchyard-ops/connections.rs`,
@@ -101,7 +94,7 @@ migrated Origin.
 
 ---
 
-### Part 2a — Group membership stops being policed by capability
+### Part 2a — Group membership stops being policed by capability ✅
 
 Reverses the rejection Part 1 built. Decided after Part 2, when the `routing-matrix`
 migration showed the rule blocking an ordinary topology: two UI branches sharing one
@@ -134,8 +127,8 @@ section is now "Address collisions, and who wins". This is the one deliberate ex
 treating the vision as immutable, made with the owner's explicit approval, because the
 rule was an oversight rather than an intent.
 
-Validation currently returns errors only, so the warning channel is the design work.
-`BundleWarning` in `switchyard-planner/src/bundle.rs` is the existing shape to follow.
+Landed in `a24991b`; 307 tests passing. The warning channel was the design work:
+`PlannerWarning` follows the existing `BundleWarning` shape and rides on `Plan.warnings`.
 
 ---
 
