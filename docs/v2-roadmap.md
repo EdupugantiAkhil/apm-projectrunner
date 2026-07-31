@@ -50,7 +50,7 @@ verification evidence.
 | ✅ | 2d — `bindings:` is deleted; membership is the connection | `6616583` |
 | ✅ | 2e — External instances: things already running outside Switchyard | `d0fcdd0` |
 | ⬜ | 3 — Serving a whole group from one address (router) | |
-| ✅ | 4 — Vocabulary and documentation alignment | |
+| ✅ | 4 — Vocabulary and documentation alignment | `db52a71` |
 | ⬜ | 5 — Daemon-as-service posture | |
 | ⬜ | 6 — Release usability items | |
 | ⬜ | 7 — Rename to APM ProjectRunner (`apmpr`) | |
