@@ -60,6 +60,35 @@ fn vision_sample_validates_and_plans_without_compatibility_router_fields() {
     assert!(generated.host_upstreams.contains_key("backend-1"));
     assert!(!generated.host_upstreams.contains_key("backend-canary"));
     assert!(!generated.host_upstreams.contains_key("db-feature-test"));
+    assert_eq!(
+        generated.host_upstreams["ui-1"].compose_service,
+        "comparison--ui-1--namespace"
+    );
+    assert_eq!(
+        generated.host_upstreams["backend-1"].compose_service,
+        "comparison--backend-1--namespace"
+    );
+
+    let compose: serde_yaml::Value = serde_yaml::from_str(&generated.compose_yaml).unwrap();
+    for service in [
+        "comparison--ui-1--app--app",
+        "comparison--ui-2--app--app",
+        "comparison--backend-1--app--app",
+        "comparison--backend-2--app--app",
+        "comparison--backend-canary--app--app",
+    ] {
+        assert_eq!(compose["services"][service]["working_dir"], "/workspace");
+        assert!(
+            compose["services"][service]["volumes"]
+                .as_sequence()
+                .unwrap()
+                .iter()
+                .any(|mount| mount
+                    .as_str()
+                    .is_some_and(|mount| mount.ends_with(":/workspace:ro"))),
+            "{service} must receive its selected source worktree"
+        );
+    }
 }
 
 #[test]

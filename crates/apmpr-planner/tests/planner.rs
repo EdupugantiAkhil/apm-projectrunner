@@ -57,6 +57,30 @@ fn pre_rename_api_group_error_names_the_replacement_prefix() {
 }
 
 #[test]
+fn local_container_commands_run_from_the_selected_source_read_only_by_default() {
+    let generated = plan(&bundle()).expect("fixture should plan");
+    let compose: serde_yaml::Value = serde_yaml::from_str(&generated.compose_yaml).unwrap();
+    let service = &compose["services"]["comparison--provider-main--api--app"];
+    assert_eq!(service["working_dir"], "/workspace");
+    let mounts = service["volumes"].as_sequence().unwrap();
+    assert!(mounts.iter().any(|mount| {
+        mount
+            .as_str()
+            .is_some_and(|mount| mount.ends_with(":/workspace:ro"))
+    }));
+}
+
+#[test]
+fn tcp_probe_does_not_require_netcat_when_the_image_has_bash() {
+    let generated = plan(&bundle()).expect("fixture should plan");
+    let compose: serde_yaml::Value = serde_yaml::from_str(&generated.compose_yaml).unwrap();
+    let healthcheck = &compose["services"]["comparison--consumer-a--api--app"]["healthcheck"];
+    let command = healthcheck["test"][1].as_str().unwrap();
+    assert!(command.contains("command -v nc"));
+    assert!(command.contains("/dev/tcp/127.0.0.1/3000"));
+}
+
+#[test]
 fn group_member_instance_service_reference_resolves_service_ambiguity() {
     let mut deployment = bundle();
     let provider = deployment.spec.blocks.get_mut("provider").unwrap();
@@ -157,6 +181,16 @@ fn remote_provider_is_partitioned_and_routed_by_device_host() {
     let service = "comparison--provider-main--api";
     assert_eq!(remote_compose["services"][service]["networks"][0], network);
     assert_eq!(remote_compose["services"][service]["ports"][0], "8080:8080");
+    assert!(
+        remote_compose["services"][service]
+            .get("working_dir")
+            .is_none(),
+        "the limited remote runtime must not refer to a local-only source mount"
+    );
+    assert_eq!(
+        remote_compose["services"][service]["volumes"],
+        serde_yaml::to_value(["comparison--provider-main--data:/data"]).unwrap()
+    );
     assert_eq!(
         remote_compose["services"][service]["labels"]["dev.apmpr.instance"],
         "provider-main"
@@ -1143,7 +1177,7 @@ fn writes_deterministic_credential_free_managed_profile_metadata() {
     assert_eq!(first.host_upstreams["backend"].container_port, 8080);
     assert_eq!(
         first.host_upstreams["backend"].compose_service,
-        "comparison--provider-main--api"
+        "comparison--provider-main--namespace"
     );
 
     let mut remote_bundle = bundle.clone();
@@ -1152,6 +1186,10 @@ fn writes_deterministic_credential_free_managed_profile_metadata() {
     assert_eq!(
         remote.host_upstreams["backend"].remote_address.as_deref(),
         Some("example-host:8080")
+    );
+    assert_eq!(
+        remote.host_upstreams["backend"].compose_service,
+        "comparison--provider-main--api"
     );
     let remote_host_config: router_config::RouterConfig =
         serde_json::from_str(remote.host_router_config.as_ref().unwrap()).unwrap();

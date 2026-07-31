@@ -1029,7 +1029,9 @@ The generator expands every block instance into concrete Compose services. It as
 - Source-specific build contexts.
 - Deployment and instance labels for discovery and cleanup.
 - Ephemeral loopback-only host ports used as native-router upstreams.
-- Read-only or read-write source mounts for script runners, as explicitly declared.
+- Selected-source mounts for local container, script, and Process Compose execution. They default
+  to `/workspace` and read-only; `writable: true` is an explicit opt-in. A container command with
+  no authored working directory starts at its source mount.
 - One-shot dependency conditions for successful `task` scripts.
 - One namespace anchor and APM ProjectRunner Router sidecar for each local group member or
   explicitly routed instance. Every service of the instance joins the anchor namespace.
@@ -1065,6 +1067,11 @@ semantics:
    active group member listening there.
 3. **Forward proxy** gives a managed browser profile an explicit routing identity when
    neither a request header nor `Origin` is sufficient.
+
+For a locally routed instance, Compose publishes application ports on the generated namespace
+anchor because every application service shares that network namespace. Generated host-upstream
+metadata therefore resolves the anchor service, not the application service name. Remote
+instances continue to resolve their own published application service.
 
 The router's own configuration contract (`apmpr.dev/router/v1alpha1`) still names
 listener destinations with a `slot` key. That is an identifier inside a generated
@@ -1445,7 +1452,7 @@ resources carrying matching APM ProjectRunner ownership labels.
   credentials. Secret values are referenced, not copied into generated definitions.
 - Containerized script blocks continue to run in runner containers with declared mounts,
   environment, user, and resource limits.
-- Default script source mounts to read-only. Require an explicit writable mount for
+- Default containerized source mounts to read-only. Require an explicit writable mount for
   compilers or development servers that create artifacts.
 - Run script containers as a non-root container user unless the block explicitly
   declares and justifies another user.

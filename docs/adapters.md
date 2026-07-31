@@ -60,7 +60,7 @@ The built-in registry contains:
 | --- | --- | --- |
 | Source | `source-path` | Existing local directory |
 | Source | `source-git` | Existing repository/worktree and requested ref |
-| Execution | `execution-container` | Compose image or Dockerfile build |
+| Execution | `execution-container` | Source-backed Compose image or Dockerfile build |
 | Execution | `execution-runner-script` | Service or task in a runner container |
 | Supervisor | `supervisor-process-compose` | Process Compose suite in a runner container |
 | Route | `route-apmpr` | Sidecar or host-gateway HTTP, HTTPS, WebSocket, gRPC, and raw TCP loopback route |

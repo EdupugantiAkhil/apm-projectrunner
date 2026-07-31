@@ -701,6 +701,13 @@ pub struct ContainerExecutionConfig {
     pub command: Vec<String>,
     /// Container working directory.
     pub working_directory: Option<String>,
+    /// Selected source mount point.
+    #[serde(default = "default_source_mount_string")]
+    #[schemars(length(min = 1))]
+    pub source_mount: String,
+    /// Whether the source mount is writable.
+    #[serde(default)]
+    pub writable: bool,
     /// Container environment.
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
@@ -727,8 +734,8 @@ impl Adapter for ContainerExecutionAdapter {
 
     fn configuration_examples(&self) -> Vec<ConfigurationExample> {
         examples(
-            json!({"image": "example/api:local", "build": null, "command": [], "workingDirectory": null, "environment": {}}),
-            json!({"image": null, "build": null, "command": [], "workingDirectory": null, "environment": {}}),
+            json!({"image": "example/api:local", "build": null, "command": [], "workingDirectory": null, "sourceMount": "/workspace", "writable": false, "environment": {}}),
+            json!({"image": null, "build": null, "command": [], "workingDirectory": null, "sourceMount": "/workspace", "writable": false, "environment": {}}),
         )
     }
 
@@ -762,6 +769,10 @@ impl Adapter for ContainerExecutionAdapter {
     fn example_handles(&self) -> Vec<Value> {
         vec![json!({"composeProject": "demo", "service": "demo--api"})]
     }
+}
+
+fn default_source_mount_string() -> String {
+    "/workspace".into()
 }
 
 impl ExecutionAdapter for ContainerExecutionAdapter {

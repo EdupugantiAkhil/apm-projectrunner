@@ -363,14 +363,14 @@ symlinks.
 
 ### Verified protections
 
-- Overlay targets must be normalized absolute container paths below `/runtime`, a script
+- Overlay targets must be normalized absolute container paths below `/runtime`, an execution
   source mount, or a declared service volume target, and may not equal the root itself.
   Duplicate targets require explicit `replace`. Generated mounts are always `:ro` and
   use content-addressed host paths. Test:
   `overlay_validation_rejects_conflicts_selectors_templates_and_traversal` and
   `overlays_resolve_in_order_trace_shadows_and_materialize_files`.
-- Script and Process Compose source mounts default to read-only; `writable: true` is an
-  explicit opt-in. Named volume read-only behavior is also emitted explicitly.
+- Container, Script, and Process Compose source mounts default to read-only; `writable: true` is
+  an explicit opt-in. Named volume read-only behavior is also emitted explicitly.
 - Bundle import checks every definition/overlay destination before its first definition
   write unless `--force` is given, refuses existing files, scaffolds only declared local
   inputs, and validates the result. `example_deployment_exports_imports_and_validates`
@@ -389,8 +389,9 @@ Planner source validation at
 [`lib.rs`](../crates/apmpr-planner/src/lib.rs#L337-L470) checks that a source is a
 directory and that referenced build/Process Compose files exist. It does not reject the
 filesystem root, a home directory, or another broad/sensitive host path. Compose
-generation at [`lib.rs`](../crates/apmpr-planner/src/lib.rs#L1910-L1974) mounts that
-path into script containers and removes `:ro` when `writable: true`. A mistaken or
+generation at [`lib.rs`](../crates/apmpr-planner/src/lib.rs#L3229-L3360) mounts that
+path into container, script, and Process Compose services and removes `:ro` when
+`writable: true`. A mistaken or
 malicious definition can therefore expose, and in writable mode modify, a broad host
 tree from a container. This violates DESIGN.md section 8's broad-bind-mount commitment.
 

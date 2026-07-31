@@ -228,15 +228,15 @@ changing which UI and backend checkout each address opens.
 
 ## Where today's implementation differs
 
-The sample above is the intended shape. Two current gaps remain in the implementation:
+The sample above is the intended shape. One current gap remains in the implementation:
 
 1. **`scripts:` is not the current shape, and is deferred.** Run actions live in
    `.apmpr/run-scripts.yaml` as seven-field records. They are deliberately outside the V2
    roadmap until a shell action has a settled way to reach the deployment it is about.
-2. **Plain container execution does not yet mount the selected source.** The UI and backend
-   commands above intentionally run their selected checkout in the declared image. The current
-   container adapter starts only the image and command, so implementing that source-backed
-   container contract remains necessary before this sample can pass its full lifecycle gate.
+
+Plain container execution mounts the selected source at `/workspace` read-only by default and
+runs an authored command there unless `workingDirectory` overrides it. `sourceMount` can choose a
+different container path and `writable: true` is the explicit opt-in for source-mutating tools.
 
 Address selection is generated without a hand-authored router topology. A bare group address
 uses its one active independently addressed member as the default; instance subdomains and trusted
@@ -248,5 +248,6 @@ Bare instance names in `instances:` do work today, and resolve to the single mem
 Writing `ui-1/app` is also accepted, and is what you need when one instance runs several services
 and you mean a particular one; the repository's own examples use that longer form throughout.
 
-The deployment above, excluding `scripts:`, validates and plans as written. The V2 roadmap records
-the remaining live-fixture issue in its Part 3 acceptance gate.
+The deployment above, excluding `scripts:`, is covered by the Part 3 lifecycle fixture: it creates
+local substitutes for the illustrative repository and external host, validates, plans, creates
+the worktrees, starts the groups, exercises their routes and isolation, and cleans up.

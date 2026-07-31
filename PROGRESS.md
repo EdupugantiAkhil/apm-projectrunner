@@ -2,6 +2,29 @@
 
 Updated: 2026-07-31
 
+## 2026-07-31 — V2 Part 3 vision-sample lifecycle completion
+
+- Local `container` execution now mounts the selected source at `/workspace` read-only by
+  default. An authored command without `workingDirectory` starts there; `sourceMount` and
+  `writable` expose the same explicit mount contract as the other containerized execution
+  adapters. Remote container execution deliberately keeps its existing no-local-bind behavior.
+- Generated host upstreams for locally routed instances now resolve the namespace anchor that
+  actually owns the published ports. Remote and unrouted upstreams retain their application
+  service names. TCP healthchecks use `nc` when present and Bash `/dev/tcp` otherwise, allowing
+  the vision sample's stock `postgres:16` image to become healthy without image customization.
+- Added `examples/vision-sample/smoke.sh`. It extracts the authoritative sample configuration,
+  excludes only deferred `scripts:`, creates local Git branches/worktrees and an external-host
+  substitute, then checks both group addresses, Origin-selected backends, shared source plus
+  separate database volumes, external routing, disabled membership, and owned cleanup.
+- Verification passes: the full workspace suite with its five declared reliability ignores,
+  all-target/all-feature Clippy with warnings denied, rustdoc with warnings denied, formatting,
+  diff and shell-syntax checks, 51 Web tests, TypeScript/Vite production build, and Web lint. A
+  local Docker run reached healthy Node, Java, and stock Postgres services and resolved the
+  corrected namespace upstreams before the host gateway encountered an unrelated process already
+  owning `127.0.0.1:8080`. The offered Linux host was also attempted without modifying unrelated
+  resources, but its 30 GB root filesystem lacked room for the sample's stock JDK/Postgres/Node
+  layers.
+
 ## 2026-07-31 — V2 Part 7 rename to APM ProjectRunner (`d2c7d7a`)
 
 - Renamed the tree from the development-era `Switchyard` name to **APM ProjectRunner**

@@ -1021,11 +1021,11 @@ fn target_is_controlled(bundle: &Bundle, instance: &crate::Instance, target: &Pa
         for service in block.services.values() {
             roots.extend(service.volumes.iter().map(|mount| mount.target.clone()));
             match &service.execution {
-                Execution::Script { source_mount, .. }
+                Execution::Container { source_mount, .. }
+                | Execution::Script { source_mount, .. }
                 | Execution::ProcessCompose { source_mount, .. } => {
                     roots.push(source_mount.clone())
                 }
-                Execution::Container { .. } => {}
             }
         }
     }

@@ -1,5 +1,38 @@
 # Agent mistakes and lessons
 
+## 2026-07-31 — A mocked router gate can hide Compose ownership
+
+- The first Part 3 gate replaced generated provider endpoints with test listeners. That proved
+  request selection but bypassed the Compose service named by host-upstream discovery. Routed
+  application services share a namespace, so the namespace anchor — not the generated app
+  service — owns every published port.
+- Lesson: keep the focused router gate, but require a generated-Compose lifecycle fixture for the
+  service-name and port-publication boundary. A mock at that boundary cannot protect it.
+
+## 2026-07-31 — Healthchecks cannot assume arbitrary images contain a preferred tool
+
+- Generated TCP probes invoked `nc` unconditionally. The authoritative sample uses stock
+  `postgres:16`, which does not contain it, so a ready database remained `unhealthy`.
+- Lesson: generated probes must use portable image capabilities or explicit fallbacks. The TCP
+  probe now uses `nc` when available and Bash `/dev/tcp` otherwise, with a diagnostic failure if
+  neither exists.
+
+## 2026-07-31 — Acceptance isolation must respect the container host
+
+- A privileged Docker-in-Docker attempt was used to avoid a host port collision after the offered
+  Linux machine ran out of Docker storage. Nested layer creation produced I/O/read-only errors and
+  left Docker Desktop temporarily unavailable, without improving product evidence.
+- Lesson: do not improvise privileged nested daemons for a lifecycle gate. Use an ordinary Linux
+  host with adequate capacity or arrange the required host port before the run; report the
+  environmental limit rather than making the test substrate less reliable.
+
+## 2026-07-31 — CLI acceptance fixtures must run from their deployment directory
+
+- The first lifecycle script invoked `apmpr plan` from the repository root, so generated state was
+  written beside the binary instead of beside the temporary deployment.
+- Lesson: CLI lifecycle fixtures must `cd` to the authored deployment workspace before validate,
+  plan, up, down, and cleanup. Test binaries may live elsewhere; project state may not.
+
 ## 2026-07-31 — A guard against a stale value must not read the value
 
 - The Part 7 environment guard reported stale `SWITCHYARD_*` names via `env::vars()`. That

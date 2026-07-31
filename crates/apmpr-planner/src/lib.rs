@@ -1214,6 +1214,8 @@ fn execution_adapter_configuration(execution: &Execution) -> (AdapterKind, &'sta
             build,
             command,
             working_directory,
+            source_mount,
+            writable,
             environment,
         } => (
             AdapterKind::Execution,
@@ -1226,6 +1228,8 @@ fn execution_adapter_configuration(execution: &Execution) -> (AdapterKind, &'sta
                 })),
                 "command": command,
                 "workingDirectory": working_directory.as_ref().map(|path| path.to_string_lossy()),
+                "sourceMount": source_mount.to_string_lossy(),
+                "writable": writable,
                 "environment": environment,
             }),
         ),
@@ -2943,14 +2947,32 @@ fn host_upstreams(
         .host_upstreams
         .iter()
         .map(|(provider, upstream)| {
+            let base_service =
+                service_name_for(&bundle.metadata.name, &upstream.instance, &upstream.service);
+            let local_routed = bundle
+                .spec
+                .instances
+                .iter()
+                .find(|instance| instance.name == upstream.instance)
+                .is_some_and(|instance| {
+                    instance
+                        .device
+                        .as_deref()
+                        .is_none_or(|device| device == "local")
+                        && bundle.spec.groups.values().any(|group| {
+                            group.instances.iter().any(|member| {
+                                provider_reference(member).0 == upstream.instance.as_str()
+                            })
+                        })
+                });
             (
                 provider.clone(),
                 HostUpstreamPlan {
-                    compose_service: service_name_for(
-                        &bundle.metadata.name,
-                        &upstream.instance,
-                        &upstream.service,
-                    ),
+                    compose_service: if local_routed {
+                        resource_name(&[&bundle.metadata.name, &upstream.instance, "namespace"])
+                    } else {
+                        base_service
+                    },
                     container_port: upstream.port,
                     remote_address: bundle
                         .spec
@@ -3231,8 +3253,14 @@ fn compose_application(
             build,
             command,
             working_directory,
+            source_mount,
+            writable,
             environment,
         } => {
+            let mount_source = instance
+                .device
+                .as_deref()
+                .is_none_or(|device| device == "local");
             if let Some(image) = image {
                 value.insert("image".into(), json!(image));
             }
@@ -3246,12 +3274,25 @@ fn compose_application(
             add_runtime_fields(
                 &mut value,
                 command,
-                working_directory.as_deref(),
+                working_directory
+                    .as_deref()
+                    .or((mount_source && !command.is_empty()).then_some(source_mount)),
                 environment,
                 instance,
                 bundle,
                 block,
             );
+            if mount_source {
+                value.insert(
+                    "volumes".into(),
+                    json!([format!(
+                        "{}:{}{}",
+                        source.display(),
+                        source_mount.display(),
+                        if *writable { "" } else { ":ro" }
+                    )]),
+                );
+            }
         }
         Execution::Script {
             image,
@@ -3492,7 +3533,14 @@ fn compose_probe(probe: &Probe) -> Value {
                 if *https { "https" } else { "http" }
             ),
         ],
-        Probe::Tcp { port } => vec!["CMD-SHELL".to_owned(), format!("nc -z 127.0.0.1 {port}")],
+        Probe::Tcp { port } => vec![
+            "CMD-SHELL".to_owned(),
+            format!(
+                "if command -v nc >/dev/null 2>&1; then nc -z 127.0.0.1 {port}; \
+                 elif command -v bash >/dev/null 2>&1; then bash -c '</dev/tcp/127.0.0.1/{port}'; \
+                 else echo 'TCP probe needs nc or bash' >&2; exit 127; fi"
+            ),
+        ],
         Probe::Command { command } => std::iter::once("CMD".to_owned())
             .chain(command.iter().cloned())
             .collect(),

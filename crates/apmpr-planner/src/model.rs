@@ -145,6 +145,10 @@ pub enum Execution {
         command: Vec<String>,
         #[serde(default)]
         working_directory: Option<PathBuf>,
+        #[serde(default = "default_source_mount")]
+        source_mount: PathBuf,
+        #[serde(default)]
+        writable: bool,
         #[serde(default)]
         environment: BTreeMap<String, String>,
     },
