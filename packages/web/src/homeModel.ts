@@ -13,7 +13,7 @@ const stateFromSignals = (done: boolean, loading: boolean, unavailable: boolean)
 export function missingConnections(spec: ConnectionSpec) {
   const assigned = new Set(Object.values(spec.groups ?? {}).flatMap((group) => (group.instances ?? []).map((member) => member.split('/', 1)[0])))
   const missing: Array<{ instance: string }> = []
-  for (const instance of spec.instances ?? []) if (!assigned.has(instance.name) && !spec.bindings?.[instance.name]) missing.push({ instance: instance.name })
+  for (const instance of spec.instances ?? []) if (!assigned.has(instance.name)) missing.push({ instance: instance.name })
   return missing
 }
 

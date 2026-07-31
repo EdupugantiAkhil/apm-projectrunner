@@ -51,31 +51,21 @@ spec:
 
   groups:
     main-services:
-      providers:
-        catalog: services-main/catalog
-        search: services-main/search
-        reports: services-main/reports
-        scheduler: services-main/scheduler
-        audit: services-shared/audit
+      instances:
+        - services-main-catalog
+        - services-main-search
+        - services-main-reports
+        - services-main-scheduler
+        - services-main-audit
+        - backend-2
     feature-services:
-      providers:
-        catalog: services-feature/catalog
-        search: services-feature/search
-        reports: services-feature/reports
-        scheduler: services-feature/scheduler
-        audit: services-shared/audit
-
-  bindings:
-    ui-1:
-      backend: backend-1
-    ui-2:
-      backend: backend-2
-    ui-3:
-      backend: backend-1
-    backend-1:
-      services: feature-services
-    backend-2:
-      services: main-services
+      instances:
+        - services-feature-catalog
+        - services-feature-search
+        - services-feature-reports
+        - services-feature-scheduler
+        - services-feature-audit
+        - backend-1
 
   identityResponses:
     providers:

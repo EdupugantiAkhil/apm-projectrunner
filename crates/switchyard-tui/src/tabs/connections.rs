@@ -2,7 +2,7 @@ use appcui::prelude::*;
 use switchyard_ops::{ConnectionRow, RouteStatus, SwitchPreview, execution::OperationSpec};
 
 use crate::{
-    shell::{PendingBind, SwitchyardShell},
+    shell::{PendingMembershipMove, SwitchyardShell},
     state::ProjectState,
 };
 
@@ -76,35 +76,37 @@ impl SwitchyardShell {
         let Some(request) = show_switch(&instance, previews) else {
             return;
         };
-        let spec = OperationSpec::bind(bundle, instance.clone(), request.group.clone());
+        let spec = OperationSpec::membership(bundle, instance.clone(), request.group.clone());
         let started = self.start_operation(
-            format!("bind {instance} → {}", request.group),
+            format!("move {instance} → {}", request.group),
             Some(deployment_name.clone()),
             false,
             spec,
         );
         if started {
-            self.pending_bind = Some(PendingBind {
+            self.pending_membership_move = Some(PendingMembershipMove {
                 deployment: deployment_name,
-                consumer: instance,
+                instance,
             });
         }
     }
 
-    pub(crate) fn finish_bind(&mut self, succeeded: bool, operation_detail: &str) {
-        let Some(bind) = self.pending_bind.take() else {
+    pub(crate) fn finish_membership_move(&mut self, succeeded: bool, operation_detail: &str) {
+        let Some(membership_move) = self.pending_membership_move.take() else {
             return;
         };
-        let (statuses, status_error) =
-            match switchyard_ops::route_status(&self.state.project_dir, &bind.deployment) {
-                Ok(statuses) => (statuses, None),
-                Err(error) => (Vec::new(), Some(error)),
-            };
+        let (statuses, status_error) = match switchyard_ops::route_status(
+            &self.state.project_dir,
+            &membership_move.deployment,
+        ) {
+            Ok(statuses) => (statuses, None),
+            Err(error) => (Vec::new(), Some(error)),
+        };
         let detail = status_error.map_or_else(
             || operation_detail.to_owned(),
             |error| format!("{operation_detail}\nRoute status lookup failed: {error}"),
         );
-        let report = render_result(&bind.consumer, succeeded, &detail, &statuses);
+        let report = render_result(&membership_move.instance, succeeded, &detail, &statuses);
         show_result(&report);
     }
 }
@@ -197,7 +199,7 @@ pub(crate) fn project_rows(state: &ProjectState) -> Vec<ConnectionRowView> {
                 let matching = deployment
                     .route_statuses
                     .iter()
-                    .filter(|status| status.binding_id == row.instance)
+                    .filter(|status| status.instance_id == row.instance)
                     .collect::<Vec<_>>();
                 let (route_version, route_state) = route_summary(&matching);
                 let unbound = row.current_group.is_none();
@@ -516,7 +518,7 @@ pub(crate) fn render_preview(preview: &SwitchPreview) -> String {
         )
     };
     format!(
-        "Group: {} → {}\n\nEvery membership entry that will change:\n{}\n\n{}\nThe complete binding is validated and applied atomically.",
+        "Group: {} → {}\n\nEvery membership entry that will change:\n{}\n\n{}\nThe membership move is validated and applied atomically.",
         preview.old_group.as_deref().unwrap_or("not assigned"),
         preview.new_group,
         routes,
@@ -532,13 +534,13 @@ pub(crate) fn render_result(
 ) -> String {
     let matching = statuses
         .iter()
-        .filter(|status| status.binding_id == consumer)
+        .filter(|status| status.instance_id == consumer)
         .collect::<Vec<_>>();
     let mut lines = vec![
         if succeeded {
-            "Atomic binding operation succeeded.".into()
+            "Atomic membership operation succeeded.".into()
         } else {
-            "Atomic binding operation failed.".into()
+            "Atomic membership operation failed.".into()
         },
         operation_detail.into(),
     ];
@@ -643,7 +645,7 @@ mod tests {
     fn matrix_projection_surfaces_unbound_fix_key_and_route_failure() {
         let failed = RouteStatus {
             router: "sidecar".into(),
-            binding_id: "frontend-a".into(),
+            instance_id: "frontend-a".into(),
             desired_version: Some(5),
             observed_version: Some(4),
             previous_version: Some(3),
@@ -728,7 +730,7 @@ mod tests {
 
         let status = RouteStatus {
             router: "sidecar".into(),
-            binding_id: "frontend-a".into(),
+            instance_id: "frontend-a".into(),
             desired_version: Some(6),
             observed_version: Some(5),
             previous_version: Some(5),

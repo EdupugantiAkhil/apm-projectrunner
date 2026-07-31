@@ -513,8 +513,6 @@ spec:
   blocks:
 {block}  instances:
   groups:
-  bindings:
-  routes:
 "#
             ),
         )

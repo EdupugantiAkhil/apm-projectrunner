@@ -1,5 +1,5 @@
 export type OperationStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled'
-export type CommandKind = 'validate' | 'plan' | 'apply' | 'bind' | 'status' | 'routes' | 'logs' | 'open' | 'down' | 'cleanup' | 'run-action' | 'clone'
+export type CommandKind = 'validate' | 'plan' | 'apply' | 'membership' | 'status' | 'routes' | 'logs' | 'open' | 'down' | 'cleanup' | 'run-action' | 'clone'
 
 export interface ApiErrorBody { code: string; message: string; context?: unknown }
 export class ApiError extends Error {
@@ -37,7 +37,7 @@ export interface DeploymentSummary {
   appliedAt: number | null
   lastOperation: { id: string; kind: string; status: OperationStatus; startedAt: number; finishedAt: number | null } | null
   customDomains: string[]
-  bindings: Record<string, string>
+  memberships: Record<string, string>
 }
 export interface ProjectInfo { apiVersion: string; name: string; root: string; registered: boolean }
 export interface DeploymentDetail {
@@ -51,7 +51,7 @@ export interface DeploymentDetail {
   reconciliation: { deployment: string; diagnostics: Array<{ code: string; path: string; message: string }> }
   resources: Array<{ kind: string; id: string; name: string; labels: Record<string, string>; state: string | null; device: string }>
   customDomains: string[]
-  bindings: Record<string, string>
+  memberships: Record<string, string>
 }
 export interface DeploymentSnapshot { spec?: {
   repositories?: Record<string, { url?: string; clone?: string }>
@@ -68,8 +68,6 @@ export interface DeploymentSnapshot { spec?: {
     }>
   }>
   groups?: Record<string, { instances?: string[]; disabled?: string[]; address?: string }>
-  bindings?: Record<string, string>
-  routes?: Record<string, Record<string, string>>
   managedProfiles?: Record<string, { route: string; startUrl: string }>
   hostRouter?: Record<string, unknown>
 } }

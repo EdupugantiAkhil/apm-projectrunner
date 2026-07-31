@@ -22,7 +22,7 @@ pub enum CommandKind {
     Validate,
     Plan,
     Apply,
-    Bind,
+    Membership,
     Status,
     Routes,
     Logs,
@@ -40,7 +40,7 @@ impl CommandKind {
             Self::Validate => "validate",
             Self::Plan => "plan",
             Self::Apply => "apply",
-            Self::Bind => "bind",
+            Self::Membership => "membership",
             Self::Status => "status",
             Self::Routes => "routes",
             Self::Logs => "logs",
@@ -56,7 +56,7 @@ impl CommandKind {
     pub const fn mutating(self) -> bool {
         matches!(
             self,
-            Self::Apply | Self::Bind | Self::Open | Self::Down | Self::Cleanup | Self::Clone
+            Self::Apply | Self::Membership | Self::Open | Self::Down | Self::Cleanup | Self::Clone
         )
     }
 
@@ -72,7 +72,7 @@ impl CommandKind {
 pub struct CommandRequestV1 {
     pub bundle: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub consumer: Option<String>,
+    pub instance: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -87,7 +87,7 @@ pub struct CommandRequestV1 {
     pub confirmed: bool,
 }
 
-/// Existing-connection behavior requested for a live binding change.
+/// Existing-connection behavior requested for a live membership move.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(
     tag = "strategy",
@@ -113,11 +113,11 @@ impl CommandRequestV1 {
             CommandKind::Validate => vec!["validate".into(), bundle],
             CommandKind::Plan => vec!["plan".into(), bundle],
             CommandKind::Apply => vec!["up".into(), bundle],
-            CommandKind::Bind => {
+            CommandKind::Membership => {
                 let mut args = vec![
-                    "bind".into(),
+                    "move".into(),
                     bundle,
-                    required(&self.consumer, "consumer")?,
+                    required(&self.instance, "instance")?,
                     required(&self.group, "group")?,
                 ];
                 match self.transition {
@@ -419,7 +419,7 @@ pub struct DeploymentSummaryV1 {
     pub applied_at: Option<i64>,
     pub last_operation: Option<DeploymentOperationSummaryV1>,
     pub custom_domains: Vec<String>,
-    pub bindings: Value,
+    pub memberships: Value,
     pub gateway_exposure: Option<GatewayExposureV1>,
     pub mdns_publication: Option<MdnsPublicationV1>,
     pub tailscale_publication: Option<TailscalePublicationV1>,
@@ -534,7 +534,7 @@ pub struct DeploymentDetailV1 {
     pub reconciliation: DeploymentReconciliation,
     pub resources: Vec<switchyard_state::OwnedResourceObservation>,
     pub custom_domains: Vec<String>,
-    pub bindings: Value,
+    pub memberships: Value,
     pub gateway_exposure: Option<GatewayExposureV1>,
     pub mdns_publication: Option<MdnsPublicationV1>,
     pub tailscale_publication: Option<TailscalePublicationV1>,

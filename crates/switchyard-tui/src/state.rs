@@ -106,7 +106,7 @@ pub(crate) struct DeploymentProjection {
     pub(crate) connections: ConnectionMatrix,
     pub(crate) route_statuses: Vec<switchyard_ops::RouteStatus>,
     pub(crate) services: Vec<ServiceProjection>,
-    pub(crate) binding_count: usize,
+    pub(crate) membership_count: usize,
     pub(crate) group_member_count: usize,
     pub(crate) validation_problems: Vec<String>,
 }
@@ -295,7 +295,7 @@ impl ProjectState {
                         health: service.health,
                     })
                     .collect(),
-                binding_count: deployment.bindings.len(),
+                membership_count: deployment.memberships.len(),
                 group_member_count: deployment.group_member_count,
                 validation_problems: deployment.validation_problems,
             })

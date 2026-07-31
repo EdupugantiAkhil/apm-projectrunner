@@ -43,6 +43,7 @@ spec:
             file: process-compose.yaml
   instances:
     - { name: provider-main, block: provider, source: app }
+    - { name: provider-feature, block: provider, source: app }
     - name: consumer-a
       block: consumer
       source: app
@@ -54,9 +55,6 @@ spec:
     - { name: suite-main, block: suite, source: app }
   groups:
     base:
-      instances: [provider-main/api]
+      instances: [provider-main/api, consumer-a/api]
     feature:
-      instances: [provider-main/api]
-  bindings:
-    consumer-a: base
-    consumer-b: feature
+      instances: [provider-feature/api, consumer-b/api]

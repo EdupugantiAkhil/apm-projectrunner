@@ -52,9 +52,9 @@ struct StateUpdate {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct PendingBind {
+pub(crate) struct PendingMembershipMove {
     pub(crate) deployment: String,
-    pub(crate) consumer: String,
+    pub(crate) instance: String,
 }
 
 #[derive(Clone, Copy)]
@@ -224,7 +224,7 @@ pub(crate) struct SwitchyardShell {
     pub(crate) state: ProjectState,
     pub(crate) outcome: OutcomeCell,
     pub(crate) operation_gate: OperationGate,
-    pub(crate) pending_bind: Option<PendingBind>,
+    pub(crate) pending_membership_move: Option<PendingMembershipMove>,
     state_task: Handle<BackgroundTask<StateUpdate, TaskResponse>>,
     reopen_code_pending: bool,
     initial_selection_pending: bool,
@@ -289,7 +289,7 @@ impl SwitchyardShell {
             state,
             outcome,
             operation_gate: OperationGate::default(),
-            pending_bind: None,
+            pending_membership_move: None,
             state_task: Handle::None,
             reopen_code_pending: restart.reopen_code,
             initial_selection_pending: true,

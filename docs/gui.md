@@ -26,8 +26,8 @@ opener does not fail the command.
 
 The React GUI is the default local interactive client. A newly registered empty project
 can add sources and devices, create and validate a deployment, edit its full authored
-definition, preview or start it, inspect topology and logs, and change complete route
-bindings. The TUI remains an optional headless/SSH client rather than a required setup
+definition, preview or start it, inspect topology and logs, and move instances between
+groups. The TUI remains an optional headless/SSH client rather than a required setup
 step. Future guided authoring should extend the schema-driven dashboard instead of
 introducing a dashboard-only product model.
 
@@ -92,11 +92,10 @@ direction arrow and a capability label as well as their capability color. The ro
 matrix toggle exposes the identical topology as a table; viewports below 1280 pixels
 select that table automatically.
 
-Select a consumer node to change its complete provider-group binding. The select lists
-only groups that satisfy every current slot. Selection prepares a modal preview of all
-old and new slot providers and the route snapshot being superseded. Nothing changes
-until **Apply complete change** is activated. Close, drain (with timeout), and pin
-connection policies map directly to the `switchyard bind` CLI options. The resulting
+Select an instance to move it to another group. Selection prepares a modal preview of
+the old and new complete ordered memberships and the route snapshots being superseded.
+Nothing changes until **Apply membership move** is activated. Close, drain (with
+timeout), and pin connection policies map directly to the `switchyard move` CLI options. The resulting
 operation acknowledgement or structured rollback failure appears in Operations and
 the event drawer.
 

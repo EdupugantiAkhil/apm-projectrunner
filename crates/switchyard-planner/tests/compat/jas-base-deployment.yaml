@@ -127,11 +127,6 @@ spec:
     ai-feature:
       address: ai-feature.jas-base.localhost
       instances: [ai-feature/suite, jas-main/service, ui-a/app]
-  bindings:
-    ui-a: ai-feature
-    ui-b: ai-main
-    jas-main: ai-feature
-    jas-feature: ai-main
   hostRouter:
     apiVersion: switchyard.dev/router/v1alpha1
     kind: RouterConfiguration

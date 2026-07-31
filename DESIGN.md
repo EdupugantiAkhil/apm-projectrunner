@@ -643,6 +643,13 @@ ordered member view. Reusing the same source or block in another group requires 
 instance. Validation rejects multi-group membership and names both groups before any
 runtime mutation.
 
+`switchyard move <deployment> <instance> <group>` and the control-plane
+`commands/membership` endpoint update this authored relationship. A live-compatible move
+replaces every affected sidecar snapshot across the source and destination groups and
+rolls back already-applied snapshots if a later router fails. Moving a previously
+ungrouped instance changes the sidecar resource set, so it is saved as desired membership
+and applied through `up` rather than treated as a route-only live change.
+
 For a group address, an explicit instance subdomain or browser route identity selects the
 member. A bare group address works only when exactly one active member also carries an
 instance `address:`; zero or several such members is an error rather than a guess.

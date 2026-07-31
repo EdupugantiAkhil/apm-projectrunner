@@ -3,7 +3,7 @@ use std::{fs, path::Path};
 use switchyard_planner::{
     ChangeImpact, DiagnosticCode, ManagedProfile, OverlayOptions, PlanningDevice,
     PublishedUpstream, classify_changes, load_bundle, load_bundle_from_str, parse_dotenv, plan,
-    plan_with_binding, plan_with_devices, plan_with_overlays, write_plan,
+    plan_with_devices, plan_with_membership, plan_with_overlays, write_plan,
 };
 
 fn bundle() -> switchyard_planner::Bundle {
@@ -48,10 +48,16 @@ fn group_member_instance_service_reference_resolves_service_ambiguity() {
         serde_json::from_str(&generated.route_configs["consumer-a"]).unwrap();
     assert_eq!(
         routes["spec"]["transparentProxy"]["members"],
-        serde_json::json!([{
-            "component": "provider-main/api",
-            "host": "comparison--provider-main--api"
-        }])
+        serde_json::json!([
+            {
+                "component": "provider-main/api",
+                "host": "comparison--provider-main--api"
+            },
+            {
+                "component": "consumer-a/api",
+                "host": "comparison--consumer-a--api"
+            }
+        ])
     );
 }
 
@@ -83,7 +89,13 @@ fn instance_device_defaults_to_local_and_requires_registration() {
 #[test]
 fn remote_non_container_execution_is_rejected() {
     let mut deployment = bundle();
-    deployment.spec.instances[3].device = Some("builder".into());
+    deployment
+        .spec
+        .instances
+        .iter_mut()
+        .find(|instance| instance.name == "suite-main")
+        .unwrap()
+        .device = Some("builder".into());
     let diagnostics = plan_with_devices(&deployment, &devices()).unwrap_err();
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.path.ends_with("services.processes.execution")
@@ -402,7 +414,7 @@ fn change_preview_distinguishes_live_restart_and_rebuild() {
     write_plan(workspace.path(), &base).unwrap();
 
     let directory = tempfile::tempdir().unwrap();
-    let live = plan_with_binding(&base_bundle, "consumer-a", "feature").unwrap();
+    let live = plan_with_membership(&base_bundle, "consumer-a", "feature").unwrap();
     assert!(
         classify_changes(workspace.path(), &live)
             .unwrap()
@@ -529,8 +541,8 @@ fn compose_and_manifest_are_deterministic_and_owned() {
         compose["services"]["comparison--consumer-a--router"]["cap_add"][0],
         "NET_ADMIN"
     );
-    assert_eq!(first.sidecars.len(), 3);
-    assert_eq!(first.route_configs.len(), 3);
+    assert_eq!(first.sidecars.len(), 4);
+    assert_eq!(first.route_configs.len(), 4);
     assert_ne!(first.definition_hash, "");
     assert_ne!(first.resource_hash, "");
     assert_eq!(first.source_identities.len(), bundle.spec.instances.len());
@@ -569,14 +581,17 @@ fn group_routes_without_any_provides_consumes_or_declared_ports() {
     }
 
     let generated = plan(&deployment).expect("group membership alone should route");
-    for consumer in ["consumer-a", "consumer-b"] {
+    for (consumer, provider) in [
+        ("consumer-a", "provider-main/api"),
+        ("consumer-b", "provider-feature/api"),
+    ] {
         let config: serde_json::Value =
             serde_json::from_str(&generated.route_configs[consumer]).unwrap();
         assert_eq!(config["spec"]["listeners"], serde_json::json!([]));
         assert_eq!(config["spec"]["providers"], serde_json::json!([]));
         assert_eq!(
             config["spec"]["transparentProxy"]["members"][0]["component"],
-            "provider-main/api"
+            provider
         );
         assert_eq!(config["spec"]["transparentProxy"]["port"], 65_535);
     }
@@ -593,12 +608,12 @@ fn disabled_group_member_is_omitted_without_losing_priority_position() {
     backup.name = "provider-backup".into();
     deployment.spec.instances.push(backup);
     let group = deployment.spec.groups.get_mut("base").unwrap();
-    group.instances = vec!["provider-main/api".into(), "provider-backup/api".into()];
+    group.instances = vec![
+        "provider-main/api".into(),
+        "provider-backup/api".into(),
+        "consumer-a/api".into(),
+    ];
     deployment.spec.groups.remove("feature");
-    deployment
-        .spec
-        .bindings
-        .retain(|consumer, _| consumer == "consumer-a");
 
     let enabled = plan(&deployment).expect("both members should plan");
     deployment.spec.groups.get_mut("base").unwrap().disabled = vec!["provider-main".into()];
@@ -613,10 +628,16 @@ fn disabled_group_member_is_omitted_without_losing_priority_position() {
         serde_json::from_str(&generated.route_configs["consumer-a"]).unwrap();
     assert_eq!(
         config["spec"]["transparentProxy"]["members"],
-        serde_json::json!([{
-            "component": "provider-backup/api",
-            "host": "comparison--provider-backup--api"
-        }])
+        serde_json::json!([
+            {
+                "component": "provider-backup/api",
+                "host": "comparison--provider-backup--api"
+            },
+            {
+                "component": "consumer-a/api",
+                "host": "comparison--consumer-a--api"
+            }
+        ])
     );
     let resolved: serde_json::Value =
         serde_yaml::from_str(&generated.resolved_deployment_yaml).unwrap();
@@ -639,36 +660,115 @@ fn disabled_entry_must_name_a_resolved_group_member() {
 }
 
 #[test]
-fn disabled_membership_is_local_and_not_inherited() {
+fn disabled_membership_is_local_to_its_group() {
     let mut deployment = bundle();
     deployment.spec.groups.get_mut("base").unwrap().disabled = vec!["provider-main".into()];
-    deployment
-        .spec
-        .bindings
-        .insert("consumer-a".into(), "feature".into());
-    deployment.spec.bindings.remove("consumer-b");
 
-    let generated = plan(&deployment).expect("child group should reactivate inherited member");
+    let generated = plan(&deployment).expect("other group should remain active");
     let config: serde_json::Value =
-        serde_json::from_str(&generated.route_configs["consumer-a"]).unwrap();
+        serde_json::from_str(&generated.route_configs["consumer-b"]).unwrap();
     assert_eq!(
         config["spec"]["transparentProxy"]["members"][0]["component"],
-        "provider-main/api"
+        "provider-feature/api"
     );
 }
 
 #[test]
-fn binding_changes_routes_without_changing_resources() {
+fn membership_move_changes_routes_without_changing_resources() {
     let bundle = bundle();
     let base = plan(&bundle).expect("base should plan");
-    let changed =
-        plan_with_binding(&bundle, "consumer-a", "feature").expect("binding override should plan");
+    let changed = plan_with_membership(&bundle, "consumer-a", "feature")
+        .expect("membership move should plan");
     assert_eq!(base.resource_hash, changed.resource_hash);
     assert_ne!(base.definition_hash, changed.definition_hash);
     assert_eq!(base.compose_yaml, changed.compose_yaml);
     let resolved: serde_json::Value =
         serde_yaml::from_str(&changed.resolved_deployment_yaml).unwrap();
-    assert_eq!(resolved["spec"]["bindings"]["consumer-a"], "feature");
+    assert_eq!(
+        resolved["spec"]["groups"]["base"]["instances"],
+        serde_json::json!(["provider-main/api"])
+    );
+    assert_eq!(
+        resolved["spec"]["groups"]["feature"]["instances"],
+        serde_json::json!(["provider-feature/api", "consumer-b/api", "consumer-a/api"])
+    );
+}
+
+#[test]
+fn grouping_a_previously_ungrouped_instance_changes_resources() {
+    let mut deployment = bundle();
+    deployment
+        .spec
+        .groups
+        .get_mut("base")
+        .unwrap()
+        .instances
+        .retain(|member| !member.starts_with("consumer-a"));
+    let ungrouped = plan(&deployment).expect("ungrouped deployment should plan");
+    let grouped = plan_with_membership(&deployment, "consumer-a", "base")
+        .expect("grouping the instance should plan");
+
+    assert_ne!(ungrouped.resource_hash, grouped.resource_hash);
+    assert_ne!(ungrouped.compose_yaml, grouped.compose_yaml);
+    assert!(!ungrouped.route_configs.contains_key("consumer-a"));
+    assert!(grouped.route_configs.contains_key("consumer-a"));
+}
+
+#[test]
+fn membership_move_rejects_unknown_instance_and_group_before_mutation() {
+    let deployment = bundle();
+    let errors = plan_with_membership(&deployment, "missing-instance", "missing-group")
+        .expect_err("unknown move targets must fail");
+
+    assert!(errors.iter().any(|error| {
+        error.code == DiagnosticCode::MissingReference
+            && error.message.contains("instance `missing-instance`")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.code == DiagnosticCode::MissingReference
+            && error.message.contains("group `missing-group`")
+    }));
+}
+
+#[test]
+fn one_instance_cannot_belong_to_two_groups() {
+    let mut deployment = bundle();
+    deployment
+        .spec
+        .groups
+        .get_mut("feature")
+        .unwrap()
+        .instances
+        .push("provider-main/api".into());
+
+    let errors = plan(&deployment).expect_err("multi-group membership must fail");
+    assert!(errors.iter().any(|error| {
+        error.path == "spec.groups.feature.instances[2]"
+            && error.code == DiagnosticCode::DuplicateName
+            && error.message.contains("group `base`")
+            && error.message.contains("group `feature`")
+    }));
+}
+
+#[test]
+fn bindings_and_direct_routes_are_not_authored_schema_fields() {
+    let deployment = bundle();
+    let document = serde_yaml::to_value(&deployment).unwrap();
+    for field in ["bindings", "routes"] {
+        let mut candidate = document.clone();
+        candidate["spec"]
+            .as_mapping_mut()
+            .unwrap()
+            .insert(field.into(), serde_yaml::Value::Mapping(Default::default()));
+        let encoded = serde_yaml::to_string(&candidate).unwrap();
+        let error = switchyard_planner::load_bundle_from_str(
+            &encoded,
+            Path::new("tests/fixtures/rejected.yaml"),
+        )
+        .expect_err("removed connection fields must be rejected");
+        assert!(error.to_string().contains("unknown field"));
+        assert!(error.to_string().contains(field));
+    }
 }
 
 fn routing_matrix_bundle() -> switchyard_planner::Bundle {

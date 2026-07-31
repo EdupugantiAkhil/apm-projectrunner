@@ -36,7 +36,7 @@ pub(crate) const TEXT: &str = r#"# Switchyard help
 
 ## Connections tab
 
-- **Enter** — choose from compatible complete groups, review every old→new route, then apply one atomic binding operation.
+- **Enter** — choose a destination group, review the membership move, then apply it atomically.
 - Unbound slots remain **not connected** until you explicitly choose and apply a provider group.
 
 ## Devices tab
@@ -56,5 +56,5 @@ pub(crate) const TEXT: &str = r#"# Switchyard help
 - **Code** — code made available from a local path, repository, or worktree.
 - **Startup profile** — a reusable definition that expands into one service or a coordinated suite.
 - **Instance** — one checkout run through one startup profile with its own parameters.
-- **Connection** — the selected provider group or routes for a consumer instance.
+- **Connection** — one instance's membership in a complete ordered group.
 "#;

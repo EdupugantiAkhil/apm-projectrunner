@@ -142,10 +142,10 @@ pub trait OperationBackend: Send + Sync + 'static {
                     "operation backend does not support shell run actions",
                 ))
             }),
-            switchyard_run_actions::OperationSpec::Bind { .. } => Box::pin(async {
+            switchyard_run_actions::OperationSpec::Membership { .. } => Box::pin(async {
                 Err(ApiErrorV1::new(
                     "run_action_invalid",
-                    "bind is not a project run action",
+                    "membership move is not a project run action",
                 ))
             }),
         }
@@ -361,6 +361,7 @@ impl OperationBackend for CliBackend {
 
 struct RouterTarget {
     id: String,
+    route_instance: Option<String>,
     endpoint: switchyard_router_admin::AdminEndpoint,
     old: router_config::RouterConfig,
     candidate: router_config::RouterConfig,
@@ -433,9 +434,9 @@ fn apply_live_binding_with_admin(
     admin: &impl RouterAdmin,
 ) -> Result<BackendOutcome, ApiErrorV1> {
     let consumer = request
-        .consumer
+        .instance
         .as_deref()
-        .ok_or_else(|| ApiErrorV1::new("invalid_request", "`consumer` is required"))?;
+        .ok_or_else(|| ApiErrorV1::new("invalid_request", "`instance` is required"))?;
     let group = request
         .group
         .as_deref()
@@ -468,7 +469,7 @@ fn apply_live_binding_with_admin(
         {
             return Err(ApiErrorV1::new(
                 "generated_state_drift",
-                "generated bind state does not match this deployment; reconcile drift before binding",
+                "generated membership state does not match this deployment; reconcile drift before moving the instance",
             ));
         }
         switchyard_planner::load_bundle(&resolved_path)
@@ -477,40 +478,57 @@ fn apply_live_binding_with_admin(
         authored
     };
     let mut plan =
-        switchyard_planner::plan_with_binding_and_devices(&base, consumer, group, &devices)
+        switchyard_planner::plan_with_membership_and_devices(&base, consumer, group, &devices)
             .map_err(|errors| ApiErrorV1::new("plan_failed", format_diagnostics(errors)))?;
+    if plan.resource_hash != authored_plan.resource_hash {
+        return Err(ApiErrorV1::new(
+            "membership_requires_apply",
+            "moving this instance changes runtime resources; save the membership and run Up",
+        ));
+    }
     let transition = request.transition;
     let route_dir = project_root
         .join(&authored_plan.artifact_dir)
         .join("routes");
-    let old_sidecar: router_config::RouterConfig = serde_json::from_slice(
-        &fs::read(route_dir.join(format!("{consumer}.json")))
-            .map_err(|error| ApiErrorV1::new("active_snapshot_missing", error.to_string()))?,
-    )
-    .map_err(|error| ApiErrorV1::new("active_snapshot_invalid", error.to_string()))?;
-    let mut candidate_sidecar: router_config::RouterConfig = serde_json::from_str(
-        plan.route_configs
-            .get(consumer)
-            .ok_or_else(|| ApiErrorV1::new("router_missing", "consumer has no sidecar router"))?,
-    )
-    .map_err(|error| ApiErrorV1::new("candidate_snapshot_invalid", error.to_string()))?;
-    set_transition(&mut candidate_sidecar, transition);
-    let sidecar = plan
-        .sidecars
-        .get(consumer)
-        .ok_or_else(|| ApiErrorV1::new("router_missing", "consumer has no sidecar router"))?;
-    let mut targets = vec![RouterTarget {
-        id: format!("sidecar:{consumer}"),
-        endpoint: switchyard_router_admin::AdminEndpoint::docker_exec(
-            &sidecar.service,
-            &sidecar.admin_socket,
-            &plan.deployment,
-            consumer,
-            &plan.resource_hash,
-        ),
-        old: old_sidecar,
-        candidate: candidate_sidecar,
-    }];
+    let mut targets = Vec::new();
+    let candidates = plan.route_configs.clone();
+    for (instance, encoded) in candidates {
+        let old: router_config::RouterConfig = serde_json::from_slice(
+            &fs::read(route_dir.join(format!("{instance}.json")))
+                .map_err(|error| ApiErrorV1::new("active_snapshot_missing", error.to_string()))?,
+        )
+        .map_err(|error| ApiErrorV1::new("active_snapshot_invalid", error.to_string()))?;
+        let mut candidate: router_config::RouterConfig = serde_json::from_str(&encoded)
+            .map_err(|error| ApiErrorV1::new("candidate_snapshot_invalid", error.to_string()))?;
+        let mut comparable = candidate.clone();
+        comparable.spec.snapshot = old.spec.snapshot.clone();
+        if comparable == old {
+            plan.route_configs.insert(
+                instance,
+                serde_json::to_string_pretty(&old).map_err(|error| {
+                    ApiErrorV1::new("snapshot_encode_failed", error.to_string())
+                })?,
+            );
+            continue;
+        }
+        set_transition(&mut candidate, transition);
+        let sidecar = plan.sidecars.get(&instance).ok_or_else(|| {
+            ApiErrorV1::new("router_missing", "group member has no sidecar router")
+        })?;
+        targets.push(RouterTarget {
+            id: format!("sidecar:{instance}"),
+            route_instance: Some(instance.clone()),
+            endpoint: switchyard_router_admin::AdminEndpoint::docker_exec(
+                &sidecar.service,
+                &sidecar.admin_socket,
+                &plan.deployment,
+                &instance,
+                &plan.resource_hash,
+            ),
+            old,
+            candidate,
+        });
+    }
 
     let host_dir = project_root.join(".switchyard/run").join(&plan.deployment);
     let host_socket = host_dir.join("host.socket");
@@ -541,15 +559,31 @@ fn apply_live_binding_with_admin(
                 }
             }
         }
-        set_transition(&mut candidate, transition);
-        targets.push(RouterTarget {
-            id: "host-gateway".into(),
-            endpoint: switchyard_router_admin::AdminEndpoint::unix(host_socket),
-            old,
-            candidate,
-        });
+        let mut comparable = candidate.clone();
+        comparable.spec.snapshot = old.spec.snapshot.clone();
+        if comparable == old {
+            plan.host_router_config =
+                Some(serde_json::to_string_pretty(&old).map_err(|error| {
+                    ApiErrorV1::new("snapshot_encode_failed", error.to_string())
+                })?);
+        } else {
+            set_transition(&mut candidate, transition);
+            targets.push(RouterTarget {
+                id: "host-gateway".into(),
+                route_instance: None,
+                endpoint: switchyard_router_admin::AdminEndpoint::unix(host_socket),
+                old,
+                candidate,
+            });
+        }
     }
 
+    if targets.is_empty() {
+        return Err(ApiErrorV1::new(
+            "router_missing",
+            "membership move does not have a live router to update",
+        ));
+    }
     let transition_context = StructuredContext::new(
         serde_json::to_value(&targets[0].candidate.spec.snapshot.transitions)
             .unwrap_or(Value::Null),
@@ -592,13 +626,13 @@ fn apply_live_binding_with_admin(
         })?;
         target.candidate.spec.snapshot.version = version;
         target.candidate.spec.snapshot.id = router_config::RouteSnapshotId::new(format!(
-            "{}-bind-{version}",
+            "{}-membership-{version}",
             target.id.replace(':', "-")
         ));
         let checksum = snapshot_checksum(&target.candidate);
         events.emit(
             EventKindV1::Route,
-            json!({"router": target.id, "binding": consumer, "desiredVersion": version, "status": "pending"}),
+            json!({"router": target.id, "instance": consumer, "desiredVersion": version, "status": "pending"}),
         );
         match admin.apply_snapshot(&target.endpoint, token, &target.candidate) {
             Ok(ack)
@@ -694,12 +728,16 @@ fn apply_live_binding_with_admin(
         });
     }
 
-    let sidecar_config = &targets[0].candidate;
-    plan.route_configs.insert(
-        consumer.to_owned(),
-        serde_json::to_string_pretty(sidecar_config)
-            .map_err(|error| ApiErrorV1::new("snapshot_encode_failed", error.to_string()))?,
-    );
+    for target in &targets {
+        if let Some(instance) = &target.route_instance {
+            plan.route_configs.insert(
+                instance.clone(),
+                serde_json::to_string_pretty(&target.candidate).map_err(|error| {
+                    ApiErrorV1::new("snapshot_encode_failed", error.to_string())
+                })?,
+            );
+        }
+    }
     if let Some(target) = targets.iter().find(|target| target.id == "host-gateway") {
         plan.host_router_config = Some(
             serde_json::to_string_pretty(&target.candidate)
@@ -715,7 +753,7 @@ fn apply_live_binding_with_admin(
         .map_err(|error| ApiErrorV1::new("artifact_write_failed", error.to_string()))?;
     events.emit(
         EventKindV1::Route,
-        json!({"binding": consumer, "status": "active"}),
+        json!({"instance": consumer, "status": "active"}),
     );
     let mut stdout = format!(
         "router acknowledgement: {}\n",
@@ -735,7 +773,7 @@ fn apply_live_binding_with_admin(
                 .unwrap_or_else(|_| "null".into())
         ));
     }
-    stdout.push_str(&format!("bound `{consumer}` to `{group}`\n"));
+    stdout.push_str(&format!("moved `{consumer}` into group `{group}`\n"));
     Ok(BackendOutcome::LiveBinding {
         result: CommandResultV1 {
             exit_code: 0,
@@ -1014,7 +1052,7 @@ where
         let event_kind = match kind {
             CommandKind::Apply => EventKindV1::Build,
             CommandKind::Status => EventKindV1::Health,
-            CommandKind::Bind | CommandKind::Routes => EventKindV1::Route,
+            CommandKind::Membership | CommandKind::Routes => EventKindV1::Route,
             _ => EventKindV1::Log,
         };
         events.emit(
@@ -1767,7 +1805,7 @@ fn run_action_preview(
         switchyard_run_actions::OperationSpec::Shell(command) => RunActionExecutionV1::Shell {
             command: command.clone(),
         },
-        switchyard_run_actions::OperationSpec::Bind { .. } => {
+        switchyard_run_actions::OperationSpec::Membership { .. } => {
             unreachable!("run scripts cannot bind")
         }
     };
@@ -2583,10 +2621,25 @@ fn validate_profile_blocking(
 }
 
 fn snapshot_fields(snapshot: Option<&Value>) -> (Vec<String>, Value) {
-    let bindings = snapshot
-        .and_then(|value| value.pointer("/spec/bindings"))
-        .cloned()
-        .unwrap_or_else(|| json!({}));
+    let mut memberships = serde_json::Map::new();
+    if let Some(groups) = snapshot
+        .and_then(|value| value.pointer("/spec/groups"))
+        .and_then(Value::as_object)
+    {
+        for (group_name, group) in groups {
+            for member in group
+                .get("instances")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                if let Some(instance) = member.split('/').next() {
+                    memberships.insert(instance.to_owned(), json!(group_name));
+                }
+            }
+        }
+    }
     let mut domains = Vec::new();
     fn collect_domains(value: &Value, domains: &mut Vec<String>) {
         match value {
@@ -2613,7 +2666,7 @@ fn snapshot_fields(snapshot: Option<&Value>) -> (Vec<String>, Value) {
     }
     domains.sort();
     domains.dedup();
-    (domains, bindings)
+    (domains, Value::Object(memberships))
 }
 
 fn snapshot_gateway_exposure(snapshot: Option<&Value>) -> Option<GatewayExposureV1> {
@@ -3151,7 +3204,7 @@ async fn list_deployments(State(inner): State<Arc<Inner>>) -> Response {
                 .as_deref()
                 .and_then(|value| serde_json::from_str::<Value>(value).ok());
             let manifest = read_manifest(&inner.config.project_root, &stored.deployment);
-            let (custom_domains, bindings) = snapshot_fields(snapshot.as_ref());
+            let (custom_domains, memberships) = snapshot_fields(snapshot.as_ref());
             let gateway_exposure = snapshot_gateway_exposure(snapshot.as_ref());
             let mdns_publication =
                 read_mdns_publication(&inner.config.project_root, &stored.deployment);
@@ -3176,7 +3229,7 @@ async fn list_deployments(State(inner): State<Arc<Inner>>) -> Response {
                     }
                 }),
                 custom_domains,
-                bindings,
+                memberships,
                 gateway_exposure,
                 mdns_publication,
                 tailscale_publication,
@@ -3258,7 +3311,7 @@ async fn deployment_detail(
             );
         }
     };
-    let (custom_domains, bindings) = snapshot_fields(snapshot.as_ref());
+    let (custom_domains, memberships) = snapshot_fields(snapshot.as_ref());
     let gateway_exposure = snapshot_gateway_exposure(snapshot.as_ref());
     let mdns_publication = read_mdns_publication(&inner.config.project_root, &deployment);
     let tailscale_publication = read_tailscale_publication(&inner.config.project_root, &deployment);
@@ -3274,7 +3327,7 @@ async fn deployment_detail(
         reconciliation,
         resources,
         custom_domains,
-        bindings,
+        memberships,
         gateway_exposure,
         mdns_publication,
         tailscale_publication,
@@ -4085,7 +4138,7 @@ impl OperationInvocation {
             ),
             Self::RunAction(
                 switchyard_run_actions::OperationSpec::Shell(_)
-                | switchyard_run_actions::OperationSpec::Bind { .. },
+                | switchyard_run_actions::OperationSpec::Membership { .. },
             ) => false,
         }
     }
@@ -4098,7 +4151,7 @@ impl OperationInvocation {
             }) => matches!(command, switchyard_run_actions::StructuredCommand::Up),
             Self::RunAction(
                 switchyard_run_actions::OperationSpec::Shell(_)
-                | switchyard_run_actions::OperationSpec::Bind { .. },
+                | switchyard_run_actions::OperationSpec::Membership { .. },
             ) => false,
         }
     }
@@ -4106,9 +4159,9 @@ impl OperationInvocation {
     fn instance(&self, kind: CommandKind, project_root: &Path) -> Option<String> {
         let (bundle, candidate, require_managed_profile) = match self {
             Self::Command { request, .. } => match kind {
-                CommandKind::Bind => (
+                CommandKind::Membership => (
                     request.bundle.as_path(),
-                    request.consumer.as_deref()?,
+                    request.instance.as_deref()?,
                     false,
                 ),
                 CommandKind::Logs => {
@@ -4121,11 +4174,11 @@ impl OperationInvocation {
                 CommandKind::Open => (request.bundle.as_path(), request.ui.as_deref()?, true),
                 _ => return None,
             },
-            Self::RunAction(switchyard_run_actions::OperationSpec::Bind {
+            Self::RunAction(switchyard_run_actions::OperationSpec::Membership {
                 bundle,
-                consumer,
+                instance,
                 ..
-            }) => (bundle.as_path(), consumer.as_str(), false),
+            }) => (bundle.as_path(), instance.as_str(), false),
             Self::RunAction(
                 switchyard_run_actions::OperationSpec::Structured { .. }
                 | switchyard_run_actions::OperationSpec::Shell(_),
@@ -4530,9 +4583,9 @@ async fn execute_operation(
     };
     let (mut work, persistence_bundle) = match invocation {
         OperationInvocation::Command { arguments, request } => {
-            let persistence_bundle = matches!(kind, CommandKind::Apply | CommandKind::Bind)
+            let persistence_bundle = matches!(kind, CommandKind::Apply | CommandKind::Membership)
                 .then(|| request.bundle.clone());
-            let work = if kind == CommandKind::Bind {
+            let work = if kind == CommandKind::Membership {
                 inner
                     .backend
                     .live_bind(request, id.clone(), cancellation.clone(), sink.clone())
@@ -5089,7 +5142,7 @@ fn parse_kind(value: &str) -> Option<CommandKind> {
         CommandKind::Validate,
         CommandKind::Plan,
         CommandKind::Apply,
-        CommandKind::Bind,
+        CommandKind::Membership,
         CommandKind::Status,
         CommandKind::Routes,
         CommandKind::Logs,
@@ -5128,7 +5181,7 @@ fn stored_operation_kind(kind: CommandKind) -> &'static str {
 fn state_kind(kind: CommandKind) -> OperationKind {
     match kind {
         CommandKind::Apply => OperationKind::Apply,
-        CommandKind::Bind => OperationKind::Bind,
+        CommandKind::Membership => OperationKind::Membership,
         CommandKind::Down => OperationKind::Stop,
         CommandKind::Cleanup => OperationKind::Cleanup,
         other => OperationKind::Other(other.segment().into()),
@@ -5551,6 +5604,7 @@ mod tests {
             candidate.spec.snapshot.version = 2;
             RouterTarget {
                 id: id.into(),
+                route_instance: None,
                 endpoint: switchyard_router_admin::AdminEndpoint::unix(socket),
                 old: config.clone(),
                 candidate,

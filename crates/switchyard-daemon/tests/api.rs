@@ -161,7 +161,7 @@ impl OperationBackend for LockLossBackend {
         >,
     > {
         let cancelled = self.cancelled.clone();
-        let binding = request.consumer.unwrap();
+        let binding = request.instance.unwrap();
         Some(Box::pin(async move {
             while !*cancellation.borrow() && cancellation.changed().await.is_ok() {}
             cancelled.store(true, Ordering::SeqCst);
@@ -247,7 +247,7 @@ impl OperationBackend for LiveBindingBackend {
             >,
         >,
     > {
-        let binding = request.consumer.unwrap();
+        let binding = request.instance.unwrap();
         Some(Box::pin(async move {
             let empty = || StructuredContext::new(json!({})).unwrap();
             Ok(BackendOutcome::LiveBinding {
@@ -925,7 +925,7 @@ async fn durable_operation_list_filters_and_marks_destructive_records() {
             "op-bind",
             "other",
             Some("api"),
-            OperationKind::Bind,
+            OperationKind::Membership,
             OperationStatus::Succeeded,
             20,
         ),
@@ -1685,7 +1685,7 @@ async fn deployment_list_and_detail_include_applied_manifest_and_reconciliation(
     }]);
     let snapshot = AppliedSnapshot::from_json(json!({
         "spec": {
-            "bindings": {"consumer-a": "feature"},
+            "groups": {"feature": {"instances": ["consumer-a"]}},
             "hostRouter": host_router
         }
     }))
@@ -1830,7 +1830,7 @@ async fn deployment_list_and_detail_include_applied_manifest_and_reconciliation(
         detail["sourceIdentities"]["consumer-a"]["commit"],
         "abcdef123456"
     );
-    assert_eq!(detail["bindings"]["consumer-a"], "feature");
+    assert_eq!(detail["memberships"]["consumer-a"], "feature");
     assert_eq!(detail["reconciliation"]["deployment"], "demo");
     assert_eq!(
         detail["gatewayExposure"],
@@ -2066,10 +2066,10 @@ async fn lock_loss_cancels_live_binding_then_persists_its_attempts() {
         &daemon,
         Some(&daemon.token),
         "POST",
-        "/api/v1/commands/bind",
+        "/api/v1/commands/membership",
         Some(json!({
             "bundle": fixture(),
-            "consumer": "backend-a",
+            "instance": "backend-a",
             "group": "base"
         })),
         &[],
@@ -2179,12 +2179,12 @@ async fn mutation_lock_global_limit_and_cancellation_work() {
         1,
     );
 
-    let bind = json!({"bundle": fixture(), "consumer": "consumer-a", "group": "base"});
+    let bind = json!({"bundle": fixture(), "instance": "consumer-a", "group": "base"});
     let (status, first) = request(
         &daemon,
         Some(&daemon.token),
         "POST",
-        "/api/v1/commands/bind",
+        "/api/v1/commands/membership",
         Some(bind.clone()),
         &[],
     )
@@ -2196,7 +2196,7 @@ async fn mutation_lock_global_limit_and_cancellation_work() {
             &daemon,
             Some(&daemon.token),
             "POST",
-            "/api/v1/commands/bind",
+            "/api/v1/commands/membership",
             Some(bind),
             &[]
         )
@@ -2296,12 +2296,12 @@ async fn restart_keeps_final_operation_state_in_sqlite() {
 async fn failed_live_binding_versions_and_rollback_history_survive_restart() {
     let temp = TempDir::new().unwrap();
     let daemon = start_api(&temp, Arc::new(LiveBindingBackend), 2);
-    let body = json!({"bundle": fixture(), "consumer": "backend-a", "group": "base", "transition": {"strategy": "drain", "timeoutMs": 2500}});
+    let body = json!({"bundle": fixture(), "instance": "backend-a", "group": "base", "transition": {"strategy": "drain", "timeoutMs": 2500}});
     let (status, operation) = request(
         &daemon,
         Some(&daemon.token),
         "POST",
-        "/api/v1/commands/bind",
+        "/api/v1/commands/membership",
         Some(body),
         &[],
     )

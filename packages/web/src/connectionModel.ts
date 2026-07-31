@@ -2,8 +2,6 @@ export interface ConnectionSpec {
   instances?: Array<{ name: string; block?: string; address?: string }>
   blocks?: Record<string, { services?: Record<string, object> }>
   groups?: Record<string, { instances?: string[]; disabled?: string[]; address?: string }>
-  bindings?: Record<string, string>
-  routes?: Record<string, Record<string, string>>
 }
 
 export function resolvedGroups(spec: ConnectionSpec) {
@@ -33,11 +31,15 @@ export function activeConnections(spec: ConnectionSpec, instance: string) {
       }
     }
   }
-  const selected = spec.bindings?.[instance]
-  if (selected && !result.some((connection) => connection.group === selected)) {
-    result.push({ group: selected, member: instance, disabled: false })
-  }
   return result
+}
+
+export function membershipByInstance(spec: ConnectionSpec) {
+  const memberships: Record<string, string> = {}
+  for (const [group, definition] of Object.entries(spec.groups ?? {})) {
+    for (const member of definition.instances ?? []) memberships[member.split('/', 1)[0]] = group
+  }
+  return memberships
 }
 
 export function definitionSpec(preview: Record<string, unknown>): ConnectionSpec | null {
@@ -47,12 +49,26 @@ export function definitionSpec(preview: Record<string, unknown>): ConnectionSpec
   return spec && typeof spec === 'object' ? spec as ConnectionSpec : null
 }
 
-export function updateBindingYaml(yaml: string, consumer: string, group: string) {
-  const lines = yaml.split('\n'); const specIndex = lines.findIndex((line) => /^spec:\s*(?:#.*)?$/.test(line)); if (specIndex < 0) throw new Error('Authored definition has no top-level spec mapping.')
-  const specEnd = lines.findIndex((line, index) => index > specIndex && /^\S/.test(line)); const end = specEnd < 0 ? lines.length : specEnd; const bindingIndex = lines.findIndex((line, index) => index > specIndex && index < end && /^  bindings:\s*(?:\{\})?\s*(?:#.*)?$/.test(line)); const key = JSON.stringify(consumer); const value = JSON.stringify(group)
-  if (bindingIndex < 0) { lines.splice(end, 0, '  bindings:', `    ${key}: ${value}`); return lines.join('\n') }
-  if (/\{\}/.test(lines[bindingIndex])) lines[bindingIndex] = '  bindings:'
-  const bindingEnd = lines.findIndex((line, index) => index > bindingIndex && index < end && /^(?:  \S|\S)/.test(line)); const limit = bindingEnd < 0 ? end : bindingEnd; const escaped = consumer.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); const existing = lines.findIndex((line, index) => index > bindingIndex && index < limit && new RegExp(`^    (?:${escaped}|["']${escaped}["']):`).test(line))
-  if (existing >= 0) lines[existing] = `    ${key}: ${value}`; else lines.splice(limit, 0, `    ${key}: ${value}`)
+export function updateGroupInstancesYaml(yaml: string, group: string, members: string[]) {
+  const lines = yaml.split('\n')
+  const groupsIndex = lines.findIndex((line) => /^  groups:\s*(?:#.*)?$/.test(line))
+  if (groupsIndex < 0) throw new Error('Authored definition has no spec.groups mapping.')
+  const groupsEnd = lines.findIndex((line, index) => index > groupsIndex && /^(?:  \S|\S)/.test(line))
+  const end = groupsEnd < 0 ? lines.length : groupsEnd
+  const escaped = group.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const groupIndex = lines.findIndex((line, index) => index > groupsIndex && index < end && new RegExp(`^    (?:${escaped}|["']${escaped}["']):\\s*(?:#.*)?$`).test(line))
+  if (groupIndex < 0) throw new Error(`Authored definition has no group ${group}.`)
+  const nextGroup = lines.findIndex((line, index) => index > groupIndex && index < end && /^    \S.*:\s*(?:#.*)?$/.test(line))
+  const groupEnd = nextGroup < 0 ? end : nextGroup
+  const instancesIndex = lines.findIndex((line, index) => index > groupIndex && index < groupEnd && /^      instances:\s*/.test(line))
+  const value = JSON.stringify(members)
+  if (instancesIndex < 0) {
+    lines.splice(groupIndex + 1, 0, `      instances: ${value}`)
+    return lines.join('\n')
+  }
+  lines[instancesIndex] = `      instances: ${value}`
+  let removeEnd = instancesIndex + 1
+  while (removeEnd < groupEnd && /^        -\s/.test(lines[removeEnd])) removeEnd += 1
+  lines.splice(instancesIndex + 1, removeEnd - instancesIndex - 1)
   return lines.join('\n')
 }

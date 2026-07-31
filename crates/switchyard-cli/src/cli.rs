@@ -39,9 +39,9 @@ pub enum CliCommand {
         bundle: PathBuf,
         options: DeploymentOptions,
     },
-    Bind {
+    Move {
         bundle: PathBuf,
-        consumer: String,
+        instance: String,
         group: String,
         transition: Option<TransitionArgument>,
     },
@@ -163,7 +163,7 @@ Usage:
   switchyard migrate <deployment.yaml>
   switchyard overlay validate <overlay.yaml>
   switchyard overlay diff <deployment.yaml> --with <overlay.yaml> [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
-  switchyard bind <deployment.yaml> <consumer> <group> [--transition close|drain|pin] [--drain-timeout-ms <ms>]
+  switchyard move <deployment.yaml> <instance> <group> [--transition close|drain|pin] [--drain-timeout-ms <ms>]
   switchyard status <deployment.yaml> [--routes] [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
   switchyard routes <deployment.yaml>
   switchyard logs <deployment.yaml> [instance[/service]]
@@ -226,7 +226,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
             let (bundle, options, _) = parse_deployment_options(rest, false)?;
             Ok(CliCommand::Up { bundle, options })
         }
-        "bind" if rest.len() >= 3 => parse_bind(rest),
+        "move" if rest.len() >= 3 => parse_move(rest),
         "status" if !rest.is_empty() => {
             let (bundle, options, routes) = parse_deployment_options(rest, true)?;
             Ok(CliCommand::Status {
@@ -539,7 +539,7 @@ fn parse_worktree_create(rest: &[String]) -> Result<CliCommand, UsageError> {
     })
 }
 
-fn parse_bind(rest: &[String]) -> Result<CliCommand, UsageError> {
+fn parse_move(rest: &[String]) -> Result<CliCommand, UsageError> {
     let mut strategy = None;
     let mut timeout = None;
     let mut index = 3;
@@ -555,7 +555,7 @@ fn parse_bind(rest: &[String]) -> Result<CliCommand, UsageError> {
                 })?);
                 index += 2;
             }
-            _ => return Err(UsageError(format!("invalid bind arguments\n\n{USAGE}"))),
+            _ => return Err(UsageError(format!("invalid move arguments\n\n{USAGE}"))),
         }
     }
     let transition = match strategy {
@@ -576,9 +576,9 @@ fn parse_bind(rest: &[String]) -> Result<CliCommand, UsageError> {
             ));
         }
     };
-    Ok(CliCommand::Bind {
+    Ok(CliCommand::Move {
         bundle: PathBuf::from(&rest[0]),
-        consumer: rest[1].clone(),
+        instance: rest[1].clone(),
         group: rest[2].clone(),
         transition,
     })
@@ -593,12 +593,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_bind_without_optional_ambiguity() {
+    fn parses_move_without_optional_ambiguity() {
         assert_eq!(
-            parse(args(&["bind", "demo.yaml", "backend", "ai-feature"])).unwrap(),
-            CliCommand::Bind {
+            parse(args(&["move", "demo.yaml", "backend", "ai-feature"])).unwrap(),
+            CliCommand::Move {
                 bundle: "demo.yaml".into(),
-                consumer: "backend".into(),
+                instance: "backend".into(),
                 group: "ai-feature".into(),
                 transition: None,
             }
@@ -677,7 +677,7 @@ mod tests {
     fn parses_drain_policy() {
         assert!(matches!(
             parse(args(&[
-                "bind",
+                "move",
                 "demo.yaml",
                 "backend",
                 "base",
@@ -687,7 +687,7 @@ mod tests {
                 "2500"
             ]))
             .unwrap(),
-            CliCommand::Bind {
+            CliCommand::Move {
                 transition: Some(TransitionArgument::Drain { timeout_ms: 2500 }),
                 ..
             }

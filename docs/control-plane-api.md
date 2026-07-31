@@ -35,7 +35,7 @@ exit. Credentials and secret-bearing output lines are never written to daemon ev
 The API bearer credential is distinct from the router-administration credential. For
 GUI and daemon-proxied commands, the daemon loads or creates the owner-only
 `.switchyard/router-token`, passes it to `switchyard up` through the child environment,
-and uses the same value for native binding changes. The value is not included in the
+and uses the same value for native membership moves. The value is not included in the
 discovery document or any API response. Persisting it allows a restarted daemon to
 continue administering routers that outlive the control-plane process. If
 `SWITCHYARD_ROUTER_TOKEN` is explicitly set, it seeds a missing file and must match an
@@ -54,7 +54,7 @@ optional `context` fields. Framework types are not part of the public Rust contr
 | `POST` | `/api/v1/commands/validate` | Validate desired state |
 | `POST` | `/api/v1/commands/plan` | Render the deterministic plan |
 | `POST` | `/api/v1/commands/apply` | Apply/build/start (`switchyard up`) |
-| `POST` | `/api/v1/commands/bind` | Change a binding |
+| `POST` | `/api/v1/commands/membership` | Move an instance to a group |
 | `POST` | `/api/v1/commands/status` | Inspect status, optionally including routes |
 | `POST` | `/api/v1/commands/routes` | Inspect route snapshots |
 | `POST` | `/api/v1/commands/logs` | Observe deployment or service logs |
@@ -66,7 +66,7 @@ optional `context` fields. Framework types are not part of the public Rust contr
 | `POST` | `/api/v1/operations/{id}/cancel` | Request cooperative cancellation |
 | `GET` | `/api/v1/operations/{id}/events` | Observe or resume the operation SSE stream |
 | `GET` | `/api/v1/deployments/{deployment}/routes` | Query route versions and activation history |
-| `GET` | `/api/v1/deployments` | List known deployments with applied hashes, latest operation, domains, and bindings |
+| `GET` | `/api/v1/deployments` | List known deployments with applied hashes, latest operation, domains, and memberships |
 | `GET` | `/api/v1/deployments/{deployment}` | Read the applied snapshot, generated source identities, resources, and reconciliation summary |
 | `GET` | `/api/v1/deployments/{deployment}/definition` | Read authored YAML, absolute path, and SHA-256 edit hash |
 | `POST` | `/api/v1/deployments` | Validate and atomically create a non-existing authored definition |
@@ -95,9 +95,9 @@ optional `context` fields. Framework types are not part of the public Rust contr
 | `DELETE` | `/api/v1/devices/{name}` | Remove an unoccupied SSH device registration |
 | `POST` | `/api/v1/devices/{name}/check` | Run and persist SSH reachability plus Docker eligibility checks |
 
-A command request always contains `bundle`. Command-specific fields are `consumer` and
-`group` for bind, `routes` for status, `target` for logs, `ui` for open, and `confirmed`
-for cleanup. A bind may also carry `transition` as `close`, `pin`, or `drain` with a
+A command request always contains `bundle`. Command-specific fields are `instance` and
+`group` for membership, `routes` for status, `target` for logs, `ui` for open, and `confirmed`
+for cleanup. A membership move may also carry `transition` as `close`, `pin`, or `drain` with a
 `timeoutMs`; the CLI exposes the same choice through `--transition` and
 `--drain-timeout-ms`. Creation returns HTTP 202 and a versioned operation document. Status is
 `pending`, `running`, `succeeded`, `failed`, or `cancelled`. Script-compatible stdout,
@@ -142,7 +142,7 @@ and is true for `cleanup` and `down`. Durable list records always have a null `r
 because stdout and stderr are intentionally memory-only.
 
 `instance` is populated only when one specific authored instance is genuinely identified:
-bind uses its consumer instance; logs uses the instance portion of a validated
+membership uses the moved instance; logs uses the instance portion of a validated
 `instance` or `instance/component` target; and open uses the managed-profile name only when
 that name is also an authored instance in the loaded bundle. Deployment-wide commands
 (validate, plan, apply, status, routes, down, and cleanup), structured or shell run actions,

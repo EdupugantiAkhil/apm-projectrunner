@@ -80,6 +80,7 @@ pub fn migrate(
     materialize_group_instances(&mut document, &mut changes)?;
     remove_identity_routing_metadata(&mut document, &mut changes)?;
     migrate_ui_routes(&mut document, &mut changes)?;
+    migrate_connections(&mut document, &mut changes)?;
     migrate_sources(&mut document, path, &mut changes)?;
     if changes.is_empty() {
         return Ok(MigrationResult {
@@ -123,6 +124,135 @@ pub fn migrate(
         changed: true,
         changes,
     })
+}
+
+fn migrate_connections(
+    document: &mut Value,
+    changes: &mut Vec<String>,
+) -> Result<(), MigrationError> {
+    let spec = document
+        .get_mut("spec")
+        .and_then(Value::as_mapping_mut)
+        .ok_or_else(|| MigrationError("cannot migrate: spec must be a mapping".into()))?;
+
+    let mut occurrences = BTreeMap::<String, Vec<(String, usize)>>::new();
+    for (group_name, group) in spec
+        .get("groups")
+        .and_then(Value::as_mapping)
+        .into_iter()
+        .flatten()
+    {
+        let group_name = group_name.as_str().ok_or_else(|| {
+            MigrationError("cannot migrate: every group name must be a string".into())
+        })?;
+        for (index, member) in group
+            .get("instances")
+            .and_then(Value::as_sequence)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let member = member.as_str().ok_or_else(|| {
+                MigrationError(format!(
+                    "cannot migrate: spec.groups.{group_name}.instances[{index}] must be a string"
+                ))
+            })?;
+            let instance = member.split('/').next().unwrap_or(member);
+            occurrences
+                .entry(instance.to_owned())
+                .or_default()
+                .push((group_name.to_owned(), index));
+        }
+    }
+
+    let duplicates = occurrences
+        .iter()
+        .filter(|(_, entries)| entries.len() > 1)
+        .map(|(instance, entries)| {
+            format!(
+                "`{instance}` at {}",
+                entries
+                    .iter()
+                    .map(|(group, index)| format!("spec.groups.{group}.instances[{index}]"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+        .collect::<Vec<_>>();
+    if !duplicates.is_empty() {
+        return Err(MigrationError(format!(
+            "cannot migrate instances listed in several groups: {}; create a separate instance for each group",
+            duplicates.join("; ")
+        )));
+    }
+
+    if let Some(bindings) = spec.get("bindings") {
+        let bindings = if bindings.is_null() {
+            None
+        } else {
+            Some(bindings.as_mapping().ok_or_else(|| {
+                MigrationError("cannot migrate: spec.bindings must be a mapping".into())
+            })?)
+        };
+        let mut conflicts = Vec::new();
+        if let Some(bindings) = bindings {
+            for (instance, selected_group) in bindings {
+                let instance = instance.as_str().ok_or_else(|| {
+                    MigrationError(
+                        "cannot migrate: every spec.bindings key must be a string".into(),
+                    )
+                })?;
+                let selected_group = selected_group.as_str().ok_or_else(|| {
+                    MigrationError(format!(
+                        "cannot migrate: spec.bindings.{instance} must name a group"
+                    ))
+                })?;
+                match occurrences.get(instance).and_then(|entries| entries.first()) {
+                    Some((member_group, _)) if member_group == selected_group => {}
+                    Some((member_group, index)) => conflicts.push(format!(
+                        "spec.bindings.{instance} selects `{selected_group}` but \
+                         spec.groups.{member_group}.instances[{index}] places it in `{member_group}`"
+                    )),
+                    None => conflicts.push(format!(
+                        "spec.bindings.{instance} selects `{selected_group}` but the instance is not a member of any group"
+                    )),
+                }
+            }
+        }
+        if !conflicts.is_empty() {
+            return Err(MigrationError(format!(
+                "cannot migrate disagreeing connection declarations: {}",
+                conflicts.join("; ")
+            )));
+        }
+        let count = bindings.map_or(0, serde_yaml::Mapping::len);
+        spec.remove("bindings");
+        changes.push(format!(
+            "spec.bindings: removed {count} redundant membership {}",
+            if count == 1 {
+                "selection"
+            } else {
+                "selections"
+            }
+        ));
+    }
+
+    if let Some(routes) = spec.get("routes") {
+        let empty = routes.is_null()
+            || routes
+                .as_mapping()
+                .is_some_and(serde_yaml::Mapping::is_empty)
+            || routes.as_sequence().is_some_and(Vec::is_empty);
+        if !empty {
+            return Err(MigrationError(
+                "cannot migrate non-empty spec.routes: direct routes bypass group membership; express the connection through one group's instances list"
+                    .into(),
+            ));
+        }
+        spec.remove("routes");
+        changes.push("spec.routes: removed empty compatibility section".into());
+    }
+    Ok(())
 }
 
 fn migrate_sources(
@@ -1100,6 +1230,72 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    fn current_membership_fixture() -> Value {
+        serde_yaml::from_str(include_str!(
+            "../../switchyard-planner/tests/fixtures/deployment.yaml"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn removes_redundant_bindings_and_empty_routes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("deployment.yaml");
+        let mut document = current_membership_fixture();
+        document["spec"]["bindings"] =
+            serde_yaml::from_str("consumer-a: base\nconsumer-b: feature\n").unwrap();
+        document["spec"]["routes"] = Value::Mapping(Default::default());
+        fs::write(&path, serde_yaml::to_string(&document).unwrap()).unwrap();
+
+        let result = migrate(&path, || {}).unwrap();
+        assert!(
+            result
+                .changes
+                .iter()
+                .any(|change| change.starts_with("spec.bindings: removed 2"))
+        );
+        let migrated: Value = serde_yaml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(migrated["spec"].get("bindings").is_none());
+        assert!(migrated["spec"].get("routes").is_none());
+    }
+
+    #[test]
+    fn refuses_disagreeing_binding_without_writing() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("deployment.yaml");
+        let mut document = current_membership_fixture();
+        document["spec"]["bindings"] = serde_yaml::from_str("consumer-a: feature\n").unwrap();
+        let original = serde_yaml::to_string(&document).unwrap();
+        fs::write(&path, &original).unwrap();
+
+        let error = migrate(&path, || panic!("refused migration must not write"))
+            .expect_err("disagreeing connection declarations must fail");
+        assert!(error.to_string().contains("consumer-a"));
+        assert!(error.to_string().contains("places it in `base`"));
+        assert!(error.to_string().contains("selects `feature`"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn refuses_multi_group_membership_and_names_every_occurrence() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("deployment.yaml");
+        let mut document = current_membership_fixture();
+        document["spec"]["groups"]["feature"]["instances"]
+            .as_sequence_mut()
+            .unwrap()
+            .push(Value::String("consumer-a/api".into()));
+        let original = serde_yaml::to_string(&document).unwrap();
+        fs::write(&path, &original).unwrap();
+
+        let error = migrate(&path, || panic!("refused migration must not write"))
+            .expect_err("multi-group membership must fail");
+        let message = error.to_string();
+        assert!(message.contains("spec.groups.base.instances[1]"));
+        assert!(message.contains("spec.groups.feature.instances[2]"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
     #[test]
     fn migrates_group_providers_and_is_idempotent() {
         let directory = tempfile::tempdir().unwrap();
@@ -1139,6 +1335,7 @@ spec:
     - { name: ai-main, block: main-suite, source: app }
     - { name: ai-feature, block: feature-suite, source: app }
     - { name: db-main, block: database, source: app }
+    - { name: db-feature, block: database, source: app }
   groups:
     base:
       providers:
@@ -1150,6 +1347,7 @@ spec:
       providers:
         search: ai-feature/suite
         reports: ai-feature/suite
+        database: db-feature
 "#,
         )
         .unwrap();
@@ -1165,7 +1363,7 @@ spec:
             [
                 "apiVersion: switchyard.dev/v1alpha1 -> switchyard.dev/v1alpha2",
                 "spec.groups.base: providers mapping with 3 entries -> instances list with 2 unique members",
-                "spec.groups.feature: providers mapping with 2 entries -> instances list with 1 unique member",
+                "spec.groups.feature: providers mapping with 3 entries -> instances list with 2 unique members",
                 "spec.groups.feature: materialized complete ordered instances list and removed extends",
                 "spec.blocks: removed provides from 3 services and consumes from 0 services after verifying identity loopback routing",
             ]
@@ -1179,7 +1377,7 @@ spec:
         );
         assert_eq!(
             bundle.spec.groups["feature"].instances,
-            ["db-main", "ai-feature/suite"]
+            ["ai-feature/suite", "db-feature"]
         );
 
         let second = migrate(&path, || panic!("an up-to-date file must not be rewritten")).unwrap();

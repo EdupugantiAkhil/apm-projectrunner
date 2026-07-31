@@ -331,27 +331,69 @@ pub fn validate_block(name: &str, block: &Block) -> Result<(), Vec<Diagnostic>> 
     }
 }
 
-/// Replans with one service-group selection changed atomically.
-pub fn plan_with_binding(
+/// Replans after moving one instance into a service group.
+pub fn plan_with_membership(
     bundle: &Bundle,
-    consumer: &str,
+    instance: &str,
     group: &str,
 ) -> Result<Plan, Vec<Diagnostic>> {
-    plan_with_binding_and_devices(bundle, consumer, group, &BTreeMap::new())
+    plan_with_membership_and_devices(bundle, instance, group, &BTreeMap::new())
 }
 
-pub fn plan_with_binding_and_devices(
+pub fn plan_with_membership_and_devices(
     bundle: &Bundle,
-    consumer: &str,
+    instance: &str,
     group: &str,
     devices: &BTreeMap<String, PlanningDevice>,
 ) -> Result<Plan, Vec<Diagnostic>> {
-    let mut updated = bundle.clone();
-    updated
+    let mut errors = Vec::new();
+    if !bundle
         .spec
-        .bindings
-        .insert(consumer.to_owned(), group.to_owned());
+        .instances
+        .iter()
+        .any(|candidate| candidate.name == instance)
+    {
+        errors.push(Diagnostic::new(
+            DiagnosticCode::MissingReference,
+            "spec.instances",
+            format!("instance `{instance}` does not exist"),
+        ));
+    }
+    if !bundle.spec.groups.contains_key(group) {
+        errors.push(Diagnostic::new(
+            DiagnosticCode::MissingReference,
+            "spec.groups",
+            format!("group `{group}` does not exist"),
+        ));
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let mut updated = bundle.clone();
+    move_instance_to_group(&mut updated, instance, group);
     plan_with_devices(&updated, devices)
+}
+
+fn move_instance_to_group(bundle: &mut Bundle, instance: &str, target_group: &str) {
+    let mut moved_member = None;
+    for group in bundle.spec.groups.values_mut() {
+        group.instances.retain(|member| {
+            if provider_reference(member).0 == instance {
+                if moved_member.is_none() {
+                    moved_member = Some(member.clone());
+                }
+                false
+            } else {
+                true
+            }
+        });
+        group.disabled.retain(|member| member != instance);
+    }
+    if let Some(group) = bundle.spec.groups.get_mut(target_group) {
+        group
+            .instances
+            .push(moved_member.unwrap_or_else(|| instance.to_owned()));
+    }
 }
 
 /// Atomically writes disposable artifacts beneath `.switchyard/generated/<deployment>`.
@@ -673,7 +715,6 @@ fn validate(
 
     let resolved_groups = resolve_groups(bundle, &instances, &mut errors);
     validate_expanded_dependencies(bundle, &instances, &mut errors);
-    validate_bindings(bundle, &instances, &resolved_groups, &mut errors);
     validate_address_claims(bundle, &mut errors);
     let has_addresses = bundle
         .spec
@@ -1086,6 +1127,7 @@ fn resolve_groups(
 ) -> ResolvedGroups {
     let mut members = BTreeMap::new();
     let mut declared_members = BTreeMap::new();
+    let mut instance_groups = BTreeMap::<&str, (&str, usize)>::new();
     for (name, group) in &bundle.spec.groups {
         validate_name(name, format!("spec.groups.{name}"), errors);
         let mut valid_members = Vec::new();
@@ -1117,6 +1159,20 @@ fn resolve_groups(
                     DiagnosticCode::DuplicateName,
                     path,
                     format!("group member `{member}` is listed more than once"),
+                ));
+                continue;
+            }
+            if let Some((first_group, first_index)) =
+                instance_groups.insert(instance_name, (name, index))
+            {
+                errors.push(Diagnostic::new(
+                    DiagnosticCode::DuplicateName,
+                    &path,
+                    format!(
+                        "instance `{instance_name}` belongs to both group `{first_group}` \
+                         (spec.groups.{first_group}.instances[{first_index}]) and group `{name}`; \
+                         create a separate instance to reuse the same source or block"
+                    ),
                 ));
                 continue;
             }
@@ -1158,37 +1214,6 @@ fn resolve_groups(
     ResolvedGroups {
         members,
         declared_members,
-    }
-}
-
-fn validate_bindings(
-    bundle: &Bundle,
-    instances: &BTreeMap<&str, &Instance>,
-    groups: &ResolvedGroups,
-    errors: &mut Vec<Diagnostic>,
-) {
-    for (consumer, group) in &bundle.spec.bindings {
-        if !instances.contains_key(consumer.as_str()) {
-            errors.push(Diagnostic::new(
-                DiagnosticCode::MissingReference,
-                format!("spec.bindings.{consumer}"),
-                "binding consumer does not exist",
-            ));
-        }
-        if !groups.members.contains_key(group) {
-            errors.push(Diagnostic::new(
-                DiagnosticCode::MissingReference,
-                format!("spec.bindings.{consumer}"),
-                format!("service group {group} does not exist"),
-            ));
-        }
-    }
-    if !bundle.spec.routes.is_empty() {
-        errors.push(Diagnostic::new(
-            DiagnosticCode::UnsupportedSchema,
-            "spec.routes",
-            "capability-based direct routes are no longer supported; use ordered group membership",
-        ));
     }
 }
 
@@ -1673,15 +1698,25 @@ fn generate(
     }
     let definition_hash = format!("{:x}", definition_digest.finalize());
     let mut resource_definition = bundle.clone();
-    resource_definition.spec.bindings.clear();
-    resource_definition.spec.routes.clear();
     for instance in &mut resource_definition.spec.instances {
         instance.address = None;
     }
-    for group in resource_definition.spec.groups.values_mut() {
-        group.address = None;
-        group.disabled.clear();
-        group.instances.sort();
+    let routed_instances = resource_definition
+        .spec
+        .groups
+        .values()
+        .flat_map(|group| &group.instances)
+        .map(|member| provider_reference(member).0.to_owned())
+        .collect::<BTreeSet<_>>();
+    resource_definition.spec.groups.clear();
+    if !routed_instances.is_empty() {
+        resource_definition.spec.groups.insert(
+            "__routed_instances__".into(),
+            ServiceGroup {
+                instances: routed_instances.into_iter().collect(),
+                ..ServiceGroup::default()
+            },
+        );
     }
     resource_definition.spec.managed_profiles.clear();
     resource_definition.spec.host_router = None;
@@ -2744,13 +2779,10 @@ fn compose_sidecar(
 const TRANSPARENT_INTERCEPTION_PORT: u16 = 65_535;
 
 fn selected_group_for_instance<'a>(
-    bundle: &'a Bundle,
+    _bundle: &'a Bundle,
     groups: &'a ResolvedGroups,
     instance: &str,
 ) -> Option<&'a str> {
-    if let Some(group) = bundle.spec.bindings.get(instance) {
-        return Some(group);
-    }
     let matching = groups
         .members
         .iter()

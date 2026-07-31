@@ -53,7 +53,7 @@ pub struct RouteHistoryEntry {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RouteStatus {
     pub router: String,
-    pub binding_id: String,
+    pub instance_id: String,
     pub desired_version: Option<i64>,
     pub observed_version: Option<i64>,
     pub previous_version: Option<i64>,
@@ -71,20 +71,13 @@ pub fn connection_matrix(
     let bundle = effective_bundle(project_dir, definition)?;
     let mut rows = Vec::new();
     for instance in &bundle.spec.instances {
-        let current_group = bundle
-            .spec
-            .bindings
-            .get(&instance.name)
-            .cloned()
-            .or_else(|| {
-                bundle.spec.groups.iter().find_map(|(name, group)| {
-                    group
-                        .instances
-                        .iter()
-                        .any(|member| member.split('/').next() == Some(instance.name.as_str()))
-                        .then(|| name.clone())
-                })
-            });
+        let current_group = bundle.spec.groups.iter().find_map(|(name, group)| {
+            group
+                .instances
+                .iter()
+                .any(|member| member.split('/').next() == Some(instance.name.as_str()))
+                .then(|| name.clone())
+        });
         let members = current_group
             .as_deref()
             .map(|group| provider_details(&bundle, group, services))
@@ -108,28 +101,45 @@ pub fn switch_preview(
 ) -> Result<SwitchPreview, String> {
     let bundle = effective_bundle(project_dir, definition)?;
     let devices = planning_devices_for_bundle(project_dir, &bundle)?;
-    let old_group = bundle.spec.bindings.get(instance).cloned().or_else(|| {
-        bundle.spec.groups.iter().find_map(|(name, group)| {
-            group
-                .instances
-                .iter()
-                .any(|member| member.split('/').next() == Some(instance))
-                .then(|| name.clone())
-        })
+    let old_group = bundle.spec.groups.iter().find_map(|(name, group)| {
+        group
+            .instances
+            .iter()
+            .any(|member| member.split('/').next() == Some(instance))
+            .then(|| name.clone())
     });
     let old_members = old_group
         .as_deref()
         .map(|group| group_members(&bundle, group))
         .transpose()?
         .unwrap_or_default();
-    let new_members = group_members(&bundle, new_group).unwrap_or_default();
-    let diagnostics =
-        switchyard_planner::plan_with_binding_and_devices(&bundle, instance, new_group, &devices)
-            .err()
-            .unwrap_or_default()
-            .into_iter()
-            .map(diagnostic_text)
-            .collect::<Vec<_>>();
+    let mut moved = bundle.clone();
+    let mut moved_member = None;
+    for group in moved.spec.groups.values_mut() {
+        group.instances.retain(|member| {
+            if member.split('/').next() == Some(instance) {
+                moved_member.get_or_insert_with(|| member.clone());
+                false
+            } else {
+                true
+            }
+        });
+        group.disabled.retain(|member| member != instance);
+    }
+    if let Some(group) = moved.spec.groups.get_mut(new_group) {
+        group
+            .instances
+            .push(moved_member.unwrap_or_else(|| instance.to_owned()));
+    }
+    let new_members = group_members(&moved, new_group).unwrap_or_default();
+    let diagnostics = switchyard_planner::plan_with_membership_and_devices(
+        &bundle, instance, new_group, &devices,
+    )
+    .err()
+    .unwrap_or_default()
+    .into_iter()
+    .map(diagnostic_text)
+    .collect::<Vec<_>>();
     let members = old_members
         .iter()
         .chain(&new_members)
@@ -195,7 +205,7 @@ pub fn project_route_status(
             entries.reverse();
             RouteStatus {
                 router: binding.router.clone(),
-                binding_id: binding.binding.clone(),
+                instance_id: binding.binding.clone(),
                 desired_version: binding.desired_version,
                 observed_version: binding.observed_version,
                 previous_version: binding.previous_version,
@@ -217,8 +227,7 @@ fn effective_bundle(project_dir: &Path, definition: &Path) -> Result<Bundle, Str
         .join("resolved-deployment.yaml");
     if let Ok(applied) = switchyard_planner::load_bundle(&resolved) {
         if applied.metadata.name == authored.metadata.name {
-            authored.spec.bindings = applied.spec.bindings;
-            authored.spec.routes = applied.spec.routes;
+            authored.spec.groups = applied.spec.groups;
         }
     }
     Ok(authored)
@@ -340,9 +349,9 @@ mod tests {
 
         let preview = switch_preview(root, &definition, "backend-1", "main-services").unwrap();
         assert!(preview.diagnostics.is_empty());
-        assert_eq!(preview.old_members.len(), 5);
-        assert_eq!(preview.new_members.len(), 5);
-        assert_eq!(preview.membership_changes.len(), 8);
+        assert_eq!(preview.old_members.len(), 6);
+        assert_eq!(preview.new_members.len(), 7);
+        assert_eq!(preview.membership_changes.len(), 11);
     }
 
     #[test]

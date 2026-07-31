@@ -200,15 +200,13 @@ is recreated or restarted. A later `switchyard up` compares the running host con
 current `docker compose port` observations and safely refreshes the owned gateway when
 they differ.
 
-## Backend-group invariant
+## One instance, one group
 
-One backend instance owns one consumer network namespace and one complete downstream
-group. UIs may share that backend only when they also share its selected group. Without
-application-level context propagation, the backend cannot associate an outbound fixed
-localhost connection with the inbound UI request that caused it. If two UIs need the
-same backend source with different groups, declare two backend instances from that
-source. The planner checks addressed groups and emits `BackendGroupInvariant` before any
-mutation when this rule is violated, with guidance to duplicate the backend instance.
+Every instance owns one network namespace and may belong to at most one group. The rule
+is structural and applies without classifying an instance as a UI, backend, database,
+sender, or receiver. If the same code or startup profile is needed in two groups,
+declare two instances that reuse that source and block. Validation names both membership
+paths before planning or mutation.
 
 An HTTPS listener uses its `tls.certificate` and `tls.privateKey` paths. Missing pairs
 are generated as 90-day self-signed identities, the key is mode `0600`, and identities

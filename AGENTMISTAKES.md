@@ -965,3 +965,16 @@ audit shell startup files as well as the requested cache directories.
   verification command itself.
 - Lesson: an executable name resolving through `npx` is not enough evidence that the intended
   project tool ran; package-local verification includes its package directory.
+
+## 2026-07-31 — Membership changes affect a router set, not one selected router
+
+- The first Part 2d live-move pass treated the selected instance as the only router whose
+  configuration changed. Removing it from one group and adding it to another changes the
+  complete ordered view for every routed instance in both groups.
+- Correction: compare every generated sidecar snapshot with its applied snapshot, apply all
+  changed routers through the daemon's existing compensation path, and preserve unchanged
+  active snapshots when rewriting generated artifacts. Reject moves that would add or remove
+  sidecar resources and require `up` for those.
+- Lesson: when authored state is a shared collection, derive the mutation's complete affected
+  set from before/after plans. The command's named object is not necessarily the mutation
+  boundary.

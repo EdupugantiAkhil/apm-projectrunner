@@ -25,8 +25,9 @@ requests the same five downstream addresses:
 | `audit` | `http://localhost:8005/identity` |
 
 The router, not the applications, supplies consumer identity and selects providers.
-`main-services` and `feature-services` each resolve all five slots. Their first four
-providers differ; both resolve `audit` to the single `services-shared/audit` provider.
+`main-services` and `feature-services` are complete ordered memberships. Their first four
+service instances differ; separate audit instances reuse the same source and startup
+profile while preserving the one-instance-one-group rule.
 
 The `identityResponses` section is the golden observable contract. A provider response
 identifies its service and concrete provider. A backend response identifies the backend
@@ -61,7 +62,7 @@ The equivalent planner workflow is:
 export SWITCHYARD_ROUTER_TOKEN="$(openssl rand -hex 32)"
 cargo run -p switchyard-cli --bin switchyard -- validate examples/routing-matrix/deployment.yaml
 cargo run -p switchyard-cli --bin switchyard -- up examples/routing-matrix/deployment.yaml
-cargo run -p switchyard-cli --bin switchyard -- bind examples/routing-matrix/deployment.yaml backend-1 main-services
+cargo run -p switchyard-cli --bin switchyard -- move examples/routing-matrix/deployment.yaml backend-1 main-services
 cargo run -p switchyard-cli --bin switchyard -- status examples/routing-matrix/deployment.yaml --routes
 cargo run -p switchyard-cli --bin switchyard -- down examples/routing-matrix/deployment.yaml
 ```
@@ -69,17 +70,12 @@ cargo run -p switchyard-cli --bin switchyard -- down examples/routing-matrix/dep
 `down` preserves the named data volumes. Delete them only with `switchyard cleanup
 examples/routing-matrix/deployment.yaml --yes`.
 
-## Backend-group boundary
+## Instance-group boundary
 
-A backend has one sidecar namespace and therefore one complete downstream group at a
-time. `ui-1` and `ui-3` share `backend-1`, so switching that backend changes the group
-for both UIs. A single backend cannot infer which inbound browser request caused a later
-outbound `localhost:8001` connection; per-UI downstream selection would require the
-application to propagate request context, which this proof intentionally forbids.
+An instance has one sidecar namespace and belongs to at most one complete group.
+`backend-1` moves between the two groups in this proof, so every member of its destination
+group receives the same ordered localhost view.
 
-The three UI instance addresses keep those peers symmetric and leave `backend-1`'s
-complete downstream group switchable by the proof above. Separately, planning reports
-`BackendGroupInvariant` when two addressed groups request different downstream groups
-from the same backend and instructs the user to create two backend instances. Those
-instances may select the same source; isolation, rather than a source-code fork, is what
-provides independent groups.
+When two groups need the same code or startup profile simultaneously, the deployment
+declares two instances, as it does for the audit service. The instances may reuse the
+same source and block; the runtime instance itself is never shared across groups.

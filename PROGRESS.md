@@ -10,6 +10,33 @@ Updated: 2026-07-31
 - Web UI plan (`docs/web-ui-plan.md`): complete. Parts 1 through 13, including follow-up
   Parts 11a–11c, and Part 13's security review with its two fixes.
 
+## 2026-07-31 — V2 Part 2d membership is the connection
+
+- Removed deployment `spec.bindings` and `spec.routes` from the strict authored schema.
+  Planning now derives each routed instance's complete ordered view solely from its one group
+  membership. Validation rejects an instance appearing in several groups and reports both
+  paths with guidance to create a separate instance.
+- Replaced the CLI/API binding operation with `switchyard move FILE INSTANCE GROUP` and
+  `/api/v1/commands/membership`. Live moves compare every sidecar in the source and destination
+  groups, apply every changed immutable snapshot through the daemon's rollback/compensation
+  path, and retain unchanged active snapshot metadata in generated artifacts. A move that
+  changes the routed-instance resource set is refused as a live change and requires `up`.
+- Changed operations, TUI, and Web projections to memberships. The stopped Web workspace edits
+  each complete ordered group list; the running workspace previews and applies an instance
+  move. Deployment summary/detail APIs now expose the membership projection derived from
+  `groups.*.instances`.
+- Migration removes agreeing legacy bindings and empty routes, refuses a binding that disagrees
+  with membership, refuses non-empty direct routes, and reports every occurrence of
+  multi-group membership without writing.
+- Updated the routing-matrix fixture to use distinct main/feature audit instances that share
+  the same source and block, proving reuse without sharing one runtime instance across groups.
+  The vision's current-differences note now drops the completed repository and connection-field
+  gaps.
+- Verification passes: workspace tests with the five declared reliability ignores; all-target,
+  all-feature Clippy with warnings denied; rustdoc with warnings denied; formatting and diff
+  checks; 49 Web tests; and the TypeScript/Vite production build. Web lint exits zero with the
+  four pre-existing exhaustive-dependencies warnings.
+
 ## 2026-07-31 V2 Part 2c — repository stores and source worktrees
 
 - Added the authored `repositories:` map. A `url:` produces one managed bare Git store

@@ -57,10 +57,6 @@ pub struct DeploymentSpec {
     #[serde(default)]
     pub groups: BTreeMap<String, ServiceGroup>,
     #[serde(default)]
-    pub bindings: BTreeMap<String, String>,
-    #[serde(default)]
-    pub routes: BTreeMap<String, BTreeMap<String, String>>,
-    #[serde(default)]
     pub managed_profiles: BTreeMap<String, ManagedProfile>,
     #[serde(default)]
     pub host_router: Option<router_config::RouterConfig>,

@@ -30,8 +30,8 @@ pub use profiles::{
     review_source_profile_manifest,
 };
 pub use projections::{
-    BindingRow, DefinitionHeader, DefinitionMetadata, DefinitionTopology, DeploymentEntry,
-    InstanceRow, ManifestService, ServiceManifest, ServiceRow, SourceChoice, list_deployments,
+    DefinitionHeader, DefinitionMetadata, DefinitionTopology, DeploymentEntry, InstanceRow,
+    ManifestService, MembershipRow, ServiceManifest, ServiceRow, SourceChoice, list_deployments,
     list_devices, list_sources, load_definition_choices,
 };
 pub use run_scripts::{RunScript, StructuredCommand};

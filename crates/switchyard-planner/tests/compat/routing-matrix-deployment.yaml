@@ -149,7 +149,11 @@ spec:
       block: scheduler-provider
       source: services-feature
       parameters: { FIXTURE_PROVIDER: services-feature/scheduler }
-    - name: services-shared-audit
+    - name: services-main-audit
+      block: audit-provider
+      source: services-shared
+      parameters: { FIXTURE_PROVIDER: services-shared/audit }
+    - name: services-feature-audit
       block: audit-provider
       source: services-shared
       parameters: { FIXTURE_PROVIDER: services-shared/audit }
@@ -168,17 +172,16 @@ spec:
         - services-main-search/app
         - services-main-reports/app
         - services-main-scheduler/app
-        - services-shared-audit/app
+        - services-main-audit/app
+        - backend-2/app
     feature-services:
       instances:
         - services-feature-catalog/app
         - services-feature-search/app
         - services-feature-reports/app
         - services-feature-scheduler/app
-        - services-shared-audit/app
-  bindings:
-    backend-1: feature-services
-    backend-2: main-services
+        - services-feature-audit/app
+        - backend-1/app
   hostRouter:
     apiVersion: switchyard.dev/router/v1alpha1
     kind: RouterConfiguration

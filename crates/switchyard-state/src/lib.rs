@@ -1541,8 +1541,8 @@ pub enum OperationKind {
     Start,
     /// Deployment stop.
     Stop,
-    /// Atomic binding change.
-    Bind,
+    /// Atomic membership move.
+    Membership,
     /// Desired-state apply.
     Apply,
     /// Ownership-aware cleanup.
@@ -1556,7 +1556,7 @@ impl OperationKind {
             Self::Build => "build",
             Self::Start => "start",
             Self::Stop => "stop",
-            Self::Bind => "bind",
+            Self::Membership => "membership",
             Self::Apply => "apply",
             Self::Cleanup => "cleanup",
             Self::Other(value) => value,
@@ -3081,7 +3081,7 @@ mod tests {
                 "op-3",
                 "demo",
                 Some("api"),
-                OperationKind::Bind,
+                OperationKind::Membership,
                 OperationStatus::Succeeded,
                 3,
             ),
@@ -3089,7 +3089,7 @@ mod tests {
                 "op-2",
                 "other",
                 Some("api"),
-                OperationKind::Bind,
+                OperationKind::Membership,
                 OperationStatus::Succeeded,
                 2,
             ),

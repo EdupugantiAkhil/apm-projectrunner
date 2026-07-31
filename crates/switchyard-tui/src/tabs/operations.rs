@@ -223,12 +223,12 @@ pub(crate) fn apply_operation_update(shell: &mut SwitchyardShell, update: OpUpda
             } else {
                 "Operation finished with a non-zero exit code. Review Operations output."
             });
-            let was_bind = shell.pending_bind.is_some();
-            shell.finish_bind(
+            let was_membership_move = shell.pending_membership_move.is_some();
+            shell.finish_membership_move(
                 exit_code == 0,
                 &format!("Process completed with exit code {exit_code}."),
             );
-            if exit_code == 0 || was_bind {
+            if exit_code == 0 || was_membership_move {
                 shell.refresh_state();
             }
         }
@@ -241,9 +241,9 @@ pub(crate) fn apply_operation_update(shell: &mut SwitchyardShell, update: OpUpda
             shell.operation_gate.finish();
             shell.set_busy(false);
             shell.set_notices("Operation failed. Review Operations output for the verbatim error.");
-            let was_bind = shell.pending_bind.is_some();
-            shell.finish_bind(false, &format!("Background execution failed: {error}"));
-            if was_bind {
+            let was_membership_move = shell.pending_membership_move.is_some();
+            shell.finish_membership_move(false, &format!("Background execution failed: {error}"));
+            if was_membership_move {
                 shell.refresh_state();
             }
         }
@@ -259,9 +259,9 @@ pub(crate) fn finish_operation_task(shell: &mut SwitchyardShell) {
         shell.operation_gate.finish();
         shell.set_busy(false);
         shell.set_notices("Background operation stopped unexpectedly.");
-        let was_bind = shell.pending_bind.is_some();
-        shell.finish_bind(false, "Background operation stopped unexpectedly.");
-        if was_bind {
+        let was_membership_move = shell.pending_membership_move.is_some();
+        shell.finish_membership_move(false, "Background operation stopped unexpectedly.");
+        if was_membership_move {
             shell.refresh_state();
         }
         shell.refresh_operation_log();

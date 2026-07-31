@@ -525,7 +525,6 @@ fn resolve(
         .iter()
         .map(|instance| (instance.name.clone(), instance.environment.clone()))
         .collect::<BTreeMap<_, _>>();
-    resolved.spec.routes.clear();
     for instance in &mut resolved.spec.instances {
         instance.parameters.clear();
         instance.environment.clear();

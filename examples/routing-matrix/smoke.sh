@@ -218,9 +218,9 @@ make_host_snapshot 4 backend-1 "$runtime_dir/host-restored.json"
 echo "host snapshot restore: $(admin_request "$runtime_dir/host.socket" apply "$runtime_dir/host-restored.json")"
 
 backend_1_url="$(published_url routing-matrix--backend-1--app)"
-"$switchyard" bind "$deployment" backend-1 main-services
+"$switchyard" move "$deployment" backend-1 main-services
 main_observation="$(curl --noproxy '*' --fail --silent --show-error "$backend_1_url")"
-"$switchyard" bind "$deployment" backend-1 feature-services
+"$switchyard" move "$deployment" backend-1 feature-services
 feature_observation="$(curl --noproxy '*' --fail --silent --show-error "$backend_1_url")"
 python3 - "$main_observation" "$feature_observation" <<'PY'
 import json
@@ -238,11 +238,11 @@ echo "sidecar route snapshot: $(sidecar_admin_request routing-matrix--backend-1-
 echo "sidecar routing decisions: $(sidecar_admin_request routing-matrix--backend-1--router events)"
 
 "${compose[@]}" stop routing-matrix--services-main-catalog--app >/dev/null
-if "$switchyard" bind "$deployment" backend-1 main-services >"$runtime_dir/rejected-bind.log" 2>&1; then
+if "$switchyard" move "$deployment" backend-1 main-services >"$runtime_dir/rejected-move.log" 2>&1; then
   echo "routing-matrix proof: unhealthy group unexpectedly activated" >&2
   exit 1
 fi
-grep -q 'previous snapshot remains active' "$runtime_dir/rejected-bind.log"
+grep -q 'previous snapshot remains active' "$runtime_dir/rejected-move.log"
 python3 - "$(curl --noproxy '*' --fail --silent --show-error "$backend_1_url")" <<'PY'
 import json, sys
 providers = {value["provider"].split("/")[0] for name, value in json.loads(sys.argv[1])["services"].items() if name != "audit"}

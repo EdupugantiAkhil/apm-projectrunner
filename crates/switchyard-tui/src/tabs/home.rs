@@ -75,10 +75,10 @@ pub(crate) fn checklist(state: &ProjectState) -> [ChecklistStep; 5] {
             health == "healthy" || status.contains("running")
         })
     });
-    let any_bindings = state
+    let any_memberships = state
         .deployments
         .iter()
-        .any(|deployment| deployment.binding_count > 0)
+        .any(|deployment| deployment.membership_count > 0)
         || state
             .connections
             .iter()
@@ -109,8 +109,8 @@ pub(crate) fn checklist(state: &ProjectState) -> [ChecklistStep; 5] {
             shortcut: "Alt+I",
         },
         ChecklistStep {
-            done: any_bindings,
-            label: "Connect routes",
+            done: any_memberships,
+            label: "Set group membership",
             destination: Destination::Connections,
             shortcut: "Alt+N",
         },
@@ -131,7 +131,7 @@ pub(crate) fn next_action(state: &ProjectState) -> NextAction {
                     "Create your first instance (Enter)"
                 }
                 Destination::Instances => "Start your instance (Enter)",
-                Destination::Connections => "Connect routes (Enter)",
+                Destination::Connections => "Set group membership (Enter)",
                 Destination::Operations => "Review operations (Enter)",
             },
             destination: step.destination,
@@ -276,7 +276,7 @@ mod tests {
         );
         assert_eq!(next_action(&state).destination, Destination::Connections);
 
-        state.deployments[0].binding_count = 1;
+        state.deployments[0].membership_count = 1;
         assert_eq!(next_action(&state).destination, Destination::Operations);
     }
 }

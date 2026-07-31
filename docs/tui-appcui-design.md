@@ -170,16 +170,14 @@ Vertical stack (single `Panel`):
 
 ### Connections
 
-- Main area: the **route matrix** as a `ListView` table — consumer instances as
-  rows; columns: consumer, slot, selected provider group, route version, state.
-- `Enter` on a row → switch dialog: DropDownList of *compatible* groups only;
-  below it a two-column old→new preview of every route that will change.
-  `Apply` performs the single atomic binding operation; result (including
-  rollback info on failure) shown in a report modal.
-- A short fixed explainer line under the matrix: "Consumers keep their fixed
-  localhost/network addresses; Switchyard routes them to the selected group."
-- Never auto-selects a provider; unbound slots show as `not connected` with the
-  key to fix it.
+- Main area: the **membership matrix** as a `ListView` table — instances as rows;
+  columns include current group, complete ordered members, route version, and state.
+- `Enter` on a row opens a group picker and an old/new complete-membership preview.
+  `Apply` performs one atomic membership move; the result, including rollback
+  information on failure, appears in a report modal.
+- A short fixed explainer line states that each group is a complete ordered instance
+  list sharing one localhost view.
+- Ungrouped instances show as `not connected` with the key to fix them.
 
 ### Devices
 

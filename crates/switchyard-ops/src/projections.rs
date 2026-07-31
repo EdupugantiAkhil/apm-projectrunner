@@ -32,7 +32,7 @@ pub struct DeploymentEntry {
     pub instances: Vec<InstanceRow>,
     pub blocks: Vec<String>,
     pub source_choices: Vec<SourceChoice>,
-    pub bindings: Vec<BindingRow>,
+    pub memberships: Vec<MembershipRow>,
     pub connections: ConnectionMatrix,
     pub connections_error: Option<String>,
     pub route_statuses: Vec<RouteStatus>,
@@ -65,7 +65,7 @@ pub struct DefinitionTopology {
     instances: Vec<InstanceRow>,
     blocks: Vec<String>,
     source_choices: Vec<SourceChoice>,
-    bindings: Vec<BindingRow>,
+    memberships: Vec<MembershipRow>,
 }
 
 #[derive(Default)]
@@ -81,8 +81,8 @@ struct ObservationStatus<'a> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BindingRow {
-    pub consumer: String,
+pub struct MembershipRow {
+    pub instance: String,
     pub group: String,
     pub compatible_groups: Vec<String>,
 }
@@ -216,7 +216,7 @@ pub fn list_deployments(
                 instances,
                 blocks,
                 source_choices,
-                bindings: load_bindings(root, &name, &bundle),
+                memberships: load_memberships(root, &name, &bundle),
             };
             let definition_status = definition_status(root, &bundle);
             let diagnostics = reconciliation
@@ -311,7 +311,7 @@ fn deployment_entry(
         instances: topology.instances,
         blocks: topology.blocks,
         source_choices: topology.source_choices,
-        bindings: topology.bindings,
+        memberships: topology.memberships,
         connections: ConnectionMatrix::default(),
         connections_error: None,
         route_statuses: Vec::new(),
@@ -459,7 +459,7 @@ pub fn load_definition_choices(
     (instances, blocks, source_choices)
 }
 
-fn load_bindings(root: &Path, deployment: &str, definition: &Path) -> Vec<BindingRow> {
+fn load_memberships(root: &Path, deployment: &str, definition: &Path) -> Vec<MembershipRow> {
     let Ok(mut authored) = switchyard_planner::load_bundle(definition) else {
         return Vec::new();
     };
@@ -469,23 +469,32 @@ fn load_bindings(root: &Path, deployment: &str, definition: &Path) -> Vec<Bindin
         .join("resolved-deployment.yaml");
     if let Ok(resolved) = switchyard_planner::load_bundle(&resolved_path) {
         if resolved.metadata.name == authored.metadata.name {
-            authored.spec.bindings = resolved.spec.bindings;
-            authored.spec.routes = resolved.spec.routes;
+            authored.spec.groups = resolved.spec.groups;
         }
     }
     let devices = planning_devices_for_bundle(root, &authored).unwrap_or_default();
     authored
         .spec
-        .bindings
+        .instances
         .iter()
-        .map(|(consumer, group)| {
+        .filter_map(|instance| {
+            let group = authored.spec.groups.iter().find_map(|(name, definition)| {
+                definition
+                    .instances
+                    .iter()
+                    .any(|member| member.split('/').next() == Some(instance.name.as_str()))
+                    .then_some(name)
+            })?;
             let mut compatible_groups = authored
                 .spec
                 .groups
                 .keys()
                 .filter(|candidate| {
-                    switchyard_planner::plan_with_binding_and_devices(
-                        &authored, consumer, candidate, &devices,
+                    switchyard_planner::plan_with_membership_and_devices(
+                        &authored,
+                        &instance.name,
+                        candidate,
+                        &devices,
                     )
                     .is_ok()
                 })
@@ -495,11 +504,11 @@ fn load_bindings(root: &Path, deployment: &str, definition: &Path) -> Vec<Bindin
                 compatible_groups.push(group.clone());
                 compatible_groups.sort();
             }
-            BindingRow {
-                consumer: consumer.clone(),
+            Some(MembershipRow {
+                instance: instance.name.clone(),
                 group: group.clone(),
                 compatible_groups,
-            }
+            })
         })
         .collect()
 }

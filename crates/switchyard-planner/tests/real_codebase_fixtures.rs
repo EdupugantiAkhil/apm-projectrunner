@@ -82,10 +82,30 @@ fn legacy_workspace_fixture_expands_through_generic_planner_contracts() {
         feature_group.address.as_deref(),
         Some("ai-feature.jas-base.localhost")
     );
-    assert_eq!(bundle.spec.bindings["jas-main"], "ai-feature");
-    assert_eq!(bundle.spec.bindings["jas-feature"], "ai-main");
-    assert_eq!(bundle.spec.bindings["ui-a"], "ai-feature");
-    assert_eq!(bundle.spec.bindings["ui-b"], "ai-main");
+    assert!(
+        bundle.spec.groups["ai-feature"]
+            .instances
+            .iter()
+            .any(|member| member == "jas-main/service")
+    );
+    assert!(
+        bundle.spec.groups["ai-main"]
+            .instances
+            .iter()
+            .any(|member| member == "jas-feature/service")
+    );
+    assert!(
+        bundle.spec.groups["ai-feature"]
+            .instances
+            .iter()
+            .any(|member| member == "ui-a/app")
+    );
+    assert!(
+        bundle.spec.groups["ai-main"]
+            .instances
+            .iter()
+            .any(|member| member == "ui-b/app")
+    );
     assert_ne!(
         bundle.spec.sources["monorepo-main"].path,
         bundle.spec.sources["jas-feature-worktree"].path

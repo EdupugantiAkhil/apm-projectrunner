@@ -295,9 +295,9 @@ pub enum OperationSpec {
         variation: Option<String>,
         set: Vec<String>,
     },
-    Bind {
+    Membership {
         bundle: PathBuf,
-        consumer: String,
+        instance: String,
         group: String,
     },
     Shell(String),
@@ -331,10 +331,10 @@ impl OperationSpec {
         }
     }
 
-    pub fn bind(bundle: PathBuf, consumer: String, group: String) -> Self {
-        Self::Bind {
+    pub fn membership(bundle: PathBuf, instance: String, group: String) -> Self {
+        Self::Membership {
             bundle,
-            consumer,
+            instance,
             group,
         }
     }
@@ -363,14 +363,14 @@ impl OperationSpec {
                 }
                 Some(args)
             }
-            Self::Bind {
+            Self::Membership {
                 bundle,
-                consumer,
+                instance,
                 group,
             } => Some(vec![
-                OsString::from("bind"),
+                OsString::from("move"),
                 bundle.as_os_str().to_owned(),
-                OsString::from(consumer),
+                OsString::from(instance),
                 OsString::from(group),
             ]),
             Self::Shell(_) => None,
@@ -386,7 +386,7 @@ impl OperationSpec {
     /// configured Switchyard CLI path for structured actions.
     pub fn process_command_with(&self, structured_program: Option<&Path>) -> Command {
         match self {
-            Self::Structured { .. } | Self::Bind { .. } => {
+            Self::Structured { .. } | Self::Membership { .. } => {
                 let executable = structured_program
                     .map(Path::to_path_buf)
                     .unwrap_or_else(|| {
@@ -544,15 +544,15 @@ mod tests {
     }
 
     #[test]
-    fn pairing_maps_to_shell_free_bind_arguments() {
-        let spec = OperationSpec::bind(
+    fn membership_maps_to_shell_free_move_arguments() {
+        let spec = OperationSpec::membership(
             "deployment.yaml".into(),
             "ui-a".into(),
             "backend-feature".into(),
         );
         assert_eq!(
             spec.arguments().unwrap(),
-            ["bind", "deployment.yaml", "ui-a", "backend-feature"].map(OsString::from)
+            ["move", "deployment.yaml", "ui-a", "backend-feature"].map(OsString::from)
         );
     }
 }

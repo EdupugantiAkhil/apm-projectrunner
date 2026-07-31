@@ -306,17 +306,27 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             print_tailscale_status(&tailscale);
             println!("deployment `{}` is healthy", plan.deployment);
         }
-        CliCommand::Bind {
+        CliCommand::Move {
             bundle,
-            consumer,
+            instance,
             group,
             transition,
         } => {
-            let bundle = load_bind_base(&workspace_root, &bundle)?;
-            let mut plan = plan_with_binding(&workspace_root, &bundle, &consumer, &group)?;
-            apply_binding(&mut plan, &consumer, transition)?;
+            let bundle = load_membership_base(&workspace_root, &bundle)?;
+            let devices = planning_devices(&workspace_root)?;
+            let current =
+                switchyard_planner::plan_with_devices(&bundle, &devices).map_err(diagnostics)?;
+            let mut plan = plan_with_membership(&workspace_root, &bundle, &instance, &group)?;
+            if plan.resource_hash != current.resource_hash {
+                return Err(MessageError(
+                    "moving this instance changes runtime resources; edit the membership and run `switchyard up`"
+                        .into(),
+                )
+                .into());
+            }
+            apply_membership_move(&workspace_root, &mut plan, transition)?;
             switchyard_planner::write_plan(&workspace_root, &plan)?;
-            println!("bound `{consumer}` to `{group}`");
+            println!("moved `{instance}` into group `{group}`");
         }
         CliCommand::Status {
             bundle,
@@ -995,7 +1005,7 @@ fn daemon_request(
     use switchyard_daemon::contract::{CommandKind, CommandRequestV1};
     let empty = |bundle| CommandRequestV1 {
         bundle,
-        consumer: None,
+        instance: None,
         group: None,
         transition: None,
         target: None,
@@ -1007,14 +1017,14 @@ fn daemon_request(
         CliCommand::Validate { bundle } => (CommandKind::Validate, empty(bundle.clone())),
         CliCommand::Plan { bundle, .. } => (CommandKind::Plan, empty(bundle.clone())),
         CliCommand::Up { bundle, .. } => (CommandKind::Apply, empty(bundle.clone())),
-        CliCommand::Bind {
+        CliCommand::Move {
             bundle,
-            consumer,
+            instance,
             group,
             transition,
         } => {
             let mut request = empty(bundle.clone());
-            request.consumer = Some(consumer.clone());
+            request.instance = Some(instance.clone());
             request.group = Some(group.clone());
             request.transition = transition.map(|transition| match transition {
                 cli::TransitionArgument::Close => {
@@ -1027,7 +1037,7 @@ fn daemon_request(
                     switchyard_daemon::contract::TransitionPolicyV1::Pin
                 }
             });
-            (CommandKind::Bind, request)
+            (CommandKind::Membership, request)
         }
         CliCommand::Status { bundle, routes, .. } => {
             let mut request = empty(bundle.clone());
@@ -1186,14 +1196,14 @@ fn ensure_deployment_sources(bundle: &Bundle) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-fn plan_with_binding(
+fn plan_with_membership(
     workspace_root: &Path,
     bundle: &Bundle,
     consumer: &str,
     group: &str,
 ) -> Result<Plan, Box<dyn std::error::Error>> {
     let devices = planning_devices(workspace_root)?;
-    switchyard_planner::plan_with_binding_and_devices(bundle, consumer, group, &devices)
+    switchyard_planner::plan_with_membership_and_devices(bundle, consumer, group, &devices)
         .map_err(diagnostics)
         .map_err(Into::into)
 }
@@ -1220,7 +1230,7 @@ fn planning_devices(
         .collect())
 }
 
-fn load_bind_base(
+fn load_membership_base(
     workspace_root: &Path,
     bundle_path: &Path,
 ) -> Result<Bundle, Box<dyn std::error::Error>> {
@@ -1241,7 +1251,7 @@ fn load_bind_base(
         || applied_resource_hash != Some(authored_plan.resource_hash.as_str())
     {
         return Err(MessageError(
-            "generated bind state does not match this deployment; run status and reconcile drift"
+            "generated membership state does not match this deployment; run status and reconcile drift"
                 .into(),
         )
         .into());
@@ -1250,8 +1260,7 @@ fn load_bind_base(
     if resolved.metadata.name != authored.metadata.name {
         return Err(MessageError("resolved deployment identity does not match".into()).into());
     }
-    authored.spec.bindings = resolved.spec.bindings;
-    authored.spec.routes = resolved.spec.routes;
+    authored.spec.groups = resolved.spec.groups;
     Ok(authored)
 }
 
@@ -1741,70 +1750,75 @@ fn print_status(status: &DeploymentStatus) {
     }
 }
 
-fn apply_binding(
+fn apply_membership_move(
+    workspace_root: &Path,
     plan: &mut Plan,
-    consumer: &str,
     transition: Option<cli::TransitionArgument>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let encoded = plan.route_configs.get(consumer).cloned().ok_or_else(|| {
-        MessageError(format!(
-            "planner did not produce a route snapshot for consumer `{consumer}`"
-        ))
+    let token = env::var("SWITCHYARD_ROUTER_TOKEN").map_err(|_| {
+        MessageError("SWITCHYARD_ROUTER_TOKEN must be set for membership moves".into())
     })?;
-    let mut config: RouterConfig = serde_json::from_str(&encoded)?;
-    if let Some(transition) = transition {
-        let policy = match transition {
-            cli::TransitionArgument::Close => router_config::ConnectionTransitionPolicy::Close,
-            cli::TransitionArgument::Drain { timeout_ms } => {
-                router_config::ConnectionTransitionPolicy::Drain { timeout_ms }
-            }
-            cli::TransitionArgument::Pin => router_config::ConnectionTransitionPolicy::Pin,
-        };
-        config.spec.snapshot.transitions = router_config::ConnectionTransitionPolicies {
-            http: policy.clone(),
-            https: policy.clone(),
-            websocket: policy.clone(),
-            grpc: policy.clone(),
-            tcp: policy,
-        };
+    let route_dir = workspace_root.join(&plan.artifact_dir).join("routes");
+    let candidates = plan.route_configs.clone();
+    let mut applied = 0;
+    for (instance, encoded) in candidates {
+        let old: RouterConfig =
+            serde_json::from_slice(&fs::read(route_dir.join(format!("{instance}.json")))?)?;
+        let mut config: RouterConfig = serde_json::from_str(&encoded)?;
+        let mut comparable = config.clone();
+        comparable.spec.snapshot = old.spec.snapshot.clone();
+        if comparable == old {
+            plan.route_configs
+                .insert(instance, serde_json::to_string_pretty(&old)?);
+            continue;
+        }
+        if let Some(transition) = transition {
+            let policy = match transition {
+                cli::TransitionArgument::Close => router_config::ConnectionTransitionPolicy::Close,
+                cli::TransitionArgument::Drain { timeout_ms } => {
+                    router_config::ConnectionTransitionPolicy::Drain { timeout_ms }
+                }
+                cli::TransitionArgument::Pin => router_config::ConnectionTransitionPolicy::Pin,
+            };
+            config.spec.snapshot.transitions = router_config::ConnectionTransitionPolicies {
+                http: policy.clone(),
+                https: policy.clone(),
+                websocket: policy.clone(),
+                grpc: policy.clone(),
+                tcp: policy,
+            };
+        }
+        let sidecar = plan.sidecars.get(&instance).ok_or_else(|| {
+            MessageError(format!(
+                "no router sidecar exists for group member `{instance}`"
+            ))
+        })?;
+        let endpoint = switchyard_router_admin::AdminEndpoint::docker_exec(
+            &sidecar.service,
+            &sidecar.admin_socket,
+            &plan.deployment,
+            &instance,
+            &plan.resource_hash,
+        );
+        let next_version = switchyard_router_admin::current_snapshot(&endpoint, &token)?
+            .version
+            .checked_add(1)
+            .ok_or_else(|| MessageError("router snapshot version is exhausted".into()))?;
+        config.spec.snapshot.version = next_version;
+        config.spec.snapshot.id =
+            router_config::RouteSnapshotId::new(format!("{instance}-membership-{next_version}"));
+        let acknowledgement = switchyard_router_admin::apply_snapshot(&endpoint, &token, &config)?;
+        plan.route_configs
+            .insert(instance, serde_json::to_string_pretty(&config)?);
+        println!(
+            "router acknowledgement: {}",
+            serde_json::to_string(&acknowledgement)?
+        );
+        applied += 1;
     }
-    config.validate().map_err(|errors| {
-        MessageError(
-            errors
-                .into_iter()
-                .map(|error| error.to_string())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )
-    })?;
-    let sidecar = plan.sidecars.get(consumer).ok_or_else(|| {
-        MessageError(format!(
-            "no router sidecar exists for consumer `{consumer}`"
-        ))
-    })?;
-    let token = env::var("SWITCHYARD_ROUTER_TOKEN")
-        .map_err(|_| MessageError("SWITCHYARD_ROUTER_TOKEN must be set for bind".into()))?;
-    let endpoint = switchyard_router_admin::AdminEndpoint::docker_exec(
-        &sidecar.service,
-        &sidecar.admin_socket,
-        &plan.deployment,
-        consumer,
-        &plan.resource_hash,
-    );
-    let next_version = switchyard_router_admin::current_snapshot(&endpoint, &token)?
-        .version
-        .checked_add(1)
-        .ok_or_else(|| MessageError("router snapshot version is exhausted".into()))?;
-    config.spec.snapshot.version = next_version;
-    config.spec.snapshot.id =
-        router_config::RouteSnapshotId::new(format!("{consumer}-bind-{next_version}"));
-    let acknowledgement = switchyard_router_admin::apply_snapshot(&endpoint, &token, &config)?;
-    plan.route_configs
-        .insert(consumer.to_owned(), serde_json::to_string_pretty(&config)?);
-    println!(
-        "router acknowledgement: {}",
-        serde_json::to_string(&acknowledgement)?
-    );
+    if applied == 0 {
+        return Err(MessageError("membership move did not change a live router".into()).into());
+    }
     Ok(())
 }
 
