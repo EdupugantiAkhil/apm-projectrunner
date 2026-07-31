@@ -4,15 +4,17 @@ metadata:
   name: routing-matrix
 spec:
   routerImage: &fixture-image switchyard-routing-matrix:local
+  repositories:
+    fixture: { url: ../.. }
   sources:
-    ui-one: &fixture-source { path: ../.. }
-    ui-two: *fixture-source
-    ui-three: *fixture-source
-    backend-one: *fixture-source
-    backend-two: *fixture-source
-    services-main: *fixture-source
-    services-feature: *fixture-source
-    services-shared: *fixture-source
+    ui-one: { repository: fixture, ref: HEAD, path: ../../worktrees/routing-ui-one }
+    ui-two: { repository: fixture, ref: HEAD, path: ../../worktrees/routing-ui-two }
+    ui-three: { repository: fixture, ref: HEAD, path: ../../worktrees/routing-ui-three }
+    backend-one: { repository: fixture, ref: HEAD, path: ../../worktrees/routing-backend-one }
+    backend-two: { repository: fixture, ref: HEAD, path: ../../worktrees/routing-backend-two }
+    services-main: { repository: fixture, ref: HEAD, path: ../../worktrees/routing-services-main }
+    services-feature: { repository: fixture, ref: HEAD, path: ../../worktrees/routing-services-feature }
+    services-shared: { repository: fixture, ref: HEAD, path: ../../worktrees/routing-services-shared }
   blocks:
     fixture-image:
       services:

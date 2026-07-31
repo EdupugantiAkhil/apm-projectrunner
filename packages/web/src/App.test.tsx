@@ -16,7 +16,7 @@ const deployment = {
   reconciliation: { deployment: 'comparison', diagnostics: [] }, resources: [{ kind: 'container', id: 'one', name: 'comparison-ui-feature', labels: { 'dev.switchyard.instance': 'ui-feature' }, state: 'healthy', device: 'build-host' }],
   customDomains: ['ui.comparison.localhost'], bindings: { 'ui-feature': 'feature' },
 }
-const source: SourceRecord = { source: { name: 'feature-ui', kind: 'managed', path: '/worktrees/ui-a' }, inspection: { identity: { path: '/worktrees/ui-a', ref: 'feature/ui-redesign', commit: '35ad2abcdef', dirty: true }, branch: 'feature/ui-redesign', changes: { staged: 1, unstaged: 2, untracked: 3 }, ahead: 2, behind: 0, unknownCode: null } }
+const source: SourceRecord = { source: { name: 'feature-ui', kind: 'managed', path: '/project/worktrees/ui-a', requestedRef: 'feature/ui-redesign' }, inspection: { identity: { path: '/project/worktrees/ui-a', repository: '/project/.switchyard/clones/monorepo', ref: 'feature/ui-redesign', commit: '35ad2abcdef', dirty: true }, linkedWorktree: true, branch: 'feature/ui-redesign', changes: { staged: 1, unstaged: 2, untracked: 3 }, ahead: 2, behind: 0, unknownCode: null } }
 const unmanagedSource = { source: { name: 'shared-app', kind: 'unmanaged' as const, path: '/code/shared-app' }, inspection: { identity: { path: '/code/shared-app', ref: 'main', commit: '123456789ab', dirty: true }, branch: 'main', changes: { staged: 4, unstaged: 5, untracked: 6 }, ahead: 0, behind: 0, unknownCode: null } }
 const sourceProfile = { apiVersion: 'v1', name: 'api', deployment: 'comparison', origin: { kind: 'discovered-in-source' as const, source: 'feature-ui', commit: '35ad2abcdef' }, trust: 'not-imported' as const, shadowed: false, services: [{ name: 'web', adapterKind: 'container' as const }] }
 const trustedProfile = { apiVersion: 'v1', name: 'worker-profile', deployment: 'comparison', origin: { kind: 'project' as const }, trust: 'trusted' as const, shadowed: false, services: [{ name: 'web', adapterKind: 'container' as const }] }
@@ -462,7 +462,7 @@ describe('Switchyard GUI', () => {
 
   it('builder validates a schema-driven draft and saves it', async () => {
     const user = userEvent.setup(); const fetchMock = vi.mocked(fetch); render(<App client={new ApiClient('test')} />)
-    await user.click(screen.getByRole('button', { name: /New deployment/ })); await user.type(screen.getByLabelText(/^Name/), 'demo'); await user.type(screen.getByLabelText(/^Instance name/), 'worker'); await user.type(screen.getByLabelText('Block name'), 'service'); await user.selectOptions(screen.getByLabelText('Source'), 'feature-ui')
+    await user.click(screen.getByRole('button', { name: /New deployment/ })); await user.type(screen.getByLabelText(/^Name/), 'demo'); await user.type(screen.getByLabelText(/^Instance name/), 'worker'); await user.type(screen.getByLabelText('Block name'), 'service'); await user.selectOptions(screen.getByLabelText(/^Source/), 'feature-ui')
     await user.click(screen.getByRole('button', { name: 'Validate draft' })); expect(await screen.findByText('Expanded services')).toBeInTheDocument(); await user.click(screen.getByRole('button', { name: 'Save deployment' }))
     await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith('/deployments') && init?.method === 'POST' && !JSON.parse(String(init.body)).validateOnly)).toBe(true))
   })

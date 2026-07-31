@@ -10,6 +10,32 @@ Updated: 2026-07-31
 - Web UI plan (`docs/web-ui-plan.md`): complete. Parts 1 through 13, including follow-up
   Parts 11a–11c, and Part 13's security review with its two fixes.
 
+## 2026-07-31 V2 Part 2c — repository stores and source worktrees
+
+- Added the authored `repositories:` map. A `url:` produces one managed bare Git store
+  under `.switchyard/clones/<name>`; `clone:` adopts an existing bare repository or
+  ordinary clone. Repository stores are never mounted or run.
+- Replaced plain/path/worktree source variants with the single required
+  `{ repository, ref, path }` form. Source paths are project-contained, relative to the
+  deployment, unique, and disjoint from repository storage.
+- `up` now performs a pure planning preflight, creates missing repository stores and
+  detached source worktrees, then replans against their live Git identities before any
+  Docker mutation. Existing worktrees are inspected and refused on repository or commit
+  mismatch rather than moved or reset.
+- Deployment sources are authoritative for planning/startup and no longer depend on the
+  SQLite registered-source catalog. Guided CLI/daemon/Web authoring converts a selected
+  registered worktree into repository/source declarations.
+- Extended `switchyard migrate` to collapse repeated legacy repository paths into one
+  adopted repository, preserve distinct existing worktree paths, and refuse repository
+  checkouts or non-Git plain paths instead of retaining a third source kind.
+- Migrated examples, compatibility fixtures, daemon/profile previews, init scaffolding,
+  generated agent guidance, and Web draft authoring. Managed repositories are bare stores;
+  all editable and runnable code lives in ordinary source worktrees.
+- Verification: workspace tests with all features passed with the five declared reliability
+  ignores; 49 Web tests, the TypeScript/Vite production build, workspace Clippy with all
+  targets/features and warnings denied, rustdoc with warnings denied, and formatting passed.
+  Web lint exited zero with the four pre-existing exhaustive-dependencies warnings.
+
 ## 2026-07-31 One instance, one group
 
 - Replaced sender/receiver-dependent membership behavior with one structural rule: an

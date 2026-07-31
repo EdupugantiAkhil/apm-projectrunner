@@ -6,9 +6,14 @@ metadata:
 spec:
   routerImage: switchyard-routing-matrix:local
 
+  repositories:
+    fixture: { url: ../.. }
+
   sources:
     workspace:
-      path: ../..
+      repository: fixture
+      ref: HEAD
+      path: ../../worktrees/automatic-localhost
 
   blocks:
     receiver:

@@ -136,9 +136,10 @@ recommendation each time, it walks you through steps 4 to 8 in order.
 
 Go to **sources**. Repositories and worktrees are separate:
 
-- A named `repository` is either a managed `url:` that Switchyard clones under
-  `.switchyard/clones/`, or an adopted `clone:` path that Switchyard reads but never
-  modifies.
+- A named `repository` is Git storage: either a managed bare clone from `url:` under
+  `.switchyard/clones/`, or an adopted `clone:` path to a bare repository or ordinary
+  clone. It holds Git objects and worktree metadata; Switchyard never runs code from a
+  repository checkout. All editable and runnable working trees are sources.
 - A named `source` is always a worktree with `{ repository, ref, path }`. Its path is
   project-relative and is the checkout an instance uses.
 
@@ -162,9 +163,9 @@ If it does not:
 
 Clone progress streams into the operations timeline like any other operation.
 
-**Adopt an existing clone.** Choose its path once at the repository level. Switchyard reads
-the clone and may create source worktrees from it, but never modifies or deletes the clone
-itself.
+**Adopt existing Git storage.** Choose its path once at the repository level. Switchyard
+may update the Git metadata needed to create source worktrees, but never runs from or edits
+the clone's checkout and never deletes an adopted repository.
 
 **Add a source worktree.** Choose the repository, ref, name, and project-relative path.
 This is the step that makes "several branches alive at once" possible — one worktree per
@@ -547,9 +548,9 @@ field name differ, both are given — the persisted YAML keeps the internal name
 | **Daemon** | project service, background service | The long-lived process that owns project state, runs operations, and serves the API. It is what Switchyard *is*; the Web UI and TUI are clients of it. Expected to be running before you open any UI. |
 | **Switchyard project** | workspace, project directory | The folder holding your authored deployment, overlays, and project-local state under `.switchyard/`. Created by `switchyard init` or `switchyard project register`. |
 | **Source** | checkout | A Git worktree named by repository, ref, and project-relative path. The exact code tree an instance runs from. |
-| **Managed repository** | cloned repository | A clone created and owned by Switchyard from an authored `url:`. |
-| **Adopted repository** | existing clone | A clone named by `clone:` that Switchyard reads but never modifies or deletes. |
-| **Repository** | — | A named managed or adopted Git clone backing one or more source worktrees. |
+| **Managed repository** | cloned repository | A bare Git repository created and owned by Switchyard from an authored `url:`. |
+| **Adopted repository** | existing clone | Existing Git storage named by `clone:`, either bare or an ordinary clone. Switchyard uses it for objects and linked-worktree metadata but never runs its checkout or deletes it. |
+| **Repository** | — | Named Git object and worktree-metadata storage backing one or more source worktrees. |
 | **Checkout** | source path | The exact source worktree an instance runs from. |
 | **Worktree** | — | A Git feature giving one repository several checked-out branches in separate directories at once. This is what makes several branches alive simultaneously. |
 | **Startup profile** | **block** | A reusable definition that expands into one service or a coordinated suite. `block` is the YAML field name. |

@@ -270,6 +270,8 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             print_plan(&workspace_root, &plan)?;
         }
         CliCommand::Up { bundle, options } => {
+            let (authored, _) = load_and_plan_options(&bundle, &options)?;
+            ensure_deployment_sources(&authored)?;
             let (_, plan) = load_and_plan_options(&bundle, &options)?;
             print_planner_warnings(&plan);
             let runtime_plan = runtime_plan(&workspace_root, &plan);
@@ -1121,6 +1123,69 @@ fn load_and_plan_options(
     Ok((bundle, plan))
 }
 
+fn ensure_deployment_sources(bundle: &Bundle) -> Result<(), Box<dyn std::error::Error>> {
+    let manager = switchyard_sources::SourceManager::new(bundle.workspace_root());
+    let mut repositories = BTreeMap::new();
+    for (name, repository) in &bundle.spec.repositories {
+        let path = match (&repository.url, &repository.clone) {
+            (Some(url), None) => {
+                let local = Path::new(url);
+                let resolved_url = if local.is_absolute() {
+                    url.clone()
+                } else {
+                    let candidate = bundle.definition_dir().join(local);
+                    if candidate.exists() {
+                        candidate.to_string_lossy().into_owned()
+                    } else {
+                        url.clone()
+                    }
+                };
+                manager.ensure_managed_clone(name, &resolved_url)?
+            }
+            (None, Some(path)) => {
+                let path = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    bundle.definition_dir().join(path)
+                };
+                path.canonicalize().map_err(|error| {
+                    MessageError(format!(
+                        "adopted repository `{name}` clone `{}` is unavailable: {error}",
+                        path.display()
+                    ))
+                })?
+            }
+            _ => {
+                return Err(MessageError(format!(
+                    "repository `{name}` must declare exactly one of `url` or `clone`"
+                ))
+                .into());
+            }
+        };
+        repositories.insert(name.as_str(), path);
+    }
+    for (name, source) in &bundle.spec.sources {
+        let repository = repositories
+            .get(source.repository.as_str())
+            .ok_or_else(|| {
+                MessageError(format!(
+                    "source `{name}` names unknown repository `{}`",
+                    source.repository
+                ))
+            })?;
+        let target = bundle.definition_dir().join(&source.path);
+        manager
+            .ensure_deployment_worktree(repository, &source.r#ref, &target)
+            .map_err(|error| {
+                MessageError(format!(
+                    "could not prepare source `{name}` at `{}`: {error}",
+                    source.path.display()
+                ))
+            })?;
+    }
+    Ok(())
+}
+
 fn plan_with_binding(
     workspace_root: &Path,
     bundle: &Bundle,
@@ -1813,6 +1878,80 @@ impl std::error::Error for MessageError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn up_source_preparation_clones_one_store_and_creates_all_worktrees() {
+        let directory = tempfile::tempdir().unwrap();
+        let origin = directory.path().join("origin");
+        let project = directory.path().join("project");
+        fs::create_dir(&origin).unwrap();
+        fs::create_dir(&project).unwrap();
+        for arguments in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.email", "tests@switchyard.invalid"],
+            vec!["config", "user.name", "Switchyard Tests"],
+        ] {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&origin)
+                .args(arguments)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        }
+        fs::write(origin.join("tracked"), "initial\n").unwrap();
+        for arguments in [vec!["add", "tracked"], vec!["commit", "-m", "initial"]] {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&origin)
+                .args(arguments)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        }
+        let deployment = project.join("deployment.yaml");
+        fs::write(
+            &deployment,
+            format!(
+                "apiVersion: switchyard.dev/v1alpha2\nkind: Deployment\nmetadata: {{ name: demo }}\nspec:\n  repositories:\n    app: {{ url: {} }}\n  sources:\n    main: {{ repository: app, ref: main, path: sources/main }}\n    other: {{ repository: app, ref: main, path: sources/other }}\n",
+                origin.display()
+            ),
+        )
+        .unwrap();
+        let bundle = switchyard_planner::load_bundle(&deployment).unwrap();
+
+        ensure_deployment_sources(&bundle).unwrap();
+
+        let store = project.join(".switchyard/clones/app");
+        assert_eq!(
+            command_output(&store, &["rev-parse", "--is-bare-repository"]),
+            "true"
+        );
+        for source in ["main", "other"] {
+            let worktree = project.join("sources").join(source);
+            assert_eq!(
+                fs::read_to_string(worktree.join("tracked")).unwrap(),
+                "initial\n"
+            );
+            assert_eq!(command_output(&worktree, &["rev-parse", "HEAD"]).len(), 40);
+        }
+        ensure_deployment_sources(&bundle).unwrap();
+    }
+
+    fn command_output(directory: &Path, arguments: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().into()
+    }
 
     #[test]
     fn device_target_defaults_and_validates_port() {

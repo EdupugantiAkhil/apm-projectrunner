@@ -5,3 +5,4 @@ npm-debug.log*
 target/
 /dist/
 .codex-refs/
+worktrees/

@@ -390,6 +390,24 @@ pub(crate) fn planning_devices_for_bundle(
     }
 }
 
+pub(crate) fn repository_path_for_source(
+    bundle: &switchyard_planner::Bundle,
+    source: &switchyard_planner::Source,
+) -> Option<PathBuf> {
+    let repository = bundle.spec.repositories.get(&source.repository)?;
+    match (&repository.url, &repository.clone) {
+        (Some(_), None) => Some(
+            bundle
+                .workspace_root()
+                .join(".switchyard/clones")
+                .join(&source.repository),
+        ),
+        (None, Some(path)) if path.is_absolute() => Some(path.clone()),
+        (None, Some(path)) => Some(bundle.definition_dir().join(path)),
+        _ => None,
+    }
+}
+
 pub fn load_definition_choices(
     definition: &Path,
     registered_sources: &[RegisteredSourceInspection],
@@ -417,9 +435,9 @@ pub fn load_definition_choices(
             name: name.clone(),
             path: source.path.clone(),
             declared: true,
-            worktree: matches!(source.r#type, switchyard_planner::SourceType::Worktree),
-            repository: source.repository.clone(),
-            requested_ref: source.r#ref.clone(),
+            worktree: true,
+            repository: repository_path_for_source(&bundle, source),
+            requested_ref: Some(source.r#ref.clone()),
         })
         .collect::<Vec<_>>();
     for source in registered_sources {

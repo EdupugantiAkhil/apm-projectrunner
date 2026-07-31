@@ -18,6 +18,16 @@ pub struct Bundle {
     pub(crate) workspace_root: PathBuf,
 }
 
+impl Bundle {
+    pub fn definition_dir(&self) -> &std::path::Path {
+        &self.definition_dir
+    }
+
+    pub fn workspace_root(&self) -> &std::path::Path {
+        &self.workspace_root
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Metadata {
@@ -36,6 +46,8 @@ pub struct DeploymentSpec {
     /// Secret-safe injected-file metadata emitted in resolved deployment artifacts.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub resolved_overlay_files: BTreeMap<String, Vec<ResolvedOverlayFile>>,
+    #[serde(default)]
+    pub repositories: BTreeMap<String, Repository>,
     #[serde(default)]
     pub sources: BTreeMap<String, Source>,
     #[serde(default)]
@@ -74,22 +86,19 @@ fn default_router_image() -> String {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Source {
-    #[serde(default)]
-    pub r#type: SourceType,
-    pub path: PathBuf,
-    #[serde(default)]
-    pub repository: Option<PathBuf>,
-    #[serde(default)]
-    pub r#ref: Option<String>,
+pub struct Repository {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clone: Option<PathBuf>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum SourceType {
-    #[default]
-    Path,
-    Worktree,
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Source {
+    pub repository: String,
+    pub r#ref: String,
+    pub path: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

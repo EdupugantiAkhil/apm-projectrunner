@@ -1,5 +1,19 @@
 # Agent mistakes and lessons
 
+## 2026-07-31 — Distinguish repository content from linked-worktree metadata
+
+- While implementing Part 2c, "an adopted clone is read and never modified" was interpreted
+  as forbidding Git from recording linked-worktree metadata. That made the roadmap appear
+  contradictory: `git worktree add` necessarily updates the repository's administrative
+  worktree records.
+- The owner clarified the product boundary: repositories are shared Git object/metadata
+  stores and may be bare; Switchyard never edits or runs a repository checkout. All working
+  files, mounts, edits, and execution belong to source worktrees.
+- Correction: managed `url:` repositories are bare stores, adopted `clone:` repositories
+  may be bare or ordinary clones, and both back ordinary source worktrees. Lesson: ownership
+  language such as "never modified" must name the protected layer precisely—working-tree
+  content and execution are different from Git metadata required to provide the feature.
+
 ## 2026-07-31 — A rule can faithfully implement wording that its justification does not support
 
 - Part 1 implemented "one provider per capability" exactly as step 8 stated it: any group with two

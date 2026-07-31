@@ -31,9 +31,10 @@ fn prepare_project() -> TempDir {
             "      instances: [provider-main/api, provider-replica/api]",
         );
     fs::write(&deployment_path, deployment).unwrap();
+    fs::create_dir(temp.path().join("source")).unwrap();
     fs::copy(
         fixture.join("process-compose.yaml"),
-        temp.path().join("process-compose.yaml"),
+        temp.path().join("source/process-compose.yaml"),
     )
     .unwrap();
     temp

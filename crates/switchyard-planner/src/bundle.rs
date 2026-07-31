@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    Bundle, Execution, Overlay, OverlayFileSource, OverlayValue, SourceType, load_bundle,
-    load_overlay, plan_with_overlays,
+    Bundle, Execution, Overlay, OverlayFileSource, OverlayValue, load_bundle, load_overlay,
+    plan_with_overlays,
 };
 
 pub const PORTABLE_BUNDLE_API_VERSION: &str = "switchyard.dev/bundle/v1alpha1";
@@ -382,13 +382,15 @@ fn reject_machine_state(bundle: &PortableBundle) -> Result<(), BundleError> {
                 "deployment.spec.sources.{name}.path"
             )));
         }
-        if source
-            .repository
+    }
+    for (name, repository) in &bundle.deployment.spec.repositories {
+        if repository
+            .clone
             .as_ref()
             .is_some_and(|path| path_is_machine_state(path))
         {
             return Err(machine_state_error(format!(
-                "deployment.spec.sources.{name}.repository"
+                "deployment.spec.repositories.{name}.clone"
             )));
         }
     }
@@ -545,9 +547,6 @@ impl Sanitizer {
                 }
             }
             self.require(input);
-            if matches!(source.r#type, SourceType::Worktree) {
-                source.repository = None;
-            }
             source.path = PathBuf::from("required-local-inputs").join(&input_name);
             self.warnings.push(BundleWarning {
                 code: BundleWarningCode::LocalPathReplaced,

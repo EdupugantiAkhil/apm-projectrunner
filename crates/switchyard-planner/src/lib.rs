@@ -463,7 +463,40 @@ fn validate(
     validate_name(&bundle.metadata.name, "metadata.name", &mut errors);
 
     let adapters = built_in_registry();
+    let generated_definition = bundle
+        .definition_dir
+        .components()
+        .any(|component| component.as_os_str() == "generated")
+        && bundle
+            .definition_dir
+            .components()
+            .any(|component| component.as_os_str() == ".switchyard");
 
+    let source_manager = SourceManager::new(&bundle.workspace_root);
+    let mut repository_paths = BTreeMap::new();
+    for (name, repository) in &bundle.spec.repositories {
+        validate_name(name, format!("spec.repositories.{name}"), &mut errors);
+        match (&repository.url, &repository.clone) {
+            (Some(url), None) if !url.trim().is_empty() => {
+                repository_paths.insert(name.as_str(), source_manager.clone_root().join(name));
+            }
+            (None, Some(path)) => {
+                repository_paths.insert(name.as_str(), resolve_path(&bundle.definition_dir, path));
+            }
+            (Some(_), None) => errors.push(Diagnostic::new(
+                DiagnosticCode::InvalidPath,
+                format!("spec.repositories.{name}.url"),
+                "repository URL must not be empty",
+            )),
+            _ => errors.push(Diagnostic::new(
+                DiagnosticCode::UnsupportedSchema,
+                format!("spec.repositories.{name}"),
+                "exactly one of `url` or `clone` is required",
+            )),
+        }
+    }
+
+    let mut source_paths = BTreeMap::<PathBuf, &str>::new();
     for (name, source) in &bundle.spec.sources {
         validate_name(name, format!("spec.sources.{name}"), &mut errors);
         let (adapter_id, configuration) = source_adapter_configuration(source);
@@ -481,24 +514,53 @@ fn validate(
                 format!("built-in adapter {adapter_id} is not registered"),
             ));
         }
-        let path = resolve_path(&bundle.definition_dir, &source.path);
-        if !path.is_dir() {
+        if source.path.is_absolute() && !generated_definition {
             errors.push(Diagnostic::new(
                 DiagnosticCode::InvalidPath,
                 format!("spec.sources.{name}.path"),
-                format!("source directory does not exist: {}", path.display()),
+                "source path must be relative to the deployment file",
             ));
         }
-        if matches!(source.r#type, SourceType::Worktree) {
-            match &source.repository {
-                Some(repository) if resolve_path(&bundle.definition_dir, repository).is_dir() => {}
-                Some(_) => errors.push(Diagnostic::new(
+        let path = normalize_path(&resolve_path(&bundle.definition_dir, &source.path));
+        if !generated_definition && !path.starts_with(&bundle.workspace_root) {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::InvalidPath,
+                format!("spec.sources.{name}.path"),
+                format!(
+                    "source path `{}` escapes project directory `{}`",
+                    source.path.display(),
+                    bundle.workspace_root.display()
+                ),
+            ));
+        }
+        if let Some(previous) = source_paths.insert(path.clone(), name) {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::DuplicateName,
+                format!("spec.sources.{name}.path"),
+                format!("source path is already used by `{previous}`"),
+            ));
+        }
+        if source.r#ref.trim().is_empty() {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::MissingReference,
+                format!("spec.sources.{name}.ref"),
+                "source ref must not be empty",
+            ));
+        }
+        match repository_paths.get(source.repository.as_str()) {
+            None => errors.push(Diagnostic::new(
+                DiagnosticCode::MissingReference,
+                format!("spec.sources.{name}.repository"),
+                format!("unknown repository `{}`", source.repository),
+            )),
+            Some(repository_path) if paths_overlap(&path, &normalize_path(repository_path)) => {
+                errors.push(Diagnostic::new(
                     DiagnosticCode::InvalidPath,
-                    format!("spec.sources.{name}"),
-                    "worktree source needs an existing repository directory",
-                )),
-                None => {}
+                    format!("spec.sources.{name}.path"),
+                    "source worktree and repository clone may not be the same directory or contain one another",
+                ));
             }
+            Some(_) => {}
         }
     }
 
@@ -581,6 +643,9 @@ fn validate(
         }
         if let Some(source) = bundle.spec.sources.get(&instance.source) {
             let source_path = resolve_path(&bundle.definition_dir, &source.path);
+            if !source_path.exists() {
+                continue;
+            }
             for (service_name, service) in &block.services {
                 let relative = match &service.execution {
                     Execution::Container {
@@ -742,20 +807,34 @@ fn validate_execution(
 }
 
 fn source_adapter_configuration(source: &Source) -> (&'static str, Value) {
-    match source.r#type {
-        SourceType::Path => (
-            "source-path",
-            json!({ "path": source.path.to_string_lossy() }),
-        ),
-        SourceType::Worktree => (
-            "source-git",
-            json!({
-                "path": source.path.to_string_lossy(),
-                "repository": source.repository.as_ref().map(|path| path.to_string_lossy()),
-                "ref": source.r#ref,
-            }),
-        ),
+    (
+        "source-git",
+        json!({
+            "path": source.path.to_string_lossy(),
+            "repository": source.repository,
+            "ref": source.r#ref,
+        }),
+    )
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
     }
+    normalized
+}
+
+fn paths_overlap(left: &Path, right: &Path) -> bool {
+    left.starts_with(right) || right.starts_with(left)
 }
 
 fn execution_adapter_configuration(execution: &Execution) -> (AdapterKind, &'static str, Value) {
@@ -1689,7 +1768,7 @@ fn generate(
         );
         let source_definition = &bundle.spec.sources[&instance.source];
         let identity = source_manager
-            .inspect(&source, source_definition.r#ref.as_deref())
+            .inspect(&source, Some(&source_definition.r#ref))
             .identity;
         source_identities.insert(instance.name.clone(), identity);
         let transparent = routing_groups.contains_key(&instance.name)
@@ -1924,6 +2003,14 @@ fn generate(
         );
     }
     let mut resolved = bundle.clone();
+    for (name, repository) in &mut resolved.spec.repositories {
+        if repository.url.is_some() {
+            repository.clone = Some(source_manager.clone_root().join(name));
+            repository.url = None;
+        } else if let Some(path) = &mut repository.clone {
+            *path = resolve_path(&bundle.definition_dir, path);
+        }
+    }
     for source in resolved.spec.sources.values_mut() {
         source.path = resolve_path(&bundle.definition_dir, &source.path);
     }

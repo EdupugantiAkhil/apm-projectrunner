@@ -235,13 +235,13 @@ migration.
 
 ---
 
-### Part 2c — Repositories are declared once; sources are a repo and a ref
+### Part 2c — Repositories are declared once; sources are a repo and a ref ✅
 
 Vision reference: user_flow step 4, ABOUT.md "all backed by one clone".
 
-Today `Source` carries `type`, `path`, `repository`, and `ref` (`model.rs:77`), and the
-project state store carries a parallel `RegisteredSource` with `repository_path` and
-`requested_ref` (`switchyard-state/src/lib.rs:248`). Two problems:
+Before this part, `Source` carried `type`, `path`, `repository`, and `ref`, and the project
+state store carried a parallel `RegisteredSource` with `repository_path` and
+`requested_ref`. Two problems were corrected:
 
 - **The repository is repeated per source.** Four worktrees of one repository means writing
   `repository: ./sources/monorepo` four times, with nothing enforcing agreement. ABOUT.md
@@ -260,7 +260,7 @@ repositories:
   monorepo:
     url: git@github.com:acme/monorepo.git      # cloned into .switchyard/clones/monorepo
   legacy:
-    clone: ~/work/legacy-checkout               # a clone you already have; read, never modified
+    clone: ~/work/legacy-checkout               # existing bare repository or ordinary clone
 
 sources:
   ui-main:         { repository: monorepo, ref: main,        path: ./sources/ui-main }
@@ -276,14 +276,16 @@ is the rule that makes the rest fall out. Two directory populations with no over
 
 | | Where | Who owns it | Ever modified by Switchyard |
 | --- | --- | --- | --- |
-| Repository clones | `.switchyard/clones/<name>`, or your own path when adopted | Switchyard, or you | Managed clones only |
+| Repository storage | `.switchyard/clones/<name>`, or your own path when adopted | Switchyard, or you | Git objects/worktree metadata; managed storage is removable |
 | Source worktrees | wherever you author `path:` | Switchyard | Created, and removable |
 
 A source is never a repository, and a repository is never a source. Nothing has to work out
 which one a directory is, and the adopt-versus-manage question is settled once at the
-repository level instead of per source: `url:` means Switchyard clones and owns it, `clone:`
-means read this and never touch it. Every worktree below is created by Switchyard either
-way, so worktree handling has exactly one case.
+repository level instead of per source: `url:` means Switchyard creates and owns a bare
+repository, while `clone:` adopts existing Git storage (bare or an ordinary clone).
+Repositories hold objects and linked-worktree metadata; Switchyard never runs their
+checkout. Every editable and runnable tree is a source worktree, created the same way
+against either repository form.
 
 **`path:` is mandatory on sources and absent from managed repositories.** A source
 directory is something you *use* — you open it in an editor, run commands in it, point
@@ -293,8 +295,8 @@ exists (`switchyard-sources/src/lib.rs:206`, used by `clone_repository` at line 
 Exactly one of `url:` or `clone:` is required on a repository.
 
 **The adopted-clone field is `clone:`, not `path:`.** Two fields spelled `path:` that mean
-different things — "the worktree Switchyard will create for you" on a source and "a
-repository that already exists, do not touch it" on a repository — is the kind of collision
+different things — "the worktree Switchyard will create for you" on a source and "existing
+Git storage backing worktrees" on a repository — is the kind of collision
 that reads fine in the spec and misleads in practice. `clone:` names what it points at and
 pairs obviously with `url:`, which is the other way of saying where the clone comes from.
 
@@ -303,17 +305,17 @@ if absent. A source whose `path` is absent gets `git worktree add` against its r
 its ref. Nothing on disk at all, and `deployment.yaml` reconstructs the whole tree. What is
 present is left alone; this is not a sync that enforces state.
 
-- [ ] `repositories:` section — exactly one of `url:` (Switchyard clones and manages) or
-      `clone:` (a clone you already have, read and never modified)
-- [ ] Managed clones land in `.switchyard/clones/<name>`, not authored
-- [ ] A source is always `{ repository, ref, path }` — all three required
-- [ ] A repository `clone:` and a source `path:` may never be the same directory, or nested
+- [x] `repositories:` section — exactly one of `url:` (Switchyard creates and manages a
+      bare repository) or `clone:` (existing bare repository or ordinary clone)
+- [x] Managed clones land in `.switchyard/clones/<name>`, not authored
+- [x] A source is always `{ repository, ref, path }` — all three required
+- [x] A repository `clone:` and a source `path:` may never be the same directory, or nested
       one inside the other; that is a validation error, not a warning
-- [ ] `path` always relative to the deployment file
-- [ ] `up` creates missing clones and worktrees via the existing `SourceManager`
-- [ ] Reconcile the deployment `Source` with the state store's `RegisteredSource` — one of
+- [x] `path` always relative to the deployment file
+- [x] `up` creates missing clones and worktrees via the existing `SourceManager`
+- [x] Reconcile the deployment `Source` with the state store's `RegisteredSource` — one of
       them should stop being the second home for the same three fields
-- [ ] Migration: `{ type: worktree, path, repository, ref }` → a `repositories:` entry plus
+- [x] Migration: `{ type: worktree, path, repository, ref }` → a `repositories:` entry plus
       a `{ repository, ref, path }` source, collapsing duplicate repository paths into one
       entry and keeping every existing path exactly as authored. The repository an existing
       deployment names is one the user already has, so it migrates to the adopted `clone:`
@@ -346,6 +348,13 @@ raw `git` error surfacing.
 
 Schema-affecting, so it lands before the Part 7 rename and rides the same `v1alpha2`
 migration.
+
+The deployment is now authoritative for planning and `up`; neither path consults the
+registered-source store. That store remains a project-level discovery and ownership catalog
+for imperative clients, and guided authoring materializes a selected registered worktree
+into the deployment's repository/source sections. Existing paths are inspected but never
+reset: wrong repository, wrong ref, missing ref, non-worktree paths, duplicate paths, and
+project escapes have explicit diagnostics.
 
 ---
 

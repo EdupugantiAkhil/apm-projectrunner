@@ -5,12 +5,14 @@ metadata:
   labels: { fixture: legacy-workspace }
 spec:
   routerImage: &fixture-image switchyard-jas-base:local
+  repositories:
+    fixture: { url: ../../../.. }
   sources:
-    repository-root: { path: ../../../.. }
-    fixture-root: { path: ../../../../examples/jas-base }
-    monorepo-main: { path: ../../../../examples/jas-base/sources/main }
-    jas-feature-worktree: { path: ../../../../examples/jas-base/sources/feature }
-    ai-feature-worktree: { path: ../../../../examples/jas-base/sources/feature }
+    repository-root: { repository: fixture, ref: HEAD, path: ../../../../worktrees/jas-repository-root }
+    fixture-root: { repository: fixture, ref: HEAD, path: ../../../../worktrees/jas-fixture-root }
+    monorepo-main: { repository: fixture, ref: HEAD, path: ../../../../worktrees/jas-monorepo-main }
+    jas-feature-worktree: { repository: fixture, ref: HEAD, path: ../../../../worktrees/jas-feature }
+    ai-feature-worktree: { repository: fixture, ref: HEAD, path: ../../../../worktrees/jas-ai-feature }
   blocks:
     fixture-image:
       services:
@@ -70,7 +72,7 @@ spec:
           execution:
             type: processCompose
             image: *fixture-image
-            file: process-compose.yaml
+            file: examples/jas-base/sources/main/process-compose.yaml
           probe:
             type: command
             command: ["/usr/local/bin/jas-base-fixture", probe, "127.0.0.1:8001", "127.0.0.1:8002", "127.0.0.1:8003", "127.0.0.1:8004", "127.0.0.1:8005"]

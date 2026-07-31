@@ -2412,20 +2412,56 @@ fn validate_profile_blocking(
             "deployment definition has no spec mapping",
         );
     };
-    let mut source_definition = serde_json::Map::from_iter([(
-        "path".into(),
-        Value::String(checkout.path.display().to_string()),
-    )]);
-    if let Some(repository) = checkout.repository_path {
-        source_definition.insert("type".into(), Value::String("worktree".into()));
-        source_definition.insert(
-            "repository".into(),
-            Value::String(repository.display().to_string()),
+    let Some(repository) = checkout.repository_path else {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "profile_checkout_not_worktree",
+            "profile validation checkout must be a registered Git worktree",
         );
-        if let Some(reference) = checkout.requested_ref {
-            source_definition.insert("ref".into(), Value::String(reference));
-        }
+    };
+    if repository == checkout.path {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "profile_checkout_is_repository",
+            "profile validation checkout must be a source worktree, not the repository store",
+        );
     }
+    let Some(reference) = checkout.requested_ref else {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "profile_checkout_ref_missing",
+            "profile validation checkout must record its requested Git ref",
+        );
+    };
+    let relative_checkout = match checkout.path.strip_prefix(&inner.config.project_root) {
+        Ok(path) => path,
+        Err(_) => {
+            return api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "profile_checkout_outside_project",
+                "profile validation checkout must be inside the project",
+            );
+        }
+    };
+    let repository_name = format!("{}-repository", request.checkout);
+    let repositories = spec
+        .entry(serde_yaml::Value::String("repositories".into()))
+        .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
+    if let Some(repositories) = repositories.as_mapping_mut() {
+        repositories
+            .entry(serde_yaml::Value::String(repository_name.clone()))
+            .or_insert_with(|| {
+                serde_yaml::to_value(json!({"clone": repository})).unwrap_or_default()
+            });
+    }
+    let source_definition = serde_json::Map::from_iter([
+        ("repository".into(), Value::String(repository_name)),
+        ("ref".into(), Value::String(reference)),
+        (
+            "path".into(),
+            Value::String(relative_checkout.display().to_string()),
+        ),
+    ]);
     let sources = spec
         .entry(serde_yaml::Value::String("sources".into()))
         .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));

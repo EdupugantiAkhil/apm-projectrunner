@@ -1,7 +1,8 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt, fs,
-    path::Path,
+    path::{Path, PathBuf},
+    process::Command,
 };
 
 use serde_yaml::Value;
@@ -79,6 +80,7 @@ pub fn migrate(
     materialize_group_instances(&mut document, &mut changes)?;
     remove_identity_routing_metadata(&mut document, &mut changes)?;
     migrate_ui_routes(&mut document, &mut changes)?;
+    migrate_sources(&mut document, path, &mut changes)?;
     if changes.is_empty() {
         return Ok(MigrationResult {
             changed: false,
@@ -103,6 +105,13 @@ pub fn migrate(
             path.display()
         )));
     }
+    if let Err(diagnostics) = switchyard_planner::plan(&bundle) {
+        return Err(MigrationError(format!(
+            "refusing to write `{}` because the migrated deployment is invalid: {}",
+            path.display(),
+            serde_json::to_string(&diagnostics).unwrap_or_else(|_| "invalid deployment".into())
+        )));
+    }
     before_write();
     write_atomic(path, migrated.as_bytes()).map_err(|error| {
         MigrationError(format!(
@@ -114,6 +123,233 @@ pub fn migrate(
         changed: true,
         changes,
     })
+}
+
+fn migrate_sources(
+    document: &mut Value,
+    deployment: &Path,
+    changes: &mut Vec<String>,
+) -> Result<(), MigrationError> {
+    let Some(spec) = document.get_mut("spec").and_then(Value::as_mapping_mut) else {
+        return Ok(());
+    };
+    let sources_key = Value::String("sources".into());
+    let Some(mut sources_value) = spec.remove(&sources_key) else {
+        return Ok(());
+    };
+    let sources = sources_value
+        .as_mapping_mut()
+        .ok_or_else(|| MigrationError("cannot migrate: spec.sources must be a mapping".into()))?;
+    let mut repositories = spec
+        .remove(Value::String("repositories".into()))
+        .unwrap_or_else(|| Value::Mapping(Default::default()))
+        .as_mapping()
+        .cloned()
+        .ok_or_else(|| {
+            MigrationError("cannot migrate: spec.repositories must be a mapping".into())
+        })?;
+    let mut adopted = BTreeMap::<String, String>::new();
+    for (name, repository) in &repositories {
+        if let (Some(name), Some(clone)) = (
+            name.as_str(),
+            repository.get("clone").and_then(Value::as_str),
+        ) {
+            adopted.insert(clone.into(), name.into());
+        }
+    }
+    let definition_dir = deployment
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+
+    for (source_name, source) in sources {
+        let name = source_name.as_str().ok_or_else(|| {
+            MigrationError("cannot migrate: every source name must be a string".into())
+        })?;
+        let mapping = source.as_mapping_mut().ok_or_else(|| {
+            MigrationError(format!(
+                "cannot migrate source `{name}`: definition must be a mapping"
+            ))
+        })?;
+        let path = mapping
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                MigrationError(format!(
+                    "cannot migrate source `{name}`: path must be a string"
+                ))
+            })?
+            .to_owned();
+        let already_current = mapping.get("repository").and_then(Value::as_str).is_some()
+            && mapping.get("ref").and_then(Value::as_str).is_some()
+            && mapping.get("type").is_none();
+        if already_current {
+            continue;
+        }
+
+        let source_path = resolve_migration_path(definition_dir, Path::new(&path));
+        let legacy_repository = mapping
+            .get("repository")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let repository_path = match legacy_repository {
+            Some(repository) => repository,
+            None => discover_separate_repository(name, &source_path, definition_dir)?,
+        };
+        let reference = match mapping.get("ref").and_then(Value::as_str) {
+            Some(reference) if !reference.trim().is_empty() => reference.to_owned(),
+            _ => discover_ref(name, &source_path)?,
+        };
+        let repository_name = if let Some(existing) = adopted.get(&repository_path) {
+            existing.clone()
+        } else {
+            let base = migration_repository_name(&repository_path);
+            let mut candidate = base.clone();
+            let mut suffix = 2;
+            while repositories.contains_key(Value::String(candidate.clone())) {
+                candidate = format!("{base}-{suffix}");
+                suffix += 1;
+            }
+            repositories.insert(
+                Value::String(candidate.clone()),
+                serde_yaml::to_value(BTreeMap::from([("clone", repository_path.clone())]))
+                    .expect("string repository definition serializes"),
+            );
+            adopted.insert(repository_path.clone(), candidate.clone());
+            candidate
+        };
+        mapping.remove("type");
+        mapping.insert(
+            Value::String("repository".into()),
+            Value::String(repository_name),
+        );
+        mapping.insert(Value::String("ref".into()), Value::String(reference));
+        changes.push(format!(
+            "source `{name}` now references a declared adopted repository and ref"
+        ));
+    }
+    spec.insert(
+        Value::String("repositories".into()),
+        Value::Mapping(repositories),
+    );
+    spec.insert(sources_key, sources_value);
+    Ok(())
+}
+
+fn resolve_migration_path(base: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_owned()
+    } else {
+        base.join(path)
+    }
+}
+
+fn discover_separate_repository(
+    name: &str,
+    source: &Path,
+    definition_dir: &Path,
+) -> Result<String, MigrationError> {
+    let worktrees = git_output(source, &["worktree", "list", "--porcelain"]).map_err(|error| {
+        MigrationError(format!(
+            "cannot migrate plain-path source `{name}`: {error}; create a separate Git worktree and author its repository and ref"
+        ))
+    })?;
+    let repository = worktrees
+        .lines()
+        .find_map(|line| line.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            MigrationError(format!(
+                "cannot migrate plain-path source `{name}`: Git did not report a repository worktree"
+            ))
+        })?;
+    let source = source.canonicalize().map_err(|error| {
+        MigrationError(format!(
+            "cannot migrate plain-path source `{name}` at `{}`: {error}",
+            source.display()
+        ))
+    })?;
+    let repository = repository.canonicalize().map_err(|error| {
+        MigrationError(format!(
+            "cannot migrate repository for source `{name}` at `{}`: {error}",
+            repository.display()
+        ))
+    })?;
+    if source == repository || source.starts_with(&repository) || repository.starts_with(&source) {
+        return Err(MigrationError(format!(
+            "cannot migrate plain-path source `{name}` because its checkout overlaps the repository clone; create a separate worktree, then update the source path"
+        )));
+    }
+    Ok(repository
+        .strip_prefix(definition_dir)
+        .map(Path::to_path_buf)
+        .unwrap_or(repository)
+        .to_string_lossy()
+        .into_owned())
+}
+
+fn discover_ref(name: &str, source: &Path) -> Result<String, MigrationError> {
+    let branch = git_output(source, &["branch", "--show-current"]).map_err(|error| {
+        MigrationError(format!("cannot determine ref for source `{name}`: {error}"))
+    })?;
+    if !branch.is_empty() {
+        Ok(branch)
+    } else {
+        git_output(source, &["rev-parse", "HEAD"]).map_err(|error| {
+            MigrationError(format!("cannot determine ref for source `{name}`: {error}"))
+        })
+    }
+}
+
+fn git_output(directory: &Path, arguments: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args(arguments)
+        .output()
+        .map_err(|error| format!("could not run Git: {error}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().into())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().into())
+    }
+}
+
+fn migration_repository_name(path: &str) -> String {
+    let candidate = Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("repository");
+    let mut name = candidate
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    while name.contains("--") {
+        name = name.replace("--", "-");
+    }
+    let name = name.trim_matches('-');
+    if name.is_empty() {
+        "repository".into()
+    } else if name.starts_with(|character: char| character.is_ascii_lowercase()) {
+        name.chars()
+            .take(63)
+            .collect::<String>()
+            .trim_end_matches('-')
+            .into()
+    } else {
+        format!("repository-{name}")
+            .chars()
+            .take(63)
+            .collect::<String>()
+            .trim_end_matches('-')
+            .into()
+    }
 }
 
 fn migrate_group_instances(
@@ -874,8 +1110,10 @@ mod tests {
 kind: Deployment
 metadata: { name: demo }
 spec:
+  repositories:
+    fixture: { url: https://example.invalid/repository.git }
   sources:
-    app: { path: . }
+    app: { repository: fixture, ref: main, path: worktrees/app }
   blocks:
     main-suite:
       services:
@@ -960,8 +1198,10 @@ spec:
 kind: Deployment
 metadata: { name: demo }
 spec:
+  repositories:
+    fixture: { url: https://example.invalid/repository.git }
   sources:
-    app: { path: . }
+    app: { repository: fixture, ref: main, path: worktrees/app }
   blocks:
     ui:
       services:
@@ -1145,8 +1385,10 @@ spec:
 kind: Deployment
 metadata: { name: demo }
 spec:
+  repositories:
+    fixture: { url: https://example.invalid/repository.git }
   sources:
-    app: { path: . }
+    app: { repository: fixture, ref: main, path: worktrees/app }
   blocks:
     provider:
       services:
@@ -1190,8 +1432,10 @@ spec:
 kind: Deployment
 metadata: { name: demo }
 spec:
+  repositories:
+    fixture: { url: https://example.invalid/repository.git }
   sources:
-    app: { path: . }
+    app: { repository: fixture, ref: main, path: worktrees/app }
   blocks:
     provider:
       services:
@@ -1240,6 +1484,114 @@ spec:
         fs::write(&path, original).unwrap();
         let error = migrate(&path, || {}).unwrap_err().to_string();
         assert!(error.contains("providers must be a mapping"));
+        assert_eq!(fs::read_to_string(path).unwrap(), original);
+    }
+
+    #[test]
+    fn migrates_legacy_worktrees_to_one_adopted_repository() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = directory.path().join("repository");
+        let project = directory.path().join("project");
+        fs::create_dir(&repository).unwrap();
+        fs::create_dir(&project).unwrap();
+        for arguments in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.email", "tests@switchyard.invalid"],
+            vec!["config", "user.name", "Switchyard Tests"],
+        ] {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(arguments)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        }
+        fs::write(repository.join("tracked"), "initial\n").unwrap();
+        for arguments in [vec!["add", "tracked"], vec!["commit", "-m", "initial"]] {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(arguments)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        }
+        for source in ["main", "other"] {
+            let target = project.join("sources").join(source);
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args([
+                    "worktree",
+                    "add",
+                    "--detach",
+                    target.to_str().unwrap(),
+                    "main",
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let path = project.join("deployment.yaml");
+        let original = r#"apiVersion: switchyard.dev/v1alpha2
+kind: Deployment
+metadata: { name: demo }
+spec:
+  sources:
+    main: { type: worktree, repository: ../repository, ref: main, path: sources/main }
+    other: { type: worktree, repository: ../repository, ref: main, path: sources/other }
+"#;
+        fs::write(&path, original).unwrap();
+
+        let result = migrate(&path, || {}).unwrap();
+        assert!(result.changed);
+        let migrated: Value = serde_yaml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            migrated["spec"]["repositories"].as_mapping().unwrap().len(),
+            1
+        );
+        let repository_name = migrated["spec"]["sources"]["main"]["repository"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            migrated["spec"]["sources"]["other"]["repository"].as_str(),
+            Some(repository_name)
+        );
+        assert_eq!(
+            migrated["spec"]["repositories"][repository_name]["clone"].as_str(),
+            Some("../repository")
+        );
+        assert!(migrated["spec"]["sources"]["main"].get("type").is_none());
+    }
+
+    #[test]
+    fn refuses_to_migrate_a_repository_checkout_as_a_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(directory.path())
+            .args(["init", "-b", "main"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let path = directory.path().join("deployment.yaml");
+        let original = r#"apiVersion: switchyard.dev/v1alpha2
+kind: Deployment
+metadata: { name: demo }
+spec:
+  sources:
+    app: { path: . }
+"#;
+        fs::write(&path, original).unwrap();
+
+        let error = migrate(&path, || {}).unwrap_err().to_string();
+        assert!(error.contains("checkout overlaps the repository"));
+        assert!(error.contains("create a separate worktree"));
         assert_eq!(fs::read_to_string(path).unwrap(), original);
     }
 }

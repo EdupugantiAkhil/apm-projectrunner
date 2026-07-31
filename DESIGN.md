@@ -82,7 +82,7 @@ Generic definitions are extended through versioned adapter interfaces rather tha
 conditionals in the core:
 
 ```text
-SourceAdapter     path | git | worktree | future plugin
+SourceAdapter     git-worktree | future repository providers
 ExecutionAdapter  container | runner-script | host | future plugin
 SupervisorAdapter process | process-compose | future plugin
 RouteAdapter      http | tcp | environment | rendered-config | future plugin
@@ -109,10 +109,11 @@ changing the human-authored topology model.
 
 ### Repository and source
 
-A repository names a Git clone once. Exactly one of `url:` (managed by Switchyard) or
-`clone:` (an existing clone that Switchyard never modifies) is required. A source is
-always a worktree backed by that repository, with an authored ref and project-relative
-path.
+A repository names Git object and linked-worktree metadata storage once. Exactly one of
+`url:` (a bare repository created and managed by Switchyard) or `clone:` (an adopted bare
+repository or ordinary clone) is required. Switchyard never runs code from a repository
+checkout. A source is always an editable and runnable worktree backed by that repository,
+with an authored ref and project-relative path.
 
 ```yaml
 repositories:
@@ -941,7 +942,7 @@ fields:
 | UI label | Architecture term | Meaning |
 | --- | --- | --- |
 | Switchyard project | Workspace/project directory | Authored deployment, overlays, and project state |
-| Code | Sources | Code made available from a local path, repository, or worktree |
+| Code | Sources | Code made available through repository-backed worktrees |
 | Repository | Repository | The Git repository and its relationship to linked worktrees |
 | Checkout | Source path/worktree | The exact code tree selected for an instance |
 | Startup profile | Block | A reusable definition that expands into one service or a coordinated suite |

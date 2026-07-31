@@ -26,6 +26,25 @@ Use this order:
 Never edit `.switchyard/generated/` or `.switchyard/state.sqlite3`. Do not hand-edit
 runtime manifests, ownership labels, imported-profile records, or route snapshots.
 
+## Author repositories and sources
+
+Declare each Git repository once. A `url:` becomes a managed Git store under
+`.switchyard/clones/`; `clone:` adopts existing Git storage. Then declare each runnable
+checkout as an ordinary project-local worktree:
+
+```yaml
+spec:
+  repositories:
+    project: { url: https://github.com/example/project.git }
+  sources:
+    main: { repository: project, ref: main, path: sources/main }
+    feature: { repository: project, ref: feature-a, path: sources/feature-a }
+```
+
+Only source worktrees are edited, mounted, or run. `switchyard up` creates missing
+repository stores and worktrees. Never use the repository store itself as a source path,
+and never author an absolute source path or one that escapes the project.
+
 ## Analyze a repository safely
 
 Read repository files; never execute repository scripts merely to discover behavior.

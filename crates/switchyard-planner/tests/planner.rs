@@ -1107,7 +1107,7 @@ fn reports_required_variables_cycles_conflicts_and_missing_providers_together() 
 }
 
 #[test]
-fn rejects_source_paths_before_writing_any_artifact() {
+fn missing_source_paths_plan_without_writing_and_are_created_by_up() {
     let mut bundle = bundle();
     bundle
         .spec
@@ -1115,12 +1115,10 @@ fn rejects_source_paths_before_writing_any_artifact() {
         .get_mut("app")
         .expect("source exists")
         .path = "does-not-exist".into();
-    let errors = plan(&bundle).expect_err("bad source should fail");
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.code == DiagnosticCode::InvalidPath)
-    );
+    let generated = plan(&bundle).expect("a missing authored worktree is materialized by up");
+    assert!(generated.source_identities.values().all(|identity| {
+        identity.commit.is_none() && identity.repository.is_none() && identity.dirty.is_none()
+    }));
     assert!(!Path::new(".switchyard/generated/comparison").exists());
 }
 
@@ -1199,23 +1197,21 @@ fn parallel_deployments_have_disjoint_names_and_dynamic_loopback_ports() {
 }
 
 #[test]
-fn worktree_sources_still_require_repository_and_ref_through_adapters() {
+fn sources_require_a_declared_repository_and_nonempty_ref() {
     let mut bundle = bundle();
     let source = bundle
         .spec
         .sources
         .get_mut("app")
         .expect("fixture declares the app source");
-    source.r#type = switchyard_planner::SourceType::Worktree;
-    source.repository = None;
-    source.r#ref = None;
-    let errors = plan(&bundle).expect_err("worktree source without repository and ref");
+    source.repository = "missing".into();
+    let errors = plan(&bundle).expect_err("source without a declared repository");
     assert!(
-        errors
-            .iter()
-            .any(|diagnostic| diagnostic.code == DiagnosticCode::InvalidPath
-                && diagnostic.path == "spec.sources.app"),
-        "expected an InvalidPath diagnostic for spec.sources.app: {errors:?}"
+        errors.iter().any(
+            |diagnostic| diagnostic.code == DiagnosticCode::MissingReference
+                && diagnostic.path == "spec.sources.app.repository"
+        ),
+        "expected a MissingReference diagnostic for spec.sources.app.repository: {errors:?}"
     );
 
     let mut empty_ref_bundle = crate::bundle();
@@ -1224,17 +1220,45 @@ fn worktree_sources_still_require_repository_and_ref_through_adapters() {
         .sources
         .get_mut("app")
         .expect("fixture declares the app source");
-    source.r#type = switchyard_planner::SourceType::Worktree;
-    source.repository = Some(".".into());
-    source.r#ref = Some(String::new());
-    let errors = plan(&empty_ref_bundle).expect_err("worktree source with an empty ref");
+    source.r#ref = String::new();
+    let errors = plan(&empty_ref_bundle).expect_err("source with an empty ref");
     assert!(
-        errors
-            .iter()
-            .any(|diagnostic| diagnostic.code == DiagnosticCode::InvalidPath
-                && diagnostic.path == "spec.sources.app"),
-        "expected an InvalidPath diagnostic for spec.sources.app: {errors:?}"
+        errors.iter().any(
+            |diagnostic| diagnostic.code == DiagnosticCode::MissingReference
+                && diagnostic.path == "spec.sources.app.ref"
+        ),
+        "expected a MissingReference diagnostic for spec.sources.app.ref: {errors:?}"
     );
+}
+
+#[test]
+fn repositories_require_one_origin_and_source_paths_stay_project_local_and_distinct() {
+    let mut deployment = bundle();
+    let repository = deployment.spec.repositories.get_mut("fixture").unwrap();
+    repository.clone = Some("../../../../outside".into());
+    let diagnostics = plan(&deployment).unwrap_err();
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.path == "spec.repositories.fixture" && diagnostic.message.contains("exactly one")
+    }));
+
+    let mut deployment = bundle();
+    deployment.spec.sources.get_mut("app").unwrap().path = "../../../../../outside".into();
+    let diagnostics = plan(&deployment).unwrap_err();
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.path == "spec.sources.app.path"
+            && diagnostic.message.contains("escapes project directory")
+    }));
+
+    let mut deployment = bundle();
+    deployment
+        .spec
+        .sources
+        .insert("duplicate".into(), deployment.spec.sources["app"].clone());
+    let diagnostics = plan(&deployment).unwrap_err();
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.path == "spec.sources.duplicate.path"
+            && diagnostic.message.contains("already used")
+    }));
 }
 
 #[test]

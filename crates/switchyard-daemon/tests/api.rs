@@ -641,26 +641,52 @@ async fn profile_library_enforces_reviewed_import_reimport_validation_and_remova
         "apiVersion: switchyard.dev/v1alpha2\nkind: Deployment\nmetadata:\n  name: demo\nspec: {}\n",
     )
     .unwrap();
+    let repository = temp.path().join("repository");
+    init_git_repository(&repository);
     let checkout = temp.path().join("checkout");
-    fs::create_dir_all(&checkout).unwrap();
     let manifest = |image: &str| {
         format!(
             "version: 1\nprofiles:\n  api:\n    parameters:\n      LOG_LEVEL:\n        required: false\n        default: info\n    services:\n      web:\n        execution:\n          type: container\n          image: {image}\n          command: [sleep, infinity]\n"
         )
     };
     fs::write(
-        checkout.join("switchyard-profiles.yaml"),
+        repository.join("switchyard-profiles.yaml"),
         manifest("busybox:1"),
     )
     .unwrap();
+    for arguments in [
+        vec!["add", "switchyard-profiles.yaml"],
+        vec!["commit", "-m", "profile"],
+    ] {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repository)
+        .args([
+            "worktree",
+            "add",
+            "--detach",
+            checkout.to_str().unwrap(),
+            "main",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
     let (store, _) = StateStore::open(temp.path().join(".switchyard/state.sqlite3")).unwrap();
     store
         .register_source(&RegisteredSource {
             name: "checkout".into(),
             kind: RegisteredSourceKind::Unmanaged,
             path: checkout.clone(),
-            repository_path: None,
-            requested_ref: None,
+            repository_path: Some(repository),
+            requested_ref: Some("main".into()),
             created_at: 1,
             managed_relative_path: None,
         })
@@ -1452,7 +1478,7 @@ fn definition_yaml(name: &str) -> String {
 
 fn membership_definition_yaml(name: &str) -> String {
     format!(
-        "apiVersion: switchyard.dev/v1alpha2\nkind: Deployment\nmetadata: {{ name: {name} }}\nspec:\n  sources:\n    app: {{ path: . }}\n  blocks:\n    database:\n      services:\n        db:\n          execution: {{ type: container, image: example/database:1 }}\n    backend:\n      services:\n        app:\n          execution: {{ type: container, image: example/backend:1 }}\n  instances:\n    - {{ name: db-main, block: database, source: app }}\n    - {{ name: db-replica, block: database, source: app }}\n    - {{ name: backend-1, block: backend, source: app }}\n  groups:\n    dual-write:\n      instances: [backend-1/app, db-main/db, db-replica/db]\n"
+        "apiVersion: switchyard.dev/v1alpha2\nkind: Deployment\nmetadata: {{ name: {name} }}\nspec:\n  repositories:\n    fixture: {{ url: https://example.invalid/repository.git }}\n  sources:\n    app: {{ repository: fixture, ref: main, path: sources/app }}\n  blocks:\n    database:\n      services:\n        db:\n          execution: {{ type: container, image: example/database:1 }}\n    backend:\n      services:\n        app:\n          execution: {{ type: container, image: example/backend:1 }}\n  instances:\n    - {{ name: db-main, block: database, source: app }}\n    - {{ name: db-replica, block: database, source: app }}\n    - {{ name: backend-1, block: backend, source: app }}\n  groups:\n    dual-write:\n      instances: [backend-1/app, db-main/db, db-replica/db]\n"
     )
 }
 
@@ -2356,9 +2382,11 @@ async fn applied_domains_bindings_and_deleted_database_recovery_survive_daemon_r
     )
     .await;
     let operation: OperationV1 = json_body(&operation);
+    let terminal = wait_terminal(&daemon, &operation.id).await;
     assert_eq!(
-        wait_terminal(&daemon, &operation.id).await.status,
-        OperationStatusV1::Succeeded
+        terminal.status,
+        OperationStatusV1::Succeeded,
+        "{terminal:#?}"
     );
     drop(daemon);
 

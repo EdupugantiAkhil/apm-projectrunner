@@ -213,6 +213,171 @@ impl SourceManager {
         &self.workspace_root
     }
 
+    /// Deterministic location for deployment-authored managed repository clones.
+    pub fn clone_root(&self) -> &Path {
+        &self.clone_root
+    }
+
+    /// Ensures a deployment-authored managed clone exists at its deterministic location.
+    ///
+    /// Existing clones are inspected but never rewritten.
+    pub fn ensure_managed_clone(
+        &self,
+        name: &str,
+        repository_url: &str,
+    ) -> Result<PathBuf, SourceError> {
+        validate_source_name(name)?;
+        if repository_url.trim().is_empty() {
+            return Err(SourceError::new(
+                "repository_url_empty",
+                "repository URL must not be empty",
+            ));
+        }
+        let target = self.clone_root.join(name);
+        if target.exists() {
+            let bare = git(&target, &["rev-parse", "--is-bare-repository"])? == "true";
+            let root = if bare {
+                normalize_git_path(&target, &git(&target, &["rev-parse", "--git-dir"])?)
+                    .canonicalize()?
+            } else {
+                PathBuf::from(git(&target, &["rev-parse", "--show-toplevel"])?).canonicalize()?
+            };
+            if root != target.canonicalize()? {
+                return Err(SourceError::new(
+                    "repository_clone_mismatch",
+                    format!(
+                        "managed repository path `{}` is not a Git repository root",
+                        target.display()
+                    ),
+                ));
+            }
+            let remote = git(&target, &["config", "--get", "remote.origin.url"])?;
+            if remote != repository_url {
+                return Err(SourceError::new(
+                    "repository_remote_mismatch",
+                    format!(
+                        "managed repository `{name}` already uses remote `{remote}`, not `{repository_url}`"
+                    ),
+                ));
+            }
+            return Ok(root);
+        }
+
+        self.guard_mutation(None, &target, Mutation::Create, false, &self.clone_root)?;
+        fs::create_dir_all(&self.clone_root)?;
+        let target_text = target.to_string_lossy();
+        let args = [
+            "clone",
+            "--bare",
+            "--",
+            repository_url,
+            target_text.as_ref(),
+        ];
+        if let Err(error) = run_git_clone(&self.workspace_root, &args, None) {
+            remove_failed_clone_target(&target);
+            return Err(error);
+        }
+        target.canonicalize().map_err(Into::into)
+    }
+
+    /// Ensures an authored project-local worktree exists at exactly the requested ref.
+    ///
+    /// Creation is detached so several sources may use the same branch without Git's
+    /// one-checked-out-branch restriction. Existing worktrees are never moved or reset.
+    pub fn ensure_deployment_worktree(
+        &self,
+        repository: &Path,
+        requested_ref: &str,
+        target: &Path,
+    ) -> Result<PathBuf, SourceError> {
+        validate_clone_ref(requested_ref)?;
+        validate_containment(target, &self.workspace_root, Mutation::Create)?;
+        let repository = repository.canonicalize().map_err(|error| {
+            SourceError::new(
+                "repository_clone_not_found",
+                format!(
+                    "repository clone `{}` is unavailable: {error}",
+                    repository.display()
+                ),
+            )
+        })?;
+        let expected_commit = git(
+            &repository,
+            &[
+                "rev-parse",
+                "--verify",
+                &format!("{requested_ref}^{{commit}}"),
+            ],
+        )
+        .map_err(|error| {
+            if error.code() == "git_unavailable" {
+                error
+            } else {
+                SourceError::new(
+                    "source_ref_unknown",
+                    format!(
+                        "Git ref `{requested_ref}` is unknown in `{}`",
+                        repository.display()
+                    ),
+                )
+            }
+        })?;
+
+        if target.exists() {
+            let target = target.canonicalize()?;
+            let top =
+                PathBuf::from(git(&target, &["rev-parse", "--show-toplevel"])?).canonicalize()?;
+            if top != target {
+                return Err(SourceError::new(
+                    "source_worktree_mismatch",
+                    format!(
+                        "source path `{}` is not a Git worktree root",
+                        target.display()
+                    ),
+                ));
+            }
+            let target_common = canonical_git_common_dir(&target)?;
+            let repository_common = canonical_git_common_dir(&repository)?;
+            if target_common != repository_common {
+                return Err(SourceError::new(
+                    "source_repository_mismatch",
+                    format!(
+                        "source path `{}` belongs to a different repository",
+                        target.display()
+                    ),
+                ));
+            }
+            let actual_commit = git(&target, &["rev-parse", "HEAD"])?;
+            if actual_commit != expected_commit {
+                return Err(SourceError::new(
+                    "source_ref_mismatch",
+                    format!(
+                        "source path `{}` is at commit `{actual_commit}`, but `{requested_ref}` resolves to `{expected_commit}`",
+                        target.display()
+                    ),
+                ));
+            }
+            return Ok(target);
+        }
+        let parent = target.parent().ok_or_else(|| {
+            SourceError::new("source_outside_managed_root", "source path has no parent")
+        })?;
+        fs::create_dir_all(parent)?;
+        let target_text = target.to_string_lossy();
+        run_git(
+            &repository,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                target_text.as_ref(),
+                requested_ref,
+            ],
+            "worktree_create_failed",
+        )?;
+        target.canonicalize().map_err(Into::into)
+    }
+
     /// Inspects a path without mutating it. Expected Git absence/failures degrade to unknown.
     pub fn inspect(&self, path: &Path, requested_ref: Option<&str>) -> SourceInspection {
         let project_root_source =
@@ -1457,6 +1622,15 @@ fn normalize_git_path(worktree: &Path, value: &str) -> PathBuf {
     }
 }
 
+fn canonical_git_common_dir(worktree: &Path) -> Result<PathBuf, SourceError> {
+    normalize_git_path(
+        worktree,
+        &git(worktree, &["rev-parse", "--git-common-dir"])?,
+    )
+    .canonicalize()
+    .map_err(Into::into)
+}
+
 fn validate_containment(target: &Path, root: &Path, mutation: Mutation) -> Result<(), SourceError> {
     let canonical_root = if root.exists() {
         root.canonicalize()?
@@ -1572,6 +1746,75 @@ mod tests {
         StateStore::open(temp.path().join("state.sqlite3"))
             .unwrap()
             .0
+    }
+
+    #[test]
+    fn deployment_sources_clone_once_and_create_project_local_worktrees() {
+        let temp = TempDir::new().unwrap();
+        let origin = repository(&temp);
+        let workspace = temp.path().join("project");
+        fs::create_dir(&workspace).unwrap();
+        let manager = SourceManager::new(&workspace);
+
+        let clone = manager
+            .ensure_managed_clone("monorepo", origin.to_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            clone,
+            workspace
+                .join(".switchyard/clones/monorepo")
+                .canonicalize()
+                .unwrap()
+        );
+        let first = manager
+            .ensure_deployment_worktree(&clone, "main", &workspace.join("sources/main"))
+            .unwrap();
+        let second = manager
+            .ensure_deployment_worktree(&clone, "main", &workspace.join("sources/other"))
+            .unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            fs::read_to_string(first.join("tracked")).unwrap(),
+            "initial\n"
+        );
+
+        assert_eq!(
+            manager
+                .ensure_managed_clone("monorepo", origin.to_str().unwrap())
+                .unwrap(),
+            clone
+        );
+        assert_eq!(
+            manager
+                .ensure_deployment_worktree(&clone, "main", &workspace.join("sources/main"))
+                .unwrap(),
+            first
+        );
+    }
+
+    #[test]
+    fn deployment_worktree_ref_mismatch_is_diagnostic_and_never_reset() {
+        let temp = TempDir::new().unwrap();
+        let repository = repository(&temp);
+        let workspace = temp.path().join("project");
+        fs::create_dir(&workspace).unwrap();
+        let manager = SourceManager::new(&workspace);
+        let target = workspace.join("sources/main");
+        manager
+            .ensure_deployment_worktree(&repository, "main", &target)
+            .unwrap();
+
+        fs::write(repository.join("tracked"), "second\n").unwrap();
+        command(&repository, &["add", "tracked"]);
+        command(&repository, &["commit", "-m", "second"]);
+        let error = manager
+            .ensure_deployment_worktree(&repository, "main", &target)
+            .unwrap_err();
+        assert_eq!(error.code(), "source_ref_mismatch");
+        assert_eq!(
+            fs::read_to_string(target.join("tracked")).unwrap(),
+            "initial\n"
+        );
     }
 
     #[test]

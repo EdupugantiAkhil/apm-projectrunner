@@ -21,7 +21,9 @@ spec:
   # Named once. Every worktree below is backed by this one clone, which `up` makes
   # if it is not there. No path — you never work in the clone itself, so where it
   # sits is Switchyard's business. Use `clone: ~/work/monorepo` instead of `url:`
-  # to point at a clone you already have, which is then read and never modified.
+  # to point at Git storage you already have (a bare repository or ordinary clone).
+  # Repositories are placeholders for objects and worktree metadata: Switchyard never
+  # runs from their checkout. All editable and runnable trees are sources below.
   repositories:
     monorepo:
       url: git@github.com:acme/monorepo.git

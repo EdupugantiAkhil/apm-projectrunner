@@ -3,9 +3,13 @@ kind: Deployment
 metadata:
   name: comparison
 spec:
+  repositories:
+    fixture: { url: ../../../.. }
   sources:
     app:
-      path: .
+      repository: fixture
+      ref: HEAD
+      path: source
   blocks:
     provider:
       services:

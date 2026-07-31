@@ -54,6 +54,8 @@ export interface DeploymentDetail {
   bindings: Record<string, string>
 }
 export interface DeploymentSnapshot { spec?: {
+  repositories?: Record<string, { url?: string; clone?: string }>
+  sources?: Record<string, { repository: string; ref: string; path: string }>
   instances?: Array<{ name: string; block?: string; source?: string; device?: string; address?: string; parameters?: Record<string, string> }>
   blocks?: Record<string, {
     parameters?: Record<string, { required?: boolean; default?: string }>
@@ -85,6 +87,7 @@ export interface SourceRecord {
   source: { name: string; kind: 'managed' | 'unmanaged'; path: string; requestedRef?: string | null }
   inspection: {
     identity: SourceIdentity
+    linkedWorktree?: boolean | null
     branch: string | null
     changes: { staged: number; unstaged: number; untracked: number } | null
     ahead: number | null

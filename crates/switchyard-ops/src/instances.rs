@@ -10,7 +10,7 @@ use switchyard_state::StateStore;
 
 use crate::{
     profiles::{ProfileOrigin, ProfileTrust, list_profiles, load_profile_block},
-    projections::{SourceChoice, planning_devices_for_bundle},
+    projections::{SourceChoice, planning_devices_for_bundle, repository_path_for_source},
 };
 
 #[derive(Clone, Debug)]
@@ -158,6 +158,11 @@ fn build_draft(
     if declared_source {
         insert_spec_section(
             &mut lines,
+            "repositories",
+            vec![repository_definition_line(&source)?],
+        )?;
+        insert_spec_section(
+            &mut lines,
             "sources",
             vec![source_definition_line(&source)?],
         )?;
@@ -245,9 +250,9 @@ fn resolve_source(
             name: name.into(),
             path: source.path.clone(),
             declared: true,
-            worktree: matches!(source.r#type, switchyard_planner::SourceType::Worktree),
-            repository: source.repository.clone(),
-            requested_ref: source.r#ref.clone(),
+            worktree: true,
+            repository: repository_path_for_source(bundle, source),
+            requested_ref: Some(source.r#ref.clone()),
         });
     }
     let store = StateStore::open(project_dir.join(".switchyard/state.sqlite3"))
@@ -257,12 +262,27 @@ fn resolve_source(
         .source(name)
         .map_err(|error| CreateInstanceError::Source(error.to_string()))?
         .ok_or_else(|| CreateInstanceError::Source(format!("source `{name}` is not registered")))?;
+    let repository = source.repository_path.ok_or_else(|| {
+        CreateInstanceError::Source(format!(
+            "registered source `{name}` is not a Git worktree; deployment sources must be worktrees"
+        ))
+    })?;
+    if repository == source.path {
+        return Err(CreateInstanceError::Source(format!(
+            "registered source `{name}` is the repository clone itself; create a separate worktree"
+        )));
+    }
+    let path = source.path.strip_prefix(project_dir).map_err(|_| {
+        CreateInstanceError::Source(format!(
+            "registered source `{name}` is outside the project; deployment source paths must be project-relative"
+        ))
+    })?;
     Ok(SourceChoice {
         name: source.name,
-        path: source.path,
+        path: path.to_owned(),
         declared: false,
-        worktree: source.repository_path.is_some(),
-        repository: source.repository_path,
+        worktree: true,
+        repository: Some(repository),
         requested_ref: source.requested_ref,
     })
 }
@@ -275,26 +295,33 @@ fn yaml_scalar(value: &str) -> Result<String, CreateInstanceError> {
 
 fn source_definition_line(source: &SourceChoice) -> Result<String, CreateInstanceError> {
     let path = yaml_scalar(&source.path.display().to_string())?;
-    if !source.worktree {
-        return Ok(format!("    {}: {{ path: {path} }}", source.name));
-    }
+    let repository = yaml_scalar(&format!("{}-repository", source.name))?;
+    let reference = source
+        .requested_ref
+        .as_deref()
+        .ok_or_else(|| {
+            CreateInstanceError::Source(format!(
+                "worktree source `{}` has no requested ref",
+                source.name
+            ))
+        })
+        .and_then(yaml_scalar)?;
+    Ok(format!(
+        "    {}: {{ repository: {repository}, ref: {reference}, path: {path} }}",
+        source.name
+    ))
+}
+
+fn repository_definition_line(source: &SourceChoice) -> Result<String, CreateInstanceError> {
     let repository = source.repository.as_ref().ok_or_else(|| {
         CreateInstanceError::Source(format!(
             "worktree source `{}` has no repository path",
             source.name
         ))
     })?;
-    let repository = yaml_scalar(&repository.display().to_string())?;
-    let reference = source
-        .requested_ref
-        .as_deref()
-        .map(yaml_scalar)
-        .transpose()?
-        .map_or_else(String::new, |value| format!(", ref: {value}"));
-    Ok(format!(
-        "    {}: {{ type: worktree, repository: {repository}, path: {path}{reference} }}",
-        source.name
-    ))
+    let name = format!("{}-repository", source.name);
+    let clone = yaml_scalar(&repository.display().to_string())?;
+    Ok(format!("    {name}: {{ clone: {clone} }}"))
 }
 
 fn block_definition_lines(name: &str, block: &Block) -> Result<Vec<String>, CreateInstanceError> {
@@ -479,8 +506,10 @@ mod tests {
 kind: Deployment
 metadata: {{ name: demo }}
 spec:
+  repositories:
+    fixture: {{ url: https://example.invalid/repository.git }}
   sources:
-    checkout: {{ path: . }}
+    checkout: {{ repository: fixture, ref: main, path: sources/checkout }}
   blocks:
 {block}  instances:
   groups:
