@@ -6,6 +6,13 @@ entry point because it can reuse the exact `switchyard` executable for script-co
 operations. The separate binary is useful to service managers and packagers; set
 `SWITCHYARD_CLI` when `switchyard` is not on its `PATH`.
 
+For normal interactive use, `switchyard daemon install [project]` generates and starts a
+per-user, per-project launchd LaunchAgent on macOS or systemd user unit on Linux. It records
+the canonical project working directory and exact current `switchyard` executable, enables
+startup at login, restarts failed processes, and appends stdout and stderr to
+`.switchyard/daemon.log`. Re-running the command replaces the same path-keyed definition.
+`switchyard daemon run` remains the foreground and recovery entry point.
+
 The daemon always binds a loopback address. Its default is an ephemeral port on
 `127.0.0.1`; a non-loopback `SWITCHYARD_DAEMON_BIND` is rejected. The global limit for
 heavy build/start work defaults to two and can be set with

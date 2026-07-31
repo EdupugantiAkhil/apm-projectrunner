@@ -3323,6 +3323,7 @@ dependencies = [
  "router-config",
  "serde",
  "serde_json",
+ "sha2",
  "switchyard-adapter-sdk",
  "switchyard-adapters",
  "switchyard-daemon",

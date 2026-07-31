@@ -1,5 +1,16 @@
 # Agent mistakes and lessons
 
+## 2026-07-31 — A login service does not inherit an interactive shell's tool path
+
+- The first daemon service definitions used an exact `switchyard` executable but did not
+  preserve `PATH`. That starts the daemon itself successfully while leaving its Docker,
+  Git, and project-command children dependent on the service manager's minimal default
+  environment.
+- Correction: capture the installer's `PATH` explicitly in both the LaunchAgent and the
+  systemd user unit, with format-appropriate escaping. Lesson: validating only the managed
+  executable misses every tool it launches; service definitions need the whole runtime
+  command-discovery boundary.
+
 ## 2026-07-31 — A "vocabulary" audit must check schema surfaces, not just branching
 
 - Part 2b removed role inference from behavior, so the Part 4 audit could easily have

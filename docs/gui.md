@@ -11,16 +11,19 @@ Adopt an existing code folder once, then launch its GUI from anywhere:
 
 ```text
 switchyard project register path/to/code --name my-project
+switchyard daemon install path/to/code
 switchyard gui path/to/code
 ```
 
 Registration preserves existing files, creates project-local Switchyard state and an
 empty `deployments/` directory, and registers the folder itself as the first code
-source. Repeating the same registration is safe. `switchyard gui [project]` reuses a
-reachable project daemon or starts one in the background, prints the local URL, and
-makes a best-effort attempt to open it with `xdg-open` on Linux or `open` on macOS.
-Daemon output is appended to `.switchyard/daemon.log`. Failure to start the desktop
-opener does not fail the command.
+source. Repeating the same registration is safe. `switchyard daemon install [project]`
+writes and starts a project-specific launchd LaunchAgent on macOS or systemd user unit on
+Linux. `switchyard gui [project]` requires that daemon to be running, prints the local URL,
+and makes a best-effort attempt to open it with `xdg-open` on Linux or `open` on macOS. If
+the daemon is stopped, `gui` reports the exact install command instead of starting it.
+Daemon output is appended to `.switchyard/daemon.log`. Failure to start the desktop opener
+does not fail the command.
 
 ## Supported scope
 

@@ -55,11 +55,13 @@ and open its browser dashboard:
 
 ```sh
 switchyard project register path/to/code --name my-project
+switchyard daemon install path/to/code
 switchyard gui path/to/code
 ```
 
-The folder becomes its own initial registered source. The GUI command starts the
-project daemon when necessary; the TUI is optional for this workflow.
+The folder becomes its own initial registered source. The install command registers and
+starts its per-user project daemon; the GUI only opens that running service. The TUI is
+optional for this workflow.
 
 The initialized skill follows the same authoring boundaries as the TUI: it inspects
 registered sources and devices, can propose project or reviewed source-local startup

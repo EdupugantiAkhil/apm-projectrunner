@@ -77,6 +77,9 @@ pub enum CliCommand {
         confirmed: bool,
     },
     DaemonRun,
+    DaemonInstall {
+        project_dir: PathBuf,
+    },
     DaemonStatus,
     DaemonStop,
     OperationCancel {
@@ -171,6 +174,7 @@ Usage:
   switchyard down <deployment.yaml> [--with <overlay.yaml>]... [--variation <name>] [--set KEY=VALUE]...
   switchyard cleanup <deployment.yaml> --yes
   switchyard daemon run
+  switchyard daemon install [<project-dir>]
   switchyard daemon status
   switchyard daemon stop
   switchyard operation cancel <operation-id>
@@ -272,6 +276,12 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<CliCommand
             id: rest[1].clone(),
         }),
         "daemon" if rest == ["run"] => Ok(CliCommand::DaemonRun),
+        "daemon" if rest == ["install"] => Ok(CliCommand::DaemonInstall {
+            project_dir: PathBuf::from("."),
+        }),
+        "daemon" if rest.len() == 2 && rest[0] == "install" => Ok(CliCommand::DaemonInstall {
+            project_dir: PathBuf::from(&rest[1]),
+        }),
         "daemon" if rest == ["status"] => Ok(CliCommand::DaemonStatus),
         "daemon" if rest == ["stop"] => Ok(CliCommand::DaemonStop),
         "gui" if rest.is_empty() => Ok(CliCommand::Gui {
@@ -869,6 +879,23 @@ mod tests {
             }
         );
         assert!(parse(args(&["gui", "one", "two"])).is_err());
+    }
+
+    #[test]
+    fn parses_daemon_install_with_optional_project_directory() {
+        assert_eq!(
+            parse(args(&["daemon", "install"])).unwrap(),
+            CliCommand::DaemonInstall {
+                project_dir: ".".into()
+            }
+        );
+        assert_eq!(
+            parse(args(&["daemon", "install", "demo"])).unwrap(),
+            CliCommand::DaemonInstall {
+                project_dir: "demo".into()
+            }
+        );
+        assert!(parse(args(&["daemon", "install", "one", "two"])).is_err());
     }
 
     #[test]

@@ -74,22 +74,22 @@ and operations keep progressing whether or not any UI is open. It is the long-li
 the Web UI is just a window onto it.
 
 ```bash
-switchyard daemon run       # run the service (foreground)
+switchyard daemon install   # install and start it as a per-user login service
+switchyard daemon run       # alternatively, run it in the foreground
 switchyard daemon status    # is it running? pid, API version, active operations
 switchyard daemon stop      # ask it to shut down
 ```
 
-The intended posture is that the service is **already running** by the time you want a UI —
-started at login or by your machine's service manager, so opening the UI never means
-"start Switchyard". Registering it with launchd or systemd is left to you today; Switchyard
-does not yet ship a service unit or a login item.
+The service is **already running** by the time you want a UI — started at login by the
+per-user service manager, so opening the UI never means "start Switchyard". The install
+command writes and loads a project-specific launchd LaunchAgent on macOS or systemd user
+unit on Linux. Pass a project directory when installing it from somewhere else:
+`switchyard daemon install path/to/code`.
 
 Service output is appended to `.switchyard/daemon.log`.
 
-> **Today's behaviour:** `switchyard gui` still auto-starts the service if it is not running,
-> as a convenience. That is a fallback, not the design — the responsibility split is that
-> the service is a service and `gui` only opens a window onto it. `switchyard gui` should not
-> be understood as the way to start Switchyard.
+`switchyard gui` does not start the service. Against a stopped daemon it reports the exact
+`switchyard daemon install <project>` command to run.
 
 ## Step 3 — Open the Web UI window (CLI)
 

@@ -2,6 +2,26 @@
 
 Updated: 2026-07-31
 
+## 2026-07-31 — V2 Part 5 daemon-as-service posture
+
+- Added `switchyard daemon install [project]`. It generates a per-user, per-project launchd
+  LaunchAgent on macOS or systemd user unit on Linux, loads/enables it immediately, and keys
+  the service name by the readable project directory plus a digest of its canonical path.
+- Both definitions run the exact current `switchyard daemon run` command in the canonical
+  project root, start at login, restart failures, and append stdout and stderr to the
+  owner-only `.switchyard/daemon.log`. Reinstall atomically replaces regular definitions
+  while refusing symlink targets.
+- `switchyard gui [project]` no longer creates logs or spawns a daemon. A stopped service is
+  an actionable error naming `switchyard daemon install <canonical-project>`; browser opening
+  remains best effort once the service is reachable.
+- Updated the vision's current-behavior note, `DESIGN.md`, GUI/API/development guidance, and
+  upgrade recovery to reflect the service boundary.
+- Verification passes: workspace formatting; all-target, all-feature Clippy with warnings
+  denied; all workspace tests with the five declared reliability ignores; and rustdoc with
+  warnings denied. The CLI suite includes generated launchd/systemd escaping, stable
+  per-project identity, owner-only log, symlink refusal, parser, and actionable GUI-error
+  coverage.
+
 ## Release status
 
 - Routing proof (Phases 0–4): complete.

@@ -979,8 +979,11 @@ Recommended implementation:
 
 The React dashboard is the default local interactive control plane. An existing folder
 can be adopted non-destructively with `switchyard project register`, after which
-`switchyard gui [project]` starts its project-scoped daemon when needed and opens the
-authenticated dashboard. The Ratatui TUI remains supported as an optional headless and
+`switchyard daemon install [project]` installs and starts its project-scoped per-user
+service, and `switchyard gui [project]` only opens the authenticated dashboard exposed by
+that running service. The installer emits a launchd LaunchAgent on macOS or systemd user
+unit on Linux, both keyed by canonical project path and configured to append output to
+`.switchyard/daemon.log`. The Ratatui TUI remains supported as an optional headless and
 SSH-friendly client, including terminal handoff for Git and ephemeral SSH credential
 prompts. `switchyard tui [project]` retains its command name.
 
@@ -1365,6 +1368,7 @@ switchyard device list | add | remove | check
 switchyard project register [<directory>] [--name <project-name>]
 switchyard gui [<project-directory>]
 switchyard tui [<project-directory>]
+switchyard daemon install [<project-directory>]
 switchyard daemon run | status | stop
 ```
 

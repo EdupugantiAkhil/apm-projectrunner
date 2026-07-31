@@ -24,8 +24,10 @@ behavior described below.
    containers may remain up.
 2. Replace the `switchyard`, `switchyard-daemon`, and `switchyard-router` binaries as one
    compatible set.
-3. Start with `switchyard daemon run`. Opening the state store applies every pending
-   embedded SQLite migration in order inside one transaction.
+3. Re-run `switchyard daemon install .` to refresh the service definition to the current
+   binary and start it. For foreground recovery, use `switchyard daemon run` instead.
+   Opening the state store applies every pending embedded SQLite migration in order inside
+   one transaction.
 4. If the database already exists and has pending migrations, Switchyard first makes a
    consistent SQLite backup beside it. Its first name is
    `.switchyard/state.sqlite3.pre-migration-vN.bak`, where `N` is the old schema

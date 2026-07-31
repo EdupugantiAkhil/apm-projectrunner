@@ -2,6 +2,7 @@
 
 mod browser;
 mod cli;
+mod daemon_service;
 mod diagnostics;
 mod host_runtime;
 mod init;
@@ -15,7 +16,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env, fmt, fs, io,
     net::{SocketAddr, TcpListener, ToSocketAddrs},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, ExitCode, Stdio},
     time::{SystemTime, UNIX_EPOCH},
@@ -89,7 +89,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         );
         return Ok(ExitCode::SUCCESS);
     }
-    if let CliCommand::Gui { project_dir } = &command {
+    if let CliCommand::Gui { project_dir } | CliCommand::DaemonInstall { project_dir } = &command {
         workspace_root = project_dir.canonicalize().map_err(|error| {
             MessageError(format!(
                 "could not open project folder `{}`: {error}",
@@ -411,6 +411,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         CliCommand::Help
         | CliCommand::Init { .. }
         | CliCommand::DaemonRun
+        | CliCommand::DaemonInstall { .. }
         | CliCommand::DaemonStatus
         | CliCommand::DaemonStop
         | CliCommand::OperationCancel { .. }
@@ -873,6 +874,43 @@ fn handle_daemon_command(
             switchyard_daemon::run_blocking(config)?;
             Ok(Some(ExitCode::SUCCESS))
         }
+        CliCommand::DaemonInstall { .. } => {
+            if switchyard_daemon::client::daemon_status(workspace_root)?.is_some() {
+                switchyard_daemon::client::daemon_stop(workspace_root)?;
+                for _ in 0..100 {
+                    if switchyard_daemon::client::daemon_status(workspace_root)?.is_none() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                if switchyard_daemon::client::daemon_status(workspace_root)?.is_some() {
+                    return Err(MessageError(
+                        "the running project daemon did not stop before service installation"
+                            .into(),
+                    )
+                    .into());
+                }
+            }
+            let installed = daemon_service::install(workspace_root, &env::current_exe()?)?;
+            let log = workspace_root.join(".switchyard/daemon.log");
+            for _ in 0..100 {
+                if switchyard_daemon::client::daemon_status(workspace_root)?.is_some() {
+                    println!(
+                        "installed and started {} ({})",
+                        installed.manager,
+                        installed.definition.display()
+                    );
+                    println!("daemon log: {}", log.display());
+                    return Ok(Some(ExitCode::SUCCESS));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(MessageError(format!(
+                "daemon service was installed but did not become ready; inspect {}",
+                log.display()
+            ))
+            .into())
+        }
         CliCommand::DaemonStatus => {
             match switchyard_daemon::client::daemon_status(workspace_root)? {
                 Some(status) => println!(
@@ -909,7 +947,7 @@ fn handle_daemon_command(
             Ok(Some(ExitCode::SUCCESS))
         }
         CliCommand::Gui { .. } => {
-            ensure_daemon_running(workspace_root)?;
+            require_daemon_for_gui(workspace_root)?;
             let url = gui_url(workspace_root)?;
             println!("{url}");
             let opener = if cfg!(target_os = "macos") {
@@ -936,52 +974,26 @@ fn installed_gui_dist() -> Option<PathBuf> {
     candidate.is_dir().then_some(candidate)
 }
 
-fn ensure_daemon_running(workspace_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn require_daemon_for_gui(workspace_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if switchyard_daemon::client::daemon_status(workspace_root)?.is_some() {
-        return Ok(());
+        Ok(())
+    } else {
+        Err(MessageError(format!(
+            "daemon not running; install and start it with `switchyard daemon install {}`",
+            shell_path(workspace_root)
+        ))
+        .into())
     }
-    fs::create_dir_all(workspace_root.join(".switchyard"))?;
-    let log_path = workspace_root.join(".switchyard/daemon.log");
-    let stdout = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(&log_path)?;
-    fs::set_permissions(&log_path, fs::Permissions::from_mode(0o600))?;
-    let stderr = stdout.try_clone()?;
-    let mut child = Command::new(env::current_exe()?)
-        .args(["daemon", "run"])
-        .current_dir(workspace_root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .spawn()?;
-    for _ in 0..100 {
-        if switchyard_daemon::client::daemon_status(workspace_root)?.is_some() {
-            println!("started project daemon (log {})", log_path.display());
-            return Ok(());
-        }
-        if let Some(status) = child.try_wait()? {
-            return Err(MessageError(format!(
-                "project daemon exited with {status}; inspect {}",
-                log_path.display()
-            ))
-            .into());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    Err(MessageError(format!(
-        "project daemon did not become ready; inspect {}",
-        log_path.display()
-    ))
-    .into())
 }
 
 fn gui_url(workspace_root: &Path) -> Result<String, MessageError> {
     let discovery = switchyard_daemon::client::load_discovery(workspace_root)
         .map_err(|error| MessageError(error.to_string()))?
         .ok_or_else(|| {
-            MessageError("daemon not running; start it with `switchyard daemon run`".into())
+            MessageError(format!(
+                "daemon not running; install and start it with `switchyard daemon install {}`",
+                shell_path(workspace_root)
+            ))
         })?;
     let port = discovery
         .address
@@ -994,6 +1006,11 @@ fn gui_url(workspace_root: &Path) -> Result<String, MessageError> {
         "http://127.0.0.1:{port}/gui/#token={}",
         discovery.token
     ))
+}
+
+fn shell_path(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn daemon_request(
@@ -1064,6 +1081,7 @@ fn daemon_request(
         CliCommand::Help
         | CliCommand::Init { .. }
         | CliCommand::DaemonRun
+        | CliCommand::DaemonInstall { .. }
         | CliCommand::DaemonStatus
         | CliCommand::DaemonStop
         | CliCommand::OperationCancel { .. }
@@ -2030,7 +2048,18 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         assert_eq!(
             gui_url(temp.path()).unwrap_err().to_string(),
-            "daemon not running; start it with `switchyard daemon run`"
+            format!(
+                "daemon not running; install and start it with `switchyard daemon install {}`",
+                shell_path(temp.path())
+            )
+        );
+    }
+
+    #[test]
+    fn service_install_guidance_shell_quotes_project_paths() {
+        assert_eq!(
+            shell_path(Path::new("/tmp/Akhil's Project")),
+            "'/tmp/Akhil'\\''s Project'"
         );
     }
 
