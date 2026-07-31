@@ -2098,3 +2098,46 @@ implemented shape and the evidence used to close a phase.
   invariant, migration round-trip/idempotence, and multi-route refusal now have independently
   localizing coverage. Web `npx tsc -b` passed with no output; lint exited zero with exactly the four
   pre-existing exhaustive-dependency warnings; all 48 web tests passed.
+
+## V2 roadmap expansion — Parts 2b through 2e, and Part 4 deferred (planning only)
+
+No code changed. This entry records design decisions taken while writing
+`docs/vision/sample-config.md`, an annotated end-to-end deployment added to the vision
+directory. Each claim below was checked against the current build with the CLI rather than
+read off the schema.
+
+- **Part 2b — a group shares one localhost.** Omitting `provides:`/`consumes:` validates
+  clean but generates **zero router sidecars** (verified: 12 sidecars with them, 0 without),
+  so the declarations are not documentation of the routing, they are the routing. That makes
+  slots the price of entry rather than an override, which contradicts ABOUT.md's "auto
+  routing magically happens". Planned: derive routing from the ports a group's members
+  listen on, discovered from `publish:`, `probe:`, and image metadata. Open: static
+  discovery versus runtime observation.
+- **Part 2c — repositories declared once.** Sources currently repeat the repository path and
+  their git fields are inert: `{ type: worktree, repository, ref }` validates, but nothing in
+  the planner calls `create_worktree`, so directories must pre-exist. Planned: a
+  `repositories:` section (`url:` managed, `clone:` adopted), sources always
+  `{ repository, ref, path }`, and `up` creating what is missing. Notes that
+  `validate_containment` must be re-scoped from `.switchyard/worktrees` to the project
+  directory, and that migration must produce the adopted form so a directory Switchyard was
+  reading never becomes one it manages. Unresolved: plain-path sources used as build context
+  (`{ path: . }`, `{ path: ../.. }`) are not worktrees.
+- **Part 2d — `bindings:` and `routes:` deleted.** Removing `bindings:` from a
+  single-group-per-consumer deployment produces four `IncompleteGroup` diagnostics, every one
+  already answered by membership. The rule becomes: an instance that consumes belongs to
+  exactly one group; one that consumes nothing may be shared by any number (which keeps
+  ABOUT.md's shared database legal). `routes:` goes in the same pass for the same reason.
+- **Part 2e — external instances.** `{ name, external, ports }` for things already running
+  outside Switchyard. `ports:` takes integers and inclusive range strings, mapping
+  port-for-port; ranges expand before the Part 2a collision check so a clash names the port
+  rather than the range.
+- **Part 4 deferred to V3.** A run action is `$SHELL -c` in the project directory
+  (`run-actions/src/lib.rs:403`), and it cannot reach the deployment it is about: `publish:`
+  emits `127.0.0.1::8080` so host ports are ephemeral, the group localhost exists only inside
+  sidecars, and the promised environment is absent (`run-actions` never calls `.env()`;
+  `SWITCHYARD_BUNDLE` appears nowhere in the workspace). Landing the flat map first would
+  migrate everyone onto a shape that then changes again. Candidates recorded: export group
+  addresses, `switchyard exec <instance> -- <cmd>`, and a group-scoped script form.
+- One-time exception noted in Part 2a stands; no other vision file was edited. Verification
+  for this entry was CLI experiments against scratch deployments only — no test suite was run,
+  because no code changed.

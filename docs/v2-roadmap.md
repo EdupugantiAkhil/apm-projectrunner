@@ -33,8 +33,12 @@ then committed. A part is only ticked once it is committed with verification evi
 | ✅ | 1 — Group membership becomes a list | `bae84bf` |
 | ✅ | 2 — Addresses on the group and on the instance | `5d14720` |
 | ✅ | 2a — Membership stops being policed by capability | `a24991b` |
+| ⬜ | 2b — A group shares one localhost; slots stop being required | |
+| ⬜ | 2c — Repositories are declared once; sources are a repo and a ref | |
+| ⬜ | 2d — `bindings:` is deleted; membership is the connection | |
+| ⬜ | 2e — External instances: things already running outside Switchyard | |
 | ⬜ | 3 — Serving a whole group from one address (router) | |
-| ⬜ | 4 — Run actions become a flat `scripts:` map | |
+| ⏸ | 4 — Run actions become a flat `scripts:` map | deferred to V3 |
 | ⬜ | 5 — Vocabulary and documentation alignment | |
 | ⬜ | 6 — Daemon-as-service posture | |
 | ⬜ | 7 — Release usability items | |
@@ -132,6 +136,298 @@ Landed in `a24991b`; 307 tests passing. The warning channel was the design work:
 
 ---
 
+### Part 2b — A group shares one localhost; slots stop being required
+
+The largest correction in V2, and the one that decides whether the product earns its
+existence. Today a deployment only routes if every profile declares `provides:` and
+`consumes:`. Omitting them validates clean and produces **zero router sidecars** — every
+instance runs isolated, talking to nothing. The declarations are not documentation of the
+routing; they *are* the routing.
+
+That is the wrong default. ABOUT.md's promise is that "the auto routing magically happens
+— you do not wire up addresses, edit config files, or change ports", and that "every UI
+still calls the backend at the address it was always written to call". A schema that
+requires you to restate every one of those addresses before anything is routed has moved
+the wiring rather than removed it. Reduced to that, Switchyard is SSH port forwarding with
+a YAML file.
+
+**The rule: everything in a group shares one localhost.** For each group, collect every
+port its members listen on. Inside each member's namespace, bind the other members' ports
+on loopback and forward them. `127.0.0.1:5432` inside the backend reaches whichever member
+of *that* group listens on 5432. No names, no addresses, nothing declared.
+
+This works because of an assumption that holds almost always: **your code calls the port
+the service actually listens on.** The backend dials `127.0.0.1:5432` because Postgres
+listens on 5432 — the consumer's expected address and the provider's real port are the same
+number. Where that holds there is nothing left to say, so you say nothing.
+
+- [ ] Discover listening ports without `provides:` — `publish:`, the `probe:` port, and
+      image `EXPOSE` metadata all already carry them
+- [ ] Generate each member's sidecar route table from the group's ports, not from
+      `consumes:`
+- [ ] A deployment with **no** `provides:`/`consumes:` anywhere routes correctly — this is
+      the acceptance test for the whole part
+- [ ] `provides:`/`consumes:` survive as **overrides**, for the genuine remap case where a
+      consumer calls a port the provider does not listen on
+- [ ] Capability names become optional labels for readability, not the wiring mechanism
+- [ ] Two members listening on one port in one group: **warn, first listed wins** — the
+      same rule Part 2a settled, applied to ports instead of capability names
+- [ ] Migration leaves existing `provides:`/`consumes:` working untouched; they simply
+      stop being required
+
+**Why this is not "one namespace per group".** The obvious reading of "a group shares one
+localhost" is to put the group in one network namespace. That cannot work: a container
+joins exactly one namespace, and ABOUT.md explicitly promises an instance can belong to
+several groups ("both groups use the same UI instance and the same database"). It stays
+namespace-per-consumer with a sidecar — same visible behaviour, and it is what makes
+`127.0.0.1:5432` mean two different databases on one machine simultaneously, which is
+precisely what SSH forwarding cannot do.
+
+**Open question — port discovery.** Static sources (`publish`, `probe`, `EXPOSE`) are fully
+knowable at plan time. Runtime observation of a started container also catches ports nobody
+declared, at the cost of routing not being resolvable until things are up. Not yet decided.
+
+Touches the planner's route generation and the sidecar config, ahead of Part 3's host-router
+work. Schema-affecting, so it lands before the Part 8 rename and rides the same `v1alpha2`
+migration.
+
+---
+
+### Part 2c — Repositories are declared once; sources are a repo and a ref
+
+Vision reference: user_flow step 4, ABOUT.md "all backed by one clone".
+
+Today `Source` carries `type`, `path`, `repository`, and `ref` (`model.rs:77`), and the
+project state store carries a parallel `RegisteredSource` with `repository_path` and
+`requested_ref` (`switchyard-state/src/lib.rs:248`). Two problems:
+
+- **The repository is repeated per source.** Four worktrees of one repository means writing
+  `repository: ./sources/monorepo` four times, with nothing enforcing agreement. ABOUT.md
+  says the branches are "all backed by one clone"; the schema only repeats a path.
+- **The git fields are descriptive, not operative.** `{ type: worktree, repository: ...,
+  ref: ... }` validates, but nothing in the planner ever calls `create_worktree` — it is
+  reachable only imperatively from the CLI, TUI, and daemon HTTP. Validation still requires
+  the directory to already exist. You cannot hand someone a `deployment.yaml` and have the
+  worktrees appear.
+
+Two sections replace one, splitting *where the code comes from* from *which checkout an
+instance runs*:
+
+```yaml
+repositories:
+  monorepo:
+    url: git@github.com:acme/monorepo.git      # cloned into .switchyard/clones/monorepo
+  legacy:
+    clone: ~/work/legacy-checkout               # a clone you already have; read, never modified
+
+sources:
+  ui-main:         { repository: monorepo, ref: main,        path: ./sources/ui-main }
+  ui-feature:      { repository: monorepo, ref: feature-a,   path: ./sources/ui-feature }
+  backend-feature: { repository: monorepo, ref: backend-fix, path: ./sources/backend-feature }
+```
+
+A source becomes a repository plus a ref plus where it lives — which is what a worktree
+*is*. Adding a fourth branch to compare is one line, which is the ABOUT.md promise.
+
+**Every source is a worktree, and the repository always lives elsewhere** (decided). This
+is the rule that makes the rest fall out. Two directory populations with no overlap:
+
+| | Where | Who owns it | Ever modified by Switchyard |
+| --- | --- | --- | --- |
+| Repository clones | `.switchyard/clones/<name>`, or your own path when adopted | Switchyard, or you | Managed clones only |
+| Source worktrees | wherever you author `path:` | Switchyard | Created, and removable |
+
+A source is never a repository, and a repository is never a source. Nothing has to work out
+which one a directory is, and the adopt-versus-manage question is settled once at the
+repository level instead of per source: `url:` means Switchyard clones and owns it, `path:`
+means read this and never touch it. Every worktree below is created by Switchyard either
+way, so worktree handling has exactly one case.
+
+**`path:` is mandatory on sources and absent from managed repositories.** A source
+directory is something you *use* — you open it in an editor, run commands in it, point
+tooling at it — so it must be yours to choose and yours to see written down. A managed
+clone is bookkeeping you never work in, so `.switchyard/clones/<name>` is fine and already
+exists (`switchyard-sources/src/lib.rs:206`, used by `clone_repository` at line 601).
+Exactly one of `url:` or `clone:` is required on a repository.
+
+**The adopted-clone field is `clone:`, not `path:`.** Two fields spelled `path:` that mean
+different things — "the worktree Switchyard will create for you" on a source and "a
+repository that already exists, do not touch it" on a repository — is the kind of collision
+that reads fine in the spec and misleads in practice. `clone:` names what it points at and
+pairs obviously with `url:`, which is the other way of saying where the clone comes from.
+
+**Missing paths are created, not rejected** (decided). A repository with a `url` is cloned
+if absent. A source whose `path` is absent gets `git worktree add` against its repository at
+its ref. Nothing on disk at all, and `deployment.yaml` reconstructs the whole tree. What is
+present is left alone; this is not a sync that enforces state.
+
+- [ ] `repositories:` section — exactly one of `url:` (Switchyard clones and manages) or
+      `clone:` (a clone you already have, read and never modified)
+- [ ] Managed clones land in `.switchyard/clones/<name>`, not authored
+- [ ] A source is always `{ repository, ref, path }` — all three required
+- [ ] A repository `clone:` and a source `path:` may never be the same directory, or nested
+      one inside the other; that is a validation error, not a warning
+- [ ] `path` always relative to the deployment file
+- [ ] `up` creates missing clones and worktrees via the existing `SourceManager`
+- [ ] Reconcile the deployment `Source` with the state store's `RegisteredSource` — one of
+      them should stop being the second home for the same three fields
+- [ ] Migration: `{ type: worktree, path, repository, ref }` → a `repositories:` entry plus
+      a `{ repository, ref, path }` source, collapsing duplicate repository paths into one
+      entry and keeping every existing path exactly as authored. The repository an existing
+      deployment names is one the user already has, so it migrates to the adopted `clone:`
+      form — migration must never turn a directory Switchyard was reading into one it
+      manages.
+
+**Unresolved: plain-path sources are not all worktrees.** "Every source is a worktree" is
+right for the branch-comparison case the product exists for, but every source in the
+repository today is a plain path, and several are not repository checkouts at all:
+`fixture-root: { path: . }` and `repository-root: { path: ../.. }` in `jas-base`, and
+`{ path: ../.. }` in `routing-matrix`, exist so a block can build a Dockerfile out of the
+repository. They have no ref and no branch, and forcing them into `{ repository, ref, path }`
+would be fiction. Three ways out, in preference order:
+
+1. **Keep a plain `{ path }` source as a third kind**, documented as "a directory, not a
+   checkout" — honest, and the validation cost is one variant rather than a rule with
+   exceptions. Loses the clean two-population split above.
+2. **Move build context off sources entirely** — a block's `build.context` is not really a
+   source, and treating it as one is what created these entries. Cleaner model, wider blast
+   radius.
+3. Force them through the repository form, which would have `jas-base` declare its own
+   repository as a repository and check itself out. Rejected.
+
+Decide before implementation; the checklist above assumes (1) unless overridden.
+
+**The containment guard has to change, and that is the one real cost.** Managed creation is
+currently guarded by `validate_containment`, which rejects any target outside
+`.switchyard/worktrees` with `source_outside_managed_root`. Author-chosen paths are outside
+it by definition, so the guard cannot stay as written. Replacing it with nothing would let
+a deployment file create directories anywhere on disk, including outside the project. The
+replacement should be: **contained within the project directory**, refusing absolute paths
+and any `../` that escapes it, with the same error code and a message naming the offending
+path. That keeps the property worth having — a deployment file cannot write outside the
+project it belongs to — while allowing `./sources/ui-main`.
+
+**Other cases needing defined behaviour, because `up` now mutates git state.** A path that
+exists but is not a worktree of the named repository; a path that is a worktree of a
+*different* ref than authored; a dirty worktree whose ref moved; a ref absent from the
+repository; two sources authored with the same path. Each needs a diagnostic rather than a
+raw `git` error surfacing.
+
+Schema-affecting, so it lands before the Part 8 rename and rides the same `v1alpha2`
+migration.
+
+---
+
+### Part 2d — `bindings:` is deleted; membership is the connection
+
+Vision reference: user_flow step 9, and the one-backend-one-group rule in step 10.
+
+`bindings:` restates group membership. In the ordinary case it carries no information at
+all — remove it from a deployment where every consumer is in exactly one group and planning
+fails with four `IncompleteGroup` diagnostics, every one of which the membership list
+already answers. Two places to say the same thing is two places to disagree.
+
+The only case it could express is a consumer in **several** groups — and that case is not
+supported and will not become supported. One process cannot infer per-request downstream
+context; the one-backend-one-group rule already refuses it and says to duplicate the
+instance. Keeping a field whose sole purpose is to describe a rejected topology invites
+people to try it.
+
+**Decided: delete the section.** One rule, stated once:
+
+> An instance that consumes may belong to exactly one group. An instance that consumes
+> nothing may belong to any number.
+
+The second half is not an accommodation, it is the same rule: with nothing consumed there
+is no downstream to be ambiguous about. That is `db-new` shared by `feature-test` and
+`regression` — ABOUT.md's own example ("both groups use the same UI instance and the same
+database"), and it must keep working.
+
+- [ ] `spec.bindings` removed from the schema; membership alone resolves every consumer
+- [ ] An instance that **consumes** and belongs to two groups is a planning error naming
+      both groups and saying to duplicate the instance
+- [ ] An instance that consumes nothing may belong to any number of groups — covered by a
+      test using the ABOUT.md shape, not just asserted here
+- [ ] `BackendGroupInvariant` rewritten against membership rather than bindings; its "a
+      group's own binding is checked for the same agreement" clause disappears with the field
+- [ ] Ops, TUI, and web surfaces that read or write bindings move to membership — the Web
+      UI's "desired connections" table becomes group membership editing
+- [ ] Migration drops `bindings:` where it agrees with membership; where it disagrees,
+      **refuse and report** rather than pick one
+- [ ] **`spec.routes` goes in the same pass.** It is the other place a connection can be
+      authored — per slot, bypassing groups entirely — and leaving it is the same mistake as
+      keeping `bindings:`: a second way to say what a group says, able to contradict it.
+      One mechanism, no escape hatch.
+
+**Sequencing.** This depends on Part 2b: once a group is one shared localhost, "which
+group's localhost does this instance see" is exactly the question an instance in two groups
+cannot answer, so 2b sharpens the ambiguity rather than softening it. Land 2b first, then
+this.
+
+---
+
+### Part 2e — External instances: things already running outside Switchyard
+
+Not everything a group needs is started by Switchyard. A Postgres installed natively on the
+machine, a shared Elasticsearch on the corporate network, a service on a teammate's box —
+today none of these can be a group member, so a deployment that needs one cannot be
+expressed at all.
+
+An **external instance** is an instance Switchyard routes to but does not start:
+
+```yaml
+instances:
+  - { name: host-db,      external: 127.0.0.1,              ports: [5432] }
+  - { name: host-kafka,   external: 127.0.0.1,              ports: [9092, 9093, 2181] }
+  - { name: host-devsvc,  external: 127.0.0.1,              ports: ["8000-8010"] }
+  - { name: staging-es,   external: search.staging.internal, ports: [9200, 9300] }
+
+groups:
+  feature-test:
+    address: feature-test.comparison.localhost
+    instances: [ui-1, backend-1, host-kafka]
+```
+
+**It is an instance kind, not a new group section** (decided). Groups stay one list of
+members, the collision rule keeps working unchanged, and an external reads as what it is:
+a member Switchyard happens not to start. The alternative — an `external:` map on the group
+— would have needed a separate rule for ordering against members, because a YAML map has no
+meaningful order and Part 2a settled collisions as *first listed wins*.
+
+**`external:` is the host and `ports:` the list, mapping port-for-port.** 5432 inside the
+group reaches 5432 on the target. Splitting the address this way is what makes ranges
+possible: a range whose two sides differ would need arithmetic, and "which end does 8005
+land on" is a question worth not having. It also means one entry per external service
+rather than per port.
+
+**Not only the host.** `search.staging.internal` is the same mechanism as `127.0.0.1`,
+which is why the field is `external:` rather than `host:` and takes a full hostname.
+
+- [ ] `Instance` gains an external form: `{ name, external, ports }`, with no block, no
+      source, no device, and no lifecycle — `up` never starts or stops it
+- [ ] `ports:` accepts integers and inclusive `"start-end"` range strings in one list;
+      ranges are quoted because YAML would otherwise mangle them
+- [ ] Range bounds validated `start <= end`, and capped (1024 ports) so `"1-65535"` fails
+      loudly rather than attempting to bind the machine
+- [ ] Ranges expand before the collision check, so a clash on one port warns about that
+      port rather than the whole range
+- [ ] Collisions stay positional: a started member listed before an external wins, with the
+      warning naming both — the Part 2a rule, unchanged
+- [ ] Two externals sharing a host with different ports is normal, not a collision — a
+      collision is about a port inside one group, never about the target
+- [ ] An optional `probe:` on an external, reusing the existing `Probe` type, so an external
+      that is not actually listening is reported at `up` rather than as a connection refused
+      at first request
+- [ ] Diagnostics distinguish "external not reachable" from "instance failed to start" —
+      the remedies are entirely different
+
+**Depends on Part 2b**, which establishes that a group's routing comes from the ports its
+members listen on. An external is the one member with nothing to discover from — no
+`publish`, no `probe` port, no image metadata — so its `ports:` list is the one place a port
+is always authored by hand.
+
+---
+
 ### Part 3 — Serving a whole group from one address (router)
 
 The substantial piece of step 10, and the reason Part 2 stops at the schema. Today a
@@ -152,13 +448,17 @@ Touches `router-pingora` and `router-config`, not only the schema.
 
 ---
 
-### Part 4 — Run actions become a flat `scripts:` map
+### Part 4 — Run actions become a flat `scripts:` map — **deferred to V3**
 
 Closes [DEVIATION §6](../DEVIATION.md#6-run-actions-carry-a-structuredshell-split-that-may-not-earn-its-keep).
 Vision reference: user_flow step 6.
 
-The structured/shell split goes. A run action becomes one name and one command line,
-following the `package.json` `scripts` model:
+**Deferred.** The schema change below is small and well understood, but it would land a
+shape whose central question is unanswered: a script cannot currently reach the deployment
+it is about. Shipping the flat map first would mean migrating everyone onto a format we
+then change again once that is solved. Left whole for V3.
+
+The intended shape, unchanged:
 
 ```yaml
 scripts:
@@ -181,6 +481,64 @@ run rather than from the schema. The deployment target is already selected in th
 run time; the runner records that selection, so the operation stays tagged in the timeline
 and still counts against the heavy-operation limit. That is the whole win the structured
 form was buying, and it survives without a second authoring format.
+
+#### Why it is deferred: a script cannot reach the deployment
+
+A run action is `$SHELL -c "<string>"` with `current_dir` set to the project
+(`switchyard-run-actions/src/lib.rs:403`, `run` at 418). Your shell, your machine, your
+permissions. That is right for `switchyard up` and wrong for anything that needs to *talk
+to* what is running, and the vision's own example is the second kind:
+`smoke: ./scripts/smoke.sh --target feature-test`.
+
+It cannot work today. `publish:` generates `127.0.0.1::8080` — an empty host port, so Docker
+assigns an ephemeral one at start and nothing can hardcode it. The group's shared localhost
+exists only inside sidecar namespaces, so `curl 127.0.0.1:8080` from your shell reaches
+nothing. And the environment step 6 promises is not implemented: `run-actions` never calls
+`.env()`, and `SWITCHYARD_BUNDLE` appears nowhere in the workspace.
+
+Three ways to close it, kept here as ideas rather than commitments:
+
+**(1) Export the addresses.** A group already has a stable name —
+`feature-test.comparison.localhost`, served by the host router. Give scripts
+`$SWITCHYARD_GROUP_FEATURE_TEST` and per-instance equivalents and `smoke.sh` curls
+something that does not move. No containers, no namespaces; just telling the script what it
+cannot discover. Smallest change, covers testing a group from outside.
+
+**(2) `switchyard exec`.** Run a command *inside* a member's namespace:
+
+```yaml
+scripts:
+  migrate: switchyard exec backend-1 -- ./gradlew flywayMigrate
+```
+
+The command then sees exactly the localhost `backend-1` sees — `127.0.0.1:5432` is that
+group's database. This is the honest answer to "how does a script reach the group": not by
+forwarding a port out, but by joining. It is also the real answer to "can a script pick its
+image" — what that question wants is the instance's *network*, not its base image.
+
+**(3) A script that names a group** and is given its own sidecar:
+
+```yaml
+scripts:
+  smoke: { group: feature-test, run: ./scripts/smoke.sh }
+```
+
+Most convenient and most magical. It costs the flat map: an entry becomes a string *or* an
+object, which is the structured/shell split this part exists to delete, reintroduced under
+a new name. Weigh that against what (2) already gives.
+
+Preference if nothing changes before V3: **(1) and (2)**. Together they cover both real
+cases — test a group from outside by name, run a task from inside — and neither costs the
+flat map. Both are one `switchyard` invocation in an ordinary shell, which is the `npm run`
+bargain the vision asks for.
+
+**On choosing an image per script** (asked during planning, recorded so it is not
+re-litigated): no. A script *acts on* the deployment from outside and needs your Docker,
+your daemon socket, and your credential helper; a block *is* the isolated thing under test
+and needs a pinned image. Putting `switchyard up` in a container containerizes the remote
+control rather than the appliance. A script that genuinely needs a runtime already has
+`docker run --rm -v $PWD:/w -w /w node:22 …` — one explicit line, no schema. Revisit only
+if that prefix turns out to be on most scripts in practice.
 
 ---
 
