@@ -46,7 +46,7 @@ verification evidence.
 | ✅ | 2 — Addresses on the group and on the instance | `5d14720` |
 | ✅ | 2a — Membership stops being policed by capability | `a24991b` |
 | ✅ | 2b — A group shares one localhost; capabilities and slots are removed | `d2bdddf` |
-| ⬜ | 2c — Repositories are declared once; sources are a repo and a ref | |
+| ✅ | 2c — Repositories are declared once; sources are a repo and a ref | `4e6969a` |
 | ⬜ | 2d — `bindings:` is deleted; membership is the connection | |
 | ⬜ | 2e — External instances: things already running outside Switchyard | |
 | ⬜ | 3 — Serving a whole group from one address (router) | |
@@ -355,6 +355,9 @@ for imperative clients, and guided authoring materializes a selected registered 
 into the deployment's repository/source sections. Existing paths are inspected but never
 reset: wrong repository, wrong ref, missing ref, non-worktree paths, duplicate paths, and
 project escapes have explicit diagnostics.
+
+Landed in `4e6969a`; workspace tests, Clippy, rustdoc, formatting, 49 Web tests, and the
+TypeScript/Vite production build passed.
 
 ---
 
