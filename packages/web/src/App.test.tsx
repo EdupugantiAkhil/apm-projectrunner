@@ -5,13 +5,13 @@ import App from './App'
 import { ApiClient, type DeviceRecord, type Operation, type OperationEvent, type RunActionPreview, type RunActionsResponse, type RouteState, type SourceRecord } from './api'
 
 const connectionBlocks = {
-  java: { services: { app: { provides: { java: {} } } } },
-  python: { services: { app: { provides: { python: {} } } } },
-  database: { services: { app: { provides: { database: {} } } } },
+  java: { services: { app: {} } },
+  python: { services: { app: {} } },
+  database: { services: { app: {} } },
 }
 const deployment = {
   apiVersion: 'v1', deployment: 'comparison', definitionHash: 'definition123', resourceHash: 'resource123', appliedAt: 1,
-  snapshot: { spec: { instances: [{ name: 'ui-feature', device: 'build-host' }, { name: 'backend-a', block: 'java' }, { name: 'backend-b', block: 'java' }, { name: 'python-a', block: 'python' }, { name: 'python-b', block: 'python' }, { name: 'shared-db', block: 'database' }], blocks: connectionBlocks, bindings: { 'ui-feature': 'feature' }, routes: { 'ui-feature': { java: 'backend-a', python: 'python-a', database: 'shared-db' } }, groups: { base: { instances: ['backend-b', 'python-b', 'shared-db'] }, feature: { address: 'ui.comparison.localhost', instances: ['backend-a', 'python-a', 'shared-db'] } } } }, manifest: {},
+  snapshot: { spec: { instances: [{ name: 'ui-feature', device: 'build-host', address: 'ui.comparison.localhost' }, { name: 'backend-a', block: 'java' }, { name: 'backend-b', block: 'java' }, { name: 'python-a', block: 'python' }, { name: 'python-b', block: 'python' }, { name: 'shared-db', block: 'database' }], blocks: connectionBlocks, bindings: { 'ui-feature': 'feature' }, groups: { base: { instances: ['backend-b', 'python-b', 'shared-db'] }, feature: { instances: ['ui-feature', 'backend-a', 'python-a'] } } } }, manifest: {},
   sourceIdentities: { 'ui-feature': { path: '/worktrees/ui-a', ref: 'feature/ui-redesign', commit: '35ad2abcdef', dirty: true } },
   reconciliation: { deployment: 'comparison', diagnostics: [] }, resources: [{ kind: 'container', id: 'one', name: 'comparison-ui-feature', labels: { 'dev.switchyard.instance': 'ui-feature' }, state: 'healthy', device: 'build-host' }],
   customDomains: ['ui.comparison.localhost'], bindings: { 'ui-feature': 'feature' },
@@ -22,7 +22,7 @@ const sourceProfile = { apiVersion: 'v1', name: 'api', deployment: 'comparison',
 const trustedProfile = { apiVersion: 'v1', name: 'worker-profile', deployment: 'comparison', origin: { kind: 'project' as const }, trust: 'trusted' as const, shadowed: false, services: [{ name: 'web', adapterKind: 'container' as const }] }
 const localDevice: DeviceRecord = { name: 'local', kind: 'local', host: null, port: null, user: null, identityFile: null, createdAt: null, lastCheckedAt: null, lastCheckStatus: 'eligible', lastCheckDetail: null, reachability: 'reachable', eligibility: 'eligible', eligibilityReason: 'local execution is always eligible', placedInstances: [] }
 const remoteDevice: DeviceRecord = { name: 'build-host', kind: 'ssh', host: 'host.test', port: 22, user: 'dev', identityFile: null, createdAt: 1, lastCheckedAt: null, lastCheckStatus: 'never', lastCheckDetail: null, reachability: 'unchecked', eligibility: 'ineligible', eligibilityReason: 'unchecked', placedInstances: [{ deployment: 'comparison', instance: 'ui-feature' }] }
-const authoredSpec = { instances: [{ name: 'ui-feature', block: 'web-ui' }, { name: 'ui-unbound', block: 'web-ui' }, { name: 'backend-a', block: 'java' }, { name: 'backend-b', block: 'java' }, { name: 'python-a', block: 'python' }, { name: 'python-b', block: 'python' }, { name: 'shared-db', block: 'database' }], blocks: { ...connectionBlocks, 'web-ui': { services: { web: { consumes: { java: { protocol: 'tcp' }, python: { protocol: 'grpc' }, database: { protocol: 'tcp' } } } } } }, groups: { base: { instances: ['backend-b', 'python-b', 'shared-db'] }, feature: { instances: ['backend-a', 'python-a', 'shared-db'] } }, bindings: { 'ui-feature': 'feature' } }
+const authoredSpec = { instances: [{ name: 'ui-feature', block: 'web-ui' }, { name: 'ui-unbound', block: 'web-ui' }, { name: 'backend-a', block: 'java' }, { name: 'backend-b', block: 'java' }, { name: 'python-a', block: 'python' }, { name: 'python-b', block: 'python' }, { name: 'shared-db', block: 'database' }], blocks: { ...connectionBlocks, 'web-ui': { services: { web: {} } } }, groups: { base: { instances: ['backend-b', 'python-b', 'shared-db'] }, feature: { instances: ['ui-feature', 'backend-a', 'python-a'] } }, bindings: { 'ui-feature': 'feature' } }
 const authoredYaml = 'apiVersion: switchyard.dev/v1alpha2\nkind: Deployment\nmetadata:\n  name: comparison\nspec:\n  instances: []\n  blocks: {}\n  groups: {}\n  bindings:\n    ui-feature: feature\n'
 const authoredDefinition = { apiVersion: 'v1', name: 'comparison', path: '/project/deployments/comparison.yaml', hash: 'hash-one', yaml: authoredYaml }
 const routeState: RouteState = {
@@ -84,7 +84,7 @@ describe('Switchyard GUI', () => {
     expect(await screen.findByRole('heading', { name: 'comparison', level: 1 })).toBeInTheDocument()
     expect(screen.getByText('payments-lab')).toBeInTheDocument()
     expect(screen.getByText('/worktrees/ui-a')).toBeInTheDocument()
-    expect(screen.getByText(/35ad2abcd/)).toBeInTheDocument()
+    expect(screen.getAllByText(/35ad2abcd/).length).toBeGreaterThan(0)
     expect(screen.getByText('healthy')).toBeInTheDocument()
     expect(screen.getAllByText('Authored placement')).toHaveLength(6)
     expect(screen.getAllByText('Observed placement')).toHaveLength(6)
@@ -96,7 +96,7 @@ describe('Switchyard GUI', () => {
   })
 
   it('shows one honest per-instance inspector with placement, services, connections, and instance-scoped operations', async () => {
-    const user = userEvent.setup(); const client = new ApiClient('test'); const inspected = { ...deployment, snapshot: { spec: { ...deployment.snapshot.spec, instances: deployment.snapshot.spec.instances.map((instance) => instance.name === 'ui-feature' ? { ...instance, block: 'web-ui', source: 'feature-ui' } : instance), blocks: { ...deployment.snapshot.spec.blocks, 'web-ui': { services: { web: { consumes: { java: { protocol: 'tcp' }, python: { protocol: 'grpc' }, database: { protocol: 'tcp' } } }, worker: {} } } } } }, resources: [{ kind: 'container', id: 'web', name: 'opaque-runtime-name', labels: { 'dev.switchyard.instance': 'ui-feature', 'dev.switchyard.service': 'web' }, state: 'running (healthy)', device: 'build-host' }, { kind: 'container', id: 'worker', name: 'comparison-ui-feature-worker', labels: {} as Record<string, string>, state: 'running (unhealthy)', device: 'local' }] }
+    const user = userEvent.setup(); const client = new ApiClient('test'); const inspected = { ...deployment, snapshot: { spec: { ...deployment.snapshot.spec, instances: deployment.snapshot.spec.instances.map((instance) => instance.name === 'ui-feature' ? { ...instance, block: 'web-ui', source: 'feature-ui' } : instance), blocks: { ...deployment.snapshot.spec.blocks, 'web-ui': { services: { web: {}, worker: {} } } } } }, resources: [{ kind: 'container', id: 'web', name: 'opaque-runtime-name', labels: { 'dev.switchyard.instance': 'ui-feature', 'dev.switchyard.service': 'web' }, state: 'running (healthy)', device: 'build-host' }, { kind: 'container', id: 'worker', name: 'comparison-ui-feature-worker', labels: {} as Record<string, string>, state: 'running (unhealthy)', device: 'local' }] }
     const instanceOperation: Operation = { apiVersion: 'v1', id: 'op-ui-feature', deployment: 'comparison', instance: 'ui-feature', kind: 'logs', destructive: false, status: 'succeeded', startedAt: 8, finishedAt: 9, error: null, result: null }; vi.spyOn(client, 'deployment').mockResolvedValue(inspected); const operations = vi.spyOn(client, 'operations').mockImplementation(async (filters = {}) => ({ apiVersion: 'v1', operations: filters.instance === 'ui-feature' ? [instanceOperation] : [], nextCursor: null }))
     vi.spyOn(client, 'profiles').mockResolvedValue({ apiVersion: 'v1', profiles: [{ ...trustedProfile, name: 'web-ui' }], sourceErrors: [] })
     render(<App client={client} />); await screen.findByRole('heading', { name: 'comparison', level: 1 }); await user.click(screen.getByRole('button', { name: 'Inspect ui-feature' }))
@@ -104,7 +104,7 @@ describe('Switchyard GUI', () => {
     const inspector = screen.getByRole('complementary', { name: 'Inspector' }); expect(within(inspector).getByRole('heading', { name: 'ui-feature' })).toBeInTheDocument(); expect(await within(inspector).findByText('web-ui · Project · comparison · trusted')).toBeInTheDocument(); expect(within(inspector).getByText('feature-ui')).toBeInTheDocument(); expect(within(inspector).getAllByText('build-host')).toHaveLength(3)
     const web = within(inspector).getByText('web').closest('li')!; expect(within(web).getByText('running (healthy)')).toBeInTheDocument(); expect(within(web).getByText('healthy')).toBeInTheDocument(); expect(within(web).getByText('build-host')).toBeInTheDocument()
     const worker = within(inspector).getByText('worker').closest('li')!; expect(within(worker).getAllByText('not observed')).toHaveLength(3)
-    expect(within(inspector).getByText('ui-feature / java → backend-a')).toBeInTheDocument(); expect(within(inspector).getByText('ui-feature / python → python-a')).toBeInTheDocument(); expect(within(inspector).getByText('ui-feature / database → shared-db')).toBeInTheDocument()
+    expect(within(inspector).getByText('feature / ui-feature')).toBeInTheDocument()
     expect(await within(inspector).findByText('op-ui-feature')).toBeInTheDocument(); expect(within(inspector).getByText(/Only operations durably attributed to instance/)).toBeInTheDocument(); expect(within(inspector).getByText(/Deployment-wide operations and legacy records whose instance is null are not blended/)).toBeInTheDocument(); expect(operations).toHaveBeenCalledWith({ deployment: 'comparison', instance: 'ui-feature' })
   })
 
@@ -124,7 +124,7 @@ describe('Switchyard GUI', () => {
   it('uses the same single inspector when patch-bay selection changes the instance', async () => {
     const user = userEvent.setup(); render(<App client={new ApiClient('test')} />); await screen.findByRole('heading', { name: 'comparison', level: 1 }); await user.click(screen.getByRole('button', { name: 'Inspect ui-feature' }))
     const inspector = screen.getByRole('complementary', { name: 'Inspector' }); expect(within(inspector).getByRole('heading', { name: 'ui-feature' })).toBeInTheDocument()
-    const providers = screen.getByRole('heading', { name: 'Backends & providers' }).parentElement!; await user.click(within(providers).getByRole('button', { name: /backend-a/ }))
+    const instances = screen.getByRole('heading', { name: 'Instances', level: 3 }).parentElement!; await user.click(within(instances).getByRole('button', { name: /backend-a/ }))
     expect(within(inspector).getByRole('heading', { name: 'backend-a' })).toBeInTheDocument(); expect(screen.getAllByRole('complementary', { name: 'Inspector' })).toHaveLength(1); expect(screen.queryByLabelText('Instance inspector')).not.toBeInTheDocument()
   })
 
@@ -133,19 +133,18 @@ describe('Switchyard GUI', () => {
     vi.spyOn(client, 'deployment').mockResolvedValue(stopped); vi.spyOn(client, 'definition').mockResolvedValue(authoredDefinition); vi.spyOn(client, 'validateDeployment').mockResolvedValue({ apiVersion: 'v1', name: 'comparison', valid: true, diagnostics: [], preview: { definition: { spec: authoredSpec } } })
     render(<App client={client} />)
     expect(await screen.findByText('Deployment is stopped or cleaned up')).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Run Up' })).toBeInTheDocument(); expect(screen.getAllByText('not running')).toHaveLength(6)
-    expect(await screen.findByRole('heading', { name: 'Desired connections (authored state)' })).toBeInTheDocument()
-    expect(screen.getByText('Desired/authored state from the deployment definition, not observed/runtime state. Changes take effect on the next Up.')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Desired group selection (authored state)' })).toBeInTheDocument()
     expect(screen.getByRole('rowheader', { name: 'ui-feature' })).toBeInTheDocument()
     expect(screen.getByRole('rowheader', { name: 'ui-unbound' })).toBeInTheDocument()
-    expect(screen.getByLabelText('Desired provider group for ui-unbound')).toHaveValue('')
-    expect(screen.getByText('Unbound — no desired provider')).toBeInTheDocument()
+    expect(screen.getByLabelText('Desired group for ui-unbound')).toHaveValue('')
+    expect(screen.getAllByText('Uses the group containing this instance').length).toBeGreaterThan(0)
     expect(screen.queryByRole('img', { name: 'Route cables' })).not.toBeInTheDocument(); expect(screen.getByText('Unavailable while stopped')).toBeInTheDocument()
   })
 
   it('saves an offline desired connection edit through validation with the expected hash', async () => {
     const user = userEvent.setup(); const stopped = { ...deployment, resources: [], customDomains: [], reconciliation: { deployment: 'comparison', diagnostics: [{ code: 'observed_resources_missing', path: 'observed.resources', message: 'no labeled Docker resources were observed' }] } }; const client = new ApiClient('test')
     vi.spyOn(client, 'deployment').mockResolvedValue(stopped); vi.spyOn(client, 'definition').mockResolvedValue(authoredDefinition); vi.spyOn(client, 'validateDeployment').mockResolvedValue({ apiVersion: 'v1', name: 'comparison', valid: true, diagnostics: [], preview: { definition: { spec: authoredSpec } } }); const update = vi.spyOn(client, 'updateDefinitionValidated').mockImplementation(async (_name, yaml) => ({ ...authoredDefinition, hash: 'hash-two', yaml }))
-    render(<App client={client} />); const select = await screen.findByLabelText('Desired provider group for ui-unbound'); await user.selectOptions(select, 'base'); await user.click(screen.getByRole('button', { name: 'Save desired connections' }))
+    render(<App client={client} />); const select = await screen.findByLabelText('Desired group for ui-unbound'); await user.selectOptions(select, 'base'); await user.click(screen.getByRole('button', { name: 'Save desired groups' }))
     await waitFor(() => expect(update).toHaveBeenCalledWith('comparison', expect.stringContaining('"ui-unbound": "base"'), 'hash-one'))
   })
 
@@ -340,10 +339,10 @@ describe('Switchyard GUI', () => {
     const empty = new ApiClient('test'); vi.spyOn(empty, 'deployments').mockResolvedValue({ apiVersion: 'v1', deployments: [] }); vi.spyOn(empty, 'sources').mockResolvedValue([]); vi.spyOn(empty, 'profiles').mockResolvedValue({ apiVersion: 'v1', profiles: [], sourceErrors: [] }); vi.spyOn(empty, 'devices').mockResolvedValue([localDevice]); vi.spyOn(empty, 'operations').mockResolvedValue({ apiVersion: 'v1', operations: [], nextCursor: null })
     render(<App client={empty} />); await screen.findByRole('heading', { name: 'Setup progress' })
     await waitFor(() => expect(screen.getAllByText('Not complete')).toHaveLength(5))
-    for (const label of ['Source registered', 'Profile selected', 'Instance created', 'Startup complete', 'Connection bound']) expect(within(screen.getByText(label).closest('li')!).getByText('Not complete')).toBeInTheDocument()
+    for (const label of ['Source registered', 'Profile selected', 'Instance created', 'Startup complete', 'Group populated']) expect(within(screen.getByText(label).closest('li')!).getByText('Not complete')).toBeInTheDocument()
     cleanup()
 
-    const ready = new ApiClient('test'); const summary = { name: 'comparison', definitionHash: 'definition123', resourceHash: 'resource123', appliedAt: 1, lastOperation: null, customDomains: [], bindings: { ui: 'base' } }; const complete = { ...deployment, appliedAt: 1, snapshot: { spec: { instances: [{ name: 'ui', block: 'web' }, { name: 'backend', block: 'api' }], blocks: { web: { services: { app: { consumes: { api: { protocol: 'tcp' } } } } }, api: { services: { app: { provides: { api: {} } } } } }, groups: { base: { instances: ['backend'] } }, bindings: { ui: 'base' } } } }
+    const ready = new ApiClient('test'); const summary = { name: 'comparison', definitionHash: 'definition123', resourceHash: 'resource123', appliedAt: 1, lastOperation: null, customDomains: [], bindings: { ui: 'base' } }; const complete = { ...deployment, appliedAt: 1, snapshot: { spec: { instances: [{ name: 'ui', block: 'web' }, { name: 'backend', block: 'api' }], blocks: { web: { services: { app: {} } }, api: { services: { app: {} } } }, groups: { base: { instances: ['ui', 'backend'] } }, bindings: { ui: 'base' } } } }
     vi.spyOn(ready, 'deployments').mockResolvedValue({ apiVersion: 'v1', deployments: [summary] }); vi.spyOn(ready, 'deployment').mockResolvedValue(complete); vi.spyOn(ready, 'definition').mockResolvedValue(authoredDefinition); vi.spyOn(ready, 'validateDeployment').mockResolvedValue({ apiVersion: 'v1', name: 'comparison', valid: true, diagnostics: [], preview: { definition: complete.snapshot } }); vi.spyOn(ready, 'sources').mockResolvedValue([source]); vi.spyOn(ready, 'profiles').mockResolvedValue({ apiVersion: 'v1', profiles: [trustedProfile], sourceErrors: [] }); vi.spyOn(ready, 'devices').mockResolvedValue([localDevice]); vi.spyOn(ready, 'operations').mockResolvedValue({ apiVersion: 'v1', operations: [], nextCursor: null })
     render(<App client={ready} />); await screen.findByRole('heading', { name: 'comparison', level: 1 }); await userEvent.click(within(screen.getByRole('navigation', { name: 'Main views' })).getByRole('button', { name: 'home' }))
     await waitFor(() => expect(screen.getAllByText('Complete')).toHaveLength(5))
@@ -412,10 +411,10 @@ describe('Switchyard GUI', () => {
   it('renders the observed runtime patch bay while running and performs a keyboard-only complete binding switch', async () => {
     const user = userEvent.setup(); const fetchMock = vi.mocked(fetch)
     render(<App client={new ApiClient('test')} />); await screen.findByRole('heading', { name: 'comparison', level: 1 })
-    expect(screen.getByRole('heading', { name: 'Observed runtime patch bay' })).toBeInTheDocument(); expect(screen.getByText('Observed/runtime state from the applied snapshot.')).toBeInTheDocument(); expect(screen.getByRole('img', { name: 'Route cables' }).querySelectorAll('path[data-slot]')).toHaveLength(3)
-    const lane = screen.getByRole('heading', { name: 'UI consumers' }).parentElement!; await user.click(within(lane).getByRole('button', { name: /ui-feature/ }))
-    const select = screen.getByLabelText('Provider group for ui-feature'); select.focus(); await user.selectOptions(select, 'base')
-    const dialog = screen.getByRole('dialog', { name: 'Preview complete route replacement' }); expect(within(dialog).getByText(/Snapshot v4/)).toBeInTheDocument(); expect(within(dialog).getAllByRole('row')).toHaveLength(4); expect(within(dialog).getByText('backend-b')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Observed group membership' })).toBeInTheDocument(); expect(screen.getByText('Ordered members from the applied snapshot. Members share one localhost.')).toBeInTheDocument()
+    const lane = screen.getByRole('heading', { name: 'Instances', level: 3 }).parentElement!; await user.click(within(lane).getByRole('button', { name: /ui-feature/ }))
+    const select = screen.getByLabelText('Group for ui-feature'); select.focus(); await user.selectOptions(select, 'base')
+    const dialog = screen.getByRole('dialog', { name: 'Preview complete membership replacement' }); expect(within(dialog).getByText(/Snapshot v4/)).toBeInTheDocument(); expect(within(dialog).getAllByRole('row')).toHaveLength(7); expect(within(dialog).getAllByText('backend-b').length).toBeGreaterThan(0)
     await user.click(within(dialog).getByRole('button', { name: 'Apply complete change' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/commands/bind', expect.objectContaining({ body: JSON.stringify({ bundle: '.switchyard/generated/comparison/resolved-deployment.yaml', consumer: 'ui-feature', group: 'base', transition: { strategy: 'close' } }) })))
     const result = await screen.findByRole('dialog', { name: 'Connection switch result' }); expect(within(result).getByText('Atomic binding operation succeeded.')).toBeInTheDocument(); expect(within(result).getByText(/Exit code 0\. applied v5/)).toBeInTheDocument(); expect(within(result).getByText(/desired v5; observed v4; status pending; transition draining; error none; rollback recorded at v4/)).toBeInTheDocument()
@@ -424,17 +423,17 @@ describe('Switchyard GUI', () => {
   it('shows a failed post-switch report with durable error and rollback observations', async () => {
     const user = userEvent.setup(); const client = new ApiClient('test'); const failedRoutes: RouteState = { ...routeState, bindings: [{ ...routeState.bindings[0], status: 'failed', transition: { state: 'rolled_back' }, lastErrorCode: 'provider_unhealthy' }] }
     vi.spyOn(client, 'pollOperation').mockResolvedValue({ apiVersion: 'v1', id: 'op-bind', deployment: 'comparison', instance: 'ui-feature', kind: 'bind', destructive: false, status: 'failed', startedAt: 10, finishedAt: 11, error: { code: 'route_apply_failed', message: 'provider health check rejected the candidate' }, result: { exitCode: 1, stdout: '', stderr: 'provider unhealthy' } }); vi.spyOn(client, 'routes').mockResolvedValue(failedRoutes)
-    render(<App client={client} />); await screen.findByRole('heading', { name: 'comparison', level: 1 }); const lane = screen.getByRole('heading', { name: 'UI consumers' }).parentElement!; await user.click(within(lane).getByRole('button', { name: /ui-feature/ })); await user.selectOptions(screen.getByLabelText('Provider group for ui-feature'), 'base'); await user.click(within(screen.getByRole('dialog', { name: 'Preview complete route replacement' })).getByRole('button', { name: 'Apply complete change' }))
+    render(<App client={client} />); await screen.findByRole('heading', { name: 'comparison', level: 1 }); const lane = screen.getByRole('heading', { name: 'Instances', level: 3 }).parentElement!; await user.click(within(lane).getByRole('button', { name: /ui-feature/ })); await user.selectOptions(screen.getByLabelText('Group for ui-feature'), 'base'); await user.click(within(screen.getByRole('dialog', { name: 'Preview complete membership replacement' })).getByRole('button', { name: 'Apply complete change' }))
     const result = await screen.findByRole('dialog', { name: 'Connection switch result' }); expect(within(result).getByText('Atomic binding operation failed.')).toBeInTheDocument(); expect(within(result).getByText('route_apply_failed: provider health check rejected the candidate')).toBeInTheDocument(); expect(within(result).getByText(/status failed; transition rolled_back; error provider_unhealthy; rollback recorded at v4/)).toBeInTheDocument()
   })
 
   it('lists an authored unbound consumer and binds it through the complete change preview', async () => {
     const user = userEvent.setup(); const client = new ApiClient('test'); const fetchMock = vi.mocked(fetch); const spec = deployment.snapshot.spec
-    vi.spyOn(client, 'deployment').mockResolvedValue({ ...deployment, snapshot: { spec: { ...spec, instances: [...spec.instances, { name: 'ui-unbound', block: 'web-ui' }], blocks: { ...deployment.snapshot.spec.blocks, 'web-ui': { services: { web: { consumes: { java: { protocol: 'tcp' }, python: { protocol: 'grpc' }, database: { protocol: 'tcp' } } } } } } } } })
+    vi.spyOn(client, 'deployment').mockResolvedValue({ ...deployment, snapshot: { spec: { ...spec, instances: [...spec.instances, { name: 'ui-unbound', block: 'web-ui' }], blocks: { ...deployment.snapshot.spec.blocks, 'web-ui': { services: { web: {} } } } } } })
     render(<App client={client} />); await screen.findByRole('heading', { name: 'comparison', level: 1 })
-    const lane = screen.getByRole('heading', { name: 'UI consumers' }).parentElement!; const consumer = within(lane).getByRole('button', { name: /ui-unbound.*unbound/ }); expect(consumer).toBeInTheDocument(); expect(screen.getAllByRole('cell', { name: 'Unbound — no current provider' })).toHaveLength(3); await user.click(consumer)
-    expect(screen.getByText(/Currently unbound/)).toBeInTheDocument(); const select = screen.getByLabelText('Provider group for ui-unbound'); expect(within(select).getByRole('option', { name: 'Unbound — choose a provider group' })).toBeInTheDocument(); await user.selectOptions(select, 'base')
-    const dialog = screen.getByRole('dialog', { name: 'Preview complete route replacement' }); expect(within(dialog).getByText(/There is no current provider group/)).toBeInTheDocument(); expect(within(dialog).getAllByText('There is no current provider')).toHaveLength(3); expect(within(dialog).getByText('backend-b')).toBeInTheDocument()
+    const lane = screen.getByRole('heading', { name: 'Instances', level: 3 }).parentElement!; const instance = within(lane).getByRole('button', { name: /ui-unbound/ }); expect(instance).toBeInTheDocument(); await user.click(instance)
+    const select = screen.getByLabelText('Group for ui-unbound'); expect(within(select).getByRole('option', { name: 'Use authored membership' })).toBeInTheDocument(); await user.selectOptions(select, 'base')
+    const dialog = screen.getByRole('dialog', { name: 'Preview complete membership replacement' }); expect(within(dialog).getByText(/There is no current group/)).toBeInTheDocument(); expect(within(dialog).getAllByText('Not in a current group')).toHaveLength(3); expect(within(dialog).getAllByText('backend-b').length).toBeGreaterThan(0)
     await user.click(within(dialog).getByRole('button', { name: 'Apply complete change' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/commands/bind', expect.objectContaining({ body: JSON.stringify({ bundle: '.switchyard/generated/comparison/resolved-deployment.yaml', consumer: 'ui-unbound', group: 'base', transition: { strategy: 'close' } }) })))
   })
@@ -474,8 +473,8 @@ describe('Switchyard GUI', () => {
   })
 
   it('shows planner warnings returned by deployment validation', async () => {
-    const client = new ApiClient('test'); vi.spyOn(client, 'definition').mockResolvedValue(authoredDefinition); vi.spyOn(client, 'validateDeployment').mockResolvedValue({ apiVersion: 'v1', name: 'comparison', valid: true, diagnostics: [], warnings: [{ code: 'provider_collision', path: 'spec.bindings.backend-1', message: '`database` slot has two candidates; routing to db-main, the first listed' }], preview: { definition: deployment.snapshot } })
+    const client = new ApiClient('test'); vi.spyOn(client, 'definition').mockResolvedValue(authoredDefinition); vi.spyOn(client, 'validateDeployment').mockResolvedValue({ apiVersion: 'v1', name: 'comparison', valid: true, diagnostics: [], warnings: [{ code: 'example_warning', path: 'spec.groups.feature', message: 'Example non-blocking planner warning.' }], preview: { definition: deployment.snapshot } })
     render(<App client={client} />); await screen.findByRole('heading', { name: 'comparison', level: 1 })
-    const warnings = await screen.findByRole('complementary', { name: 'Planner warnings' }); expect(within(warnings).getByText('provider_collision')).toBeInTheDocument(); expect(within(warnings).getByText('spec.bindings.backend-1')).toBeInTheDocument(); expect(within(warnings).getByText(/routing to db-main, the first listed/)).toBeInTheDocument()
+    const warnings = await screen.findByRole('complementary', { name: 'Planner warnings' }); expect(within(warnings).getByText('example_warning')).toBeInTheDocument(); expect(within(warnings).getByText('spec.groups.feature')).toBeInTheDocument(); expect(within(warnings).getByText((_content, element) => element?.tagName === 'LI' && element.textContent?.includes('Example non-blocking planner warning.') === true)).toBeInTheDocument()
   })
 })

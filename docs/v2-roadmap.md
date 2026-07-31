@@ -153,10 +153,10 @@ collisions and removes `provides:` and `consumes:` from the authored schema.
 ### Part 2b — A group shares one localhost; capabilities and slots are removed
 
 The largest correction in V2, and the one that decides whether the product earns its
-existence. Today a deployment only routes if every profile declares `provides:` and
-`consumes:`. Omitting them validates clean and produces **zero router sidecars** — every
-instance runs isolated, talking to nothing. The declarations are not documentation of the
-routing; they *are* the routing.
+existence. Before this part, a deployment only routed if every profile declared
+`provides:` and `consumes:`. Omitting them validated clean and produced **zero router
+sidecars** — every instance ran isolated. The declarations were not documentation of the
+routing; they *were* the routing.
 
 That is the wrong default. ABOUT.md's promise is that "the auto routing magically happens
 — you do not wire up addresses, edit config files, or change ports", and that "every UI
@@ -185,24 +185,29 @@ port 5432.
       `consumes:`
 - [x] A deployment with **no** `provides:`/`consumes:` anywhere routes correctly — this is
       the acceptance test for the whole part
-- [ ] Remove `provides:` and `consumes:` from the authored schema and all client authoring,
+- [x] Remove `provides:` and `consumes:` from the authored schema and all client authoring,
       validation, compatibility filtering, and projections
-- [ ] Remove role inference built on capability names. No planner, API, or client branch
+- [x] Remove role inference built on capability names. No planner, API, or client branch
       may treat names such as `ui`, `backend`, or `database` as product types
-- [ ] Remove the fixed-listener override path generated from capabilities and slots; a
+- [x] Remove the fixed-listener override path generated from capabilities and slots; a
       future port-remapping feature, if needed, must have its own explicit schema rather
       than retaining the old topology model
 - [x] Two members listening on one port in one group: **warn, first listed wins** —
       sidecars passively report their namespace listener tables; callers warn from those
       observations without opening probe connections to losing application ports
-- [ ] Migration drops identity, loopback, port-for-port `provides:`/`consumes:` metadata.
+- [x] Migration drops identity, loopback, port-for-port `provides:`/`consumes:` metadata.
       It refuses with an actionable diagnostic when an old slot changes host or port,
       because silently dropping a real remap would change behavior
-- [ ] Remove `extends:`. Without a capability key there is no honest definition of
+- [x] Remove `extends:`. Without a capability key there is no honest definition of
       "replace the inherited member that provides the same thing." Every group authors its
       complete ordered `instances:` list; overlays may replace that list explicitly
 - [x] `disabled:` removes a member from only that group's active routing while preserving
       its running instance, namespace, and authored priority position
+
+The schema-removal pass also completed the schema-visible portion of Part 3: address
+selection is generic, never keyed by a `ui` role, and a bare group address requires
+exactly one active member with its own `address:`. Per-request explicit member selection
+and the end-to-end group-address fixture remain Part 3 work.
 
 **Why this is not "one namespace per group".** The product goal is to keep alternative
 instances running and switch which one a group tests without rebuilding or restarting
@@ -458,12 +463,12 @@ request**.
 - [ ] Resolve an explicitly targeted member per request by instance subdomain
       (`backend-1.feature-test.comparison.localhost`) or browser route identity; no
       capability or slot name participates
-- [ ] Delete the planner's `group_capability_candidates(..., "ui", ...)` selection and
+- [x] Delete the planner's `group_capability_candidates(..., "ui", ...)` selection and
       every diagnostic that requires a member "providing UI"
-- [ ] The bare group name resolves only when exactly one active member is independently
+- [x] The bare group name resolves only when exactly one active member is independently
       browser-addressable through its own `address:`. That schema-visible fact replaces
       the removed `ui` capability as the default-selection rule
-- [ ] Zero or several browser-addressable members is an error listing the candidates,
+- [x] Zero or several browser-addressable members is an error listing the candidates,
       never a first-listed guess
 - [ ] Checked against browser identity — an `Origin` serving several members must still
       identify the group unambiguously

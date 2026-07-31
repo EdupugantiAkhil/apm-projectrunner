@@ -33,12 +33,12 @@ ui-b --java--> jas-feature -database---> db-main/{kv,document}
 ```
 
 Both UIs call the unchanged address `localhost:10081`. Both Java stand-ins call the
-same `127.0.0.1:8001` through `:8005` addresses, but their sidecars select different
-five-service groups. The Java stand-ins also use fixed database slots on ports 9101 and
+same `127.0.0.1:8001` through `:8005` addresses, while membership gives each one a
+different shared localhost. The Java stand-ins also use fixed database ports 9101 and
 9102. Every identity response includes the deployment, instance, service, selected
-providers, and source path.
+members, and source path.
 
-`ai-feature` extends `ai-main` and replaces all five providers. The checked-in
+`ai-feature` authors its complete ordered member list. The checked-in
 `sources/main` and `sources/feature` paths make ordinary offline planning deterministic.
 The smoke proof creates an isolated Git repository from the untouched main fixture
 tree, registers it, creates the feature source with `switchyard worktree create`, and
@@ -54,7 +54,7 @@ From the repository root:
 ```
 
 The script requires Docker, Compose, Cargo, Git, curl, and Python 3. It builds and
-starts the fixture, verifies both UI selections and all fixed slots, confirms worktree
+starts the fixture, verifies both addressed instances and all fixed ports, confirms worktree
 source identities in `switchyard status`, switches `jas-main` from `ai-feature` to
 `ai-main` without restarting its application container, and performs a down/up cycle.
 The schema task increments state in both named volumes, so the second initialization
@@ -82,7 +82,7 @@ The bundle covers the mechanisms behind MVP criteria 1–3, 9–11, 17, and 18:
 - path and managed-worktree source identities are observable without source edits;
 - database, Dockerfile UI, runner-script Java, and five-process Python suite blocks are
   declared together;
-- inherited five-service groups route identical localhost slots per consumer and switch
+- complete ordered groups route identical localhost ports per instance and switch
   atomically without application restart;
 - ordered overlays create disjoint named variation plans and materialize files outside
   the source trees; and

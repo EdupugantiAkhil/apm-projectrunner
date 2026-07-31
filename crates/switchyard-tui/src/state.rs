@@ -107,7 +107,7 @@ pub(crate) struct DeploymentProjection {
     pub(crate) route_statuses: Vec<switchyard_ops::RouteStatus>,
     pub(crate) services: Vec<ServiceProjection>,
     pub(crate) binding_count: usize,
-    pub(crate) consumer_slot_count: usize,
+    pub(crate) group_member_count: usize,
     pub(crate) validation_problems: Vec<String>,
 }
 
@@ -296,7 +296,7 @@ impl ProjectState {
                     })
                     .collect(),
                 binding_count: deployment.bindings.len(),
-                consumer_slot_count: deployment.consumer_slot_count,
+                group_member_count: deployment.group_member_count,
                 validation_problems: deployment.validation_problems,
             })
             .collect();

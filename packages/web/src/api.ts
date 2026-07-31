@@ -58,15 +58,14 @@ export interface DeploymentSnapshot { spec?: {
   blocks?: Record<string, {
     parameters?: Record<string, { required?: boolean; default?: string }>
     services?: Record<string, {
-      provides?: Record<string, { protocol?: string; port?: number }>
-      consumes?: Record<string, { protocol?: string; address?: { host?: string; port?: number } }>
+      [key: string]: unknown
       execution?: Record<string, unknown>
       probe?: Record<string, unknown>
       publish?: number[]
       volumes?: unknown[]
     }>
   }>
-  groups?: Record<string, { extends?: string; instances?: string[]; address?: string }>
+  groups?: Record<string, { instances?: string[]; disabled?: string[]; address?: string }>
   bindings?: Record<string, string>
   routes?: Record<string, Record<string, string>>
   managedProfiles?: Record<string, { route: string; startUrl: string }>

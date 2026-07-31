@@ -931,3 +931,23 @@ audit shell startup files as well as the requested cache directories.
 - Correction: removed the commit while preserving its file changes locally for review.
 - Lesson: phase-sized commits are the repository default, but an owner's request to keep
   work uncommitted controls the handoff.
+
+## 2026-07-31 — Schema removal must include projection vocabulary
+
+- The first Part 2b pass removed capabilities and slots from planner behavior but left operations
+  and TUI DTOs named `consumer`, `slot`, and `provider`, effectively preserving the old topology in
+  a public projection even though each row had become group membership.
+- Correction: model those projections as instance, group, ordered members, and membership changes;
+  update client tests and labels to exercise the role-free view.
+- Lesson: when a product concept is removed, audit serialized/API and presentation boundaries as
+  well as validation and runtime code. Relabeling an old shape is not model removal.
+
+## 2026-07-31 — Package-local tools require the package working directory
+
+- A TypeScript check was accidentally launched from the Rust workspace root. `npx` fetched the
+  unrelated deprecated `tsc` package and failed instead of using the Web package's installed
+  TypeScript compiler.
+- Correction: run `npx tsc -b` from `packages/web` and include the working directory in the
+  verification command itself.
+- Lesson: an executable name resolving through `npx` is not enough evidence that the intended
+  project tool ran; package-local verification includes its package directory.

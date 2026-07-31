@@ -1,5 +1,5 @@
 import type { DeploymentDetail, DeploymentSummary, DeviceRecord, Operation, PlannerWarning, ProfileRecord, SourceRecord } from './api'
-import { consumedSlots, resolvedGroups, type ConnectionSpec } from './connectionModel'
+import { type ConnectionSpec } from './connectionModel'
 
 export type HomeDestination = 'sources' | 'devices' | 'profiles' | 'builder' | 'deployments' | 'operations'
 export type ChecklistState = 'done' | 'todo' | 'unknown'
@@ -11,19 +11,20 @@ const trusted = (profile: ProfileRecord) => !profile.shadowed && (profile.trust 
 const stateFromSignals = (done: boolean, loading: boolean, unavailable: boolean): ChecklistState => done ? 'done' : loading || unavailable ? 'unknown' : 'todo'
 
 export function missingConnections(spec: ConnectionSpec) {
-  const consumed = consumedSlots(spec); const groups = resolvedGroups(spec); const bindings = spec.bindings ?? {}; const direct = spec.routes ?? {}; const missing: Array<{ consumer: string; slots: string[] }> = []
-  for (const [consumer, slots] of Object.entries(consumed)) { const group = bindings[consumer]; const routes = group && groups[group] ? groups[group] : direct[consumer] ?? {}; const absent = slots.filter((slot) => !routes[slot]); if (absent.length) missing.push({ consumer, slots: absent }) }
+  const assigned = new Set(Object.values(spec.groups ?? {}).flatMap((group) => (group.instances ?? []).map((member) => member.split('/', 1)[0])))
+  const missing: Array<{ instance: string }> = []
+  for (const instance of spec.instances ?? []) if (!assigned.has(instance.name) && !spec.bindings?.[instance.name]) missing.push({ instance: instance.name })
   return missing
 }
 
 export function setupChecklist({ sources, profiles, deployments, sourcesLoading, profilesLoading, deploymentsLoading, sourcesUnavailable, profilesUnavailable, deploymentsUnavailable }: { sources: SourceRecord[]; profiles: ProfileRecord[]; deployments: DeploymentSignal[]; sourcesLoading: boolean; profilesLoading: boolean; deploymentsLoading: boolean; sourcesUnavailable: boolean; profilesUnavailable: boolean; deploymentsUnavailable: boolean }): ChecklistStep[] {
-  const sourceDone = sources.length > 0; const profileDone = profiles.some(trusted); const unavailable = deploymentsUnavailable || deployments.some((deployment) => Boolean(deployment.error)); const instanceDone = deployments.some((deployment) => !deployment.error && Boolean(deployment.spec?.instances?.length)); const startupDone = deployments.some((deployment) => deployment.summary.appliedAt !== null); const connectionDone = deployments.some((deployment) => !deployment.error && deployment.spec ? Object.keys(consumedSlots(deployment.spec)).length > 0 && missingConnections(deployment.spec).length < Object.keys(consumedSlots(deployment.spec)).length : false)
+  const sourceDone = sources.length > 0; const profileDone = profiles.some(trusted); const unavailable = deploymentsUnavailable || deployments.some((deployment) => Boolean(deployment.error)); const instanceDone = deployments.some((deployment) => !deployment.error && Boolean(deployment.spec?.instances?.length)); const startupDone = deployments.some((deployment) => deployment.summary.appliedAt !== null); const connectionDone = deployments.some((deployment) => !deployment.error && deployment.spec ? Object.values(deployment.spec.groups ?? {}).some((group) => Boolean(group.instances?.length)) : false)
   return [
     { label: 'Source registered', state: stateFromSignals(sourceDone, sourcesLoading, sourcesUnavailable), signal: 'Registered source records from GET /sources.', action: 'Register a source', destination: 'sources' },
     { label: 'Profile selected', state: stateFromSignals(profileDone, profilesLoading, profilesUnavailable), signal: 'The API has no separate durable selection record; completion means a non-shadowed trusted or imported profile is available for guided authoring.', action: 'Select a startup profile', destination: 'profiles' },
     { label: 'Instance created', state: stateFromSignals(instanceDone, deploymentsLoading, unavailable), signal: 'At least one authored instance is present in a loaded deployment spec.', action: 'Create an instance', destination: 'builder' },
     { label: 'Startup complete', state: stateFromSignals(startupDone, deploymentsLoading, unavailable), signal: 'A deployment summary has a non-null appliedAt timestamp; the API exposes no structured running verdict.', action: 'Start a deployment', destination: 'deployments' },
-    { label: 'Connection bound', state: stateFromSignals(connectionDone, deploymentsLoading, unavailable), signal: 'At least one consumer has providers for every consumed slot in its authored spec.', action: 'Bind a connection', destination: 'deployments' },
+    { label: 'Group populated', state: stateFromSignals(connectionDone, deploymentsLoading, unavailable), signal: 'At least one authored group contains an instance.', action: 'Edit group membership', destination: 'deployments' },
   ]
 }
 
@@ -33,7 +34,7 @@ export function projectProblems({ sources, profileSourceErrors, deployments, dev
   for (const error of profileSourceErrors) problems.push({ category: 'Profiles', message: `${error.source}: ${error.message}`, destination: 'profiles' })
   for (const deployment of deployments) {
     for (const diagnostic of deployment.detail?.reconciliation.diagnostics ?? []) problems.push({ category: 'Deployments', message: `${deployment.summary.name}: ${diagnostic.message} (${diagnostic.code}).`, destination: 'deployments' })
-    if (deployment.spec) for (const missing of missingConnections(deployment.spec)) problems.push({ category: 'Connections', message: `${deployment.summary.name} / ${missing.consumer}: unbound slots ${missing.slots.join(', ')}.`, destination: 'deployments' })
+    if (deployment.spec) for (const missing of missingConnections(deployment.spec)) problems.push({ category: 'Connections', message: `${deployment.summary.name} / ${missing.instance}: not assigned to a group.`, destination: 'deployments' })
   }
   for (const device of devices) {
     if (device.reachability !== 'reachable') problems.push({ category: 'Devices', message: `${device.name}: reachability is ${device.reachability}.`, destination: 'devices' })

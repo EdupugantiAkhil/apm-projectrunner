@@ -2262,3 +2262,27 @@ read off the schema.
 - Workspace tests, all-target/all-feature Clippy with `-D warnings`, and rustdoc with `-D warnings`
   pass. Group priority order and `disabled` are excluded from the resource hash, so those route
   changes do not require application-resource recreation.
+
+## 2026-07-31 — V2 Part 2b schema and projection removal
+
+- Removed authored `provides:`, `consumes:`, capability, route-slot, and `extends:` types. Groups
+  now resolve only their complete ordered `instances:` list plus group-local `disabled:` entries;
+  planner-generated sidecars use transparent membership routing exclusively.
+- Removed the capability-derived fixed-listener planning path, protocol compatibility filtering,
+  capability collision validation, and role inference. Planner, operations, TUI, and Web
+  projections now expose generic instances, groups, ordered members, and membership changes.
+- Added safe migration for the removed fields. Identity loopback port-for-port metadata is dropped,
+  inherited groups are materialized before `extends:` is removed, and host or port remaps are
+  refused with a field-specific diagnostic instead of silently changing behavior.
+- Updated initialization templates and the JAS/routing-matrix compatibility fixtures to the
+  membership-only schema. Fixed-port fixture applications now bind their original distinct ports,
+  allowing transparent port-for-port routing without authored dependency metadata.
+- Completed the schema-visible Part 3 address rule while removing role inference: an instance
+  address selects that instance generically, and a bare group address requires exactly one active
+  member with its own address. Zero or multiple candidates fail with candidate-list diagnostics.
+- `bindings:` and direct `routes:` remain compatibility-only until Part 2d; the planner rejects
+  non-empty direct routes and clients label the remaining binding action as a temporary whole-group
+  membership selection rather than a capability/slot connection.
+- Verification passes: `cargo test --workspace --all-features`, all-target/all-feature Clippy with
+  `-D warnings`, rustdoc with `-D warnings`, Web `npm test -- --run` (49 tests), and Web
+  `npx tsc -b`.

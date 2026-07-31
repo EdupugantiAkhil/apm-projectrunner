@@ -1,9 +1,9 @@
 use std::{fs, path::Path};
 
 use switchyard_planner::{
-    ChangeImpact, DiagnosticCode, ManagedProfile, OverlayOptions, PlannerWarningCode,
-    PlanningDevice, PublishedUpstream, classify_changes, load_bundle, load_bundle_from_str,
-    parse_dotenv, plan, plan_with_binding, plan_with_devices, plan_with_overlays, write_plan,
+    ChangeImpact, DiagnosticCode, ManagedProfile, OverlayOptions, PlanningDevice,
+    PublishedUpstream, classify_changes, load_bundle, load_bundle_from_str, parse_dotenv, plan,
+    plan_with_binding, plan_with_devices, plan_with_overlays, write_plan,
 };
 
 fn bundle() -> switchyard_planner::Bundle {
@@ -22,38 +22,6 @@ fn devices() -> std::collections::BTreeMap<String, PlanningDevice> {
     )])
 }
 
-fn provider_collision_bundle(group: &str) -> switchyard_planner::Bundle {
-    let mut deployment = bundle();
-    let provider = deployment.spec.blocks.get_mut("provider").unwrap();
-    let provider_service = provider.services.get_mut("api").unwrap();
-    let capability = provider_service.provides.remove("search").unwrap();
-    provider_service
-        .provides
-        .insert("database".into(), capability);
-    let consumer = deployment.spec.blocks.get_mut("consumer").unwrap();
-    let consumer_service = consumer.services.get_mut("api").unwrap();
-    let slot = consumer_service.consumes.remove("search").unwrap();
-    consumer_service.consumes.insert("database".into(), slot);
-
-    deployment
-        .spec
-        .instances
-        .retain(|instance| instance.name != "consumer-b");
-    deployment.spec.instances[0].name = "db-main".into();
-    deployment.spec.instances[1].name = "backend-1".into();
-    let mut replica = deployment.spec.instances[0].clone();
-    replica.name = "db-replica".into();
-    deployment.spec.instances.push(replica);
-    deployment.spec.groups.get_mut("base").unwrap().instances =
-        vec!["db-main/api".into(), "db-replica/api".into()];
-    deployment.spec.bindings.clear();
-    deployment
-        .spec
-        .bindings
-        .insert("backend-1".into(), group.into());
-    deployment
-}
-
 #[test]
 fn v1alpha1_loader_error_names_the_migration_command() {
     let directory = tempfile::tempdir().unwrap();
@@ -68,137 +36,6 @@ fn v1alpha1_loader_error_names_the_migration_command() {
 }
 
 #[test]
-fn consumer_slot_warns_and_routes_to_the_first_listed_candidate() {
-    let deployment = provider_collision_bundle("base");
-
-    let generated = plan(&deployment).expect("provider collisions are non-fatal");
-    assert_eq!(generated.warnings.len(), 1);
-    assert_eq!(
-        generated.warnings[0].code,
-        PlannerWarningCode::ProviderCollision
-    );
-    assert_eq!(generated.warnings[0].path, "spec.bindings.backend-1");
-    assert_eq!(
-        generated.warnings[0].message,
-        "`database` slot on backend-1 has two candidates in group `base`: db-main/api and db-replica/api; routing to db-main/api, the first listed"
-    );
-    let routes: serde_json::Value =
-        serde_json::from_str(&generated.route_configs["backend-1"]).unwrap();
-    assert_eq!(
-        routes["spec"]["routes"][0]["provider"],
-        "db-main/api--database"
-    );
-}
-
-#[test]
-fn reordering_colliding_group_members_changes_the_selected_provider() {
-    let mut deployment = provider_collision_bundle("base");
-    let initial = plan(&deployment).expect("initial collision should plan");
-    deployment
-        .spec
-        .groups
-        .get_mut("base")
-        .unwrap()
-        .instances
-        .reverse();
-
-    let generated = plan(&deployment).expect("reordered collision should plan");
-    assert_eq!(generated.resource_hash, initial.resource_hash);
-    assert_eq!(generated.compose_yaml, initial.compose_yaml);
-    assert!(
-        generated.warnings[0]
-            .message
-            .ends_with("routing to db-replica/api, the first listed")
-    );
-    let routes: serde_json::Value =
-        serde_json::from_str(&generated.route_configs["backend-1"]).unwrap();
-    assert_eq!(
-        routes["spec"]["routes"][0]["provider"],
-        "db-replica/api--database"
-    );
-}
-
-#[test]
-fn inherited_collision_order_is_preserved_through_extends() {
-    let deployment = provider_collision_bundle("feature");
-
-    let generated = plan(&deployment).expect("inherited collision should plan");
-    assert!(generated.warnings[0].message.contains("group `feature`"));
-    assert!(
-        generated.warnings[0]
-            .message
-            .ends_with("routing to db-main/api, the first listed")
-    );
-}
-
-#[test]
-fn unconsumed_duplicate_capabilities_do_not_warn() {
-    let mut deployment = bundle();
-    let mut ui = deployment.spec.blocks["provider"].clone();
-    let service = ui.services.get_mut("api").unwrap();
-    let capability = service.provides.remove("search").unwrap();
-    service.provides.insert("ui".into(), capability);
-    deployment.spec.blocks.insert("ui".into(), ui);
-    for name in ["ui-a", "ui-b"] {
-        let mut instance = deployment.spec.instances[0].clone();
-        instance.name = name.into();
-        instance.block = "ui".into();
-        deployment.spec.instances.push(instance);
-        deployment
-            .spec
-            .groups
-            .get_mut("base")
-            .unwrap()
-            .instances
-            .push(format!("{name}/api"));
-    }
-
-    let generated = plan(&deployment).expect("two UIs should be legal group members");
-    assert!(generated.warnings.is_empty());
-    let compose: serde_json::Value = serde_yaml::from_str(&generated.compose_yaml).unwrap();
-    assert!(
-        compose["services"]
-            .get("comparison--ui-a--api--app")
-            .is_some()
-    );
-    assert!(
-        compose["services"]
-            .get("comparison--ui-b--api--app")
-            .is_some()
-    );
-}
-
-#[test]
-fn group_extends_overrides_an_inherited_member_by_capability() {
-    let mut deployment = bundle();
-    let mut feature = deployment
-        .spec
-        .instances
-        .iter()
-        .find(|instance| instance.name == "provider-main")
-        .unwrap()
-        .clone();
-    feature.name = "provider-feature".into();
-    deployment.spec.instances.push(feature);
-    deployment.spec.groups.get_mut("feature").unwrap().instances =
-        vec!["provider-feature/api".into()];
-
-    let generated = plan(&deployment).unwrap();
-    let base: serde_json::Value =
-        serde_json::from_str(&generated.route_configs["consumer-a"]).unwrap();
-    let feature: serde_json::Value =
-        serde_json::from_str(&generated.route_configs["consumer-b"]).unwrap();
-    assert_eq!(
-        base["spec"]["routes"][0]["provider"],
-        "provider-main/api--search"
-    );
-    assert_eq!(
-        feature["spec"]["routes"][0]["provider"],
-        "provider-feature/api--search"
-    );
-}
-
-#[test]
 fn group_member_instance_service_reference_resolves_service_ambiguity() {
     let mut deployment = bundle();
     let provider = deployment.spec.blocks.get_mut("provider").unwrap();
@@ -210,8 +47,11 @@ fn group_member_instance_service_reference_resolves_service_ambiguity() {
     let routes: serde_json::Value =
         serde_json::from_str(&generated.route_configs["consumer-a"]).unwrap();
     assert_eq!(
-        routes["spec"]["routes"][0]["provider"],
-        "provider-main/api--search"
+        routes["spec"]["transparentProxy"]["members"],
+        serde_json::json!([{
+            "component": "provider-main/api",
+            "host": "comparison--provider-main--api"
+        }])
     );
 }
 
@@ -241,15 +81,6 @@ fn instance_device_defaults_to_local_and_requires_registration() {
 }
 
 #[test]
-fn remote_consumers_are_rejected_with_the_cross_host_reason() {
-    let mut deployment = bundle();
-    deployment.spec.instances[1].device = Some("builder".into());
-    let diagnostics = plan_with_devices(&deployment, &devices()).unwrap_err();
-    assert!(diagnostics.iter().any(|diagnostic| diagnostic.message
-        == "Remote consumers are out of the cut because consumer-side sidecar interception cannot span hosts"));
-}
-
-#[test]
 fn remote_non_container_execution_is_rejected() {
     let mut deployment = bundle();
     deployment.spec.instances[3].device = Some("builder".into());
@@ -259,27 +90,6 @@ fn remote_non_container_execution_is_rejected() {
             && diagnostic
                 .message
                 .contains("only supports container execution")
-    }));
-}
-
-#[test]
-fn remote_provider_must_publish_every_capability() {
-    let mut deployment = bundle();
-    deployment.spec.instances[0].device = Some("builder".into());
-    deployment
-        .spec
-        .blocks
-        .get_mut("provider")
-        .unwrap()
-        .services
-        .get_mut("api")
-        .unwrap()
-        .publish
-        .clear();
-    let diagnostics = plan_with_devices(&deployment, &devices()).unwrap_err();
-    assert!(diagnostics.iter().any(|diagnostic| {
-        diagnostic.message.contains("remote service `api`")
-            && diagnostic.message.contains("capability `search` port 8080")
     }));
 }
 
@@ -340,10 +150,9 @@ fn remote_provider_is_partitioned_and_routed_by_device_host() {
     let route: serde_json::Value =
         serde_json::from_str(&generated.route_configs["consumer-a"]).unwrap();
     assert_eq!(
-        route["spec"]["providers"][0]["endpoint"]["host"],
+        route["spec"]["transparentProxy"]["members"][0]["host"],
         "example-host"
     );
-    assert_eq!(route["spec"]["providers"][0]["endpoint"]["port"], 8080);
 }
 
 fn write_overlay(directory: &Path, name: &str, body: &str) -> std::path::PathBuf {
@@ -380,7 +189,6 @@ spec:
     envFiles: [values.env]
     set: { STATIC_VALUE: overlay-one, REMOVE_ME: inherited }
   parameters: { LOG_LEVEL: overlay }
-  routes: { search: provider-main/api }
   variables: { enabled: "true" }
   files:
     - content: "enabled=${overlay.variables.enabled}\ncommand=$(touch /tmp/never)\n"
@@ -401,8 +209,6 @@ spec:
   environment:
     set: { STATIC_VALUE: overlay-two }
     unset: [REMOVE_ME]
-  routes:
-    search: { provider: provider-main/api, replace: true }
   files:
     - content: "replacement=${instance.name}/${deployment.name}/${parameters.LOG_LEVEL}\n"
       target: /runtime/config/app.conf
@@ -596,26 +402,7 @@ fn change_preview_distinguishes_live_restart_and_rebuild() {
     write_plan(workspace.path(), &base).unwrap();
 
     let directory = tempfile::tempdir().unwrap();
-    let route = write_overlay(
-        directory.path(),
-        "route.yaml",
-        r#"
-apiVersion: switchyard.dev/v1alpha1
-kind: Overlay
-metadata: { name: route }
-spec:
-  selectors: { instances: { names: [consumer-a] } }
-  routes: { search: provider-main/api }
-"#,
-    );
-    let live = plan_with_overlays(
-        &base_bundle,
-        &OverlayOptions {
-            overlays: vec![route],
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    let live = plan_with_binding(&base_bundle, "consumer-a", "feature").unwrap();
     assert!(
         classify_changes(workspace.path(), &live)
             .unwrap()
@@ -767,7 +554,7 @@ fn identical_loopback_ports_are_isolated_by_consumer_namespace() {
             plan.compose_yaml
                 .contains(&format!("comparison--{consumer}--router"))
         );
-        assert!(plan.route_configs[consumer].contains("\"port\": 8001"));
+        assert!(plan.route_configs[consumer].contains("\"port\": 65535"));
     }
 }
 
@@ -776,8 +563,6 @@ fn group_routes_without_any_provides_consumes_or_declared_ports() {
     let mut deployment = bundle();
     for block in deployment.spec.blocks.values_mut() {
         for service in block.services.values_mut() {
-            service.provides.clear();
-            service.consumes.clear();
             service.publish.clear();
             service.probe = None;
         }
@@ -800,12 +585,6 @@ fn group_routes_without_any_provides_consumes_or_declared_ports() {
 #[test]
 fn disabled_group_member_is_omitted_without_losing_priority_position() {
     let mut deployment = bundle();
-    for block in deployment.spec.blocks.values_mut() {
-        for service in block.services.values_mut() {
-            service.provides.clear();
-            service.consumes.clear();
-        }
-    }
     deployment
         .spec
         .instances
@@ -862,12 +641,6 @@ fn disabled_entry_must_name_a_resolved_group_member() {
 #[test]
 fn disabled_membership_is_local_and_not_inherited() {
     let mut deployment = bundle();
-    for block in deployment.spec.blocks.values_mut() {
-        for service in block.services.values_mut() {
-            service.provides.clear();
-            service.consumes.clear();
-        }
-    }
     deployment.spec.groups.get_mut("base").unwrap().disabled = vec!["provider-main".into()];
     deployment
         .spec
@@ -959,26 +732,7 @@ fn instance_address_generates_its_domain_destination_and_origin_route() {
 }
 
 #[test]
-fn backend_group_invariant_keeps_address_path_and_duplicate_guidance() {
-    let mut deployment = jas_base_bundle();
-    let mut second = deployment.spec.groups["ai-main"].clone();
-    second.address = Some("ai-copy.jas-base.localhost".into());
-    deployment.spec.groups.insert("ai-copy".into(), second);
-
-    let errors = plan(&deployment).expect_err("one backend cannot serve two addressed groups");
-    let invariant = errors
-        .iter()
-        .find(|error| {
-            error.code == DiagnosticCode::BackendGroupInvariant
-                && error.message.contains("per-request downstream context")
-        })
-        .expect("shared-backend invariant diagnostic should be explicit");
-    assert_eq!(invariant.path, "spec.groups.ai-main.address");
-    assert!(invariant.message.contains("duplicate the backend instance"));
-}
-
-#[test]
-fn group_address_rejects_a_group_without_a_ui_member() {
+fn group_address_rejects_a_group_without_an_addressed_member() {
     let mut deployment = jas_base_bundle();
     deployment
         .spec
@@ -988,16 +742,18 @@ fn group_address_rejects_a_group_without_a_ui_member() {
         .instances
         .retain(|member| member != "ui-b/app");
 
-    let errors = plan(&deployment).expect_err("a group address needs a UI member");
+    let errors = plan(&deployment).expect_err("a group address needs an addressed member");
     assert!(errors.iter().any(|error| {
         error.path == "spec.groups.ai-main.address"
-            && error.message.contains("exactly one member providing `ui`")
-            && error.message.contains("jas-feature/service")
+            && error
+                .message
+                .contains("exactly one active member with its own address")
+            && error.message.contains("candidates: none")
     }));
 }
 
 #[test]
-fn group_address_rejects_a_group_with_two_ui_members() {
+fn group_address_rejects_a_group_with_two_addressed_members() {
     let mut deployment = jas_base_bundle();
     deployment
         .spec
@@ -1007,11 +763,11 @@ fn group_address_rejects_a_group_with_two_ui_members() {
         .instances
         .push("ui-a/app".into());
 
-    let errors = plan(&deployment).expect_err("a group address may not guess between UIs");
+    let errors = plan(&deployment).expect_err("a group address may not guess between members");
     assert!(errors.iter().any(|error| {
         error.path == "spec.groups.ai-main.address"
-            && error.message.contains("ui-a/app")
-            && error.message.contains("ui-b/app")
+            && error.message.contains("ui-a")
+            && error.message.contains("ui-b")
     }));
 }
 
@@ -1336,14 +1092,11 @@ fn reports_required_variables_cycles_conflicts_and_missing_providers_together() 
         .expect("consumer block exists");
     let api = consumer_block.services.get_mut("api").expect("api exists");
     api.depends_on.insert("api".into(), Default::default());
-    api.consumes
-        .insert("duplicate".into(), api.consumes["search"].clone());
 
     let errors = plan(&bundle).expect_err("invalid bundle should fail before generation");
     for expected in [
         DiagnosticCode::MissingVariable,
         DiagnosticCode::DependencyCycle,
-        DiagnosticCode::ListenerConflict,
         DiagnosticCode::MissingReference,
     ] {
         assert!(

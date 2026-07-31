@@ -17,10 +17,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use switchyard_adapter_sdk::{
-    AdapterKind, ConsumerSlot, Diagnostic as AdapterDiagnostic, Protocol as AdapterProtocol,
-    ProviderCapability, RegisteredAdapter, RouteValidationContext, SourceIdentity,
-};
+use switchyard_adapter_sdk::{AdapterKind, Diagnostic as AdapterDiagnostic, SourceIdentity};
 use switchyard_adapters::built_in_registry;
 use switchyard_sources::SourceManager;
 
@@ -76,10 +73,7 @@ pub enum DiagnosticCode {
     MissingVariable,
     DependencyCycle,
     ListenerConflict,
-    MissingProvider,
-    IncompatibleProtocol,
     IncompleteGroup,
-    BackendGroupInvariant,
     InvalidOverlay,
     SelectorNoMatch,
     OverlayConflict,
@@ -111,41 +105,11 @@ impl fmt::Display for Diagnostic {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PlannerWarningCode {
-    ProviderCollision,
-}
-
-impl PlannerWarningCode {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::ProviderCollision => "provider_collision",
-        }
-    }
-}
-
-impl fmt::Display for PlannerWarningCode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlannerWarning {
-    pub code: PlannerWarningCode,
+    pub code: String,
     pub path: String,
     pub message: String,
-}
-
-impl PlannerWarning {
-    fn new(code: PlannerWarningCode, path: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            path: path.into(),
-            message: message.into(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -248,13 +212,9 @@ struct DocumentVersion {
     api_version: String,
 }
 
-type ProviderMap = BTreeMap<String, BTreeMap<String, String>>;
-type CandidateMap = BTreeMap<String, BTreeMap<String, Vec<String>>>;
 type GroupMemberMap = BTreeMap<String, Vec<String>>;
 
 struct ResolvedGroups {
-    providers: ProviderMap,
-    candidates: CandidateMap,
     members: GroupMemberMap,
     declared_members: GroupMemberMap,
 }
@@ -326,39 +286,6 @@ pub fn plan_with_devices(
     })
 }
 
-pub fn resolve_service_groups(
-    bundle: &Bundle,
-) -> Result<BTreeMap<String, BTreeMap<String, String>>, Vec<Diagnostic>> {
-    let instances = bundle
-        .spec
-        .instances
-        .iter()
-        .map(|instance| (instance.name.as_str(), instance))
-        .collect();
-    let mut errors = Vec::new();
-    let groups = resolve_groups(bundle, &instances, &mut errors);
-    if errors.is_empty() {
-        Ok(groups.providers)
-    } else {
-        Err(errors)
-    }
-}
-
-pub fn resolve_provider_service(
-    bundle: &Bundle,
-    provider_ref: &str,
-    capability: &str,
-) -> Result<String, String> {
-    let instances = bundle
-        .spec
-        .instances
-        .iter()
-        .map(|instance| (instance.name.as_str(), instance))
-        .collect();
-    provider_for(bundle, &instances, provider_ref, capability)
-        .map(|(service, _)| service.to_owned())
-}
-
 /// Validates a reusable block with the same contracts used by deployment planning.
 pub fn validate_block(name: &str, block: &Block) -> Result<(), Vec<Diagnostic>> {
     let mut errors = Vec::new();
@@ -380,14 +307,6 @@ pub fn validate_block(name: &str, block: &Block) -> Result<(), Vec<Diagnostic>> 
         validate_execution(name, service_name, service, &adapters, &mut errors);
         if let Some(probe) = &service.probe {
             validate_probe(name, service_name, probe, &adapters, &mut errors);
-        }
-        validate_route_slots(name, service_name, service, &adapters, &mut errors);
-        for slot in service.provides.keys().chain(service.consumes.keys()) {
-            validate_name(
-                slot,
-                format!("spec.blocks.{name}.services.{service_name}.{slot}"),
-                &mut errors,
-            );
         }
         for volume in &service.volumes {
             validate_name(
@@ -533,7 +452,7 @@ fn validate(
     devices: &BTreeMap<String, PlanningDevice>,
 ) -> Result<ValidationResult, Vec<Diagnostic>> {
     let mut errors = Vec::new();
-    let mut warnings = Vec::new();
+    let mut warnings = Vec::<PlannerWarning>::new();
     if bundle.api_version != API_VERSION || bundle.kind != KIND {
         errors.push(Diagnostic::new(
             DiagnosticCode::UnsupportedSchema,
@@ -638,22 +557,7 @@ fn validate(
                         ),
                     ));
                 }
-                if !service.consumes.is_empty() {
-                    errors.push(Diagnostic::new(
-                        DiagnosticCode::UnsupportedSchema,
-                        format!("spec.blocks.{}.services.{service_name}.consumes", instance.block),
-                        "Remote consumers are out of the cut because consumer-side sidecar interception cannot span hosts",
-                    ));
-                }
-                for (capability_name, capability) in &service.provides {
-                    if !service.publish.contains(&capability.port) {
-                        errors.push(Diagnostic::new(
-                            DiagnosticCode::MissingReference,
-                            format!("spec.blocks.{}.services.{service_name}.publish", instance.block),
-                            format!("remote service `{service_name}` must publish capability `{capability_name}` port {}", capability.port),
-                        ));
-                    }
-                }
+                let _ = service_name;
             }
         }
         if !bundle.spec.sources.contains_key(&instance.source) {
@@ -675,7 +579,6 @@ fn validate(
                 ));
             }
         }
-        validate_listener_conflicts(instance, block, &mut errors);
         if let Some(source) = bundle.spec.sources.get(&instance.source) {
             let source_path = resolve_path(&bundle.definition_dir, &source.path);
             for (service_name, service) in &block.services {
@@ -705,14 +608,7 @@ fn validate(
 
     let resolved_groups = resolve_groups(bundle, &instances, &mut errors);
     validate_expanded_dependencies(bundle, &instances, &mut errors);
-    validate_routes(
-        bundle,
-        &instances,
-        &resolved_groups,
-        &adapters,
-        &mut errors,
-        &mut warnings,
-    );
+    validate_bindings(bundle, &instances, &resolved_groups, &mut errors);
     validate_address_claims(bundle, &mut errors);
     let has_addresses = bundle
         .spec
@@ -734,15 +630,15 @@ fn validate(
         )),
         None => {}
     }
-    for (ui, profile) in &bundle.spec.managed_profiles {
-        let path = format!("spec.managedProfiles.{ui}");
-        validate_name(ui, &path, &mut errors);
+    for (instance_name, profile) in &bundle.spec.managed_profiles {
+        let path = format!("spec.managedProfiles.{instance_name}");
+        validate_name(instance_name, &path, &mut errors);
         validate_name(&profile.route, format!("{path}.route"), &mut errors);
-        if !instances.contains_key(ui.as_str()) {
+        if !instances.contains_key(instance_name.as_str()) {
             errors.push(Diagnostic::new(
                 DiagnosticCode::MissingReference,
                 &path,
-                "managed profile UI must name a declared instance",
+                "managed profile key must name a declared instance",
             ));
         }
         let valid_start_url = is_local_http_url(&profile.start_url);
@@ -961,72 +857,6 @@ fn validate_probe(
     }
 }
 
-fn validate_route_slots(
-    block_name: &str,
-    service_name: &str,
-    service: &Service,
-    adapters: &switchyard_adapter_sdk::AdapterRegistry,
-    errors: &mut Vec<Diagnostic>,
-) {
-    let path = format!("spec.blocks.{block_name}.services.{service_name}");
-    let Some(RegisteredAdapter::Route { adapter, common }) =
-        adapters.lookup(AdapterKind::Route, "route-switchyard")
-    else {
-        errors.push(Diagnostic::new(
-            DiagnosticCode::UnsupportedSchema,
-            path,
-            "built-in adapter route-switchyard is not registered",
-        ));
-        return;
-    };
-    extend_adapter_diagnostics(
-        errors,
-        common.validate_configuration(&json!({ "mode": "sidecar" })),
-        DiagnosticCode::InvalidPath,
-        &path,
-    );
-    for (slot_name, slot) in &service.consumes {
-        let context = RouteValidationContext {
-            consumer: service_name.into(),
-            slot: ConsumerSlot {
-                name: slot_name.clone(),
-                protocol: adapter_protocol(slot.protocol),
-                host: slot.address.host.clone(),
-                port: slot.address.port,
-            },
-            provider: ProviderCapability {
-                name: "validation-placeholder".into(),
-                protocol: adapter_protocol(slot.protocol),
-                port: 1,
-            },
-        };
-        extend_adapter_diagnostics(
-            errors,
-            adapter.validate(&context),
-            DiagnosticCode::InvalidPath,
-            &format!("{path}.consumes.{slot_name}"),
-        );
-    }
-    let declaration = common.declaration();
-    let supported = &declaration.capabilities.protocols;
-    for (capability_name, capability) in &service.provides {
-        if capability.port == 0 {
-            errors.push(Diagnostic::new(
-                DiagnosticCode::InvalidPath,
-                format!("{path}.provides.{capability_name}.port"),
-                "route ports must be nonzero",
-            ));
-        }
-        if !supported.contains(&adapter_protocol(capability.protocol)) {
-            errors.push(Diagnostic::new(
-                DiagnosticCode::IncompatibleProtocol,
-                format!("{path}.provides.{capability_name}.protocol"),
-                "route-switchyard does not support this provider protocol",
-            ));
-        }
-    }
-}
-
 fn extend_adapter_diagnostics(
     errors: &mut Vec<Diagnostic>,
     diagnostics: Vec<AdapterDiagnostic>,
@@ -1170,140 +1000,52 @@ fn validate_local_dependencies(block_name: &str, block: &Block, errors: &mut Vec
     }
 }
 
-fn validate_listener_conflicts(instance: &Instance, block: &Block, errors: &mut Vec<Diagnostic>) {
-    let mut listeners = BTreeMap::new();
-    for service in block.services.values() {
-        for (slot, route) in &service.consumes {
-            let key = (&route.address.host, route.address.port);
-            if let Some(first) = listeners.insert(key, slot) {
-                errors.push(Diagnostic::new(
-                    DiagnosticCode::ListenerConflict,
-                    format!("spec.instances.{}.consumes.{slot}", instance.name),
-                    format!("listener conflicts with slot {first}"),
-                ));
-            }
-        }
-    }
-}
-
 fn resolve_groups(
     bundle: &Bundle,
     instances: &BTreeMap<&str, &Instance>,
     errors: &mut Vec<Diagnostic>,
 ) -> ResolvedGroups {
-    #[derive(Clone)]
-    struct ResolvedMember {
-        reference: String,
-        capabilities: BTreeSet<String>,
-    }
-
-    #[derive(Clone, Default)]
-    struct ResolvedGroup {
-        members: Vec<ResolvedMember>,
-        active_members: Vec<String>,
-        providers: BTreeMap<String, String>,
-        candidates: BTreeMap<String, Vec<String>>,
-    }
-
-    fn capabilities(
-        bundle: &Bundle,
-        instances: &BTreeMap<&str, &Instance>,
-        group: &str,
-        member: &str,
-        path: &str,
-        errors: &mut Vec<Diagnostic>,
-    ) -> Option<BTreeSet<String>> {
-        let (instance_name, requested_service) = provider_reference(member);
-        let Some(instance) = instances.get(instance_name) else {
-            errors.push(Diagnostic::new(
-                DiagnosticCode::MissingReference,
-                path,
-                format!("`{member}` is not a member of group `{group}`"),
-            ));
-            return None;
-        };
-        // An unknown block is already reported against the instance declaration.
-        let block = bundle.spec.blocks.get(&instance.block)?;
-        if let Some(service) = requested_service {
-            if !block.services.contains_key(service) {
+    let mut members = BTreeMap::new();
+    let mut declared_members = BTreeMap::new();
+    for (name, group) in &bundle.spec.groups {
+        validate_name(name, format!("spec.groups.{name}"), errors);
+        let mut valid_members = Vec::new();
+        let mut seen = BTreeSet::new();
+        for (index, member) in group.instances.iter().enumerate() {
+            let path = format!("spec.groups.{name}.instances[{index}]");
+            let (instance_name, requested_service) = provider_reference(member);
+            let Some(instance) = instances.get(instance_name) else {
+                errors.push(Diagnostic::new(
+                    DiagnosticCode::MissingReference,
+                    path,
+                    format!("group member `{member}` does not exist"),
+                ));
+                continue;
+            };
+            let Some(block) = bundle.spec.blocks.get(&instance.block) else {
+                continue;
+            };
+            if requested_service.is_some_and(|service| !block.services.contains_key(service)) {
                 errors.push(Diagnostic::new(
                     DiagnosticCode::MissingReference,
                     path,
                     format!("`{member}` does not name a service on group member `{instance_name}`"),
                 ));
-                return None;
-            }
-        }
-        let provided = block
-            .services
-            .iter()
-            .filter(|(service, _)| requested_service.is_none_or(|requested| requested == *service))
-            .flat_map(|(_, service)| service.provides.keys().cloned())
-            .collect::<BTreeSet<_>>();
-        for capability in &provided {
-            if let Err(message) = provider_for(bundle, instances, member, capability) {
-                errors.push(Diagnostic::new(
-                    DiagnosticCode::MissingProvider,
-                    path,
-                    message,
-                ));
-                return None;
-            }
-        }
-        Some(provided)
-    }
-
-    fn resolve_one(
-        name: &str,
-        bundle: &Bundle,
-        instances: &BTreeMap<&str, &Instance>,
-        stack: &mut BTreeSet<String>,
-        resolved: &mut BTreeMap<String, ResolvedGroup>,
-        errors: &mut Vec<Diagnostic>,
-    ) -> ResolvedGroup {
-        if let Some(group) = resolved.get(name) {
-            return group.clone();
-        }
-        if !stack.insert(name.to_owned()) {
-            errors.push(Diagnostic::new(
-                DiagnosticCode::DependencyCycle,
-                format!("spec.groups.{name}.extends"),
-                "service-group inheritance cycle detected",
-            ));
-            return ResolvedGroup::default();
-        }
-        let Some(group) = bundle.spec.groups.get(name) else {
-            errors.push(Diagnostic::new(
-                DiagnosticCode::MissingReference,
-                format!("spec.groups.{name}"),
-                "unknown service group",
-            ));
-            stack.remove(name);
-            return ResolvedGroup::default();
-        };
-        let mut members = group
-            .extends
-            .as_deref()
-            .map(|parent| resolve_one(parent, bundle, instances, stack, resolved, errors).members)
-            .unwrap_or_default();
-        let mut additions = Vec::new();
-        for (index, member) in group.instances.iter().enumerate() {
-            let path = format!("spec.groups.{name}.instances[{index}]");
-            let Some(provided) = capabilities(bundle, instances, name, member, &path, errors)
-            else {
                 continue;
-            };
-            members.retain(|inherited| inherited.capabilities.is_disjoint(&provided));
-            additions.push(ResolvedMember {
-                reference: member.clone(),
-                capabilities: provided,
-            });
+            }
+            if !seen.insert(member.as_str()) {
+                errors.push(Diagnostic::new(
+                    DiagnosticCode::DuplicateName,
+                    path,
+                    format!("group member `{member}` is listed more than once"),
+                ));
+                continue;
+            }
+            valid_members.push(member.clone());
         }
-        members.extend(additions);
-
-        let resolved_instance_names = members
+        let resolved_instance_names = valid_members
             .iter()
-            .map(|member| provider_reference(&member.reference).0)
+            .map(|member| provider_reference(member).0)
             .collect::<BTreeSet<_>>();
         let mut disabled = BTreeSet::new();
         for (index, instance_name) in group.disabled.iter().enumerate() {
@@ -1326,102 +1068,25 @@ fn resolve_groups(
                 ));
             }
         }
-        let active_members = members
+        let active_members = valid_members
             .iter()
-            .filter(|member| !disabled.contains(provider_reference(&member.reference).0))
-            .map(|member| member.reference.clone())
+            .filter(|member| !disabled.contains(provider_reference(member).0))
+            .cloned()
             .collect::<Vec<_>>();
-        let mut providers = BTreeMap::new();
-        let mut candidates = BTreeMap::<String, Vec<String>>::new();
-        for member in members
-            .iter()
-            .filter(|member| !disabled.contains(provider_reference(&member.reference).0))
-        {
-            for capability in &member.capabilities {
-                providers
-                    .entry(capability.clone())
-                    .or_insert_with(|| member.reference.clone());
-                candidates
-                    .entry(capability.clone())
-                    .or_default()
-                    .push(member.reference.clone());
-            }
-        }
-        stack.remove(name);
-        let group = ResolvedGroup {
-            members,
-            active_members,
-            providers,
-            candidates,
-        };
-        resolved.insert(name.to_owned(), group.clone());
-        group
-    }
-
-    let mut resolved = BTreeMap::new();
-    for name in bundle.spec.groups.keys() {
-        validate_name(name, format!("spec.groups.{name}"), errors);
-        resolve_one(
-            name,
-            bundle,
-            instances,
-            &mut BTreeSet::new(),
-            &mut resolved,
-            errors,
-        );
-    }
-    let mut providers = BTreeMap::new();
-    let mut candidates = BTreeMap::new();
-    let mut members = BTreeMap::new();
-    let mut declared_members = BTreeMap::new();
-    for (name, group) in resolved {
-        providers.insert(name.clone(), group.providers);
-        candidates.insert(name.clone(), group.candidates);
-        members.insert(name.clone(), group.active_members);
-        declared_members.insert(
-            name,
-            group
-                .members
-                .into_iter()
-                .map(|member| member.reference)
-                .collect(),
-        );
+        members.insert(name.clone(), active_members);
+        declared_members.insert(name.clone(), valid_members);
     }
     ResolvedGroups {
-        providers,
-        candidates,
         members,
         declared_members,
     }
 }
 
-fn candidate_count(count: usize) -> String {
-    match count {
-        2 => "two".into(),
-        3 => "three".into(),
-        _ => count.to_string(),
-    }
-}
-
-fn candidate_list(candidates: &[String]) -> String {
-    match candidates {
-        [] => String::new(),
-        [only] => only.clone(),
-        [first, second] => format!("{first} and {second}"),
-        _ => {
-            let (last, rest) = candidates.split_last().expect("non-empty candidate list");
-            format!("{}, and {last}", rest.join(", "))
-        }
-    }
-}
-
-fn validate_routes(
+fn validate_bindings(
     bundle: &Bundle,
     instances: &BTreeMap<&str, &Instance>,
     groups: &ResolvedGroups,
-    adapters: &switchyard_adapter_sdk::AdapterRegistry,
     errors: &mut Vec<Diagnostic>,
-    warnings: &mut Vec<PlannerWarning>,
 ) {
     for (consumer, group) in &bundle.spec.bindings {
         if !instances.contains_key(consumer.as_str()) {
@@ -1431,7 +1096,7 @@ fn validate_routes(
                 "binding consumer does not exist",
             ));
         }
-        if !groups.providers.contains_key(group) {
+        if !groups.members.contains_key(group) {
             errors.push(Diagnostic::new(
                 DiagnosticCode::MissingReference,
                 format!("spec.bindings.{consumer}"),
@@ -1439,112 +1104,12 @@ fn validate_routes(
             ));
         }
     }
-    for (consumer, instance) in instances {
-        let block = &bundle.spec.blocks[&instance.block];
-        if !block
-            .services
-            .values()
-            .any(|service| !service.consumes.is_empty())
-        {
-            continue;
-        }
-        let selected_group = bundle.spec.bindings.get(*consumer);
-        let mut selected = selected_group
-            .and_then(|group| groups.providers.get(group))
-            .cloned()
-            .unwrap_or_default();
-        let explicit_routes = bundle.spec.routes.get(*consumer);
-        if let Some(routes) = explicit_routes {
-            selected.extend(routes.clone());
-        }
-        for (slot, route_slot) in block
-            .services
-            .values()
-            .flat_map(|service| &service.consumes)
-        {
-            if explicit_routes.is_none_or(|routes| !routes.contains_key(slot)) {
-                if let Some((group, candidates)) = selected_group.and_then(|group| {
-                    groups
-                        .candidates
-                        .get(group)
-                        .and_then(|capabilities| capabilities.get(slot))
-                        .map(|candidates| (group, candidates))
-                }) {
-                    if candidates.len() > 1 {
-                        warnings.push(PlannerWarning::new(
-                            PlannerWarningCode::ProviderCollision,
-                            format!("spec.bindings.{consumer}"),
-                            format!(
-                                "`{slot}` slot on {consumer} has {} candidates in group `{group}`: {}; routing to {}, the first listed",
-                                candidate_count(candidates.len()),
-                                candidate_list(candidates),
-                                candidates[0]
-                            ),
-                        ));
-                    }
-                }
-            }
-            let Some(provider_ref) = selected.get(slot) else {
-                errors.push(Diagnostic::new(
-                    DiagnosticCode::IncompleteGroup,
-                    format!("spec.routes.{consumer}.{slot}"),
-                    "consumer route slot has no selected provider",
-                ));
-                continue;
-            };
-            match provider_for(bundle, instances, provider_ref, slot) {
-                Ok((_, capability)) => {
-                    let path = format!("spec.routes.{consumer}.{slot}");
-                    match adapters.lookup(AdapterKind::Route, "route-switchyard") {
-                        Some(RegisteredAdapter::Route { adapter, .. }) => {
-                            let context = RouteValidationContext {
-                                consumer: (*consumer).into(),
-                                slot: ConsumerSlot {
-                                    name: slot.clone(),
-                                    protocol: adapter_protocol(route_slot.protocol),
-                                    host: route_slot.address.host.clone(),
-                                    port: route_slot.address.port,
-                                },
-                                provider: ProviderCapability {
-                                    name: provider_ref.clone(),
-                                    protocol: adapter_protocol(capability.protocol),
-                                    port: capability.port,
-                                },
-                            };
-                            for diagnostic in adapter.validate(&context) {
-                                if diagnostic.code == "adapter_incompatible_protocol" {
-                                    errors.push(Diagnostic::new(
-                                        DiagnosticCode::IncompatibleProtocol,
-                                        &path,
-                                        diagnostic.message,
-                                    ));
-                                }
-                            }
-                        }
-                        _ => errors.push(Diagnostic::new(
-                            DiagnosticCode::UnsupportedSchema,
-                            path,
-                            "built-in adapter route-switchyard is not registered",
-                        )),
-                    }
-                }
-                Err(message) => errors.push(Diagnostic::new(
-                    DiagnosticCode::MissingProvider,
-                    format!("spec.routes.{consumer}.{slot}"),
-                    message,
-                )),
-            }
-        }
-    }
-}
-
-fn adapter_protocol(protocol: Protocol) -> AdapterProtocol {
-    match protocol {
-        Protocol::Http => AdapterProtocol::Http,
-        Protocol::Https => AdapterProtocol::Https,
-        Protocol::Websocket => AdapterProtocol::Websocket,
-        Protocol::Grpc => AdapterProtocol::Grpc,
-        Protocol::Tcp => AdapterProtocol::Tcp,
+    if !bundle.spec.routes.is_empty() {
+        errors.push(Diagnostic::new(
+            DiagnosticCode::UnsupportedSchema,
+            "spec.routes",
+            "capability-based direct routes are no longer supported; use ordered group membership",
+        ));
     }
 }
 
@@ -1573,37 +1138,6 @@ fn normalized_hostname(value: &str) -> String {
     value.trim_end_matches('.').to_ascii_lowercase()
 }
 
-fn group_capability_candidates(
-    bundle: &Bundle,
-    instances: &BTreeMap<&str, &Instance>,
-    group_name: &str,
-    capability: &str,
-    visiting: &mut BTreeSet<String>,
-) -> Vec<String> {
-    if !visiting.insert(group_name.to_owned()) {
-        return Vec::new();
-    }
-    let Some(group) = bundle.spec.groups.get(group_name) else {
-        visiting.remove(group_name);
-        return Vec::new();
-    };
-    let direct = group
-        .instances
-        .iter()
-        .filter(|member| provider_for(bundle, instances, member, capability).is_ok())
-        .cloned()
-        .collect::<Vec<_>>();
-    let candidates = if direct.is_empty() {
-        group.extends.as_deref().map_or_else(Vec::new, |parent| {
-            group_capability_candidates(bundle, instances, parent, capability, visiting)
-        })
-    } else {
-        direct
-    };
-    visiting.remove(group_name);
-    candidates
-}
-
 fn host_provider_for_instance_service<'a>(
     bundle: &'a Bundle,
     instance: &str,
@@ -1622,44 +1156,25 @@ fn addressed_instance_provider<'a>(
     bundle: &'a Bundle,
     instance: &'a Instance,
 ) -> Result<(&'a str, &'a str), String> {
-    let Some(block) = bundle.spec.blocks.get(&instance.block) else {
+    if !bundle.spec.blocks.contains_key(&instance.block) {
         return Err(format!(
             "instance `{}` has no resolvable block",
             instance.name
         ));
-    };
-    let ui_services = block
-        .services
-        .iter()
-        .filter(|(_, service)| service.provides.contains_key("ui"))
-        .map(|(service, _)| service.as_str())
+    }
+    let services = bundle
+        .spec
+        .host_upstreams
+        .values()
+        .filter(|upstream| upstream.instance == instance.name)
+        .map(|upstream| upstream.service.as_str())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect::<Vec<_>>();
-    let services = if ui_services.is_empty() {
-        bundle
-            .spec
-            .host_upstreams
-            .values()
-            .filter(|upstream| upstream.instance == instance.name)
-            .map(|upstream| upstream.service.as_str())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>()
-    } else {
-        ui_services
-    };
     if services.len() != 1 {
         return Err(format!(
-            "instance `{}` address needs exactly one reachable service{}; candidates: {}",
+            "instance `{}` address needs exactly one reachable service; candidates: {}",
             instance.name,
-            if block
-                .services
-                .values()
-                .any(|service| service.provides.contains_key("ui"))
-            {
-                " providing `ui`"
-            } else {
-                ""
-            },
             if services.is_empty() {
                 "none".into()
             } else {
@@ -1693,14 +1208,13 @@ fn address_origin(listener: &router_config::Listener, address: &str) -> Result<S
 }
 
 fn add_address_route(
-    bundle: &Bundle,
     config: &mut router_config::RouterConfig,
     address: &str,
-    ui: &str,
+    instance: &str,
     provider: &str,
     path: &str,
     errors: &mut Vec<Diagnostic>,
-) -> Vec<(String, String)> {
+) {
     let normalized = normalized_hostname(address);
     let mut existing = Vec::new();
     for (listener_index, listener) in config.spec.listeners.iter().enumerate() {
@@ -1740,11 +1254,11 @@ fn add_address_route(
                 DiagnosticCode::MissingReference,
                 path,
                 format!(
-                    "address `{address}` for `{ui}` maps to {} host-router listener routes; expected exactly one",
+                    "address `{address}` for `{instance}` maps to {} host-router listener routes; expected exactly one",
                     candidates.len()
                 ),
             ));
-            return Vec::new();
+            return;
         }
         candidates.iter().next().cloned().expect("one candidate")
     } else {
@@ -1755,7 +1269,7 @@ fn add_address_route(
                 path,
                 format!("custom domain `{address}` is declared for multiple route slots"),
             ));
-            return Vec::new();
+            return;
         }
         if !candidates.contains(&first) {
             errors.push(Diagnostic::new(
@@ -1766,7 +1280,7 @@ fn add_address_route(
                     first.1
                 ),
             ));
-            return Vec::new();
+            return;
         }
         first
     };
@@ -1782,7 +1296,7 @@ fn add_address_route(
         Ok(origin) => origin,
         Err(message) => {
             errors.push(Diagnostic::new(DiagnosticCode::InvalidPath, path, message));
-            return Vec::new();
+            return;
         }
     };
     let templates = config
@@ -1792,7 +1306,7 @@ fn add_address_route(
         .filter(|route| {
             matches!(
                 &route.identity,
-                router_config::BrowserIdentity::ExplicitHeader { value } if value.as_str() == ui
+                router_config::BrowserIdentity::ExplicitHeader { value } if value.as_str() == instance
             )
         })
         .cloned()
@@ -1802,12 +1316,11 @@ fn add_address_route(
             DiagnosticCode::MissingReference,
             path,
             format!(
-                "address `{address}` needs at least one explicit-header browser route for UI `{ui}`"
+                "address `{address}` needs at least one explicit-header browser route for instance `{instance}`"
             ),
         ));
-        return Vec::new();
+        return;
     }
-    let mut backends = Vec::new();
     for template in templates {
         let generated = router_config::BrowserRoute {
             identity: router_config::BrowserIdentity::Origin {
@@ -1835,20 +1348,7 @@ fn add_address_route(
             Some(_) => {}
             None => config.spec.browser_routes.push(generated),
         }
-        if let Some(upstream) = bundle.spec.host_upstreams.get(template.provider.as_str()) {
-            backends.push((upstream.instance.clone(), origin.clone()));
-        } else {
-            errors.push(Diagnostic::new(
-                DiagnosticCode::MissingReference,
-                path,
-                format!(
-                    "browser provider `{}` has no spec.hostUpstreams mapping to a backend instance",
-                    template.provider
-                ),
-            ));
-        }
     }
-    backends
 }
 
 fn validate_address_claims(bundle: &Bundle, errors: &mut Vec<Diagnostic>) {
@@ -1902,15 +1402,7 @@ fn apply_addresses(
         let path = format!("spec.instances[{index}].address");
         match addressed_instance_provider(bundle, instance) {
             Ok((_, provider)) => {
-                add_address_route(
-                    bundle,
-                    config,
-                    address,
-                    &instance.name,
-                    provider,
-                    &path,
-                    errors,
-                );
+                add_address_route(config, address, &instance.name, provider, &path, errors);
             }
             Err(message) => errors.push(Diagnostic::new(
                 DiagnosticCode::MissingReference,
@@ -1920,88 +1412,54 @@ fn apply_addresses(
         }
     }
 
-    let mut backend_requirements = BTreeMap::<String, (String, String)>::new();
     for (group_name, group) in &bundle.spec.groups {
         let Some(address) = group.address.as_deref() else {
             continue;
         };
         let path = format!("spec.groups.{group_name}.address");
-        let candidates =
-            group_capability_candidates(bundle, instances, group_name, "ui", &mut BTreeSet::new());
+        let candidates = group
+            .instances
+            .iter()
+            .filter_map(|member| {
+                let instance_name = provider_reference(member).0;
+                (!group
+                    .disabled
+                    .iter()
+                    .any(|disabled| disabled == instance_name))
+                .then(|| instances.get(instance_name).copied())
+                .flatten()
+                .filter(|instance| instance.address.is_some())
+            })
+            .collect::<Vec<_>>();
         if candidates.len() != 1 {
             errors.push(Diagnostic::new(
-                if candidates.is_empty() {
-                    DiagnosticCode::MissingProvider
-                } else {
-                    DiagnosticCode::IncompleteGroup
-                },
+                DiagnosticCode::IncompleteGroup,
                 &path,
                 format!(
-                    "group address needs exactly one member providing `ui`; candidates: {}",
+                    "group address needs exactly one active member with its own address; candidates: {}",
                     if candidates.is_empty() {
-                        group.instances.join(", ")
+                        "none".into()
                     } else {
-                        candidates.join(", ")
+                        candidates
+                            .iter()
+                            .map(|instance| instance.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     }
                 ),
             ));
             continue;
         }
-        let ui_reference = &candidates[0];
-        let (ui, _) = provider_reference(ui_reference);
-        let Ok((service, _)) = provider_for(bundle, instances, ui_reference, "ui") else {
-            continue;
-        };
-        let providers = host_provider_for_instance_service(bundle, ui, service);
-        if providers.len() != 1 {
-            errors.push(Diagnostic::new(
+        let instance = candidates[0];
+        match addressed_instance_provider(bundle, instance) {
+            Ok((_, provider)) => {
+                add_address_route(config, address, &instance.name, provider, &path, errors);
+            }
+            Err(message) => errors.push(Diagnostic::new(
                 DiagnosticCode::MissingReference,
                 &path,
-                format!(
-                    "group UI `{ui_reference}` maps to {} host-router providers; expected exactly one",
-                    providers.len()
-                ),
-            ));
-            continue;
-        }
-        let backends = add_address_route(bundle, config, address, ui, providers[0], &path, errors);
-        for (backend, _) in backends {
-            if !instances.contains_key(backend.as_str()) {
-                errors.push(Diagnostic::new(
-                    DiagnosticCode::MissingReference,
-                    &path,
-                    format!("backend instance `{backend}` does not exist"),
-                ));
-                continue;
-            }
-            if let Some((first_group, first_path)) =
-                backend_requirements.insert(backend.clone(), (group_name.clone(), path.clone()))
-            {
-                if first_group != *group_name {
-                    errors.push(Diagnostic::new(
-                        DiagnosticCode::BackendGroupInvariant,
-                        &path,
-                        format!(
-                            "group `{group_name}` requests backend `{backend}`, but group `{first_group}` at {first_path} requests the same backend; duplicate the backend instance (the copies may select the same source) because one backend cannot infer per-request downstream context"
-                        ),
-                    ));
-                }
-            }
-            match bundle.spec.bindings.get(&backend) {
-                Some(selected) if selected == group_name => {}
-                Some(selected) => errors.push(Diagnostic::new(
-                    DiagnosticCode::BackendGroupInvariant,
-                    &path,
-                    format!(
-                        "group `{group_name}` requests backend `{backend}`, but that backend is bound to `{selected}`; duplicate the backend instance to select a different downstream group"
-                    ),
-                )),
-                None => errors.push(Diagnostic::new(
-                    DiagnosticCode::BackendGroupInvariant,
-                    &path,
-                    format!("backend `{backend}` has no complete downstream group binding"),
-                )),
-            }
+                message,
+            )),
         }
     }
 }
@@ -2088,36 +1546,6 @@ fn provider_reference(reference: &str) -> (&str, Option<&str>) {
         .map_or((reference, None), |(instance, service)| {
             (instance, Some(service))
         })
-}
-
-fn provider_for<'a>(
-    bundle: &'a Bundle,
-    instances: &BTreeMap<&str, &'a Instance>,
-    provider_ref: &str,
-    slot: &str,
-) -> Result<(&'a str, &'a Capability), String> {
-    let (instance_name, requested_service) = provider_reference(provider_ref);
-    let instance = instances
-        .get(instance_name)
-        .ok_or_else(|| format!("provider instance {instance_name} does not exist"))?;
-    let block = bundle
-        .spec
-        .blocks
-        .get(&instance.block)
-        .ok_or_else(|| format!("provider instance {instance_name} has an unknown block"))?;
-    let mut matches = block.services.iter().filter(|(name, service)| {
-        requested_service.is_none_or(|requested| requested == name.as_str())
-            && service.provides.contains_key(slot)
-    });
-    let Some((service, definition)) = matches.next() else {
-        return Err(format!("{provider_ref} does not provide capability {slot}"));
-    };
-    if matches.next().is_some() {
-        return Err(format!(
-            "{provider_ref} is ambiguous; select an instance/service"
-        ));
-    }
-    Ok((service, &definition.provides[slot]))
 }
 
 fn validate_name(name: &str, path: impl Into<String>, errors: &mut Vec<Diagnostic>) {
@@ -2225,12 +1653,7 @@ fn generate(
                     members
                         .iter()
                         .any(|member| provider_reference(member).0 == instance.name.as_str())
-                }) || routing_groups.contains_key(&instance.name)
-                    || bundle.spec.routes.contains_key(&instance.name)
-                    || bundle.spec.blocks[&instance.block]
-                        .services
-                        .values()
-                        .any(|service| !service.consumes.is_empty()))
+                }) || routing_groups.contains_key(&instance.name))
         })
         .map(|instance| instance.name.as_str())
         .collect::<BTreeSet<_>>();
@@ -2413,14 +1836,11 @@ fn generate(
             let sidecar_name = sidecar_name.as_ref().expect("routed sidecar");
             let mut router_labels = instance_labels.clone();
             router_labels.insert(SERVICE_LABEL.into(), "router".into());
-            let selected = selected_routes(bundle, &groups.providers, &instance.name);
             let transparent_group = routing_groups.get(&instance.name).map(String::as_str);
             let config = router_config(
                 bundle,
                 &instances,
                 instance,
-                block,
-                &selected,
                 TransparentRoute {
                     enabled: transparent,
                     group: transparent_group,
@@ -2428,11 +1848,6 @@ fn generate(
                 },
                 devices,
             )?;
-            let provider_dependencies = if transparent {
-                BTreeMap::new()
-            } else {
-                provider_dependencies(bundle, &instances, block, &selected, &routed_instances)?
-            };
             let config_path = artifact_dir
                 .join("routes")
                 .join(format!("{}.json", instance.name));
@@ -2444,7 +1859,6 @@ fn generate(
                 &artifact_bind_dir
                     .join("routes")
                     .join(format!("{}.json", instance.name)),
-                &provider_dependencies,
                 &router_labels,
                 transparent,
             );
@@ -3196,7 +2610,6 @@ fn compose_sidecar(
     namespace_service: &str,
     sidecar_name: &str,
     config_path: &Path,
-    providers: &BTreeMap<String, bool>,
     labels: &BTreeMap<String, String>,
     transparent: bool,
 ) -> Value {
@@ -3205,18 +2618,6 @@ fn compose_sidecar(
         namespace_service.into(),
         json!({ "condition": "service_started" }),
     );
-    for (provider, healthy) in providers {
-        depends_on.insert(
-            provider.clone(),
-            json!({
-                "condition": if *healthy {
-                    "service_healthy"
-                } else {
-                    "service_started"
-                }
-            }),
-        );
-    }
     let mut sidecar = json!({
         "image": image,
         "user": "${SWITCHYARD_UID:-1000}:${SWITCHYARD_GID:-1000}",
@@ -3253,61 +2654,6 @@ fn compose_sidecar(
     sidecar
 }
 
-fn provider_dependencies(
-    bundle: &Bundle,
-    instances: &BTreeMap<&str, &Instance>,
-    block: &Block,
-    selected: &BTreeMap<String, String>,
-    routed_instances: &BTreeSet<&str>,
-) -> Result<BTreeMap<String, bool>, io::Error> {
-    let mut dependencies = BTreeMap::new();
-    for slot in block
-        .services
-        .values()
-        .flat_map(|service| service.consumes.keys())
-    {
-        let provider_ref = &selected[slot];
-        let (provider_service, _) =
-            provider_for(bundle, instances, provider_ref, slot).map_err(io::Error::other)?;
-        let provider_instance = provider_ref.split('/').next().unwrap_or(provider_ref);
-        if instances[provider_instance]
-            .device
-            .as_deref()
-            .is_some_and(|device| device != "local")
-        {
-            continue;
-        }
-        let provider_definition =
-            &bundle.spec.blocks[&instances[provider_instance].block].services[provider_service];
-        let base = service_name_for(&bundle.metadata.name, provider_instance, provider_service);
-        let dependency = if routed_instances.contains(provider_instance) {
-            resource_name(&[&base, "app"])
-        } else {
-            base
-        };
-        dependencies.insert(dependency, provider_definition.probe.is_some());
-    }
-    Ok(dependencies)
-}
-
-fn selected_routes(
-    bundle: &Bundle,
-    groups: &BTreeMap<String, BTreeMap<String, String>>,
-    consumer: &str,
-) -> BTreeMap<String, String> {
-    let mut selected = bundle
-        .spec
-        .bindings
-        .get(consumer)
-        .and_then(|group| groups.get(group))
-        .cloned()
-        .unwrap_or_default();
-    if let Some(routes) = bundle.spec.routes.get(consumer) {
-        selected.extend(routes.clone());
-    }
-    selected
-}
-
 const TRANSPARENT_INTERCEPTION_PORT: u16 = 65_535;
 
 fn selected_group_for_instance<'a>(
@@ -3339,6 +2685,7 @@ fn transparent_members(
     instances: &BTreeMap<&str, &Instance>,
     groups: &ResolvedGroups,
     group: &str,
+    devices: &BTreeMap<String, PlanningDevice>,
 ) -> Vec<Value> {
     groups
         .members
@@ -3360,9 +2707,18 @@ fn transparent_members(
                     requested_service.is_none_or(|requested| requested == service.as_str())
                 })
                 .map(|service| {
+                    let host = instance
+                        .device
+                        .as_deref()
+                        .filter(|device| *device != "local")
+                        .and_then(|device| devices.get(device))
+                        .map_or_else(
+                            || service_name_for(&bundle.metadata.name, instance_name, service),
+                            |device| device.host.clone(),
+                        );
                     json!({
                         "component": format!("{instance_name}/{service}"),
-                        "host": service_name_for(&bundle.metadata.name, instance_name, service),
+                        "host": host,
                     })
                 })
                 .collect::<Vec<_>>()
@@ -3374,55 +2730,9 @@ fn router_config(
     bundle: &Bundle,
     instances: &BTreeMap<&str, &Instance>,
     consumer: &Instance,
-    block: &Block,
-    selected: &BTreeMap<String, String>,
     transparent: TransparentRoute<'_>,
     devices: &BTreeMap<String, PlanningDevice>,
 ) -> Result<Value, Box<dyn std::error::Error>> {
-    let mut listeners = Vec::new();
-    let mut providers = Vec::new();
-    let mut routes = Vec::new();
-    for (slot, route_slot) in block
-        .services
-        .values()
-        .flat_map(|service| &service.consumes)
-    {
-        let provider_ref = &selected[slot];
-        let (provider_service, capability) =
-            provider_for(bundle, instances, provider_ref, slot).map_err(io::Error::other)?;
-        let provider_instance = provider_ref.split('/').next().unwrap_or(provider_ref);
-        let provider_device = instances[provider_instance]
-            .device
-            .as_deref()
-            .filter(|device| *device != "local")
-            .and_then(|device| devices.get(device));
-        let dns = provider_device.map_or_else(
-            || service_name_for(&bundle.metadata.name, provider_instance, provider_service),
-            |device| device.host.clone(),
-        );
-        let provider_id = format!("{provider_instance}/{provider_service}--{slot}");
-        let provider_definition =
-            &bundle.spec.blocks[&instances[provider_instance].block].services[provider_service];
-        listeners.push(json!({
-            "consumer": consumer.name,
-            "bind": { "host": route_slot.address.host, "port": route_slot.address.port },
-            "protocol": protocol_name(route_slot.protocol),
-            "destinations": [{ "kind": "loopback", "slot": slot }],
-        }));
-        let mut provider = json!({
-            "id": provider_id,
-            "endpoint": {
-                "protocol": protocol_name(capability.protocol),
-                "host": dns,
-                "port": capability.port,
-            }
-        });
-        if let Some(health_check) = provider_router_health(provider_definition.probe.as_ref()) {
-            provider["healthCheck"] = health_check;
-        }
-        providers.push(provider);
-        routes.push(json!({ "consumer": consumer.name, "slot": slot, "provider": provider_id }));
-    }
     let transition = json!({ "strategy": "close" });
     let mut spec = json!({
         "snapshot": {
@@ -3436,9 +2746,9 @@ fn router_config(
                 "tcp": transition,
             }
         },
-        "listeners": listeners,
-        "providers": providers,
-        "routes": routes,
+        "listeners": [],
+        "providers": [],
+        "routes": [],
     });
     if transparent.enabled {
         spec["transparentProxy"] = json!({
@@ -3446,7 +2756,7 @@ fn router_config(
             "port": TRANSPARENT_INTERCEPTION_PORT,
             "members": transparent.group.map_or_else(
                 Vec::new,
-                |group| transparent_members(bundle, instances, transparent.groups, group)
+                |group| transparent_members(bundle, instances, transparent.groups, group, devices)
             ),
             "connectTimeoutMs": 250,
         });
@@ -3457,33 +2767,6 @@ fn router_config(
         "metadata": { "deployment": bundle.metadata.name },
         "spec": spec,
     }))
-}
-
-fn provider_router_health(probe: Option<&Probe>) -> Option<Value> {
-    match probe? {
-        Probe::Http { path, https, .. } => Some(json!({
-            "protocol": if *https { "https" } else { "http" },
-            "path": path,
-            "intervalMs": 1000,
-            "timeoutMs": 500,
-        })),
-        Probe::Tcp { .. } => Some(json!({
-            "protocol": "tcp",
-            "intervalMs": 1000,
-            "timeoutMs": 500,
-        })),
-        Probe::Command { .. } => None,
-    }
-}
-
-fn protocol_name(protocol: Protocol) -> &'static str {
-    match protocol {
-        Protocol::Http => "http",
-        Protocol::Https => "https",
-        Protocol::Websocket => "websocket",
-        Protocol::Grpc => "grpc",
-        Protocol::Tcp => "tcp",
-    }
 }
 
 fn ownership_labels(deployment: &str, resource_hash: &str) -> BTreeMap<String, String> {

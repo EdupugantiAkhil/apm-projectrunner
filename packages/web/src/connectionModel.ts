@@ -1,37 +1,41 @@
 export interface ConnectionSpec {
   instances?: Array<{ name: string; block?: string; address?: string }>
-  blocks?: Record<string, { services?: Record<string, { provides?: Record<string, unknown>; consumes?: Record<string, unknown> }> }>
-  groups?: Record<string, { extends?: string; instances?: string[]; address?: string }>
+  blocks?: Record<string, { services?: Record<string, object> }>
+  groups?: Record<string, { instances?: string[]; disabled?: string[]; address?: string }>
   bindings?: Record<string, string>
   routes?: Record<string, Record<string, string>>
 }
 
 export function resolvedGroups(spec: ConnectionSpec) {
-  const source = spec.groups ?? {}; const result: Record<string, Record<string, string>> = {}; const resolvedMembers: Record<string, string[]> = {}
-  const capabilities = (reference: string) => { const [instanceName, serviceName] = reference.split('/', 2); const instance = spec.instances?.find((candidate) => candidate.name === instanceName); const block = instance?.block ? spec.blocks?.[instance.block] : undefined; return Array.from(new Set(Object.entries(block?.services ?? {}).filter(([name]) => !serviceName || name === serviceName).flatMap(([, service]) => Object.keys(service.provides ?? {})))) }
-  const members = (name: string, seen = new Set<string>()): string[] => { if (resolvedMembers[name]) return resolvedMembers[name]; if (seen.has(name)) return []; const next = new Set(seen); next.add(name); const group = source[name]; if (!group) return []; let inherited = group.extends ? members(group.extends, next) : []; const additions = group.instances ?? []; for (const member of additions) { const provided = new Set(capabilities(member)); inherited = inherited.filter((candidate) => capabilities(candidate).every((capability) => !provided.has(capability))) } return resolvedMembers[name] = [...inherited, ...additions] }
-  for (const name of Object.keys(source)) { const providers: Record<string, string> = {}; for (const member of members(name)) for (const capability of capabilities(member)) providers[capability] = member; result[name] = providers }
-  return result
+  return Object.fromEntries(
+    Object.entries(spec.groups ?? {}).map(([name, group]) => [
+      name,
+      (group.instances ?? []).filter((member) => {
+        const instance = member.split('/', 1)[0]
+        return !(group.disabled ?? []).includes(instance)
+      }),
+    ]),
+  ) as Record<string, string[]>
 }
 
-export function consumedSlots(spec: ConnectionSpec) {
-  const result: Record<string, string[]> = {}
-  for (const instance of spec.instances ?? []) { const block = instance.block ? spec.blocks?.[instance.block] : undefined; if (!block) continue; const slots = Array.from(new Set(Object.values(block.services ?? {}).flatMap((service) => Object.keys(service.consumes ?? {})))).sort(); if (slots.length) result[instance.name] = slots }
-  return result
+export function connectionConsumers(spec: ConnectionSpec) {
+  return (spec.instances ?? []).map((instance) => instance.name)
 }
 
-export function connectionConsumers(spec: ConnectionSpec, consumed = consumedSlots(spec)) { return Array.from(new Set([...Object.keys(consumed), ...Object.keys(spec.routes ?? {}), ...Object.keys(spec.bindings ?? {})])) }
-
-export type ActiveConnection = { direction: 'consumes' | 'provides'; consumer: string; slot: string; provider: string }
+export type ActiveConnection = { group: string; member: string; disabled: boolean }
 
 export function activeConnections(spec: ConnectionSpec, instance: string) {
-  const groups = resolvedGroups(spec); const bindings = spec.bindings ?? {}; const direct = spec.routes ?? {}; const result: ActiveConnection[] = []
-  for (const consumer of connectionConsumers(spec)) {
-    const routes = bindings[consumer] && groups[bindings[consumer]] ? groups[bindings[consumer]] : direct[consumer] ?? {}
-    for (const [slot, provider] of Object.entries(routes)) {
-      if (consumer === instance) result.push({ direction: 'consumes', consumer, slot, provider })
-      if (provider === instance || provider.startsWith(`${instance}/`)) result.push({ direction: 'provides', consumer, slot, provider })
+  const result: ActiveConnection[] = []
+  for (const [groupName, group] of Object.entries(spec.groups ?? {})) {
+    for (const member of group.instances ?? []) {
+      if (member.split('/', 1)[0] === instance) {
+        result.push({ group: groupName, member, disabled: (group.disabled ?? []).includes(instance) })
+      }
     }
+  }
+  const selected = spec.bindings?.[instance]
+  if (selected && !result.some((connection) => connection.group === selected)) {
+    result.push({ group: selected, member: instance, disabled: false })
   }
   return result
 }

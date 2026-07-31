@@ -38,7 +38,7 @@ pub struct DeploymentEntry {
     pub route_statuses: Vec<RouteStatus>,
     pub last_operation: Option<String>,
     pub applied: bool,
-    pub consumer_slot_count: usize,
+    pub group_member_count: usize,
     pub validation_problems: Vec<String>,
 }
 
@@ -70,7 +70,7 @@ pub struct DefinitionTopology {
 
 #[derive(Default)]
 struct DefinitionStatus {
-    consumer_slot_count: usize,
+    group_member_count: usize,
     validation_problems: Vec<String>,
 }
 
@@ -320,7 +320,7 @@ fn deployment_entry(
             .and_then(|entry| entry.definition_hash.as_ref())
             .is_some()
             || !observation.resources.is_empty(),
-        consumer_slot_count: definition_status.consumer_slot_count,
+        group_member_count: definition_status.group_member_count,
         validation_problems: definition_status.validation_problems,
     }
 }
@@ -328,16 +328,15 @@ fn deployment_entry(
 fn definition_status(root: &Path, definition: &Path) -> DefinitionStatus {
     let Ok(bundle) = switchyard_planner::load_bundle(definition) else {
         return DefinitionStatus {
-            consumer_slot_count: 0,
+            group_member_count: 0,
             validation_problems: vec!["The deployment definition could not be loaded.".into()],
         };
     };
-    let consumer_slot_count = bundle
+    let group_member_count = bundle
         .spec
-        .blocks
+        .groups
         .values()
-        .flat_map(|block| block.services.values())
-        .map(|service| service.consumes.len())
+        .map(|group| group.instances.len())
         .sum();
     let devices = planning_devices_for_bundle(root, &bundle).unwrap_or_default();
     let validation_problems = switchyard_planner::plan_with_devices(&bundle, &devices)
@@ -349,7 +348,7 @@ fn definition_status(root: &Path, definition: &Path) -> DefinitionStatus {
         .into_iter()
         .collect();
     DefinitionStatus {
-        consumer_slot_count,
+        group_member_count,
         validation_problems,
     }
 }

@@ -12,8 +12,9 @@ pub mod projections;
 pub mod run_scripts;
 
 pub use connections::{
-    ConnectionMatrix, ConnectionRow, ProviderDetail, RouteChange, RouteHistoryEntry, RouteStatus,
-    SwitchPreview, connection_matrix, project_route_status, route_status, switch_preview,
+    ConnectionMatrix, ConnectionRow, MemberDetail, MembershipChange, RouteHistoryEntry,
+    RouteStatus, SwitchPreview, connection_matrix, project_route_status, route_status,
+    switch_preview,
 };
 pub use execution::{OperationEvent, OperationSpec};
 pub use instances::{

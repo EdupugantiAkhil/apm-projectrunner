@@ -48,7 +48,7 @@ language-specific behavior.
 ## Author startup profiles
 
 A project startup profile is a block under `spec.blocks` in `deployment.yaml`. For a
-single containerized provider:
+single containerized service:
 
 ```yaml
 spec:
@@ -60,8 +60,6 @@ spec:
             type: container
             build: { context: services/api, dockerfile: Dockerfile }
             command: ["./api", "--port", "8080"]
-          provides:
-            query: { protocol: http, port: 8080 }
           publish: [8080]
           probe: { type: http, path: /health, port: 8080 }
   instances:
@@ -82,15 +80,11 @@ profiles:
     services:
       cache:
         execution: { type: container, image: redis:7-alpine }
-        provides:
-          cache: { protocol: tcp, port: 6379 }
         probe: { type: tcp, port: 6379 }
       api:
         execution:
           type: container
           build: { context: ., dockerfile: Dockerfile }
-        provides:
-          application-api: { protocol: http, port: 8080 }
         dependsOn: { cache: healthy }
         probe: { type: http, path: /health, port: 8080 }
 ```
@@ -100,38 +94,30 @@ source-local profile is not runnable until the user explicitly reviews and impor
 in the TUI Profiles view. Changed content requires review and import again. Do not
 bypass that trust boundary or write imported-profile state directly.
 
-## Model connections completely
+## Model connections with group membership
 
-For every routable service:
+For every combination you want to run:
 
-- declare each `provides` capability with its real protocol and listen port;
-- declare each `consumes` slot with the fixed address the unchanged consumer calls;
-- define a group whose `instances` list contains one member providing each required
-  capability (use `instance/service` only when one instance has an ambiguous provider); and
-- bind a consumer instance to one complete compatible group in `spec.bindings`.
+- define one complete ordered group `instances` list;
+- put each instance in at most one group;
+- use `instance/service` only when the group should expose one service from a
+  multi-service instance; and
+- keep the application's existing loopback ports unchanged. Routing preserves the
+  original destination port and tries active group members in authored order.
 
 Example:
 
 ```yaml
 spec:
-  blocks:
-    client:
-      services:
-        app:
-          execution: { type: container, image: example/client:1 }
-          consumes:
-            query: { protocol: http, address: { host: 127.0.0.1, port: 8001 } }
   groups:
     main-services:
-      instances: [api-main/server]
-  bindings:
-    client-main: main-services
+      instances: [client-main/app, api-main/server]
 ```
 
-Never invent a capability, provider, address, or binding to make validation pass.
-Never author a partial group or switch only part of a consumer's binding. If consumers
-need different downstream groups, give each an independently routable provider
-instance where required by the topology.
+Never add capability, slot, binding, or direct-route metadata. Group membership is the
+whole connection statement. Author each group as a complete list; there is no
+`extends:` form. Use `disabled:` to exclude a member temporarily without losing its
+priority position.
 
 ## Place instances on devices
 
@@ -142,9 +128,9 @@ review. Before selecting a registered SSH device, run:
 switchyard device check <name>
 ```
 
-Remote placement supports only container-backed, provider-only instances. Every
-provided capability port must appear in `publish`; consumers, routers, process/script
-adapters, and cross-device sidecars remain local. The registered device host must be
+Remote placement supports only container-backed instances. Ports that local members
+must reach need to appear in `publish`; routers, process/script adapters, and
+cross-device sidecars remain local. The registered device host must be
 resolvable and reachable from the local router's containers. Prefer a LAN IP;
 `localhost` points back at a container and mDNS often does not resolve in container
 DNS. Eligibility proves SSH and Docker access, while `validate` proves workload fit.

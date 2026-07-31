@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::Path};
+use std::path::Path;
 
 use switchyard_planner::{Bundle, Diagnostic};
 use switchyard_state::{RouterBindingState, StateStore, StoredRouteSnapshot};
@@ -6,7 +6,7 @@ use switchyard_state::{RouterBindingState, StateStore, StoredRouteSnapshot};
 use crate::projections::{ServiceRow, planning_devices_for_bundle};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProviderDetail {
+pub struct MemberDetail {
     pub instance: String,
     pub service: String,
     pub health: String,
@@ -14,11 +14,10 @@ pub struct ProviderDetail {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConnectionRow {
-    pub consumer: String,
-    pub slot: String,
+    pub instance: String,
     pub current_group: Option<String>,
-    pub compatible_groups: Vec<String>,
-    pub providers: Vec<ProviderDetail>,
+    pub groups: Vec<String>,
+    pub members: Vec<MemberDetail>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -27,20 +26,20 @@ pub struct ConnectionMatrix {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RouteChange {
-    pub service: String,
-    pub old_provider: Option<String>,
-    pub new_provider: Option<String>,
+pub struct MembershipChange {
+    pub member: String,
+    pub old_member: Option<String>,
+    pub new_member: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SwitchPreview {
-    pub consumer: String,
+    pub instance: String,
     pub old_group: Option<String>,
     pub new_group: String,
-    pub old_providers: Vec<ProviderDetail>,
-    pub new_providers: Vec<ProviderDetail>,
-    pub affected_services: Vec<RouteChange>,
+    pub old_members: Vec<MemberDetail>,
+    pub new_members: Vec<MemberDetail>,
+    pub membership_changes: Vec<MembershipChange>,
     pub diagnostics: Vec<String>,
 }
 
@@ -70,53 +69,33 @@ pub fn connection_matrix(
     services: &[ServiceRow],
 ) -> Result<ConnectionMatrix, String> {
     let bundle = effective_bundle(project_dir, definition)?;
-    let devices = planning_devices_for_bundle(project_dir, &bundle)?;
-    let mut compatible = BTreeMap::<String, Vec<String>>::new();
     let mut rows = Vec::new();
     for instance in &bundle.spec.instances {
-        let Some(block) = bundle.spec.blocks.get(&instance.block) else {
-            continue;
-        };
-        let slots = block
-            .services
-            .values()
-            .flat_map(|service| service.consumes.keys().cloned())
-            .collect::<std::collections::BTreeSet<_>>();
-        if slots.is_empty() {
-            continue;
-        }
-        let groups = compatible.entry(instance.name.clone()).or_insert_with(|| {
-            bundle
-                .spec
-                .groups
-                .keys()
-                .filter(|group| {
-                    switchyard_planner::plan_with_binding_and_devices(
-                        &bundle,
-                        &instance.name,
-                        group,
-                        &devices,
-                    )
-                    .is_ok()
+        let current_group = bundle
+            .spec
+            .bindings
+            .get(&instance.name)
+            .cloned()
+            .or_else(|| {
+                bundle.spec.groups.iter().find_map(|(name, group)| {
+                    group
+                        .instances
+                        .iter()
+                        .any(|member| member.split('/').next() == Some(instance.name.as_str()))
+                        .then(|| name.clone())
                 })
-                .cloned()
-                .collect()
-        });
-        let current_group = bundle.spec.bindings.get(&instance.name).cloned();
-        let providers = current_group
+            });
+        let members = current_group
             .as_deref()
             .map(|group| provider_details(&bundle, group, services))
             .transpose()?
             .unwrap_or_default();
-        for slot in slots {
-            rows.push(ConnectionRow {
-                consumer: instance.name.clone(),
-                slot,
-                current_group: current_group.clone(),
-                compatible_groups: groups.clone(),
-                providers: providers.clone(),
-            });
-        }
+        rows.push(ConnectionRow {
+            instance: instance.name.clone(),
+            current_group,
+            groups: bundle.spec.groups.keys().cloned().collect(),
+            members,
+        });
     }
     Ok(ConnectionMatrix { rows })
 }
@@ -124,49 +103,57 @@ pub fn connection_matrix(
 pub fn switch_preview(
     project_dir: &Path,
     definition: &Path,
-    consumer: &str,
+    instance: &str,
     new_group: &str,
 ) -> Result<SwitchPreview, String> {
     let bundle = effective_bundle(project_dir, definition)?;
     let devices = planning_devices_for_bundle(project_dir, &bundle)?;
-    let old_group = bundle.spec.bindings.get(consumer).cloned();
-    let old_map = old_group
+    let old_group = bundle.spec.bindings.get(instance).cloned().or_else(|| {
+        bundle.spec.groups.iter().find_map(|(name, group)| {
+            group
+                .instances
+                .iter()
+                .any(|member| member.split('/').next() == Some(instance))
+                .then(|| name.clone())
+        })
+    });
+    let old_members = old_group
         .as_deref()
-        .map(|group| resolved_group(&bundle, group))
+        .map(|group| group_members(&bundle, group))
         .transpose()?
         .unwrap_or_default();
-    let new_map = resolved_group(&bundle, new_group).unwrap_or_default();
+    let new_members = group_members(&bundle, new_group).unwrap_or_default();
     let diagnostics =
-        switchyard_planner::plan_with_binding_and_devices(&bundle, consumer, new_group, &devices)
+        switchyard_planner::plan_with_binding_and_devices(&bundle, instance, new_group, &devices)
             .err()
             .unwrap_or_default()
             .into_iter()
             .map(diagnostic_text)
             .collect::<Vec<_>>();
-    let services = old_map
-        .keys()
-        .chain(new_map.keys())
+    let members = old_members
+        .iter()
+        .chain(&new_members)
         .cloned()
         .collect::<std::collections::BTreeSet<_>>();
-    let affected_services = services
+    let membership_changes = members
         .iter()
-        .filter_map(|service| {
-            let old_provider = old_map.get(service).cloned();
-            let new_provider = new_map.get(service).cloned();
-            (old_provider != new_provider).then(|| RouteChange {
-                service: service.clone(),
-                old_provider,
-                new_provider,
+        .filter_map(|member| {
+            let old_member = old_members.contains(member).then(|| member.clone());
+            let new_member = new_members.contains(member).then(|| member.clone());
+            (old_member != new_member).then(|| MembershipChange {
+                member: member.clone(),
+                old_member,
+                new_member,
             })
         })
         .collect();
     Ok(SwitchPreview {
-        consumer: consumer.into(),
+        instance: instance.into(),
         old_group,
         new_group: new_group.into(),
-        old_providers: details_from_map(&bundle, &old_map, &[])?,
-        new_providers: details_from_map(&bundle, &new_map, &[])?,
-        affected_services,
+        old_members: details_from_members(&bundle, &old_members, &[])?,
+        new_members: details_from_members(&bundle, &new_members, &[])?,
+        membership_changes,
         diagnostics,
     })
 }
@@ -237,57 +224,75 @@ fn effective_bundle(project_dir: &Path, definition: &Path) -> Result<Bundle, Str
     Ok(authored)
 }
 
-fn resolved_group(bundle: &Bundle, group: &str) -> Result<BTreeMap<String, String>, String> {
-    let groups = switchyard_planner::resolve_service_groups(bundle).map_err(|diagnostics| {
-        diagnostics
-            .into_iter()
-            .map(|diagnostic| diagnostic.to_string())
-            .collect::<Vec<_>>()
-            .join("\n")
-    })?;
-    groups
+fn group_members(bundle: &Bundle, group: &str) -> Result<Vec<String>, String> {
+    bundle
+        .spec
+        .groups
         .get(group)
-        .cloned()
-        .ok_or_else(|| format!("provider group `{group}` does not exist"))
+        .map(|definition| {
+            definition
+                .instances
+                .iter()
+                .filter(|member| {
+                    !definition
+                        .disabled
+                        .iter()
+                        .any(|disabled| member.split('/').next() == Some(disabled))
+                })
+                .cloned()
+                .collect()
+        })
+        .ok_or_else(|| format!("group `{group}` does not exist"))
 }
 
 fn provider_details(
     bundle: &Bundle,
     group: &str,
     services: &[ServiceRow],
-) -> Result<Vec<ProviderDetail>, String> {
-    let providers = resolved_group(bundle, group)?;
-    details_from_map(bundle, &providers, services)
+) -> Result<Vec<MemberDetail>, String> {
+    let members = group_members(bundle, group)?;
+    details_from_members(bundle, &members, services)
 }
 
-fn details_from_map(
+fn details_from_members(
     bundle: &Bundle,
-    providers: &BTreeMap<String, String>,
+    members: &[String],
     services: &[ServiceRow],
-) -> Result<Vec<ProviderDetail>, String> {
-    providers
+) -> Result<Vec<MemberDetail>, String> {
+    Ok(members
         .iter()
-        .map(|(capability, provider)| {
-            let (instance, explicit_service) = provider
+        .flat_map(|member| {
+            let (instance, explicit_service) = member
                 .split_once('/')
-                .map_or((provider.as_str(), None), |(instance, service)| {
+                .map_or((member.as_str(), None), |(instance, service)| {
                     (instance, Some(service))
                 });
-            let service = match explicit_service {
-                Some(service) => service.to_owned(),
-                None => switchyard_planner::resolve_provider_service(bundle, provider, capability)?,
-            };
-            let health = services
-                .iter()
-                .find(|row| row.instance == instance && row.service == service)
-                .map_or("unknown", |row| row.health.as_str());
-            Ok(ProviderDetail {
-                instance: instance.into(),
-                service,
-                health: health.into(),
+            let service_names = explicit_service.map_or_else(
+                || {
+                    bundle
+                        .spec
+                        .instances
+                        .iter()
+                        .find(|candidate| candidate.name == instance)
+                        .and_then(|candidate| bundle.spec.blocks.get(&candidate.block))
+                        .map(|block| block.services.keys().cloned().collect())
+                        .unwrap_or_default()
+                },
+                |service| vec![service.to_owned()],
+            );
+            service_names.into_iter().map(move |service| {
+                let health = services
+                    .iter()
+                    .find(|row| row.instance == instance && row.service == service)
+                    .map_or("unknown", |row| row.health.as_str());
+                MemberDetail {
+                    instance: instance.into(),
+                    service,
+                    health: health.into(),
+                }
             })
         })
-        .collect()
+        .collect())
 }
 
 fn diagnostic_text(diagnostic: Diagnostic) -> String {
@@ -321,36 +326,23 @@ mod tests {
     }
 
     #[test]
-    fn matrix_and_preview_only_expose_complete_compatible_groups() {
+    fn matrix_and_preview_expose_complete_groups_and_membership_changes() {
         let definition = fixture();
         let root = definition.parent().unwrap();
         let matrix = connection_matrix(root, &definition, &[]).unwrap();
         let backend = matrix
             .rows
             .iter()
-            .find(|row| row.consumer == "backend-1")
+            .find(|row| row.instance == "backend-1")
             .unwrap();
         assert_eq!(backend.current_group.as_deref(), Some("feature-services"));
-        assert_eq!(
-            backend.compatible_groups,
-            ["feature-services", "main-services"]
-        );
+        assert_eq!(backend.groups, ["feature-services", "main-services"]);
 
         let preview = switch_preview(root, &definition, "backend-1", "main-services").unwrap();
         assert!(preview.diagnostics.is_empty());
-        assert_eq!(preview.old_providers.len(), 5);
-        assert_eq!(preview.new_providers.len(), 5);
-        assert_eq!(preview.affected_services.len(), 4);
-    }
-
-    #[test]
-    fn provider_details_do_not_hide_resolution_failures() {
-        let bundle = switchyard_planner::load_bundle(&fixture()).unwrap();
-        let providers = BTreeMap::from([("catalog".into(), "missing-provider".into())]);
-
-        let error = details_from_map(&bundle, &providers, &[]).unwrap_err();
-
-        assert!(error.contains("provider instance missing-provider does not exist"));
+        assert_eq!(preview.old_members.len(), 5);
+        assert_eq!(preview.new_members.len(), 5);
+        assert_eq!(preview.membership_changes.len(), 8);
     }
 
     #[test]

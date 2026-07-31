@@ -74,7 +74,6 @@ fn legacy_workspace_fixture_expands_through_generic_planner_contracts() {
         bundle.spec.groups["ai-main"].address.as_deref(),
         Some("ai-main.jas-base.localhost")
     );
-    assert_eq!(feature_group.extends.as_deref(), Some("ai-main"));
     assert_eq!(
         feature_group.instances,
         ["ai-feature/suite", "jas-main/service", "ui-a/app"]
@@ -91,46 +90,17 @@ fn legacy_workspace_fixture_expands_through_generic_planner_contracts() {
         bundle.spec.sources["monorepo-main"].path,
         bundle.spec.sources["jas-feature-worktree"].path
     );
-    assert_eq!(bundle.spec.routes["ui-a"]["java"], "jas-main/service");
-    assert_eq!(bundle.spec.routes["ui-b"]["java"], "jas-feature/service");
-
-    for consumer in ["jas-main", "jas-feature"] {
+    for consumer in ["jas-main", "jas-feature", "ui-a", "ui-b"] {
         let routes: serde_json::Value = serde_json::from_str(&generated.route_configs[consumer])
             .expect("sidecar route configuration should be JSON");
-        let destinations = routes["spec"]["listeners"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .flat_map(|listener| listener["destinations"].as_array().unwrap())
-            .map(|destination| destination["slot"].as_str().unwrap())
-            .collect::<BTreeSet<_>>();
+        assert_eq!(routes["spec"]["listeners"], serde_json::json!([]));
+        assert_eq!(routes["spec"]["providers"], serde_json::json!([]));
         assert_eq!(
-            destinations,
-            BTreeSet::from([
-                "audit",
-                "catalog",
-                "database-document",
-                "database-kv",
-                "reports",
-                "scheduler",
-                "search",
-            ])
-        );
-    }
-
-    for consumer in ["ui-a", "ui-b"] {
-        let routes: serde_json::Value = serde_json::from_str(&generated.route_configs[consumer])
-            .expect("UI sidecar route configuration should be JSON");
-        let destinations = routes["spec"]["listeners"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .flat_map(|listener| listener["destinations"].as_array().unwrap())
-            .map(|destination| destination["slot"].as_str().unwrap())
-            .collect::<BTreeSet<_>>();
-        assert_eq!(
-            destinations,
-            BTreeSet::from(["audit", "catalog", "java", "reports", "scheduler", "search",])
+            routes["spec"]["transparentProxy"]["members"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
         );
     }
 
@@ -151,7 +121,9 @@ fn legacy_workspace_fixture_expands_through_generic_planner_contracts() {
         domains,
         BTreeSet::from([
             "ai-feature.jas-base.localhost",
-            "ai-main.jas-base.localhost"
+            "ai-main.jas-base.localhost",
+            "ui-a.jas-base.localhost",
+            "ui-b.jas-base.localhost",
         ])
     );
 

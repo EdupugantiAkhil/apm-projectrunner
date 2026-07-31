@@ -18,8 +18,9 @@ The TUI uses one project snapshot across seven workflow-ordered tabs:
   profiles.
 - **Instances** creates instances and validates, plans, starts, stops, or cleans up
   their deployment.
-- **Connections** shows consumer slots and atomically switches each slot to a compatible,
-  complete provider group. Switchyard never chooses a group implicitly.
+- **Connections** shows each instance's authored group and complete ordered membership.
+  The temporary binding action can select another complete group until Part 2d removes
+  bindings in favor of editing membership directly.
 - **Devices** manages the local device and SSH targets, including connectivity and
   remote-container eligibility checks.
 - **Operations** manages project run actions and shows the ordered, filterable timeline
@@ -56,9 +57,8 @@ Follow the checklist on Home:
    service preview and create the instance.
 4. With the instance selected, use `F7` to validate, `F8` to inspect the plan, and `F9`
    to start its deployment. Output streams to Operations.
-5. If the instance consumes a service slot, open Connections (`Alt+N`), press `Enter`,
-   choose a compatible provider group, review every old-to-new route, and apply the
-   atomic switch.
+5. Open Connections (`Alt+N`) to inspect the instance's complete ordered group. During
+   the Part 2d transition, `Enter` can still preview and atomically select another group.
 
 Lists and trees select their first row automatically, so a one-item project is ready for
 its F-key actions without an initial arrow press.

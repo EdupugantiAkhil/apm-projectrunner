@@ -225,7 +225,7 @@ changing which UI and backend checkout each address opens.
 
 ## Where today's schema differs
 
-The sample above is the intended shape. Six things about the current build differ, all tracked
+The sample above is the intended shape. Five things about the current build differ, all tracked
 in [docs/v2-roadmap.md](../v2-roadmap.md):
 
 1. **There is no `repositories:` section, and nothing is ever created.** Today a source is
@@ -234,27 +234,21 @@ in [docs/v2-roadmap.md](../v2-roadmap.md):
    nothing in the planner clones or creates a worktree, so every directory must already exist
    before `up` — validation fails outright if one does not. Part 2c names the repository once and
    makes `up` create what is missing.
-2. **Routing is declared, not discovered.** Today each profile must carry `provides:` (what it
-   offers, and on which port) and `consumes:` (each dependency, with the address the application
-   already calls). Omit them and the deployment validates but produces **no router sidecars at
-   all** — every instance runs isolated. Part 2b removes both fields and makes group membership
-   sufficient, as the sample shows. Routing is port-for-port; remapping is not a retained
-   capability/slot escape hatch.
-3. **Connections are authored twice more.** A `bindings:` map names a group per consumer, and a
-   `routes:` map can name a provider per slot directly. Both restate what group membership
-   already says, and both can contradict it. Part 2d deletes them and validates that each
-   instance belongs to at most one group.
-4. **There are no external instances.** Every instance must have a block and a source, so
+2. **Compatibility connection fields remain.** A `bindings:` map can still select a group per
+   instance. The `routes:` field also remains in the compatibility schema, although non-empty
+   direct routes are rejected. Part 2d deletes both fields and validates that each instance
+   belongs to at most one group.
+3. **There are no external instances.** Every instance must have a block and a source, so
    anything already running outside Switchyard — a natively installed database, a shared staging
    service — cannot be a group member at all. Part 2e adds the `{ name, external, ports }` form.
-5. **`scripts:` is not the current shape, and is deferred.** Run actions live in
+4. **`scripts:` is not the current shape, and is deferred.** Run actions live in
    `.switchyard/run-scripts.yaml` as seven-field records. They are deliberately outside the V2
    roadmap until a shell action has a settled way to reach the deployment it is about.
-6. **Addresses still require a hand-authored `hostRouter:` block.** Declaring `address:` on a
-   group or instance is accepted, but validation then insists on a `hostRouter:` section
-   alongside it — listeners, providers, routes, and an explicit-header `browserRoutes` entry per
-   addressed UI — plus a `hostUpstreams:` map from each router provider back to a published port.
-   That is roughly sixty lines the sample omits. Deriving it from the addresses is Part 3.
+5. **Address selection is not yet per request.** Instance addresses and a bare group address are
+   generated without a hand-authored router topology. The bare group address works only when
+   exactly one active member has its own `address:`, which is deliberate and generic. Part 3 still
+   needs explicit member subdomains/browser identity and an end-to-end fixture that serves several
+   members through one group address.
 
 Bare instance names in `instances:` do work today, and resolve to the single member service.
 Writing `ui-1/app` is also accepted, and is what you need when one instance runs several services

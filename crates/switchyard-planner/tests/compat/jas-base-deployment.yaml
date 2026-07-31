@@ -29,8 +29,6 @@ spec:
             type: container
             image: *fixture-image
             command: ["/usr/local/bin/jas-base-fixture", store, "0.0.0.0:9101", kv-store, "/data/schema-count"]
-          provides:
-            database-kv: { protocol: http, port: 9101 }
           volumes: [{ name: kv-data, target: /data }]
           probe: { type: http, path: /health, port: 9101 }
         document-store:
@@ -38,8 +36,6 @@ spec:
             type: container
             image: *fixture-image
             command: ["/usr/local/bin/jas-base-fixture", store, "0.0.0.0:9102", document-store, "/data/schema-count"]
-          provides:
-            database-document: { protocol: http, port: 9102 }
           volumes: [{ name: document-data, target: /data }]
           probe: { type: http, path: /health, port: 9102 }
         initialize-schema:
@@ -62,16 +58,6 @@ spec:
             image: *fixture-image
             command: ["/workspace/start-jas-service.sh"]
             workingDirectory: /workspace
-          consumes:
-            database-kv: { protocol: http, address: { host: 127.0.0.1, port: 9101 } }
-            database-document: { protocol: http, address: { host: 127.0.0.1, port: 9102 } }
-            catalog: { protocol: http, address: { host: 127.0.0.1, port: 8001 } }
-            search: { protocol: http, address: { host: 127.0.0.1, port: 8002 } }
-            reports: { protocol: http, address: { host: 127.0.0.1, port: 8003 } }
-            scheduler: { protocol: http, address: { host: 127.0.0.1, port: 8004 } }
-            audit: { protocol: http, address: { host: 127.0.0.1, port: 8005 } }
-          provides:
-            java: { protocol: http, port: 10081 }
           publish: [10081]
           dependsOn:
             db-main/initialize-schema: completed_successfully
@@ -85,12 +71,6 @@ spec:
             type: processCompose
             image: *fixture-image
             file: process-compose.yaml
-          provides:
-            catalog: { protocol: http, port: 8001 }
-            search: { protocol: http, port: 8002 }
-            reports: { protocol: http, port: 8003 }
-            scheduler: { protocol: http, port: 8004 }
-            audit: { protocol: http, port: 8005 }
           probe:
             type: command
             command: ["/usr/local/bin/jas-base-fixture", probe, "127.0.0.1:8001", "127.0.0.1:8002", "127.0.0.1:8003", "127.0.0.1:8004", "127.0.0.1:8005"]
@@ -104,17 +84,6 @@ spec:
             image: *fixture-image
             build: { context: ., dockerfile: examples/jas-base/Dockerfile }
             command: ["/usr/local/bin/jas-base-fixture", ui, "0.0.0.0:8080"]
-          consumes:
-            # The unchanged UI calls localhost:10081; inside the container namespace
-            # the sidecar binds the loopback IP literal serving that same address.
-            java: { protocol: http, address: { host: 127.0.0.1, port: 10081 } }
-            catalog: { protocol: http, address: { host: 127.0.0.1, port: 8001 } }
-            search: { protocol: http, address: { host: 127.0.0.1, port: 8002 } }
-            reports: { protocol: http, address: { host: 127.0.0.1, port: 8003 } }
-            scheduler: { protocol: http, address: { host: 127.0.0.1, port: 8004 } }
-            audit: { protocol: http, address: { host: 127.0.0.1, port: 8005 } }
-          provides:
-            ui: { protocol: http, port: 8080 }
           publish: [8080]
           probe: { type: http, path: /health, port: 8080 }
   instances:
@@ -142,17 +111,18 @@ spec:
     - name: ui-a
       block: ui
       source: repository-root
+      address: ui-a.jas-base.localhost
       parameters: { FIXTURE_SOURCE: repository-root/ui-a }
     - name: ui-b
       block: ui
       source: repository-root
+      address: ui-b.jas-base.localhost
       parameters: { FIXTURE_SOURCE: repository-root/ui-b }
   groups:
     ai-main:
       address: ai-main.jas-base.localhost
       instances: [ai-main/suite, jas-feature/service, ui-b/app]
     ai-feature:
-      extends: ai-main
       address: ai-feature.jas-base.localhost
       instances: [ai-feature/suite, jas-main/service, ui-a/app]
   bindings:
@@ -160,13 +130,6 @@ spec:
     ui-b: ai-main
     jas-main: ai-feature
     jas-feature: ai-main
-  routes:
-    ui-a: { java: jas-main/service }
-    ui-b: { java: jas-feature/service }
-    jas-main:
-      { database-kv: db-main/kv-store, database-document: db-main/document-store }
-    jas-feature:
-      { database-kv: db-main/kv-store, database-document: db-main/document-store }
   hostRouter:
     apiVersion: switchyard.dev/router/v1alpha1
     kind: RouterConfiguration

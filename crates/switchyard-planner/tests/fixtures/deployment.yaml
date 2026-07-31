@@ -14,8 +14,6 @@ spec:
             type: container
             image: example/provider:1
             command: ["serve", "--port", "8080"]
-          provides:
-            search: { protocol: http, port: 8080 }
           publish: [8080]
           volumes:
             - { name: data, target: /data }
@@ -31,10 +29,6 @@ spec:
             command: ["./start"]
             workingDirectory: /workspace
             environment: { STATIC_VALUE: yes }
-          consumes:
-            search:
-              protocol: http
-              address: { host: 127.0.0.1, port: 8001 }
           probe: { type: tcp, port: 3000 }
     suite:
       services:
@@ -43,8 +37,6 @@ spec:
             type: processCompose
             image: example/process-compose:1
             file: process-compose.yaml
-          provides:
-            events: { protocol: tcp, port: 9000 }
   instances:
     - { name: provider-main, block: provider, source: app }
     - name: consumer-a
@@ -60,8 +52,7 @@ spec:
     base:
       instances: [provider-main/api]
     feature:
-      extends: base
-      instances: []
+      instances: [provider-main/api]
   bindings:
     consumer-a: base
     consumer-b: feature

@@ -33,8 +33,6 @@ spec:
             type: container
             image: *fixture-image
             command: ["/usr/local/bin/routing-fixture", "ui-configured", "0.0.0.0:8080"]
-          provides:
-            ui: { protocol: http, port: 8080 }
           publish: [8080]
           probe: { type: http, path: /health, port: 8080 }
     catalog-provider:
@@ -45,9 +43,7 @@ spec:
           execution:
             type: container
             image: *fixture-image
-            command: ["/usr/local/bin/routing-fixture", "provider-configured", "0.0.0.0:8080", "catalog"]
-          provides:
-            catalog: { protocol: http, port: 8080 }
+            command: ["/usr/local/bin/routing-fixture", "provider-configured", "0.0.0.0:8001", "catalog"]
           probe: { type: http, path: /health, port: 8080 }
     search-provider:
       parameters:
@@ -57,9 +53,7 @@ spec:
           execution:
             type: container
             image: *fixture-image
-            command: ["/usr/local/bin/routing-fixture", "provider-configured", "0.0.0.0:8080", "search"]
-          provides:
-            search: { protocol: http, port: 8080 }
+            command: ["/usr/local/bin/routing-fixture", "provider-configured", "0.0.0.0:8002", "search"]
           probe: { type: http, path: /health, port: 8080 }
     reports-provider:
       parameters:
@@ -69,9 +63,7 @@ spec:
           execution:
             type: container
             image: *fixture-image
-            command: ["/usr/local/bin/routing-fixture", "provider-configured", "0.0.0.0:8080", "reports"]
-          provides:
-            reports: { protocol: http, port: 8080 }
+            command: ["/usr/local/bin/routing-fixture", "provider-configured", "0.0.0.0:8003", "reports"]
           probe: { type: http, path: /health, port: 8080 }
     scheduler-provider:
       parameters:
@@ -81,9 +73,7 @@ spec:
           execution:
             type: container
             image: *fixture-image
-            command: ["/usr/local/bin/routing-fixture", "provider-configured", "0.0.0.0:8080", "scheduler"]
-          provides:
-            scheduler: { protocol: http, port: 8080 }
+            command: ["/usr/local/bin/routing-fixture", "provider-configured", "0.0.0.0:8004", "scheduler"]
           probe: { type: http, path: /health, port: 8080 }
     audit-provider:
       parameters:
@@ -93,9 +83,7 @@ spec:
           execution:
             type: container
             image: *fixture-image
-            command: ["/usr/local/bin/routing-fixture", "provider-configured", "0.0.0.0:8080", "audit"]
-          provides:
-            audit: { protocol: http, port: 8080 }
+            command: ["/usr/local/bin/routing-fixture", "provider-configured", "0.0.0.0:8005", "audit"]
           probe: { type: http, path: /health, port: 8080 }
     backend:
       parameters:
@@ -106,14 +94,6 @@ spec:
             type: container
             image: *fixture-image
             command: ["/usr/local/bin/routing-fixture", "backend-configured", "0.0.0.0:8080", "/data/request-count"]
-          consumes:
-            catalog: { protocol: http, address: { host: 127.0.0.1, port: 8001 } }
-            search: { protocol: http, address: { host: 127.0.0.1, port: 8002 } }
-            reports: { protocol: http, address: { host: 127.0.0.1, port: 8003 } }
-            scheduler: { protocol: http, address: { host: 127.0.0.1, port: 8004 } }
-            audit: { protocol: http, address: { host: 127.0.0.1, port: 8005 } }
-          provides:
-            backend: { protocol: http, port: 8080 }
           publish: [8080]
           volumes:
             - { name: data, target: /data }

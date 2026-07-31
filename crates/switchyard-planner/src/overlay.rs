@@ -46,8 +46,6 @@ pub struct OverlaySpec {
     #[serde(default)]
     pub parameters: BTreeMap<String, String>,
     #[serde(default)]
-    pub routes: BTreeMap<String, OverlayRoute>,
-    #[serde(default)]
     pub variables: BTreeMap<String, String>,
     /// Allows keyed entries to replace an earlier overlay entry.
     #[serde(default)]
@@ -141,27 +139,6 @@ fn default_file_mode() -> String {
 pub enum OverlayFileSource {
     Path(PathBuf),
     Secret(OverlaySecretReference),
-}
-
-/// Route provider selection, optionally replacing an earlier overlay selection.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(untagged)]
-pub enum OverlayRoute {
-    Provider(String),
-    Detailed {
-        provider: String,
-        #[serde(default)]
-        replace: bool,
-    },
-}
-
-impl OverlayRoute {
-    fn parts(&self) -> (&str, bool) {
-        match self {
-            Self::Provider(provider) => (provider, false),
-            Self::Detailed { provider, replace } => (provider, *replace),
-        }
-    }
 }
 
 /// A previous layer shadowed during resolution.
@@ -498,24 +475,6 @@ pub fn plan_with_overlays_and_devices(
     }
     let (resolved, mut resolution) = resolve(bundle, &overlays, options)?;
     let validation = validate(&resolved, devices)?;
-    for instance in &resolved.spec.instances {
-        for (slot, provider) in
-            crate::selected_routes(&resolved, &validation.groups.providers, &instance.name)
-        {
-            if !resolution.origins.iter().any(|origin| {
-                origin.instance == instance.name && origin.category == "route" && origin.key == slot
-            }) {
-                resolution.origins.push(OriginTrace {
-                    instance: instance.name.clone(),
-                    category: "route".into(),
-                    key: slot,
-                    value: provider,
-                    layer: format!("deployment binding {}", instance.name),
-                    shadowed: Vec::new(),
-                });
-            }
-        }
-    }
     resolution.origins.sort_by(|left, right| {
         (&left.instance, &left.category, &left.key).cmp(&(
             &right.instance,
@@ -566,7 +525,6 @@ fn resolve(
         .iter()
         .map(|instance| (instance.name.clone(), instance.environment.clone()))
         .collect::<BTreeMap<_, _>>();
-    let original_routes = bundle.spec.routes.clone();
     resolved.spec.routes.clear();
     for instance in &mut resolved.spec.instances {
         instance.parameters.clear();
@@ -576,7 +534,6 @@ fn resolve(
     let mut errors = Vec::new();
     let mut resolution = OverlayResolution::default();
     let mut traces: BTreeMap<(String, String, String), OriginTrace> = BTreeMap::new();
-    let mut overlay_route_keys = BTreeSet::new();
     let mut file_indexes: BTreeMap<(String, PathBuf), usize> = BTreeMap::new();
 
     for instance in &bundle.spec.instances {
@@ -688,27 +645,6 @@ fn resolve(
                 set_trace(&mut traces, &target, "parameter", key, value, &layer);
                 instance.parameters.insert(key.clone(), value.clone());
             }
-            for (slot, route) in &overlay.spec.routes {
-                let (provider, route_replace) = route.parts();
-                let replace = route_replace || overlay.spec.replace;
-                let conflict_key = (target.clone(), slot.clone());
-                if overlay_route_keys.contains(&conflict_key) && !replace {
-                    errors.push(Diagnostic::new(
-                        DiagnosticCode::OverlayConflict,
-                        format!("spec.routes.{slot}"),
-                        format!("route slot `{slot}` for `{target}` requires replace: true"),
-                    ));
-                    continue;
-                }
-                overlay_route_keys.insert(conflict_key);
-                set_trace(&mut traces, &target, "route", slot, provider, &layer);
-                resolved
-                    .spec
-                    .routes
-                    .entry(target.clone())
-                    .or_default()
-                    .insert(slot.clone(), provider.into());
-            }
             resolve_files(
                 bundle,
                 overlay,
@@ -747,17 +683,6 @@ fn resolve(
                 resolution
                     .secret_environment
                     .remove(&(instance.name.clone(), key.clone()));
-            }
-        }
-        if let Some(values) = original_routes.get(&instance.name) {
-            for (slot, provider) in values {
-                set_trace(&mut traces, &instance.name, "route", slot, provider, &layer);
-                resolved
-                    .spec
-                    .routes
-                    .entry(instance.name.clone())
-                    .or_default()
-                    .insert(slot.clone(), provider.clone());
             }
         }
         for (key, value) in &options.set {

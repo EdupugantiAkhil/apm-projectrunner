@@ -456,11 +456,10 @@ pub(crate) fn detail_text(state: &ProjectState, row: &InstanceRowView) -> String
         .connections
         .rows
         .iter()
-        .filter(|connection| connection.consumer == instance.name)
+        .filter(|connection| connection.instance == instance.name)
         .map(|connection| {
             format!(
-                "  {} -> {}",
-                connection.slot,
+                "  group -> {}",
                 connection
                     .current_group
                     .as_deref()

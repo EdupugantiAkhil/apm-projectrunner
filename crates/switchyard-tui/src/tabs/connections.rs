@@ -14,7 +14,7 @@ impl SwitchyardShell {
     pub(crate) fn refresh_connection_controls(&mut self) {
         let preferred = self
             .selected_connection_row()
-            .map(|row| (row.deployment_index, row.consumer, row.slot));
+            .map(|row| (row.deployment_index, row.instance));
         let state = self.state.clone();
         let handles = self.connections;
         let empty = project_rows(&state).is_empty();
@@ -38,7 +38,7 @@ impl SwitchyardShell {
         }
         let Some(view) = self.selected_connection_row() else {
             self.set_notices(
-                "Connections need a consumer instance with at least one consumed slot. Create one with F2 on Instances.",
+                "Group membership appears after a deployment defines instances and groups. Create them with F2 on Instances.",
             );
             return;
         };
@@ -48,22 +48,20 @@ impl SwitchyardShell {
             );
             return;
         };
-        if row.compatible_groups.is_empty() {
-            self.set_notices(
-                "No complete provider group is compatible with this consumer. Fix the deployment definition and press F5.",
-            );
+        if row.groups.is_empty() {
+            self.set_notices("No groups are defined. Fix the deployment definition and press F5.");
             return;
         }
         let deployment_name = deployment.name.clone();
         let bundle = deployment.bundle.clone();
-        let consumer = row.consumer.clone();
-        let compatible_groups = row.compatible_groups.clone();
-        let mut previews = Vec::with_capacity(compatible_groups.len());
-        for group in compatible_groups {
+        let instance = row.instance.clone();
+        let groups = row.groups.clone();
+        let mut previews = Vec::with_capacity(groups.len());
+        for group in groups {
             match switchyard_ops::switch_preview(
                 &self.state.project_dir,
                 &bundle,
-                &consumer,
+                &instance,
                 &group,
             ) {
                 Ok(preview) => previews.push(preview),
@@ -75,12 +73,12 @@ impl SwitchyardShell {
                 }
             }
         }
-        let Some(request) = show_switch(&consumer, previews) else {
+        let Some(request) = show_switch(&instance, previews) else {
             return;
         };
-        let spec = OperationSpec::bind(bundle, consumer.clone(), request.group.clone());
+        let spec = OperationSpec::bind(bundle, instance.clone(), request.group.clone());
         let started = self.start_operation(
-            format!("bind {consumer} → {}", request.group),
+            format!("bind {instance} → {}", request.group),
             Some(deployment_name.clone()),
             false,
             spec,
@@ -88,7 +86,7 @@ impl SwitchyardShell {
         if started {
             self.pending_bind = Some(PendingBind {
                 deployment: deployment_name,
-                consumer,
+                consumer: instance,
             });
         }
     }
@@ -111,17 +109,18 @@ impl SwitchyardShell {
     }
 }
 
-pub(crate) const EXPLAINER: &str = "Consumers keep their fixed localhost/network addresses; Switchyard routes them to the selected group.";
+pub(crate) const EXPLAINER: &str =
+    "Each group is a complete ordered instance list sharing one localhost view.";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ConnectionRowView {
     pub(crate) deployment_index: usize,
-    pub(crate) consumer: String,
-    pub(crate) slot: String,
+    pub(crate) instance: String,
     pub(crate) group: String,
+    pub(crate) members: String,
     pub(crate) route_version: String,
     pub(crate) state: String,
-    pub(crate) compatible_groups: Vec<String>,
+    pub(crate) groups: Vec<String>,
 }
 
 impl ListItem for ConnectionRowView {
@@ -131,9 +130,9 @@ impl ListItem for ConnectionRowView {
 
     fn column(index: u16) -> Column {
         match index {
-            0 => Column::new("Consumer", 22, TextAlignment::Left),
-            1 => Column::new("Slot", 18, TextAlignment::Left),
-            2 => Column::new("Selected provider group", 27, TextAlignment::Left),
+            0 => Column::new("Instance", 22, TextAlignment::Left),
+            1 => Column::new("Selected group", 18, TextAlignment::Left),
+            2 => Column::new("Active members", 27, TextAlignment::Left),
             3 => Column::new("Route version", 21, TextAlignment::Left),
             _ => Column::new("State", 34, TextAlignment::Left),
         }
@@ -141,9 +140,9 @@ impl ListItem for ConnectionRowView {
 
     fn render_method(&self, column_index: u16) -> Option<listview::RenderMethod<'_>> {
         let text = match column_index {
-            0 => &self.consumer,
-            1 => &self.slot,
-            2 => &self.group,
+            0 => &self.instance,
+            1 => &self.group,
+            2 => &self.members,
             3 => &self.route_version,
             4 => &self.state,
             _ => return None,
@@ -170,7 +169,7 @@ pub(crate) fn add(tab: &mut Tab, index: u32, state: &ProjectState) -> Handles {
     list.set_visible(!project_rows(state).is_empty());
     let list_handle = panel.add(list);
     let mut empty = Label::new(
-        "Connections appear after a consumer instance has at least one consumed service slot.\n\nCreate a consumer with F2 on Instances, then return here and press Enter on a slot to connect it. Switchyard never chooses a provider group for you.",
+        "Membership appears after a deployment defines instances and groups.\n\nCreate instances with F2, author complete ordered group membership, then return here to inspect it.",
         layout!("l:3,t:3,r:3,h:7"),
     );
     empty.set_visible(project_rows(state).is_empty());
@@ -198,27 +197,32 @@ pub(crate) fn project_rows(state: &ProjectState) -> Vec<ConnectionRowView> {
                 let matching = deployment
                     .route_statuses
                     .iter()
-                    .filter(|status| status.binding_id == row.consumer)
+                    .filter(|status| status.binding_id == row.instance)
                     .collect::<Vec<_>>();
                 let (route_version, route_state) = route_summary(&matching);
                 let unbound = row.current_group.is_none();
                 ConnectionRowView {
                     deployment_index,
-                    consumer: row.consumer.clone(),
-                    slot: row.slot.clone(),
+                    instance: row.instance.clone(),
                     group: row
                         .current_group
                         .clone()
-                        .unwrap_or_else(|| "not connected — press Enter to fix".into()),
+                        .unwrap_or_else(|| "not assigned".into()),
+                    members: row
+                        .members
+                        .iter()
+                        .map(|member| member.instance.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
                     route_version,
                     state: if unbound && route_state == "not applied" {
-                        "not connected — press Enter to fix".into()
+                        "not assigned — press Enter to select a group".into()
                     } else if unbound {
-                        format!("not connected — press Enter to fix; last {route_state}")
+                        format!("not assigned — press Enter to select a group; last {route_state}")
                     } else {
                         route_state
                     },
-                    compatible_groups: row.compatible_groups.clone(),
+                    groups: row.groups.clone(),
                 }
             })
         })
@@ -285,18 +289,15 @@ fn distinct<'a>(values: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
 pub(crate) fn fill_list(
     list: &mut ListView<ConnectionRowView>,
     state: &ProjectState,
-    preferred: Option<(usize, String, String)>,
+    preferred: Option<(usize, String)>,
 ) {
     list.clear();
     let rows = project_rows(state);
     let selected = preferred
         .as_ref()
-        .and_then(|(deployment, consumer, slot)| {
-            rows.iter().position(|row| {
-                row.deployment_index == *deployment
-                    && row.consumer == *consumer
-                    && row.slot == *slot
-            })
+        .and_then(|(deployment, instance)| {
+            rows.iter()
+                .position(|row| row.deployment_index == *deployment && row.instance == *instance)
         })
         .or_else(|| (!rows.is_empty()).then_some(0));
     for row in rows {
@@ -325,7 +326,7 @@ pub(crate) fn source_row<'a>(
         .connections
         .rows
         .iter()
-        .find(|row| row.consumer == view.consumer && row.slot == view.slot)?;
+        .find(|row| row.instance == view.instance)?;
     Some((deployment, row))
 }
 
@@ -371,7 +372,7 @@ struct SwitchDialog {
 }
 
 impl SwitchDialog {
-    fn new(consumer: &str, previews: Vec<SwitchPreview>) -> Self {
+    fn new(instance: &str, previews: Vec<SwitchPreview>) -> Self {
         let mut dialog = Self {
             base: ModalWindow::new(
                 "Atomic connection switch",
@@ -386,20 +387,20 @@ impl SwitchDialog {
             previews,
         };
         dialog.add(Label::new(
-            &format!("Consumer: {consumer}\nChoose one compatible complete provider group:"),
+            &format!("Instance: {instance}\nChoose one complete group:"),
             layout!("l:2,t:1,r:2,h:2"),
         ));
         let mut groups = DropDownList::new(
             layout!("l:2,t:4,r:2,h:1"),
             dropdownlist::Flags::AllowNoneSelection,
         );
-        groups.set_none_string("Choose a compatible group (no automatic selection)");
+        groups.set_none_string("Choose a group (no automatic selection)");
         for choice in group_choices(&dialog.previews) {
             groups.add(choice);
         }
         dialog.groups = dialog.add(groups);
         dialog.preview = dialog.add(TextArea::new(
-            "Select a provider group to see every route in the old → new preview.",
+            "Select a group to see every membership change in the old → new preview.",
             layout!("l:2,t:6,r:2,b:4"),
             textarea::Flags::ReadOnly | textarea::Flags::ScrollBars,
         ));
@@ -420,7 +421,7 @@ impl SwitchDialog {
             .selected_preview_index()
             .and_then(|index| self.previews.get(index))
             .map_or_else(
-                || "Select a provider group to see every route in the old → new preview.".into(),
+                || "Select a group to see every membership change in the old → new preview.".into(),
                 render_preview,
             );
         let preview = self.preview;
@@ -456,7 +457,7 @@ impl ButtonEvents for SwitchDialog {
             let Some(index) = self.selected_preview_index() else {
                 let error = self.error;
                 if let Some(label) = self.control_mut(error) {
-                    label.set_caption("Choose a compatible provider group before applying.");
+                    label.set_caption("Choose a group before applying.");
                 }
                 return EventProcessStatus::Processed;
             };
@@ -478,31 +479,31 @@ impl ButtonEvents for SwitchDialog {
     }
 }
 
-pub(crate) fn show_switch(consumer: &str, previews: Vec<SwitchPreview>) -> Option<BindRequest> {
-    SwitchDialog::new(consumer, previews).show()
+pub(crate) fn show_switch(instance: &str, previews: Vec<SwitchPreview>) -> Option<BindRequest> {
+    SwitchDialog::new(instance, previews).show()
 }
 
 pub(crate) fn render_preview(preview: &SwitchPreview) -> String {
-    let routes = if preview.affected_services.is_empty() {
-        "  (no route changes)".into()
+    let routes = if preview.membership_changes.is_empty() {
+        "  (no membership changes)".into()
     } else {
         let mut lines = vec![format!(
             "  {:<24} | {:<28} | {}",
-            "Route", "Old provider", "New provider"
+            "Member", "Old group", "New group"
         )];
         lines.push(format!("  {}", "-".repeat(78)));
-        lines.extend(preview.affected_services.iter().map(|change| {
+        lines.extend(preview.membership_changes.iter().map(|change| {
             format!(
                 "  {:<24} | {:<28} | {}",
-                change.service,
-                change.old_provider.as_deref().unwrap_or("not connected"),
-                change.new_provider.as_deref().unwrap_or("not connected"),
+                change.member,
+                change.old_member.as_deref().unwrap_or("not present"),
+                change.new_member.as_deref().unwrap_or("not present"),
             )
         }));
         lines.join("\n")
     };
     let diagnostics = if preview.diagnostics.is_empty() {
-        "Validation: compatible — ready for one atomic apply.".into()
+        "Validation: ready for one atomic apply.".into()
     } else {
         format!(
             "Cannot apply:\n{}",
@@ -515,8 +516,8 @@ pub(crate) fn render_preview(preview: &SwitchPreview) -> String {
         )
     };
     format!(
-        "Group: {} → {}\n\nEvery route that will change:\n{}\n\n{}\nThe complete binding is validated and applied atomically; no route-by-route mutation is performed.",
-        preview.old_group.as_deref().unwrap_or("not connected"),
+        "Group: {} → {}\n\nEvery membership entry that will change:\n{}\n\n{}\nThe complete binding is validated and applied atomically.",
+        preview.old_group.as_deref().unwrap_or("not assigned"),
         preview.new_group,
         routes,
         diagnostics,
@@ -627,15 +628,14 @@ pub(crate) fn show_result(text: &str) {
 mod tests {
     use super::*;
     use crate::state::{DeploymentProjection, ProjectState};
-    use switchyard_ops::{RouteChange, RouteHistoryEntry};
+    use switchyard_ops::{MembershipChange, RouteHistoryEntry};
 
     fn connection() -> ConnectionRow {
         ConnectionRow {
-            consumer: "frontend-a".into(),
-            slot: "api".into(),
+            instance: "frontend-a".into(),
             current_group: None,
-            compatible_groups: vec!["feature".into(), "main".into()],
-            providers: Vec::new(),
+            groups: vec!["feature".into(), "main".into()],
+            members: Vec::new(),
         }
     }
 
@@ -663,26 +663,30 @@ mod tests {
             ..Default::default()
         };
         let rows = project_rows(&state);
-        assert_eq!(rows[0].group, "not connected — press Enter to fix");
+        assert_eq!(rows[0].group, "not assigned");
         assert_eq!(rows[0].route_version, "desired v5 / observed v4");
-        assert!(rows[0].state.contains("not connected — press Enter to fix"));
+        assert!(
+            rows[0]
+                .state
+                .contains("not assigned — press Enter to select a group")
+        );
         assert!(rows[0].state.contains("failed: timeout"));
         assert!(rows[0].state.contains("rolling_back"));
     }
 
     #[test]
-    fn switch_display_contains_only_ops_compatible_groups() {
+    fn switch_display_contains_all_authored_groups() {
         let row = connection();
         let previews = row
-            .compatible_groups
+            .groups
             .iter()
             .map(|group| SwitchPreview {
-                consumer: row.consumer.clone(),
+                instance: row.instance.clone(),
                 old_group: None,
                 new_group: group.clone(),
-                old_providers: Vec::new(),
-                new_providers: Vec::new(),
-                affected_services: Vec::new(),
+                old_members: Vec::new(),
+                new_members: Vec::new(),
+                membership_changes: Vec::new(),
                 diagnostics: Vec::new(),
             })
             .collect::<Vec<_>>();
@@ -695,21 +699,21 @@ mod tests {
     #[test]
     fn synthetic_switch_preview_renders_every_old_to_new_route() {
         let preview = SwitchPreview {
-            consumer: "frontend-a".into(),
+            instance: "frontend-a".into(),
             old_group: Some("main".into()),
             new_group: "feature".into(),
-            old_providers: Vec::new(),
-            new_providers: Vec::new(),
-            affected_services: vec![
-                RouteChange {
-                    service: "api".into(),
-                    old_provider: Some("api-main/http".into()),
-                    new_provider: Some("api-feature/http".into()),
+            old_members: Vec::new(),
+            new_members: Vec::new(),
+            membership_changes: vec![
+                MembershipChange {
+                    member: "api".into(),
+                    old_member: Some("api-main/http".into()),
+                    new_member: Some("api-feature/http".into()),
                 },
-                RouteChange {
-                    service: "db".into(),
-                    old_provider: Some("db-main/postgres".into()),
-                    new_provider: Some("db-feature/postgres".into()),
+                MembershipChange {
+                    member: "db".into(),
+                    old_member: Some("db-main/postgres".into()),
+                    new_member: Some("db-feature/postgres".into()),
                 },
             ],
             diagnostics: Vec::new(),

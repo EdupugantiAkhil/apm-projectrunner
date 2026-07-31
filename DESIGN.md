@@ -16,7 +16,7 @@ authored topology has no separate capability, slot, binding, or direct-route lay
 
 Existing application code must not require modification. A containerized consumer may
 continue calling fixed dependency addresses such as `localhost:8001`; Switchyard routes
-those calls to the selected provider group inside the consumer's isolated network
+those calls through the instance's group inside its isolated network
 namespace.
 
 Switchyard's core is solution-agnostic. Java, Python, JAS, UI, and database are example
@@ -45,15 +45,15 @@ The system must support sources from:
    deployment files are the source of truth. Generated Compose files are disposable.
 2. **Treat a suite as a unit.** A Python suite can expand into five related services;
    duplicating the suite duplicates all five with consistent naming and configuration.
-3. **Make routing explicit.** A UI never silently connects to whichever backend happens
-   to be available. Its selected dependencies are visible and inspectable.
+3. **Make membership explicit.** Every instance's complete ordered group is visible and
+   inspectable; routing does not infer roles from names such as UI or backend.
 4. **Keep source separate from runtime.** A source identifies code; a block describes
    how to run it; an instance combines them for a deployment.
 5. **Use containers as the first isolation boundary.** Phase 1 wraps every long-running
    instance in a container-backed network namespace. This makes repeated fixed ports
    safe and enables transparent loopback routing. Other execution adapters remain part
    of the product model but are deferred until this path is proven.
-6. **Fail before mutation.** Validate paths, names, ports, route targets, dependency
+6. **Fail before mutation.** Validate paths, names, addresses, membership,
    cycles, Dockerfiles, and required variables before starting a deployment.
 7. **Local first, LAN optional.** `.localhost` is the safe default. mDNS LAN exposure is
    an explicit opt-in with visible security warnings.

@@ -16,12 +16,10 @@ spec:
           execution:
             type: container
             image: nginx:alpine
-          provides:
-            http: { protocol: http, port: 80 }
           probe: { type: http, path: /, port: 80 }
           publish: [80]
 
-    # A consumer block can use a provided capability and wait for a local service:
+    # A multi-service block can still express local lifecycle dependencies:
     # client:
     #   services:
     #     helper:
@@ -29,9 +27,10 @@ spec:
     #       probe: { type: command, command: ["true"] }
     #     app:
     #       execution: { type: container, image: busybox:latest, command: ["sleep", "infinity"] }
-    #       consumes:
-    #         http: { protocol: http, address: { host: 127.0.0.1, port: 8080 } }
     #       dependsOn:
     #         helper: healthy
   instances:
     - { name: web, block: web, source: project }
+  groups:
+    default:
+      instances: [web]

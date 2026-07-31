@@ -1450,17 +1450,17 @@ fn definition_yaml(name: &str) -> String {
     )
 }
 
-fn collision_definition_yaml(name: &str) -> String {
+fn membership_definition_yaml(name: &str) -> String {
     format!(
-        "apiVersion: switchyard.dev/v1alpha2\nkind: Deployment\nmetadata: {{ name: {name} }}\nspec:\n  sources:\n    app: {{ path: . }}\n  blocks:\n    database:\n      services:\n        db:\n          execution: {{ type: container, image: example/database:1 }}\n          provides:\n            database: {{ protocol: tcp, port: 5432 }}\n    backend:\n      services:\n        app:\n          execution: {{ type: container, image: example/backend:1 }}\n          consumes:\n            database: {{ protocol: tcp, address: {{ host: 127.0.0.1, port: 5432 }} }}\n  instances:\n    - {{ name: db-main, block: database, source: app }}\n    - {{ name: db-replica, block: database, source: app }}\n    - {{ name: backend-1, block: backend, source: app }}\n  groups:\n    dual-write:\n      instances: [db-main/db, db-replica/db]\n  bindings:\n    backend-1: dual-write\n"
+        "apiVersion: switchyard.dev/v1alpha2\nkind: Deployment\nmetadata: {{ name: {name} }}\nspec:\n  sources:\n    app: {{ path: . }}\n  blocks:\n    database:\n      services:\n        db:\n          execution: {{ type: container, image: example/database:1 }}\n    backend:\n      services:\n        app:\n          execution: {{ type: container, image: example/backend:1 }}\n  instances:\n    - {{ name: db-main, block: database, source: app }}\n    - {{ name: db-replica, block: database, source: app }}\n    - {{ name: backend-1, block: backend, source: app }}\n  groups:\n    dual-write:\n      instances: [backend-1/app, db-main/db, db-replica/db]\n"
     )
 }
 
 #[tokio::test]
-async fn deployment_validation_returns_planner_warnings() {
+async fn deployment_validation_accepts_membership_without_static_listener_warnings() {
     let temp = tempfile::tempdir().unwrap();
     let api = start_api(&temp, Arc::new(ImmediateBackend), 1);
-    let yaml = collision_definition_yaml("warning-demo");
+    let yaml = membership_definition_yaml("warning-demo");
 
     let (status, body) = request(
         &api,
@@ -1476,12 +1476,7 @@ async fn deployment_validation_returns_planner_warnings() {
     let validation = json_body::<Value>(&body);
     assert_eq!(validation["valid"], true);
     assert_eq!(validation["diagnostics"], json!([]));
-    assert_eq!(validation["warnings"][0]["code"], "provider_collision");
-    assert_eq!(validation["warnings"][0]["path"], "spec.bindings.backend-1");
-    assert_eq!(
-        validation["warnings"][0]["message"],
-        "`database` slot on backend-1 has two candidates in group `dual-write`: db-main/db and db-replica/db; routing to db-main/db, the first listed"
-    );
+    assert!(validation.get("warnings").is_none());
 }
 
 #[tokio::test]

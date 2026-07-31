@@ -114,10 +114,6 @@ pub struct Parameter {
 pub struct Service {
     pub execution: Execution,
     #[serde(default)]
-    pub provides: BTreeMap<String, Capability>,
-    #[serde(default)]
-    pub consumes: BTreeMap<String, RouteSlot>,
-    #[serde(default)]
     pub publish: Vec<u16>,
     #[serde(default)]
     pub volumes: Vec<VolumeMount>,
@@ -197,45 +193,6 @@ pub struct Build {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Capability {
-    #[serde(default)]
-    pub protocol: Protocol,
-    pub port: u16,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RouteSlot {
-    #[serde(default)]
-    pub protocol: Protocol,
-    pub address: ListenAddress,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ListenAddress {
-    #[serde(default = "default_loopback")]
-    pub host: String,
-    pub port: u16,
-}
-
-fn default_loopback() -> String {
-    "127.0.0.1".into()
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Protocol {
-    #[default]
-    Http,
-    Https,
-    Websocket,
-    Grpc,
-    Tcp,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VolumeMount {
     pub name: String,
     pub target: PathBuf,
@@ -301,8 +258,6 @@ pub struct Instance {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceGroup {
-    #[serde(default)]
-    pub extends: Option<String>,
     #[serde(default)]
     pub instances: Vec<String>,
     /// Members excluded only from this group's routing while their authored

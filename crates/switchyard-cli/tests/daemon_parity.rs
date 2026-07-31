@@ -73,9 +73,7 @@ async fn no_daemon_fallback_and_api_backend_have_identical_output() {
         .output()
         .unwrap();
     assert!(direct.status.success());
-    assert!(String::from_utf8_lossy(&direct.stdout).contains(
-        "Warning [provider_collision] spec.bindings.consumer-a: `search` slot on consumer-a has two candidates in group `base`: provider-main/api and provider-replica/api; routing to provider-main/api, the first listed"
-    ));
+    assert!(String::from_utf8_lossy(&direct.stdout).contains("deployment `comparison` is valid"));
     assert!(!temp.path().join(".switchyard/daemon.json").exists());
 
     let config = DaemonConfig::new(temp.path().into(), binary.into());
