@@ -485,26 +485,6 @@ In the Web UI, group and instance addresses and `managedProfiles` are edited thr
 **Routing** panel's definition editor. Every save validates the complete deployment, so
 multi-group membership is rejected before Plan or Up.
 
-> **Not built this way yet.** Neither field exists in this shape. What is implemented is
-> `uiRoutes` (`crates/switchyard-planner/src/model.rs:316`): entries keyed by UI carrying
-> `origin`, `backend`, and `downstreamGroup`. That is a group address in all but location — it
-> names the combination, but it hangs off the UI rather than the group, and its domain is
-> declared separately as a `custom_domain` destination on a `hostRouter` listener, so one
-> address means editing two places that must agree. The current planner also has a narrower,
-> backend-specific downstream-group invariant; V2 replaces it with the generic
-> one-instance-one-group validation above. Instance-level addresses are described in
-> `DESIGN.md` as a separate `ingress:` block and are not implemented anywhere in the crates;
-> the shape above drops that block and puts `address:` on the instance instead.
->
-> Reaching **any** member of a group by one address is the largest piece of new work here.
-> Today a `custom_domain` destination maps to exactly one provider, so serving a whole group
-> from one name means the host router resolving a member per request — router work in
-> `router-pingora`, not only a schema change. It also needs checking against browser identity
-> below: an `Origin` of `feature-test.comparison.localhost` is what currently identifies which
-> combination a request belongs to, so a domain that reaches several members must still
-> identify the group unambiguously. This is tracked in
-> [V2 roadmap Part 3](../v2-roadmap.md#part-3--serving-a-whole-group-from-one-address-router).
-
 ### Reaching a specific instance from the browser
 
 This is the one place where you have to do something Switchyard-specific. Every application instance
@@ -567,7 +547,7 @@ field name differ, both are given — the persisted YAML keeps the internal name
 | **Desired vs observed** | authored vs runtime | Desired is what you authored; observed is what is actually running. The UI keeps them in separate views and labels which you are looking at. |
 | **Group address** | `address` on a group | A group's own custom local name. Its bare form resolves when exactly one active member also has an instance address. |
 | **Instance address** | `address` on an instance | A stable custom local name for one instance, with no combination implied. Optional; most instances have none. |
-| **Host router** | `hostRouter` | The native host process serving custom domains, TLS, and browser-facing traffic, mapping each domain to the instance behind it. |
+| **Host router** | native gateway | The native host process serving custom domains, TLS, and browser-facing traffic. Its ordinary local configuration is generated from addresses, membership, published services, and HTTP probes. |
 | **Device** | — | A host that can run instances: the implicit `local`, plus registered SSH hosts. |
 | **Reachability** | device status | Whether Switchyard can reach a device over SSH: `never`, `ok`, `unreachable`, `auth-failed`. |
 | **Eligibility** | — | Whether a device can actually run instances. Separate from reachability — a device can be reachable and still ineligible. |

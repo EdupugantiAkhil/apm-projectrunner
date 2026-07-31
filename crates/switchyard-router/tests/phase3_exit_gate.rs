@@ -9,6 +9,8 @@ use bytes::Bytes;
 use http::{HeaderMap, HeaderValue, Request, Response};
 use router_config::RouterConfig;
 use serde_json::json;
+use std::path::Path;
+use switchyard_planner::{load_bundle, load_bundle_from_str, plan};
 use switchyard_router::{
     AdminOptions, RouterProcess,
     host_gateway::{ensure_proxy_credentials, preflight},
@@ -65,6 +67,299 @@ impl Drop for IdentityUpstream {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+fn vision_sample_without_deferred_scripts() -> String {
+    let markdown = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/vision/sample-config.md"),
+    )
+    .unwrap();
+    let yaml = markdown
+        .split_once("```yaml\n")
+        .and_then(|(_, rest)| rest.split_once("\n```"))
+        .map(|(yaml, _)| yaml)
+        .unwrap();
+    yaml.split_once("\nscripts:")
+        .map_or(yaml, |(supported, _)| supported)
+        .to_owned()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn vision_sample_routes_two_groups_without_authored_router_topology() {
+    let definition =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/vision/acceptance.yaml");
+    let yaml = vision_sample_without_deferred_scripts();
+    assert!(!yaml.contains("hostRouter:"));
+    assert!(!yaml.contains("hostUpstreams:"));
+    let bundle = load_bundle_from_str(&yaml, &definition).unwrap();
+    let planned = plan(&bundle).unwrap();
+    let mut config: RouterConfig =
+        serde_json::from_str(planned.host_router_config.as_deref().unwrap()).unwrap();
+    let ui_1 = IdentityUpstream::start("ui-1").await;
+    let ui_2 = IdentityUpstream::start("ui-2").await;
+    let backend_1 = IdentityUpstream::start("backend-1").await;
+    let backend_2 = IdentityUpstream::start("backend-2").await;
+    let backend_canary = IdentityUpstream::start("backend-canary").await;
+    for provider in &mut config.spec.providers {
+        provider.endpoint.port = match provider.id.as_str() {
+            "ui-1" => ui_1.address.port(),
+            "ui-2" => ui_2.address.port(),
+            "backend-1" => backend_1.address.port(),
+            "backend-2" => backend_2.address.port(),
+            "backend-canary" => backend_canary.address.port(),
+            unknown => panic!("unexpected inferred provider {unknown}"),
+        };
+    }
+    let original_group_port = config
+        .spec
+        .listeners
+        .iter()
+        .find(|listener| {
+            listener.destinations.iter().any(|destination| {
+                matches!(
+                    destination,
+                    router_config::ListenerDestination::CustomDomain { domain, .. }
+                        if domain == "feature-test.comparison.localhost"
+                )
+            })
+        })
+        .unwrap()
+        .bind
+        .port;
+    for listener in &mut config.spec.listeners {
+        listener.bind.port = unused_port();
+    }
+    let group_port = config
+        .spec
+        .listeners
+        .iter()
+        .find(|listener| {
+            listener.destinations.iter().any(|destination| {
+                matches!(
+                    destination,
+                    router_config::ListenerDestination::CustomDomain { domain, .. }
+                        if domain == "feature-test.comparison.localhost"
+                )
+            })
+        })
+        .unwrap()
+        .bind
+        .port;
+    let backend_port = config
+        .spec
+        .listeners
+        .iter()
+        .find(|listener| {
+            listener
+                .destinations
+                .iter()
+                .any(|destination| destination.slot().as_str() == "browser-8080")
+        })
+        .unwrap()
+        .bind
+        .port;
+    assert!(!config.spec.listeners.iter().any(|listener| {
+        listener.destinations.iter().any(|destination| {
+            matches!(
+                destination,
+                router_config::ListenerDestination::CustomDomain { domain, .. }
+                    if domain.contains("backend-canary")
+            )
+        })
+    }));
+    let directory = tempfile::Builder::new()
+        .prefix("sy-phase3-vision-")
+        .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+        .unwrap();
+    let process = RouterProcess::start(
+        config,
+        AdminOptions {
+            socket_path: directory.path().join("admin.socket"),
+            token: "test-token".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let groups = SocketAddr::from(([127, 0, 0, 1], group_port));
+    let feature = http_request(
+        groups,
+        "GET / HTTP/1.1\r\nHost: feature-test.comparison.localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert_eq!(response_body(&feature), "ui-1");
+    let regression = http_request(
+        groups,
+        "GET / HTTP/1.1\r\nHost: regression.comparison.localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert_eq!(response_body(&regression), "ui-2");
+
+    let browser_backend = SocketAddr::from(([127, 0, 0, 1], backend_port));
+    let feature_backend = http_request(
+        browser_backend,
+        &format!("GET / HTTP/1.1\r\nHost: localhost:8080\r\nOrigin: http://feature-test.comparison.localhost:{original_group_port}\r\nConnection: close\r\n\r\n"),
+    )
+    .await;
+    assert_eq!(response_body(&feature_backend), "backend-1");
+    let regression_backend = http_request(
+        browser_backend,
+        &format!("GET / HTTP/1.1\r\nHost: localhost:8080\r\nOrigin: http://regression.comparison.localhost:{original_group_port}\r\nConnection: close\r\n\r\n"),
+    )
+    .await;
+    assert_eq!(response_body(&regression_backend), "backend-2");
+
+    process.request_shutdown();
+    process.wait().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn planned_fixture_serves_two_groups_from_their_bare_addresses() {
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/jas-base/deployment.yaml");
+    let bundle = load_bundle(&fixture).unwrap();
+    let planned = plan(&bundle).unwrap();
+    let mut config: RouterConfig =
+        serde_json::from_str(planned.host_router_config.as_deref().unwrap()).unwrap();
+    let ui_a = IdentityUpstream::start("ui-a").await;
+    let ui_b = IdentityUpstream::start("ui-b").await;
+    for provider in &mut config.spec.providers {
+        provider.endpoint.port = if provider.id.as_str() == "ui-a" {
+            ui_a.address.port()
+        } else {
+            ui_b.address.port()
+        };
+    }
+    for listener in &mut config.spec.listeners {
+        listener.bind.port = unused_port();
+    }
+    let group_port = config
+        .spec
+        .listeners
+        .iter()
+        .find(|listener| {
+            listener.destinations.iter().any(|destination| {
+                matches!(
+                    destination,
+                    router_config::ListenerDestination::CustomDomain { domain, .. }
+                        if domain == "ai-main.jas-base.localhost"
+                )
+            })
+        })
+        .unwrap()
+        .bind
+        .port;
+    let directory = tempfile::Builder::new()
+        .prefix("sy-phase3-planned-")
+        .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+        .unwrap();
+    let process = RouterProcess::start(
+        config,
+        AdminOptions {
+            socket_path: directory.path().join("admin.socket"),
+            token: "test-token".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let address = SocketAddr::from(([127, 0, 0, 1], group_port));
+    let main = http_request(
+        address,
+        "GET / HTTP/1.1\r\nHost: ai-main.jas-base.localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert_eq!(response_body(&main), "ui-b");
+    let feature = http_request(
+        address,
+        "GET / HTTP/1.1\r\nHost: ai-feature.jas-base.localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert_eq!(response_body(&feature), "ui-a");
+
+    process.request_shutdown();
+    process.wait().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn group_domain_uses_its_default_and_allows_an_explicit_member_override() {
+    let default = IdentityUpstream::start("default-member").await;
+    let alternate = IdentityUpstream::start("alternate-member").await;
+    let port = unused_port();
+    let directory = tempfile::Builder::new()
+        .prefix("sy-phase3-group-")
+        .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+        .unwrap();
+    let config: RouterConfig = serde_json::from_value(json!({
+        "apiVersion": "switchyard.dev/router/v1alpha1",
+        "kind": "RouterConfiguration",
+        "metadata": { "deployment": "phase3-group-domain" },
+        "spec": {
+            "snapshot": {
+                "id": "phase3-group-domain-1", "version": 1,
+                "transitions": transitions()
+            },
+            "listeners": [{
+                "consumer": "gateway",
+                "bind": { "host": "127.0.0.1", "port": port },
+                "protocol": "http",
+                "destinations": [{
+                    "kind": "custom_domain", "slot": "group-target",
+                    "domain": "feature.demo.localhost"
+                }]
+            }],
+            "providers": [
+                { "id": "default-member", "endpoint": {
+                    "protocol": "http", "host": "127.0.0.1", "port": default.address.port()
+                }},
+                { "id": "alternate-member", "endpoint": {
+                    "protocol": "http", "host": "127.0.0.1", "port": alternate.address.port()
+                }}
+            ],
+            "groups": [], "bindings": [],
+            "routes": [{
+                "consumer": "gateway", "slot": "group-target", "provider": "default-member"
+            }],
+            "browserRoutes": [{
+                "identity": { "source": "explicit_header", "value": "alternate-member" },
+                "destination": "group-target", "provider": "alternate-member"
+            }],
+            "identity": { "explicitHeader": "X-Switchyard-Route", "stripBeforeForwarding": true }
+        }
+    }))
+    .unwrap();
+    let process = RouterProcess::start(
+        config,
+        AdminOptions {
+            socket_path: directory.path().join("admin.socket"),
+            token: "test-token".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+
+    let bare = http_request(
+        address,
+        "GET / HTTP/1.1\r\nHost: feature.demo.localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert_eq!(response_body(&bare), "default-member");
+    let targeted = http_request(
+        address,
+        "GET / HTTP/1.1\r\nHost: feature.demo.localhost\r\nX-Switchyard-Route: alternate-member\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert_eq!(response_body(&targeted), "alternate-member");
+    assert!(!targeted.to_ascii_lowercase().contains("x-switchyard-route"));
+    let unknown = http_request(
+        address,
+        "GET / HTTP/1.1\r\nHost: feature.demo.localhost\r\nX-Switchyard-Route: missing\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(unknown.starts_with("HTTP/1.1 403"));
+    assert!(unknown.contains("unknown_route_identity"));
+
+    process.request_shutdown();
+    process.wait().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

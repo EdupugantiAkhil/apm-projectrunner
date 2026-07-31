@@ -806,6 +806,23 @@ fn group_address_generates_its_domain_destination_and_origin_route() {
         ) && route.destination.as_str() == "browser-java"
             && route.provider.as_str() == "jas-feature"
     }));
+    assert!(host.spec.listeners.iter().any(|listener| {
+        listener.destinations.iter().any(|destination| {
+            matches!(
+                destination,
+                router_config::ListenerDestination::CustomDomain { domain, .. }
+                    if domain == "jas-feature.ai-main.jas-base.localhost"
+            )
+        })
+    }));
+    assert!(host.spec.browser_routes.iter().any(|route| {
+        matches!(
+            &route.identity,
+            router_config::BrowserIdentity::ExplicitHeader { value }
+                if value.as_str() == "jas-feature"
+        ) && route.destination.as_str() == "ui-b-domain"
+            && route.provider.as_str() == "jas-feature"
+    }));
 }
 
 #[test]
@@ -855,6 +872,7 @@ fn group_address_rejects_a_group_without_an_addressed_member() {
 #[test]
 fn group_address_rejects_a_group_with_two_addressed_members() {
     let mut deployment = jas_base_bundle();
+    deployment.spec.groups.remove("ai-feature");
     deployment
         .spec
         .groups

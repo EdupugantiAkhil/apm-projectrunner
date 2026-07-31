@@ -640,7 +640,59 @@ impl ProxyHttp for SwitchyardProxy {
         };
         let snapshot = self.engine.snapshot();
         let target = if let Some(consumer) = &self.listener.consumer {
-            snapshot.lookup_consumer(consumer, slot).cloned()
+            let explicit = header_text(session.req_header(), &self.identity.explicit_header);
+            let candidates = snapshot.browser_candidates(slot);
+            if explicit.is_some() && !candidates.is_empty() {
+                if header_count(session.req_header(), &self.identity.explicit_header) > 1 {
+                    return self
+                        .reject_browser_route(
+                            session,
+                            ctx,
+                            400,
+                            "conflicting_route_identity",
+                            "routing identity headers must occur at most once",
+                            &candidates,
+                        )
+                        .await;
+                }
+                if !self.listener.bind.host.is_loopback() {
+                    return self
+                        .reject_browser_route(
+                            session,
+                            ctx,
+                            403,
+                            "untrusted_identity_header",
+                            "the explicit route header is accepted only on loopback listeners",
+                            &candidates,
+                        )
+                        .await;
+                }
+                match snapshot.lookup_browser(BrowserLookup {
+                    destination: slot,
+                    explicit_header: explicit,
+                    origin: None,
+                    proxy_listener: None,
+                }) {
+                    Ok(target) => {
+                        ctx.browser_routed = true;
+                        Some(target.clone())
+                    }
+                    Err(error) => {
+                        return self
+                            .reject_browser_route(
+                                session,
+                                ctx,
+                                403,
+                                "unknown_route_identity",
+                                &error.to_string(),
+                                &candidates,
+                            )
+                            .await;
+                    }
+                }
+            } else {
+                snapshot.lookup_consumer(consumer, slot).cloned()
+            }
         } else {
             ctx.browser_routed = true;
             if header_count(session.req_header(), &self.identity.explicit_header) > 1

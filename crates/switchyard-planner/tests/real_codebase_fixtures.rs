@@ -8,6 +8,60 @@ fn repository_path(relative: &str) -> std::path::PathBuf {
         .join(relative)
 }
 
+fn vision_sample_without_deferred_scripts() -> String {
+    let markdown = fs::read_to_string(repository_path("docs/vision/sample-config.md")).unwrap();
+    let yaml = markdown
+        .split_once("```yaml\n")
+        .and_then(|(_, rest)| rest.split_once("\n```"))
+        .map(|(yaml, _)| yaml)
+        .expect("vision sample must contain one YAML deployment");
+    yaml.split_once("\nscripts:")
+        .map_or(yaml, |(supported, _)| supported)
+        .to_owned()
+}
+
+#[test]
+fn vision_sample_validates_and_plans_without_compatibility_router_fields() {
+    let yaml = vision_sample_without_deferred_scripts();
+    assert!(!yaml.contains("hostRouter:"));
+    assert!(!yaml.contains("hostUpstreams:"));
+    let deployment_path = repository_path("docs/vision/vision-sample-deployment.yaml");
+    let bundle = switchyard_planner::load_bundle_from_str(&yaml, &deployment_path)
+        .expect("vision sample should load as the authored v1alpha2 schema");
+    let generated = plan(&bundle).expect("vision sample should plan without router topology");
+    let host: router_config::RouterConfig =
+        serde_json::from_str(generated.host_router_config.as_deref().unwrap()).unwrap();
+    let domains = host
+        .spec
+        .listeners
+        .iter()
+        .flat_map(|listener| &listener.destinations)
+        .filter_map(|destination| match destination {
+            router_config::ListenerDestination::CustomDomain { domain, .. } => {
+                Some(domain.as_str())
+            }
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    for expected in [
+        "feature-test.comparison.localhost",
+        "regression.comparison.localhost",
+        "ui-1.comparison.localhost",
+        "ui-2.comparison.localhost",
+        "backend-1.feature-test.comparison.localhost",
+        "backend-2.regression.comparison.localhost",
+    ] {
+        assert!(
+            domains.contains(expected),
+            "missing generated domain {expected}"
+        );
+    }
+    assert!(generated.host_upstreams.contains_key("ui-1"));
+    assert!(generated.host_upstreams.contains_key("backend-1"));
+    assert!(!generated.host_upstreams.contains_key("backend-canary"));
+    assert!(!generated.host_upstreams.contains_key("db-feature-test"));
+}
+
 #[test]
 fn legacy_workspace_fixture_expands_through_generic_planner_contracts() {
     let deployment = repository_path("examples/jas-base/deployment.yaml");
@@ -142,7 +196,11 @@ fn legacy_workspace_fixture_expands_through_generic_planner_contracts() {
         BTreeSet::from([
             "ai-feature.jas-base.localhost",
             "ai-main.jas-base.localhost",
+            "jas-feature.ai-main.jas-base.localhost",
+            "jas-main.ai-feature.jas-base.localhost",
+            "ui-a.ai-feature.jas-base.localhost",
             "ui-a.jas-base.localhost",
+            "ui-b.ai-main.jas-base.localhost",
             "ui-b.jas-base.localhost",
         ])
     );

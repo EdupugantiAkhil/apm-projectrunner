@@ -228,21 +228,21 @@ changing which UI and backend checkout each address opens.
 
 ## Where today's schema differs
 
-The sample above is the intended shape. Two things about the current build differ, both tracked
-in [docs/v2-roadmap.md](../v2-roadmap.md):
+The sample above is the intended shape. One deferred field differs from the current build:
 
 1. **`scripts:` is not the current shape, and is deferred.** Run actions live in
    `.switchyard/run-scripts.yaml` as seven-field records. They are deliberately outside the V2
    roadmap until a shell action has a settled way to reach the deployment it is about.
-2. **Address selection is not yet per request.** Instance addresses and a bare group address are
-   generated without a hand-authored router topology. The bare group address works only when
-   exactly one active member has its own `address:`, which is deliberate and generic. Part 3 still
-   needs explicit member subdomains/browser identity and an end-to-end fixture that serves several
-   members through one group address.
+
+Address selection is generated without a hand-authored router topology. A bare group address
+uses its one active independently addressed member as the default; instance subdomains and trusted
+browser identity select another browser-reachable member per request. The planner derives the
+host-facing HTTP/HTTPS providers and browser localhost routes from published services with HTTP
+probes.
 
 Bare instance names in `instances:` do work today, and resolve to the single member service.
 Writing `ui-1/app` is also accepted, and is what you need when one instance runs several services
 and you mean a particular one; the repository's own examples use that longer form throughout.
 
-For a deployment that validates against the build as it stands today, see
-`examples/routing-matrix/deployment.yaml`.
+The deployment above, excluding `scripts:`, validates and plans as written. The V2 roadmap records
+the remaining live-fixture issue in its Part 3 acceptance gate.

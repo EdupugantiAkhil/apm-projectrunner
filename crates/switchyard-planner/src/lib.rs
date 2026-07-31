@@ -281,9 +281,10 @@ pub fn plan_with_devices(
     if !bundle.spec.overlays.is_empty() {
         return plan_with_overlays_and_devices(bundle, &OverlayOptions::default(), devices);
     }
-    let validation = validate(bundle, devices)?;
+    let effective = with_derived_host_routing(bundle);
+    let validation = validate(&effective, devices)?;
     generate(
-        bundle,
+        &effective,
         &validation.groups,
         validation.warnings,
         None,
@@ -296,6 +297,275 @@ pub fn plan_with_devices(
             error.to_string(),
         )]
     })
+}
+
+fn with_derived_host_routing(bundle: &Bundle) -> Bundle {
+    let mut effective = bundle.clone();
+    let has_addresses = effective
+        .spec
+        .instances
+        .iter()
+        .any(|instance| instance.address.is_some())
+        || effective
+            .spec
+            .groups
+            .values()
+            .any(|group| group.address.is_some());
+    if effective.spec.host_router.is_some() || !has_addresses {
+        return effective;
+    }
+    let browser_members = effective
+        .spec
+        .instances
+        .iter()
+        .filter(|instance| instance.address.is_some())
+        .map(|instance| instance.name.as_str())
+        .chain(effective.spec.groups.values().flat_map(|group| {
+            group.instances.iter().filter_map(|member| {
+                let instance = provider_reference(member).0;
+                (!group.disabled.iter().any(|disabled| disabled == instance)).then_some(instance)
+            })
+        }))
+        .collect::<BTreeSet<_>>();
+    for instance in effective.spec.instances.iter().filter(|instance| {
+        !instance.is_external() && browser_members.contains(instance.name.as_str())
+    }) {
+        let Some(block) = effective.spec.blocks.get(&instance.block) else {
+            continue;
+        };
+        let candidates = block
+            .services
+            .iter()
+            .filter_map(|(service_name, service)| match &service.probe {
+                Some(Probe::Http { path, port, https }) if service.publish.contains(port) => {
+                    Some((service_name, service, path, *port, *https))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for (service_name, _, _, port, _) in candidates {
+            if effective.spec.host_upstreams.values().any(|upstream| {
+                upstream.instance == instance.name && upstream.service == *service_name
+            }) {
+                continue;
+            }
+            let preferred = if block
+                .services
+                .values()
+                .filter(|service| matches!(service.probe, Some(Probe::Http { .. })))
+                .count()
+                == 1
+            {
+                instance.name.clone()
+            } else {
+                resource_name(&[&instance.name, service_name])
+            };
+            let mut provider = preferred.clone();
+            let mut suffix = 2;
+            while effective.spec.host_upstreams.contains_key(&provider) {
+                provider = format!("{preferred}-{suffix}");
+                suffix += 1;
+            }
+            effective.spec.host_upstreams.insert(
+                provider,
+                PublishedUpstream {
+                    instance: instance.name.clone(),
+                    service: service_name.clone(),
+                    port,
+                },
+            );
+        }
+    }
+
+    effective.spec.host_router = Some(derived_host_router(&effective));
+    effective
+}
+
+fn derived_host_router(bundle: &Bundle) -> router_config::RouterConfig {
+    use router_config::{
+        BrowserIdentity, BrowserRoute, ComponentId, ConfigMetadata, ConnectionTransitionPolicies,
+        ConnectionTransitionPolicy, HealthCheck, HealthCheckProtocol, IdentityPolicy, InstanceId,
+        Listener, ListenerDestination, Protocol, Provider, Route, RouteSlotId, RouteSnapshot,
+        RouteSnapshotId, RouterConfig, RouterSpec, SocketAddress, UpstreamEndpoint,
+    };
+
+    let browser_targets = bundle
+        .spec
+        .instances
+        .iter()
+        .filter(|instance| instance.address.is_some())
+        .map(|instance| instance.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut providers = Vec::new();
+    let mut routes = Vec::new();
+    let mut upstream_by_instance_port = BTreeMap::<(String, u16), String>::new();
+    for (provider, upstream) in &bundle.spec.host_upstreams {
+        let service = bundle
+            .spec
+            .instances
+            .iter()
+            .find(|instance| instance.name == upstream.instance)
+            .and_then(|instance| bundle.spec.blocks.get(&instance.block))
+            .and_then(|block| block.services.get(&upstream.service));
+        let (protocol, health_check) = match service.and_then(|service| service.probe.as_ref()) {
+            Some(Probe::Http { path, https, .. }) => (
+                if *https {
+                    Protocol::Https
+                } else {
+                    Protocol::Http
+                },
+                Some(HealthCheck {
+                    protocol: if *https {
+                        HealthCheckProtocol::Https
+                    } else {
+                        HealthCheckProtocol::Http
+                    },
+                    path: Some(path.clone()),
+                    interval_ms: 1_000,
+                    timeout_ms: 500,
+                }),
+            ),
+            _ => (Protocol::Http, None),
+        };
+        providers.push(Provider {
+            id: ComponentId::from(provider.as_str()),
+            endpoint: UpstreamEndpoint {
+                protocol,
+                host: "127.0.0.1".into(),
+                port: 0,
+            },
+            health_check,
+            receive_identity_header: false,
+        });
+        if browser_targets.contains(upstream.instance.as_str()) {
+            routes.push(Route {
+                consumer: InstanceId::from("gateway"),
+                slot: RouteSlotId::from(resource_name(&["host", provider]).as_str()),
+                provider: ComponentId::from(provider.as_str()),
+            });
+        }
+        upstream_by_instance_port
+            .insert((upstream.instance.clone(), upstream.port), provider.clone());
+    }
+
+    let gateway_digest = Sha256::digest(bundle.metadata.name.as_bytes());
+    let gateway_port = 18_000 + u16::from_be_bytes([gateway_digest[0], gateway_digest[1]]) % 2_000;
+    let mut listeners = vec![Listener {
+        consumer: Some(InstanceId::from("gateway")),
+        bind: SocketAddress {
+            host: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            port: gateway_port,
+        },
+        protocol: Protocol::Http,
+        tls: None,
+        destinations: Vec::new(),
+        proxy_identity: None,
+        proxy_authentication: None,
+    }];
+    let mut browser_routes = Vec::new();
+    let instances = bundle
+        .spec
+        .instances
+        .iter()
+        .map(|instance| (instance.name.as_str(), instance))
+        .collect::<BTreeMap<_, _>>();
+    let mut browser_ports = BTreeSet::new();
+    let candidate_ports = upstream_by_instance_port
+        .keys()
+        .map(|(_, port)| *port)
+        .collect::<BTreeSet<_>>();
+    for group in bundle.spec.groups.values() {
+        let active = group
+            .instances
+            .iter()
+            .filter(|member| {
+                !group
+                    .disabled
+                    .iter()
+                    .any(|name| name == provider_reference(member).0)
+            })
+            .collect::<Vec<_>>();
+        for port in &candidate_ports {
+            let winner = active.iter().find_map(|member| {
+                let (instance_name, requested_service) = provider_reference(member);
+                let candidate = bundle.spec.host_upstreams.iter().find(|(_, upstream)| {
+                    upstream.instance == instance_name
+                        && upstream.port == *port
+                        && requested_service.is_none_or(|service| upstream.service == service)
+                });
+                candidate.map(|(id, _)| id)
+            });
+            let Some(winner) = winner else { continue };
+            browser_ports.insert(*port);
+            for member in &active {
+                let identity = provider_reference(member).0;
+                if !instances.contains_key(identity) {
+                    continue;
+                }
+                let route = BrowserRoute {
+                    identity: BrowserIdentity::ExplicitHeader {
+                        value: router_config::BindingId::from(identity),
+                    },
+                    destination: RouteSlotId::from(format!("browser-{port}").as_str()),
+                    provider: ComponentId::from(winner.as_str()),
+                };
+                if !browser_routes.iter().any(|existing: &BrowserRoute| {
+                    existing.identity == route.identity && existing.destination == route.destination
+                }) {
+                    browser_routes.push(route);
+                }
+            }
+        }
+    }
+    for port in browser_ports {
+        listeners.push(Listener {
+            consumer: None,
+            bind: SocketAddress {
+                host: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                port,
+            },
+            protocol: Protocol::Http,
+            tls: None,
+            destinations: vec![ListenerDestination::LegacyLocalhost {
+                slot: RouteSlotId::from(format!("browser-{port}").as_str()),
+                host: "localhost".into(),
+            }],
+            proxy_identity: None,
+            proxy_authentication: None,
+        });
+    }
+
+    RouterConfig {
+        api_version: router_config::API_VERSION.into(),
+        kind: router_config::KIND.into(),
+        metadata: ConfigMetadata {
+            deployment: router_config::DeploymentId::from(bundle.metadata.name.as_str()),
+        },
+        spec: RouterSpec {
+            snapshot: RouteSnapshot {
+                id: RouteSnapshotId::from(
+                    resource_name(&[&bundle.metadata.name, "host", "initial"]).as_str(),
+                ),
+                version: 1,
+                transitions: ConnectionTransitionPolicies {
+                    http: ConnectionTransitionPolicy::Drain { timeout_ms: 5_000 },
+                    https: ConnectionTransitionPolicy::Drain { timeout_ms: 5_000 },
+                    websocket: ConnectionTransitionPolicy::Pin,
+                    grpc: ConnectionTransitionPolicy::Drain { timeout_ms: 5_000 },
+                    tcp: ConnectionTransitionPolicy::Close,
+                },
+            },
+            exposure: None,
+            listeners,
+            providers,
+            groups: Vec::new(),
+            bindings: Vec::new(),
+            routes,
+            browser_routes,
+            transparent_proxy: None,
+            identity: IdentityPolicy::default(),
+        },
+    }
 }
 
 /// Validates a reusable block with the same contracts used by deployment planning.
@@ -751,7 +1021,7 @@ fn validate(
             .any(|group| group.address.is_some());
     let mut effective_host_router = bundle.spec.host_router.clone();
     match &mut effective_host_router {
-        Some(config) => apply_addresses(bundle, &instances, config, &mut errors),
+        Some(config) => apply_addresses(bundle, &instances, &resolved_groups, config, &mut errors),
         None if has_addresses => errors.push(Diagnostic::new(
             DiagnosticCode::MissingReference,
             "spec.hostRouter",
@@ -1456,7 +1726,7 @@ fn addressed_instance_provider<'a>(
         .collect::<Vec<_>>();
     if services.len() != 1 {
         return Err(format!(
-            "instance `{}` address needs exactly one reachable service; candidates: {}",
+            "instance `{}` address needs exactly one browser-reachable service; candidates: {}",
             instance.name,
             if services.is_empty() {
                 "none".into()
@@ -1477,6 +1747,30 @@ fn addressed_instance_provider<'a>(
     Ok((service, providers[0]))
 }
 
+fn addressed_member_provider<'a>(
+    bundle: &'a Bundle,
+    instances: &BTreeMap<&str, &'a Instance>,
+    member: &str,
+) -> Result<(&'a str, &'a str), String> {
+    let (instance_name, requested_service) = provider_reference(member);
+    let instance = instances
+        .get(instance_name)
+        .ok_or_else(|| format!("group member `{member}` does not name an instance"))?;
+    let provider = if let Some(service) = requested_service {
+        let providers = host_provider_for_instance_service(bundle, instance_name, service);
+        if providers.len() != 1 {
+            return Err(format!(
+                "group member `{member}` maps to {} host-router providers; expected exactly one",
+                providers.len()
+            ));
+        }
+        providers[0]
+    } else {
+        addressed_instance_provider(bundle, instance)?.1
+    };
+    Ok((instance.name.as_str(), provider))
+}
+
 fn address_origin(listener: &router_config::Listener, address: &str) -> Result<String, String> {
     let (scheme, default_port) = match listener.protocol {
         router_config::Protocol::Http => ("http", 80),
@@ -1490,14 +1784,95 @@ fn address_origin(listener: &router_config::Listener, address: &str) -> Result<S
     })
 }
 
+struct AddressRoute {
+    listener: usize,
+    slot: router_config::RouteSlotId,
+}
+
+struct GroupMemberTarget<'a> {
+    group_name: &'a str,
+    group_address: &'a str,
+    member: &'a str,
+    provider: &'a str,
+    base: &'a AddressRoute,
+    path: &'a str,
+}
+
+fn add_browser_origin_routes(
+    bundle: &Bundle,
+    config: &mut router_config::RouterConfig,
+    origin: &str,
+    identity: &str,
+    path: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let templates = config
+        .spec
+        .browser_routes
+        .iter()
+        .filter(|route| {
+            matches!(
+                &route.identity,
+                router_config::BrowserIdentity::ExplicitHeader { value }
+                    if value.as_str() == identity
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for template in templates {
+        let generated = router_config::BrowserRoute {
+            identity: router_config::BrowserIdentity::Origin {
+                origin: origin.to_owned(),
+            },
+            destination: template.destination.clone(),
+            provider: template.provider.clone(),
+        };
+        let conflicting = config.spec.browser_routes.iter().find(|route| {
+            route.destination == generated.destination
+                && matches!(
+                    &route.identity,
+                    router_config::BrowserIdentity::Origin { origin: candidate }
+                        if candidate == origin
+                )
+        });
+        match conflicting {
+            Some(route) if route.provider != generated.provider => errors.push(Diagnostic::new(
+                DiagnosticCode::ListenerConflict,
+                path,
+                format!(
+                    "origin `{origin}` already routes destination `{}` to `{}` instead of `{}`",
+                    generated.destination, route.provider, generated.provider
+                ),
+            )),
+            Some(_) => {}
+            None => config.spec.browser_routes.push(generated),
+        }
+        if !bundle
+            .spec
+            .host_upstreams
+            .contains_key(template.provider.as_str())
+        {
+            errors.push(Diagnostic::new(
+                DiagnosticCode::MissingReference,
+                path,
+                format!(
+                    "browser provider `{}` has no spec.hostUpstreams mapping to an instance",
+                    template.provider
+                ),
+            ));
+        }
+    }
+}
+
 fn add_address_route(
+    bundle: &Bundle,
     config: &mut router_config::RouterConfig,
     address: &str,
     instance: &str,
     provider: &str,
     path: &str,
     errors: &mut Vec<Diagnostic>,
-) {
+) -> Option<AddressRoute> {
     let normalized = normalized_hostname(address);
     let mut existing = Vec::new();
     for (listener_index, listener) in config.spec.listeners.iter().enumerate() {
@@ -1513,7 +1888,9 @@ fn add_address_route(
         .spec
         .routes
         .iter()
-        .filter(|route| route.provider.as_str() == provider)
+        .filter(|route| {
+            route.provider.as_str() == provider && !route.slot.as_str().starts_with("group--")
+        })
         .flat_map(|route| {
             config
                 .spec
@@ -1541,7 +1918,7 @@ fn add_address_route(
                     candidates.len()
                 ),
             ));
-            return;
+            return None;
         }
         candidates.iter().next().cloned().expect("one candidate")
     } else {
@@ -1552,7 +1929,7 @@ fn add_address_route(
                 path,
                 format!("custom domain `{address}` is declared for multiple route slots"),
             ));
-            return;
+            return None;
         }
         if !candidates.contains(&first) {
             errors.push(Diagnostic::new(
@@ -1563,7 +1940,7 @@ fn add_address_route(
                     first.1
                 ),
             ));
-            return;
+            return None;
         }
         first
     };
@@ -1579,58 +1956,163 @@ fn add_address_route(
         Ok(origin) => origin,
         Err(message) => {
             errors.push(Diagnostic::new(DiagnosticCode::InvalidPath, path, message));
-            return;
+            return None;
         }
     };
-    let templates = config
-        .spec
-        .browser_routes
-        .iter()
-        .filter(|route| {
-            matches!(
-                &route.identity,
-                router_config::BrowserIdentity::ExplicitHeader { value } if value.as_str() == instance
+    add_browser_origin_routes(bundle, config, &origin, instance, path, errors);
+    Some(AddressRoute {
+        listener: selected.0,
+        slot: selected.1,
+    })
+}
+
+fn browser_protocols_compatible(
+    listener: router_config::Protocol,
+    provider: router_config::Protocol,
+) -> bool {
+    listener == provider
+        || matches!(
+            (listener, provider),
+            (
+                router_config::Protocol::Http | router_config::Protocol::Https,
+                router_config::Protocol::Http | router_config::Protocol::Https
             )
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    if templates.is_empty() {
+        )
+}
+
+fn add_group_member_target(
+    bundle: &Bundle,
+    config: &mut router_config::RouterConfig,
+    target: GroupMemberTarget<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let GroupMemberTarget {
+        group_name,
+        group_address,
+        member,
+        provider,
+        base,
+        path,
+    } = target;
+    let (instance_name, _) = provider_reference(member);
+    let Some(provider_definition) = config
+        .spec
+        .providers
+        .iter()
+        .find(|candidate| candidate.id.as_str() == provider)
+    else {
         errors.push(Diagnostic::new(
             DiagnosticCode::MissingReference,
             path,
-            format!(
-                "address `{address}` needs at least one explicit-header browser route for instance `{instance}`"
-            ),
+            format!("group member `{member}` provider `{provider}` is not declared"),
+        ));
+        return;
+    };
+    let listener_protocol = config.spec.listeners[base.listener].protocol;
+    if !browser_protocols_compatible(listener_protocol, provider_definition.endpoint.protocol) {
+        return;
+    }
+    let Some(consumer) = config.spec.listeners[base.listener].consumer.clone() else {
+        errors.push(Diagnostic::new(
+            DiagnosticCode::MissingReference,
+            path,
+            "group addresses require a host-router listener with a consumer identity",
+        ));
+        return;
+    };
+
+    let subdomain = format!("{instance_name}.{group_address}");
+    if !plausible_hostname(&subdomain) {
+        errors.push(Diagnostic::new(
+            DiagnosticCode::InvalidPath,
+            path,
+            format!("generated member subdomain `{subdomain}` is not a valid hostname"),
         ));
         return;
     }
-    for template in templates {
-        let generated = router_config::BrowserRoute {
-            identity: router_config::BrowserIdentity::Origin {
-                origin: origin.clone(),
-            },
-            destination: template.destination.clone(),
-            provider: template.provider.clone(),
-        };
-        let conflicting = config.spec.browser_routes.iter().find(|route| {
-            route.destination == generated.destination
-                && matches!(
-                    &route.identity,
-                    router_config::BrowserIdentity::Origin { origin: candidate } if candidate == &origin
-                )
-        });
-        match conflicting {
-            Some(route) if route.provider != generated.provider => errors.push(Diagnostic::new(
+    let normalized = normalized_hostname(&subdomain);
+    let existing_domain = config
+        .spec
+        .listeners
+        .iter()
+        .enumerate()
+        .flat_map(|(listener_index, listener)| {
+            let normalized = &normalized;
+            listener.destinations.iter().filter_map(move |destination| {
+                if let router_config::ListenerDestination::CustomDomain { slot, domain } =
+                    destination
+                {
+                    (normalized_hostname(domain) == normalized.as_str()).then_some((
+                        listener_index,
+                        slot.clone(),
+                        domain.clone(),
+                    ))
+                } else {
+                    None
+                }
+            })
+        })
+        .next();
+    if let Some((listener_index, slot, domain)) = existing_domain {
+        let reusable = listener_index == base.listener
+            && config.spec.routes.iter().any(|route| {
+                route.consumer == consumer
+                    && route.slot == slot
+                    && route.provider.as_str() == provider
+            });
+        if !reusable {
+            errors.push(Diagnostic::new(
                 DiagnosticCode::ListenerConflict,
                 path,
                 format!(
-                    "origin `{origin}` already routes destination `{}` to `{}` instead of `{}`",
-                    generated.destination, route.provider, generated.provider
+                    "generated member subdomain `{subdomain}` conflicts with custom domain `{domain}` on slot `{slot}`"
                 ),
-            )),
-            Some(_) => {}
-            None => config.spec.browser_routes.push(generated),
+            ));
+            return;
         }
+    } else {
+        let slot_name = resource_name(&["group", group_name, instance_name]);
+        let slot = router_config::RouteSlotId::from(slot_name.as_str());
+        config.spec.listeners[base.listener].destinations.push(
+            router_config::ListenerDestination::CustomDomain {
+                slot: slot.clone(),
+                domain: subdomain.clone(),
+            },
+        );
+        config.spec.routes.push(router_config::Route {
+            consumer,
+            slot,
+            provider: router_config::ComponentId::from(provider),
+        });
+    }
+
+    let targeted = router_config::BrowserRoute {
+        identity: router_config::BrowserIdentity::ExplicitHeader {
+            value: router_config::BindingId::from(instance_name),
+        },
+        destination: base.slot.clone(),
+        provider: router_config::ComponentId::from(provider),
+    };
+    match config.spec.browser_routes.iter().find(|route| {
+        route.destination == targeted.destination && route.identity == targeted.identity
+    }) {
+        Some(existing) if existing.provider != targeted.provider => errors.push(Diagnostic::new(
+            DiagnosticCode::ListenerConflict,
+            path,
+            format!(
+                "browser identity `{instance_name}` already targets `{}` instead of `{provider}`",
+                existing.provider
+            ),
+        )),
+        Some(_) => {}
+        None => config.spec.browser_routes.push(targeted),
+    }
+
+    match address_origin(&config.spec.listeners[base.listener], &subdomain) {
+        Ok(origin) => {
+            add_browser_origin_routes(bundle, config, &origin, instance_name, path, errors);
+        }
+        Err(message) => errors.push(Diagnostic::new(DiagnosticCode::InvalidPath, path, message)),
     }
 }
 
@@ -1675,6 +2157,7 @@ fn validate_address_claims(bundle: &Bundle, errors: &mut Vec<Diagnostic>) {
 fn apply_addresses(
     bundle: &Bundle,
     instances: &BTreeMap<&str, &Instance>,
+    groups: &ResolvedGroups,
     config: &mut router_config::RouterConfig,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -1685,7 +2168,15 @@ fn apply_addresses(
         let path = format!("spec.instances[{index}].address");
         match addressed_instance_provider(bundle, instance) {
             Ok((_, provider)) => {
-                add_address_route(config, address, &instance.name, provider, &path, errors);
+                let _ = add_address_route(
+                    bundle,
+                    config,
+                    address,
+                    &instance.name,
+                    provider,
+                    &path,
+                    errors,
+                );
             }
             Err(message) => errors.push(Diagnostic::new(
                 DiagnosticCode::MissingReference,
@@ -1700,19 +2191,20 @@ fn apply_addresses(
             continue;
         };
         let path = format!("spec.groups.{group_name}.address");
-        let candidates = group
-            .instances
+        let active_members = groups
+            .members
+            .get(group_name)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let candidates = active_members
             .iter()
-            .filter_map(|member| {
-                let instance_name = provider_reference(member).0;
-                (!group
-                    .disabled
-                    .iter()
-                    .any(|disabled| disabled == instance_name))
-                .then(|| instances.get(instance_name).copied())
-                .flatten()
-                .filter(|instance| instance.address.is_some())
+            .filter(|member| {
+                let (instance_name, _) = provider_reference(member);
+                instances
+                    .get(instance_name)
+                    .is_some_and(|instance| instance.address.is_some())
             })
+            .cloned()
             .collect::<Vec<_>>();
         if candidates.len() != 1 {
             errors.push(Diagnostic::new(
@@ -1723,26 +2215,52 @@ fn apply_addresses(
                     if candidates.is_empty() {
                         "none".into()
                     } else {
-                        candidates
-                            .iter()
-                            .map(|instance| instance.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
+                        candidates.join(", ")
                     }
                 ),
             ));
             continue;
         }
-        let instance = candidates[0];
-        match addressed_instance_provider(bundle, instance) {
-            Ok((_, provider)) => {
-                add_address_route(config, address, &instance.name, provider, &path, errors);
-            }
-            Err(message) => errors.push(Diagnostic::new(
+        let default_member = &candidates[0];
+        let Ok((default_instance, default_provider)) =
+            addressed_member_provider(bundle, instances, default_member)
+        else {
+            errors.push(Diagnostic::new(
                 DiagnosticCode::MissingReference,
                 &path,
-                message,
-            )),
+                format!(
+                    "default group member `{default_member}` is not independently browser-addressable"
+                ),
+            ));
+            continue;
+        };
+        let Some(base) = add_address_route(
+            bundle,
+            config,
+            address,
+            default_instance,
+            default_provider,
+            &path,
+            errors,
+        ) else {
+            continue;
+        };
+        for member in active_members {
+            if let Ok((_, provider)) = addressed_member_provider(bundle, instances, member) {
+                add_group_member_target(
+                    bundle,
+                    config,
+                    GroupMemberTarget {
+                        group_name,
+                        group_address: address,
+                        member,
+                        provider,
+                        base: &base,
+                        path: &path,
+                    },
+                    errors,
+                );
+            }
         }
     }
 }
@@ -1977,7 +2495,8 @@ fn generate(
     let mut route_configs = BTreeMap::new();
     let mut sidecars = BTreeMap::new();
     let managed_profiles = managed_profiles(bundle);
-    let host_router_config = generate_host_router_config(bundle, &managed_profiles, devices)?;
+    let host_router_config =
+        generate_host_router_config(bundle, groups, &managed_profiles, devices)?;
     let host_upstreams = host_upstreams(bundle, devices);
     let mut source_identities = BTreeMap::new();
     let source_manager = SourceManager::new(&bundle.workspace_root);
@@ -2549,6 +3068,7 @@ fn managed_profile_destinations(
 
 fn generate_host_router_config(
     bundle: &Bundle,
+    groups: &ResolvedGroups,
     profiles: &BTreeMap<String, ManagedProfilePlan>,
     devices: &BTreeMap<String, PlanningDevice>,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
@@ -2585,7 +3105,7 @@ fn generate_host_router_config(
         .map(|instance| (instance.name.as_str(), instance))
         .collect();
     let mut address_errors = Vec::new();
-    apply_addresses(bundle, &instances, &mut config, &mut address_errors);
+    apply_addresses(bundle, &instances, groups, &mut config, &mut address_errors);
     if !address_errors.is_empty() {
         return Err(address_errors
             .into_iter()

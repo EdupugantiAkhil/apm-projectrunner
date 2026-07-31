@@ -1,5 +1,24 @@
 # Agent mistakes and lessons
 
+## 2026-07-31 — Derived compatibility data must be gated by the feature that needs it
+
+- The first automatic host-routing pass inferred host-upstream records for every HTTP-probed
+  service, including deployments with no addresses or host router. Validation then correctly
+  rejected those orphan mappings, breaking otherwise unrelated planner tests.
+- Correction: derive upstreams only when addresses require an automatically generated host
+  router; preserve authored advanced routers exactly rather than opportunistically adding
+  inferred providers. Lesson: compatibility data derived for one feature must not leak into
+  bundles where that feature is absent, especially when validation treats the data as a claim.
+
+## 2026-07-31 — Invalid fixtures can hide the diagnostic a test claims to exercise
+
+- The two-addressed-member test added `ui-a` to a second group even though one-instance-one-group
+  validation already made that bundle invalid. Once address resolution used validated active
+  membership, the intended ambiguity diagnostic disappeared behind the earlier membership error.
+- Correction: remove the other group before adding the second addressed member. Lesson: a
+  negative test should violate exactly the invariant named by its assertion unless it explicitly
+  verifies diagnostic aggregation.
+
 ## 2026-07-31 — Distinguish repository content from linked-worktree metadata
 
 - While implementing Part 2c, "an adopted clone is read and never modified" was interpreted

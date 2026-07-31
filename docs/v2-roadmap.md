@@ -479,12 +479,12 @@ literal host resolution and port-for-port forwarding from the expanded external 
 
 ### Part 3 — Serving a whole group from one address (router)
 
-The substantial piece of step 9, and the reason Part 2 stops at the schema. Today a
+The substantial piece of step 9, and the reason Part 2 stopped at the schema. Before this part, a
 `custom_domain` destination maps to exactly one provider, resolved at config-render time.
 Reaching **any** member by one address means the host router resolving a member **per
 request**.
 
-- [ ] Resolve an explicitly targeted member per request by instance subdomain
+- [x] Resolve an explicitly targeted member per request by instance subdomain
       (`backend-1.feature-test.comparison.localhost`) or browser route identity; no
       capability or slot name participates
 - [x] Delete the planner's `group_capability_candidates(..., "ui", ...)` selection and
@@ -494,16 +494,27 @@ request**.
       the removed `ui` capability as the default-selection rule
 - [x] Zero or several browser-addressable members is an error listing the candidates,
       never a first-listed guess
-- [ ] Checked against browser identity — an `Origin` serving several members must still
+- [x] Checked against browser identity — an `Origin` serving several members must still
       identify the group unambiguously
-- [ ] A fixture that actually exercises a group address end to end
+- [x] A fixture that actually exercises a group address end to end
 - [ ] Materialize `docs/vision/sample-config.md` as the acceptance fixture, excluding only
       its deferred `scripts:` section: validate, plan, create its missing clone/worktrees,
       start both groups, open both group addresses, prove their different backends and
       separate database instances reusing one source/profile, reach the external instance,
       exercise `disabled:`, then stop and clean up without compatibility-only schema fields
 
-Touches `router-pingora` and `router-config`, not only the schema.
+The sample now validates, plans, and passes a live planner-to-router gate without authored
+`hostRouter` or `hostUpstreams`: both bare group domains select their distinct UI and Origin
+selects the matching backend, while the disabled canary is absent. The remaining full lifecycle
+gate needs a product choice before it can honestly be ticked: the sample invokes source commands
+inside plain `container` images, while the execution contract mounts source only for `script`.
+The fixture also needs local substitutes for its illustrative Git and external-service hosts.
+Changing the sample to `script` or broadening `container` source-mount semantics is not a router
+implementation detail and must be settled explicitly.
+
+Uses the existing `router-config` direct-route and browser-route contracts and changes
+`router-pingora` so a trusted explicit identity can select a member on an otherwise static
+host-gateway route. No new authored router schema is required.
 
 ---
 

@@ -669,6 +669,18 @@ For a group address, an explicit instance subdomain or browser route identity se
 member. A bare group address works only when exactly one active member also carries an
 instance `address:`; zero or several such members is an error rather than a guess.
 
+The planner keeps this selection in generated router data rather than adding an authored
+topology layer. When no advanced `hostRouter` configuration is supplied, it derives one
+HTTP/HTTPS provider from each service whose HTTP probe port is also published, generates
+the loopback gateway on a deterministic unprivileged port, and derives browser localhost listeners
+from group membership. The bare custom domain has a direct route to the default member.
+Each active browser-reachable member gets an `<instance>.<group-address>` custom domain,
+and the bare destination gets an explicit-header route for that member. Pingora evaluates
+that override per request on the loopback gateway, fails closed for unknown identity, and
+strips the identity before forwarding. Generated Origin routes retain unambiguous group
+context for subsequent browser calls. TCP-only members remain available through the
+group's transparent shared localhost.
+
 ### Deployment
 
 The desired combination of sources, instances, parameters, and groups.

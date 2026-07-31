@@ -10,6 +10,35 @@ Updated: 2026-07-31
 - Web UI plan (`docs/web-ui-plan.md`): complete. Parts 1 through 13, including follow-up
   Parts 11a–11c, and Part 13's security review with its two fixes.
 
+## 2026-07-31 — V2 Part 3 group-address routing increment
+
+- Group addresses now select browser-reachable members per request. The planner generates
+  `<instance>.<group-address>` domains and trusted explicit-header routes for each active
+  HTTP/HTTPS member; Pingora accepts those identities on loopback consumer listeners, rejects
+  unknown identities, and strips the routing header before forwarding.
+- A bare group address still requires exactly one active independently addressed member. That
+  member is only the default, not a designated group front door. Disabled and TCP-only members
+  do not become browser targets, while all active members remain available through shared
+  localhost routing.
+- Deployments with addresses no longer need compatibility-only `hostRouter` or `hostUpstreams`
+  topology. The planner derives a deterministic unprivileged host gateway, dynamic providers, and
+  browser localhost routes from membership plus services whose HTTP/HTTPS probe port is also
+  published. Disabled members are excluded from those inferred providers. Existing authored
+  router configurations retain their advanced merge path.
+- The executable vision-sample test extracts the YAML in `docs/vision/sample-config.md`, removes
+  only deferred `scripts:`, and proves it validates and plans without compatibility fields. A
+  live planner-to-Pingora gate opens both group domains, observes different UIs and backends,
+  and verifies that the disabled canary has no generated domain.
+- The final full-lifecycle sample gate remains open. Its UI/backend profiles invoke source-tree
+  commands in plain `container` images, but the settled execution contract mounts source only
+  for `script`; its illustrative Git and external hosts also need local fixture replacements.
+  Choosing script-backed sample profiles versus broadening container source semantics is a
+  product decision, not router work, and has not been guessed here.
+
+Verification passes: full workspace tests with the five declared reliability ignores; all-target,
+all-feature Clippy with warnings denied; rustdoc with warnings denied; formatting and diff checks;
+the focused planner suite; and all five live Phase 3 router gates.
+
 ## 2026-07-31 — V2 Part 2e external instances
 
 - Added the strict `{ name, external, ports, probe? }` instance form. External instances

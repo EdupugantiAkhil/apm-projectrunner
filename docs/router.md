@@ -195,6 +195,12 @@ Compose starts, the CLI accepts exactly one nonzero loopback result from
 `.switchyard/run/<deployment>/host-router.json`. Providers with a concrete loopback
 port remain valid for externally managed local processes.
 
+Authored `hostRouter` and `hostUpstreams` remain an advanced compatibility path. For an
+ordinary deployment that only declares group/instance addresses, the planner generates
+the loopback HTTP gateway on a deterministic unprivileged port. A service becomes browser-reachable when its
+HTTP/HTTPS probe port is also in `publish:`; that supplies the protocol, health path, and
+dynamically published upstream without adding router topology to the deployment.
+
 Docker may assign a new ephemeral loopback port when a published container namespace
 is recreated or restarted. A later `switchyard up` compares the running host config to
 current `docker compose port` observations and safely refreshes the owned gateway when
@@ -207,6 +213,17 @@ is structural and applies without classifying an instance as a UI, backend, data
 sender, or receiver. If the same code or startup profile is needed in two groups,
 declare two instances that reuse that source and block. Validation names both membership
 paths before planning or mutation.
+
+## Group addresses
+
+A bare group address resolves only when exactly one active member is independently
+browser-addressable through its own `address:`. The planner generates a direct route to
+that default plus an `<instance>.<group-address>` domain for every active member with one
+HTTP/HTTPS-compatible host upstream. On loopback listeners, `X-Switchyard-Route` may also
+select one of those members per request; unknown identities fail closed and the header is
+stripped before forwarding. Each generated Origin continues to identify the group for
+browser calls to fixed localhost ports. Non-browser services remain reachable through
+the group's transparent shared localhost.
 
 An HTTPS listener uses its `tls.certificate` and `tls.privateKey` paths. Missing pairs
 are generated as 90-day self-signed identities, the key is mode `0600`, and identities
