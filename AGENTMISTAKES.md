@@ -847,3 +847,24 @@ audit shell startup files as well as the requested cache directories.
   their authored order is reversed.
 - Lesson: target-specific code needs a target-native build, and routing-order proofs must include
   the caller itself as a colliding candidate rather than only distinct receiver containers.
+
+## 2026-07-31 — Optional legacy topology is still legacy topology
+
+- Part 2b initially kept `provides:` and `consumes:` as optional remapping overrides after
+  group membership became sufficient for normal routing. That left capability/slot
+  semantics in `extends:`, collision diagnostics, browser default selection, clients, and
+  migration, so the supposedly removed model still controlled important behavior.
+- Correction: the V2 authored schema removes capabilities, slots, bindings, direct routes,
+  and capability-based inheritance. Transparent routing is port-for-port and group
+  membership is the only connection statement.
+- Lesson: when a new schema removes a concept, trace every behavior that used it and give
+  that behavior a new schema-visible rule or remove it too. Making the old fields optional
+  does not complete the migration.
+
+## 2026-07-31 — Markdown backticks in shell arguments execute command substitutions
+
+- A final `rg` verification put Markdown field names with backticks inside a double-quoted
+  zsh argument. The shell attempted to execute the enclosed words before running `rg`.
+- Correction: use a single-quoted search expression when matching Markdown backticks.
+- Lesson: shell quoting applies even to read-only verification commands; never place
+  literal Markdown backticks inside a double-quoted command argument.

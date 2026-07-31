@@ -6,7 +6,7 @@ and are not edited. [DEVIATION.md](../DEVIATION.md) records where the implementa
 differs from them today; this file is the plan for closing those differences.
 
 Scope of V2 is **the shapes the product is authored and reasoned about in**: group
-membership, addresses, run actions, and the vocabulary. Multi-project support is
+membership, addresses, and the vocabulary. Run actions are deferred to V3, multi-project support is
 deliberately out (see "Not in V2"), and the security/acceptance backlog in
 [docs/unfinished-work.md](unfinished-work.md) is a separate track that V2 does not touch.
 
@@ -33,7 +33,7 @@ then committed. A part is only ticked once it is committed with verification evi
 | ✅ | 1 — Group membership becomes a list | `bae84bf` |
 | ✅ | 2 — Addresses on the group and on the instance | `5d14720` |
 | ✅ | 2a — Membership stops being policed by capability | `a24991b` |
-| ✅ | 2b — A group shares one localhost; slots stop being required | |
+| ⬜ | 2b — A group shares one localhost; capabilities and slots are removed | |
 | ⬜ | 2c — Repositories are declared once; sources are a repo and a ref | |
 | ⬜ | 2d — `bindings:` is deleted; membership is the connection | |
 | ⬜ | 2e — External instances: things already running outside Switchyard | |
@@ -70,6 +70,11 @@ The slot→provider mapping is derived by the same `provider_for` search run the
 direction, so the map no longer restates what the profiles already declare. Touched
 `switchyard-planner`, `switchyard-ops/connections.rs`,
 `packages/web/src/connectionModel.ts`, `switchyard-cli`, examples, and compat fixtures.
+
+This was an intermediate migration step. Part 2b removes capabilities and slots from the
+authored schema, and Part 2d removes the bindings and routes that used the derived mapping.
+The capability-based `extends:` behavior above is therefore historical, not part of the
+final V2 model.
 
 ---
 
@@ -133,10 +138,12 @@ rule was an oversight rather than an intent.
 
 Landed in `a24991b`; 307 tests passing. The warning channel was the design work:
 `PlannerWarning` follows the existing `BundleWarning` shape and rides on `Plan.warnings`.
+Part 2b supersedes the remaining capability-based warning rule with listener-port
+collisions and removes `provides:` and `consumes:` from the authored schema.
 
 ---
 
-### Part 2b — A group shares one localhost; slots stop being required
+### Part 2b — A group shares one localhost; capabilities and slots are removed
 
 The largest correction in V2, and the one that decides whether the product earns its
 existence. Today a deployment only routes if every profile declares `provides:` and
@@ -160,7 +167,10 @@ to the receiver's own loopback, so an application may continue binding only
 
 This removes the false requirement that Switchyard predict every port before a program
 starts. `publish:`, probes, and image `EXPOSE` remain useful lifecycle and host-ingress
-metadata, but they are not routing prerequisites.
+metadata, but they are not routing prerequisites. `provides:` and `consumes:` are not
+optional labels or an override language in V2: they are absent from the new schema.
+Routing is port-for-port. A call to loopback port 5432 is tried against group members on
+port 5432.
 
 - [x] Intercept arbitrary `127.0.0.0/8` and `::1` TCP destinations without a port list
 - [x] Preserve loopback-only receiver binds through receiver-side interception
@@ -168,14 +178,20 @@ metadata, but they are not routing prerequisites.
       `consumes:`
 - [x] A deployment with **no** `provides:`/`consumes:` anywhere routes correctly — this is
       the acceptance test for the whole part
-- [x] `provides:`/`consumes:` survive as **overrides**, for the genuine remap case where a
-      consumer calls a port the provider does not listen on
-- [x] Capability names become optional labels for readability, not the wiring mechanism
+- [ ] Remove `provides:` and `consumes:` from the authored schema and all client authoring,
+      validation, compatibility filtering, and projections
+- [ ] Remove the fixed-listener override path generated from capabilities and slots; a
+      future port-remapping feature, if needed, must have its own explicit schema rather
+      than retaining the old topology model
 - [x] Two members listening on one port in one group: **warn, first listed wins** —
       sidecars passively report their namespace listener tables; callers warn from those
       observations without opening probe connections to losing application ports
-- [x] Migration leaves existing `provides:`/`consumes:` working untouched; they simply
-      stop being required
+- [ ] Migration drops identity, loopback, port-for-port `provides:`/`consumes:` metadata.
+      It refuses with an actionable diagnostic when an old slot changes host or port,
+      because silently dropping a real remap would change behavior
+- [ ] Remove `extends:`. Without a capability key there is no honest definition of
+      "replace the inherited member that provides the same thing." Every group authors its
+      complete ordered `instances:` list; overlays may replace that list explicitly
 - [x] `disabled:` removes a member from only that group's active routing while preserving
       its running instance, namespace, and authored priority position
 
@@ -330,27 +346,27 @@ all — remove it from a deployment where every consumer is in exactly one group
 fails with four `IncompleteGroup` diagnostics, every one of which the membership list
 already answers. Two places to say the same thing is two places to disagree.
 
-The only case it could express is a consumer in **several** groups — and that case is not
-supported and will not become supported. One process cannot infer per-request downstream
-context; the one-backend-one-group rule already refuses it and says to duplicate the
-instance. Keeping a field whose sole purpose is to describe a rejected topology invites
-people to try it.
+The only extra choice it could express is which group supplies the outbound localhost of
+an instance listed in **several** groups. One process cannot infer that context per
+connection. The schema deliberately does not classify instances as consumers or
+receiver-only, because capabilities and slots no longer exist.
 
-**Decided: delete the section.** One rule, stated once:
+**Decided: delete the section.** Membership gives an instance its routing context. A
+single-group member sees that group's ordered localhost. A member shared by several groups
+is legal as a receiver, but if it originates an intercepted loopback connection the router
+rejects that connection as ambiguous and names every containing group. Duplicate the
+instance when it needs outbound group routing.
 
-> An instance that consumes may belong to exactly one group. An instance that consumes
-> nothing may belong to any number.
-
-The second half is not an accommodation, it is the same rule: with nothing consumed there
-is no downstream to be ambiguous about. That is `db-new` shared by `feature-test` and
-`regression` — ABOUT.md's own example ("both groups use the same UI instance and the same
-database"), and it must keep working.
+This keeps `db-new` shared by `feature-test` and `regression` — ABOUT.md's own example —
+without pretending the planner can infer from a removed `consumes:` map whether a process
+will make an outbound call.
 
 - [ ] `spec.bindings` removed from the schema; membership alone resolves every consumer
-- [ ] An instance that **consumes** and belongs to two groups is a planning error naming
-      both groups and saying to duplicate the instance
-- [ ] An instance that consumes nothing may belong to any number of groups — covered by a
-      test using the ABOUT.md shape, not just asserted here
+- [ ] A member of one group gets that group's complete ordered receiver view
+- [ ] A member of several groups remains available as a receiver in each group; an outbound
+      intercepted connection from it fails with an ambiguity diagnostic naming the groups
+      and saying to duplicate the instance
+- [ ] The shared-database shape from ABOUT.md is an acceptance test, not just an assertion
 - [ ] `BackendGroupInvariant` rewritten against membership rather than bindings; its "a
       group's own binding is checked for the same agreement" clause disappears with the field
 - [ ] Ops, TUI, and web surfaces that read or write bindings move to membership — the Web
@@ -358,7 +374,7 @@ database"), and it must keep working.
 - [ ] Migration drops `bindings:` where it agrees with membership; where it disagrees,
       **refuse and report** rather than pick one
 - [ ] **`spec.routes` goes in the same pass.** It is the other place a connection can be
-      authored — per slot, bypassing groups entirely — and leaving it is the same mistake as
+      authored — bypassing groups entirely — and leaving it is the same mistake as
       keeping `bindings:`: a second way to say what a group says, able to contradict it.
       One mechanism, no escape hatch.
 
@@ -438,11 +454,14 @@ The substantial piece of step 10, and the reason Part 2 stops at the schema. Tod
 Reaching **any** member by one address means the host router resolving a member **per
 request**.
 
-- [ ] Resolve a member per request: by subdomain
-      (`backend.feature-test.comparison.localhost`), by path, or by requested slot
-- [ ] Bare group name resolves to the **UI-capability** member. Part 2a allows several,
-      so it follows the same collision rule: warn, take the first listed
-- [ ] No UI member is still an error listing what it could have meant
+- [ ] Resolve an explicitly targeted member per request by instance subdomain
+      (`backend-1.feature-test.comparison.localhost`) or browser route identity; no
+      capability or slot name participates
+- [ ] The bare group name resolves only when exactly one active member is independently
+      browser-addressable through its own `address:`. That schema-visible fact replaces
+      the removed `ui` capability as the default-selection rule
+- [ ] Zero or several browser-addressable members is an error listing the candidates,
+      never a first-listed guess
 - [ ] Checked against browser identity — an `Origin` serving several members must still
       identify the group unambiguously
 - [ ] A fixture that actually exercises a group address end to end
@@ -550,7 +569,7 @@ if that prefix turns out to be on most scripts in practice.
 `DESIGN.md` is the authoritative architecture doc and still describes the pre-V2 shapes.
 
 - [ ] `DESIGN.md`: groups as lists, `address:` on both objects, `ingress:` gone,
-      `scripts:` as a flat map
+      capabilities/slots/bindings/routes/extends gone; leave the flat `scripts:` map to V3
 - [ ] Reconcile the user_flow glossary against the terms diagnostics and UI labels use
 - [ ] `DEVIATION.md` records which sections V2 closed
 - [ ] `AGENTS.md` reflects that the vision was edited once, deliberately, in Part 2a

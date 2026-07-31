@@ -10,6 +10,21 @@ Updated: 2026-07-31
 - Web UI plan (`docs/web-ui-plan.md`): complete. Parts 1 through 13, including follow-up
   Parts 11a–11c, and Part 13's security review with its two fixes.
 
+## 2026-07-31 V2 schema clarification — no capabilities or slots
+
+- Clarified the final V2 topology in `DESIGN.md` and `docs/v2-roadmap.md`: group membership
+  is the only authored connection model. `provides:`, `consumes:`, `bindings:`, `routes:`,
+  and capability-based `extends:` are removed rather than retained as optional overrides.
+- Routing remains transparent and port-for-port. Runtime listener observation supplies
+  collision information; a future port-remapping feature must use a separate explicit
+  schema rather than keeping the old capability/slot model alive.
+- Defined behavior that had previously depended on removed fields: groups author complete
+  ordered lists; a member shared across groups may receive in all of them but gets an
+  ambiguity error if it originates a loopback connection; a bare group address requires
+  exactly one active member with its own browser address.
+- Documentation-only clarification. No implementation or vision file changed, and no code
+  tests were run.
+
 ## 2026-07-31 V2 Part 2a — group membership stops being policed by capability
 
 - Removed the hard duplicate-provider rejection and its diagnostic code. Group resolution now keeps

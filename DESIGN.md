@@ -11,7 +11,8 @@ independent Git repositories.
 
 Switchyard is a local-first deployment and topology orchestrator. It lets a developer
 define reusable startup blocks, create multiple instances from different source trees,
-combine providers into named service groups, and choose which group each consumer uses.
+and combine instances into named service groups. Group membership is the connection; the
+authored topology has no separate capability, slot, binding, or direct-route layer.
 
 Existing application code must not require modification. A containerized consumer may
 continue calling fixed dependency addresses such as `localhost:8001`; Switchyard routes
@@ -67,18 +68,15 @@ The core understands only these concepts:
 - A **block** expands into components.
 - An **execution adapter** starts and stops a component.
 - A **lifecycle** describes preparation, readiness, and cleanup.
-- A **capability** is an optional name and protocol override for something a component
-  provides.
-- A **slot** is an optional address-remapping override for a consumed dependency.
-- A **route adapter** connects a slot to a provider.
-- A **service group** is a named, reusable selection of providers.
-- A **binding** selects one service group for a consumer instance.
+- A **service group** is a named, ordered set of instances that share one localhost.
+- A **route adapter** implements transparent transport internally; it is not an authored
+  capability-to-slot connection.
 - A **probe** observes readiness or health.
-- A **deployment** selects instances and connections.
+- A **deployment** selects instances and their group membership.
 
-Names such as `java`, `python`, `database`, and `ui` are ordinary user-defined
-capabilities. Another solution could instead define `payments-api`, `message-broker`,
-`firmware-simulator`, `model-server`, or `sap-gateway` without changing Switchyard.
+Names such as `java`, `python`, `database`, and `ui` may be useful instance or block names,
+but they have no routing semantics. Routing follows the destination loopback port and the
+authored order of the selected group.
 
 Generic definitions are extended through versioned adapter interfaces rather than
 conditionals in the core:
@@ -378,17 +376,14 @@ profiles:
           build:
             context: services/api
             dockerfile: Dockerfile
-        provides:
-          python-api:
-            protocol: http
-            endpoint: "http://${runtime.host}:${runtime.port}"
+        publish: [8001]
         healthcheck: /health
 ```
 
 Each value in `profiles` is a block `spec` body using the existing block schema, with
 the profile's map key taking the place of `metadata.name`. It may
-declare the execution adapter, command, working directory, mounts, provided
-capabilities, consumed slots, probes, parameters, and lifecycle. The manifest does not
+declare the execution adapter, command, working directory, mounts, published ports,
+probes, parameters, and lifecycle. The manifest does not
 introduce another execution format, and a source-local profile has the same validation,
 planning, isolation, ownership, health, and cleanup contracts as a project block.
 Project run actions remain separate operations declared in
@@ -442,33 +437,20 @@ Runtime handles are opaque to the core and serializable for recovery. Adapters m
 normalized state and events so a host process, Compose suite, container, or future
 runtime looks consistent to the GUI.
 
-Route adapters implement:
+Transparent route adapters implement:
 
 ```text
-validate(consumer, slot, provider) → diagnostics
-plan(connection)                   → live | restart | rebuild
-apply(connection)                  → route handle
+validate(group membership) → diagnostics
+plan(group snapshot)       → live | restart | rebuild
+apply(group snapshot)      → route handle
 remove(route handle)
-inspect(route handle)              → observed target
+inspect(route handle)      → observed membership and listeners
 ```
 
-Capabilities and slots carry protocol metadata without assuming HTTP:
-
-```yaml
-provides:
-  query-api:
-    protocol: http
-    endpoint: "http://${runtime.host}:${runtime.port}"
-  event-stream:
-    protocol: kafka
-    endpoint: "${runtime.bootstrapServers}"
-consumes:
-  primary-query:
-    accepts: [query-api]
-    routeAdapter: environment
-    binding:
-      variable: QUERY_API_URL
-```
+The authored schema supplies ordered group membership, not typed endpoints. The route
+adapter observes listeners and preserves the original TCP destination port. Transport
+metadata needed by the browser-facing host router is derived from addresses and listener
+configuration rather than capabilities or slots.
 
 ### Reference fixture: JAS legacy deployment
 
@@ -482,20 +464,15 @@ execution mechanisms, but none of its details belong in the product core:
 | Python AI suite | `process-compose -f ai-services.process-compose.yaml up` in `/zfs/projects/FR/jasBase` | Process Compose inside an AI runner container |
 | UI | Worktree-specific Dockerfile or runner script | Container or containerized script |
 
-The desired topology is expressed through typed slots rather than being embedded in the
-startup mechanism:
+The desired topology is expressed through group membership rather than being embedded in
+the startup mechanism:
 
 ```text
-ui-a ──java────► jas-main ──database──► db-main
-  │                 │
-  └──python─────────┴───────────────► ai-feature
-
-ui-b ──java────► jas-feature ─database► db-main
-  │                 │
-  └──python─────────┴───────────────► ai-main
+group-a: [ui-a, jas-main, ai-feature, db-main]
+group-b: [ui-b, jas-feature, ai-main, db-main]
 ```
 
-The routing layer owns the selections. A block does not need to know whether its target
+The routing layer owns the ordered membership. A block does not need to know whether its target
 uses an image-backed container, runner script, or supervised Process Compose suite.
 
 All files for this integration belong under `examples/jas-base/` as ordinary source,
@@ -626,82 +603,41 @@ Every expanded service name is namespaced:
 comparison--python-feature--analysis
 ```
 
-### Route
+### Service group and transparent routing
 
-A typed connection from a consumer slot to a provider instance or service.
-
-```yaml
-routes:
-  ui-main:
-    java: backend-main
-    python: python-main
-    database: shared-db
-
-  ui-feature:
-    java: backend-feature-a
-    python: python-feature
-    database: shared-db
-```
-
-Blocks declare the slots they consume and capabilities they provide. Validation rejects
-invalid connections, such as routing a `database` slot to a UI.
-
-Slots may also declare the address already used by an unchanged application:
-
-```yaml
-consumes:
-  ai-ingest:
-    accepts: [ai-ingest]
-    routeAdapter: loopback-proxy
-    address: { host: 127.0.0.1, port: 8001 }
-  ai-analysis:
-    accepts: [ai-analysis]
-    routeAdapter: loopback-proxy
-    address: { host: 127.0.0.1, port: 8002 }
-```
-
-The address is the consumer contract, not the provider's runtime address. A proxy
-sidecar sharing the consumer's container network namespace binds the declared loopback
-ports and forwards them to the selected providers.
-
-### Service group and binding
-
-A service group selects providers as one reusable unit. It can inherit a shared baseline
-and replace only selected services.
+A service group is the complete ordered list of instances that share one localhost.
+There are no authored `provides:`, `consumes:`, `routes:`, or `bindings:` sections.
+`extends:` is also absent: without capability keys, replacing an inherited member would
+be ambiguous. Each group states its complete membership.
 
 ```yaml
 groups:
-  ai-main:
-    providers:
-      ai-ingest: ai-main/ingest
-      ai-analysis: ai-main/analysis
-      ai-reports: ai-main/reports
-      ai-scheduler: ai-main/scheduler
-      ai-worker: ai-main/worker
-
-  ai-feature:
-    extends: ai-main
-    providers:
-      ai-analysis: ai-feature/analysis
-      ai-reports: ai-feature/reports
+  feature-test:
+    address: feature-test.comparison.localhost
+    instances: [ui-1, backend-1, db-new]
+  regression:
+    address: regression.comparison.localhost
+    instances: [ui-2, backend-2, db-new]
 ```
 
-A binding selects the group used by one consumer:
+An outbound IPv4 or IPv6 loopback TCP connection is intercepted in the sender's namespace.
+The router preserves the destination port and tries active group members on that same port
+in authored order. If several members listen, the first listed wins and a warning names
+the collision. Ports are observed at runtime; `publish`, probes, and image `EXPOSE` remain
+lifecycle or ingress metadata, not routing declarations.
 
-```yaml
-bindings:
-  jas-main: ai-main
-  jas-feature: ai-feature
-```
+A member of one group sees that group's receiver view. A member shared by several groups
+may receive traffic in all of them, which supports a shared database. If that shared member
+originates an intercepted loopback connection, the router rejects it as ambiguous and
+names the groups; a sender needing different contexts must be duplicated.
 
-The resolved topology still consists of ordinary typed routes. Group switching replaces
-the consumer's complete route table as one operation; partial group application is
-invalid.
+For a group address, an explicit instance subdomain or browser route identity selects the
+member. A bare group address works only when exactly one active member also carries an
+instance `address:`; zero or several such members is an error rather than a guess.
 
 ### Deployment
 
-The desired combination of sources, instances, parameters, groups, bindings, and any
-direct route overrides.
+The desired combination of sources, instances, parameters, and groups.
 
 ```yaml
 apiVersion: switchyard.dev/v1alpha1
@@ -724,9 +660,11 @@ spec:
     - { name: ui-3, block: ui, source: ui-feature-b }
     - { name: ui-4, block: ui, source: ui-feature-c }
     - { name: ui-5, block: ui, source: ui-feature-d }
-  routes:
-    ui-1: { java: backend-main, python: python-main, database: shared-db }
-    ui-2: { java: backend-a, python: python-feature, database: shared-db }
+  groups:
+    main:
+      instances: [ui-1, backend-main, python-main, shared-db]
+    feature:
+      instances: [ui-2, backend-a, python-feature, shared-db]
 ```
 
 ### Overlay
@@ -766,12 +704,13 @@ spec:
       mode: "0644"
   parameters:
     migrationPolicy: isolated-database
-  routes:
-    database: mongodb-main
+  groups:
+    feature:
+      instances: [ui-feature, backend-feature, mongodb-main]
 ```
 
-Overlay selectors may target deployment labels, block instances, expanded components,
-or capability consumers. A selector must match at least one target unless explicitly
+Overlay selectors may target deployment labels, block instances, or expanded components.
+A selector must match at least one target unless explicitly
 marked optional; misspelled selectors must not silently do nothing.
 
 #### Composition and precedence
@@ -786,10 +725,10 @@ adapter defaults
   < explicitly named ephemeral CLI overrides
 ```
 
-Maps merge by key. `unset` removes an inherited environment key. File targets and route
-slots must be unique after resolution unless a later overlay explicitly declares
-`replace: true`. Lists do not merge implicitly; each schema declares whether a list is
-replace-only, appendable, or keyed.
+Maps merge by key. `unset` removes an inherited environment key. File targets must be
+unique after resolution unless a later overlay explicitly declares `replace: true`.
+Group `instances:` lists are replace-only; lists do not merge implicitly unless their
+schema explicitly declares append or keyed semantics.
 
 Switchyard must render and display the fully resolved deployment and an origin trace for
 every value:
@@ -872,7 +811,7 @@ claims do not collide.
  └──────────────────────────┬──────────────────────────────┘
                             │
                             ▼
-             selected providers / shared services
+             selected group members / shared services
 
  TUI / CLI / Web GUI ──HTTP+SSE──► Switchyard control plane
                               ├── planner + Compose generator
@@ -909,9 +848,9 @@ only `127.0.0.1` or `::1`; they do not have to widen their bind address to
 originated calls still follow authored group priority, including when the calling
 instance itself listens on the requested port.
 
-`provides` and `consumes` remain supported as explicit remapping overrides. Their fixed
-listeners sit behind the transparent layer, so an override can map a caller's port to a
-different provider port without becoming the default routing mechanism.
+The authored schema has no `provides` or `consumes` override. Routing is port-for-port.
+If a future use case requires port remapping, it must receive a separate explicit schema
+and migration rather than reviving capability/slot topology.
 
 The host router runs as a native process. Browser `localhost` refers to the developer
 host, and native execution gives consistent access to host listeners and Docker's
@@ -975,7 +914,7 @@ prompts. `switchyard tui [project]` retains its command name.
 
 Application behavior shared by interactive and command-line clients belongs in a new
 `switchyard-ops` crate. It owns operations that validate, plan, apply, and mutate
-sources, devices, profiles, instances, and bindings. It also owns read-model projections
+sources, devices, profiles, instances, and group membership. It also owns read-model projections
 such as the rows, summaries, validation diagnostics, and operation states rendered by a
 view. It does not render widgets or parse command-line arguments and must not depend on
 `ratatui` or `clap`.
@@ -995,15 +934,15 @@ fields:
 | Checkout | Source path/worktree | The exact code tree selected for an instance |
 | Startup profile | Block | A reusable definition that expands into one service or a coordinated suite |
 | Instance | Instance | One checkout run through one startup profile with its own parameters |
-| Service group | Service group | A complete reusable set of compatible providers |
-| Connection | Binding/routes | The selected provider group or routes for a consumer instance |
+| Service group | Service group | A complete ordered set of instances sharing one localhost |
+| Connection | Group membership | The group whose localhost an instance uses |
 | Run action | Project run script | A project-level Up, Down, Plan, Status, or smoke-test operation |
 | Device | Registered device | A known execution host; `local` plus registered SSH hosts |
 
 The handwritten alternative "project / project instance" is rejected because
 "Switchyard project" already means the workspace. Reusing `project` for source code
 would make project state, code checkouts, and running instances ambiguous. Persisted
-`source`, `block`, `instance`, `group`, and `binding` field names remain unchanged.
+`source`, `block`, `instance`, and `group` field names remain unchanged.
 
 ### Compose generator
 
@@ -1034,7 +973,7 @@ Generated output belongs under:
 .switchyard/generated/<deployment>/compose.yaml
 .switchyard/generated/<deployment>/resolved-deployment.yaml
 .switchyard/generated/<deployment>/manifest.json
-.switchyard/generated/<deployment>/routes/<consumer>.cfg
+.switchyard/generated/<deployment>/routes/<instance>.cfg
 ```
 
 Only human-authored definitions are committed. `.switchyard/generated` is ignored.
@@ -1048,8 +987,7 @@ semantics:
    ports, CORS/preflight handling, and routes to loopback-published container ports.
 2. **Container sidecar** shares an instance's network namespace, transparently captures
    arbitrary loopback TCP destinations, and forwards the original port to the first
-   active group member listening there. Explicit fixed listeners remain available for
-   remapping overrides.
+   active group member listening there.
 3. **Forward proxy** gives a managed browser profile an explicit routing identity when
    neither a request header nor `Origin` is sufficient.
 
@@ -1076,9 +1014,9 @@ jas-feature requests 127.0.0.1:8001
                               └──► comparison--ai-main--ingest
 ```
 
-In Phase 1, changing a binding renders and validates a complete replacement router
+Changing group membership renders and validates a complete replacement router
 configuration, then atomically reloads only the router sidecar. The application
-container is not restarted; applying slots one at a time is forbidden.
+container is not restarted; a partially applied group is forbidden.
 
 Phase 2 adds versioned live route snapshots, acknowledgements, history in SQLite, and
 graceful connection policies. The route plan states whether existing connections drain,
@@ -1174,8 +1112,8 @@ Its primary job is to answer and change:
 **“Which exact source-backed instances are connected right now?”**
 
 It is an operational tool, not a generic admin dashboard. The main view should resemble
-a disciplined physical patch bay: service instances sit in typed lanes and visible
-cables connect consumers to providers.
+a disciplined physical patch bay: ordered groups contain visible instance members, and
+shared members visibly appear in every group that can route to them.
 
 The dashboard must grow guided startup-profile authoring, instance creation, connection
 editing, and device placement through shared operations and schema-driven forms. Raw
@@ -1245,10 +1183,11 @@ source identity in this product.
 
 Interaction rules:
 
-- Selecting an instance opens its source, commit, health, environment, routes, and logs.
-- Dragging a cable to another compatible socket prepares a route change; it does not
-  apply until the user confirms the route diff.
-- Incompatible sockets do not accept the cable and explain the capability mismatch.
+- Selecting an instance opens its source, commit, health, environment, group, and logs.
+- Moving an instance between groups prepares a membership change; it does not apply until
+  the user confirms the complete group diff.
+- A shared member that originates loopback traffic shows the multi-group ambiguity and
+  directs the user to duplicate that instance.
 - Modified worktrees are visible before build and require acknowledgment.
 - Each route displays both the friendly instance name and abbreviated commit.
 - Keyboard users can change routes through select controls in the inspector; dragging is
@@ -1263,14 +1202,14 @@ Interaction rules:
 - Add block instances from a searchable library.
 - Select a source and worktree for each instance.
 - Set parameters using block-provided field definitions.
-- Connect required slots and validate the graph continuously.
+- Build ordered groups and validate membership continuously.
 - Preview the expanded service and resource count before starting.
 
 #### Overlay editor and variation comparison
 
 - Add, remove, and reorder overlays on a deployment.
 - Edit schema-approved environment values, dotenv inputs, file injections, parameters,
-  and route selections.
+  and group membership.
 - Show the origin of every resolved value and a warning when a later overlay shadows it.
 - Compare two variations side by side across source refs, environment keys, injected
   file hashes, routes, images, ports, and resource claims.
@@ -1287,8 +1226,7 @@ Interaction rules:
 
 #### Block library
 
-- Block description, capabilities, consumed slots, expanded services, parameters, and
-  health contract.
+- Block description, expanded services, parameters, published ports, and health contract.
 - Validate a block against a selected source without starting it.
 - Show the generated service preview.
 - Identify whether each service is Dockerfile/image-backed or a containerized script,
@@ -1338,8 +1276,7 @@ switchyard build <deployment> [--instance <name>]
 switchyard up <deployment>
 switchyard status [deployment]
 switchyard group list <deployment>
-switchyard bind <consumer> <group>
-switchyard route set <consumer> <slot> <provider>
+switchyard group set-members <deployment> <group> <instance...>
 switchyard logs <deployment> [instance[/service]]
 switchyard open <instance>
 switchyard down <deployment> [--volumes]
@@ -1359,8 +1296,6 @@ Initial API groups:
 /api/deployments/:name/plan
 /api/deployments/:name/operations
 /api/deployments/:name/groups
-/api/deployments/:name/bindings
-/api/deployments/:name/routes
 /api/deployments/:name/events
 /api/blocks
 /api/sources
@@ -1377,7 +1312,7 @@ immediately and stream progress separately.
 
 1. Parse block, source, and deployment definitions.
 2. Resolve paths and Git identities.
-3. Validate required capabilities and route slots.
+3. Validate group membership, addresses, and listener conflicts known before startup.
 4. Calculate expanded services, images, networks, volumes, and hostnames.
 5. Detect conflicts and show a deterministic diff against the active deployment.
 
@@ -1388,8 +1323,8 @@ immediately and stream progress separately.
 3. Build changed images with bounded concurrency.
 4. Start stateful dependencies and wait for readiness.
 5. Start provider suites and wait for readiness.
-6. Apply the internal route table.
-7. Start consumers and register ingress hostnames.
+6. Apply the complete group-membership route snapshot.
+7. Start instances and register ingress hostnames.
 8. Stream the final state and release the lock.
 
 ### Stop and cleanup
@@ -1542,7 +1477,6 @@ adapters/
   execution-host/             explicitly trusted host commands
   supervisor-process-compose/ Process Compose inspection and lifecycle
   route-switchyard/           native gateway and sidecar lifecycle
-  route-binding/              environment and rendered-config bindings
 examples/
   routing-matrix/             3 UIs, 2 backends, and switchable service groups
   jas-base/                   containerized legacy parent-workspace fixture
@@ -1563,7 +1497,7 @@ the implementation plan is the markable execution checklist.
 
 ### Phase 1: routing proof
 
-- Minimal schemas for existing sources, blocks, instances, groups, bindings, and routes.
+- Minimal schemas for sources, blocks, instances, and ordered groups.
 - Container and containerized-script execution only, including Process Compose inside a
   runner container.
 - Deterministic planning and generated Compose as an internal runtime implementation.
@@ -1572,9 +1506,9 @@ the implementation plan is the markable execution checklist.
 - Custom local domains and browser legacy-localhost routing by explicit header, Origin,
   or managed-profile proxy identity.
 - Explicit rejection and diagnostics when browser routing identity is ambiguous.
-- Per-consumer sidecars sharing Docker network namespaces for fixed
-  `localhost:<port>` slots.
-- One-shot CLI commands: validate, plan, up, bind, status, logs, and down.
+- Per-instance sidecars sharing Docker network namespaces and transparently intercepting
+  fixed `localhost:<port>` calls.
+- One-shot CLI commands: validate, plan, up, status, logs, and down.
 - Generated manifests and Docker ownership labels; no daemon or SQLite dependency.
 - Golden tests plus a real fixture with three UIs, two backends, and two five-service
   groups. All unchanged consumers use the same localhost ports while reaching their
@@ -1614,15 +1548,15 @@ The first complete version is successful when a developer can:
    The fixtures must cover a Dockerfile, a containerized legacy script, and a Process
    Compose suite inside a runner container.
 3. Create one database, five UI instances, two Python suites, and three Java suites.
-4. Preview exactly which containers, images, volumes, and routes will be created.
+4. Preview exactly which containers, images, volumes, groups, and router resources will be created.
 5. Start the deployment and wait for health-based readiness.
 6. Open each UI at a stable hostname.
 7. See the source path, branch, and commit behind every running instance.
-8. Select which Java and Python instances each UI uses.
+8. Select which Java and Python instances each UI shares a group with.
 9. Define named five-service groups assembled from one or several source variants.
 10. Run two consumers that both call the same `localhost:8001` while reaching different
     provider groups.
-11. Switch a consumer's complete group without restarting the application container.
+11. Move a sender between complete groups without restarting the application container.
 12. Assign and persist custom domains for human-facing instances through the native
     Switchyard Router.
 13. Recover observed deployment and route state through SQLite and Docker labels after a
