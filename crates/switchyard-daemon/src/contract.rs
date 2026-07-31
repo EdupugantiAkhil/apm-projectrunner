@@ -433,10 +433,20 @@ pub struct DeploymentSummaryV1 {
     pub applied_at: Option<i64>,
     pub last_operation: Option<DeploymentOperationSummaryV1>,
     pub custom_domains: Vec<String>,
+    #[serde(default)]
+    pub custom_domain_links: Vec<CustomDomainLinkV1>,
     pub memberships: Value,
     pub gateway_exposure: Option<GatewayExposureV1>,
     pub mdns_publication: Option<MdnsPublicationV1>,
     pub tailscale_publication: Option<TailscalePublicationV1>,
+}
+
+/// A browser-openable custom domain resolved from its active router listener.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomDomainLinkV1 {
+    pub domain: String,
+    pub url: String,
 }
 
 /// Effective host-gateway listener exposure for deployment inspection.
@@ -548,6 +558,8 @@ pub struct DeploymentDetailV1 {
     pub reconciliation: DeploymentReconciliation,
     pub resources: Vec<switchyard_state::OwnedResourceObservation>,
     pub custom_domains: Vec<String>,
+    #[serde(default)]
+    pub custom_domain_links: Vec<CustomDomainLinkV1>,
     pub memberships: Value,
     pub gateway_exposure: Option<GatewayExposureV1>,
     pub mdns_publication: Option<MdnsPublicationV1>,

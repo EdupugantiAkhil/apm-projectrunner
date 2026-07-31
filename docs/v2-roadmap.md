@@ -52,7 +52,7 @@ verification evidence.
 | ⬜ | 3 — Serving a whole group from one address (router) | |
 | ✅ | 4 — Vocabulary and documentation alignment | `db52a71` |
 | ✅ | 5 — Daemon-as-service posture | `08e86d1` |
-| ⬜ | 6 — Release usability items | |
+| ✅ | 6 — Release usability items | |
 | ⬜ | 7 — Rename to APM ProjectRunner (`apmpr`) | |
 
 Baseline after Part 2a: 307 Rust tests passing, 49 web tests passing, four known React
@@ -590,16 +590,27 @@ present.
 
 ---
 
-### Part 6 — Release usability items that block the vision's flow
+### Part 6 — Release usability items that block the vision's flow ✅
 
 Pulled from [docs/unfinished-work.md](unfinished-work.md) because the vision's flow reads
 wrong without them, not because they are security work:
 
-- [ ] Running custom domains in the dashboard become normal clickable links opening in
+- [x] Running custom domains in the dashboard become normal clickable links opening in
       the default browser
-- [ ] Normal link opening kept distinct from the managed-profile fallback
-- [ ] Root `README.md` status refreshed to match reality
-- [ ] Clear the four React `exhaustive-deps` warnings so web lint is warning-free
+- [x] Normal link opening kept distinct from the managed-profile fallback
+- [x] Root `README.md` status refreshed to match reality
+- [x] Clear the four React `exhaustive-deps` warnings so web lint is warning-free
+
+The daemon now projects browser-openable `{ domain, url }` pairs from the applied
+HTTP/HTTPS host-router listeners without changing the existing `customDomains` v1 field.
+That distinction matters because generated gateways use unprivileged ports: a dashboard
+must link to the listener's real URL rather than guess `http://<domain>`. The runtime
+inspector renders those URLs as ordinary links. Managed Chromium remains an explicitly
+labeled per-instance action and is invoked only through the separate `open` operation.
+
+The README now reports the completed MVP and the actual remaining V2 and team-release
+work. The Web hooks use stable callbacks and complete dependency lists; lint is clean
+without suppressions.
 
 ---
 

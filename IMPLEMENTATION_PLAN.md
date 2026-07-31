@@ -454,7 +454,7 @@ Entry gate: the product MVP is stable for local single-developer use.
       imported writes, SR-7 literal credential-looking values in artifacts (high);
       SR-1 GUI symlink serving, SR-5 overlay container-symlink boundary, SR-6
       script-container non-root default, SR-8 command-result redaction (medium).
-- [ ] Make running custom domains clickable in the dashboard through the normal default
+- [x] Make running custom domains clickable in the dashboard through the normal default
       browser, independently of the Chromium-only managed-profile fallback.
 - [ ] Pin Node.js 24 in a repository-level version-manager file and report a mismatched
       Node version before web or release verification begins.

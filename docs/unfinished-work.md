@@ -6,7 +6,7 @@ remains the authoritative release checklist; when a release item changes, update
 file and this index together. Detailed evidence and procedures remain in the linked
 documents rather than being duplicated here.
 
-Last reconciled: 2026-07-30.
+Last reconciled: 2026-07-31.
 
 ## Team-release blockers
 
@@ -35,14 +35,14 @@ Source: [security review](security-review.md) and
 
 ### Release usability
 
-- [ ] Make each running custom domain in the dashboard a normal clickable link that
+- [x] Make each running custom domain in the dashboard a normal clickable link that
       opens in the user's default browser.
-- [ ] Keep normal link opening distinct from the managed-profile fallback; require
+- [x] Keep normal link opening distinct from the managed-profile fallback; require
       Chromium or Chrome for Testing only when proxy-authenticated, isolated localhost
       routing is actually requested.
 - [ ] Add a repository-level Node.js 24 pin (for example `.nvmrc`) and make development
       or release preflight report the required version before a long build.
-- [ ] Refresh the root README status so it reports the completed product MVP and the
+- [x] Refresh the root README status so it reports the completed product MVP and the
       in-progress team release rather than only the Phase 4 routing proof.
 
 ## Required acceptance and automation
@@ -92,7 +92,7 @@ end-to-end evidence is still missing. The manual procedures are in
 These do not currently block the team release unless their scope is promoted in
 `IMPLEMENTATION_PLAN.md`.
 
-- [ ] Resolve the four existing React exhaustive-dependency warnings in `App.tsx` and
+- [x] Resolve the four existing React exhaustive-dependency warnings in `App.tsx` and
       `DeploymentBuilder.tsx`, then make web lint warning-free.
 - [ ] Reduce the Home signal loader's three requests per deployment and avoid rerunning
       planner validation after every command on large projects.

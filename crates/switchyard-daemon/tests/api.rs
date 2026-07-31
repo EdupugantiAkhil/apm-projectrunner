@@ -1798,6 +1798,10 @@ async fn deployment_list_and_detail_include_applied_manifest_and_reconciliation(
     );
     assert_eq!(list["deployments"][0]["customDomains"][0], "demo.localhost");
     assert_eq!(
+        list["deployments"][0]["customDomainLinks"][0],
+        json!({"domain": "demo.localhost", "url": "http://demo.localhost:18080"})
+    );
+    assert_eq!(
         list["deployments"][0]["gatewayExposure"]["mode"],
         "loopback"
     );
@@ -1831,6 +1835,10 @@ async fn deployment_list_and_detail_include_applied_manifest_and_reconciliation(
         "abcdef123456"
     );
     assert_eq!(detail["memberships"]["consumer-a"], "feature");
+    assert_eq!(
+        detail["customDomainLinks"],
+        list["deployments"][0]["customDomainLinks"]
+    );
     assert_eq!(detail["reconciliation"]["deployment"], "demo");
     assert_eq!(
         detail["gatewayExposure"],

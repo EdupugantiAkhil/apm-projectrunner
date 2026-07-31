@@ -108,6 +108,12 @@ Apply performs a dry-run validation before the definition PUT; an optional follo
 can plan or run Up. This is deliberately the same portable workflow available without
 the GUI: edit `deployments/<name>.yaml`, run `switchyard validate`, then plan or apply.
 
+While a deployment is running, its HTTP/HTTPS custom domains are normal links in the
+deployment inspector. Their targets include the active host-listener port and open with
+the browser's normal link behavior. The separate **Managed profile** button starts the
+`open` operation for an authored managed profile; it is the Chromium-specific fallback
+for proxy-authenticated localhost routing, not the default way to open a custom domain.
+
 ## Builder and schema forms
 
 The existing deployment builder and schema forms provide the portable

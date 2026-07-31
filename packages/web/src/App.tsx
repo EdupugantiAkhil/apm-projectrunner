@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { ApiClient, ApiError, type AdapterRecord, type CloneChallenge, type CloneSourceRequest, type DeploymentDetail, type DeploymentSummary, type DeviceRecord, type JsonValue, type Operation, type OperationEvent, type PlannerWarning, type ProfileRecord, type ProjectInfo, type RouteHistory, type RouterBinding, type RouteState, type RunActionsResponse, type SourceRecord } from './api'
 import DeploymentWorkspace, { AuthoredConnections, InstanceBindingEditor, PlannerWarnings, RoutingEditor } from './DeploymentWorkspace'
 import { activeConnections, definitionSpec, type ConnectionSpec } from './connectionModel'
@@ -11,6 +11,7 @@ import RunActionsView from './RunActionsView'
 import './App.css'
 
 type View = 'home' | 'deployments' | 'sources' | 'devices' | 'profiles' | 'run-actions' | 'operations' | 'builder' | 'library'
+const defaultClient = new ApiClient()
 const terminal = (status: Operation['status']) => ['succeeded', 'failed', 'cancelled'].includes(status)
 const short = (value?: string | null) => value ? value.slice(0, 9) : 'unknown'
 const stoppedDiagnostic = (detail: DeploymentDetail) => detail.resources.length === 0
@@ -39,7 +40,7 @@ const rollbackDetail = (binding: RouterBinding, history: RouteHistory[]) => {
   return binding.previousVersion === null ? 'no rollback recorded' : `previous version v${binding.previousVersion} available for rollback`
 }
 
-export default function App({ client = new ApiClient() }: { client?: ApiClient }) {
+export default function App({ client = defaultClient }: { client?: ApiClient }) {
   const [view, setView] = useState<View>('deployments')
   const [builderDeployment, setBuilderDeployment] = useState('')
   const [project, setProject] = useState<ProjectInfo | null>(null)
@@ -75,14 +76,14 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
   const [error, setError] = useState('')
   const subscriptions = useRef<Map<string, { close(): void }>>(new Map())
 
-  const report = (value: unknown) => setError(value instanceof ApiError ? `${value.code}: ${value.message}` : String(value))
-  const loadDeploymentSignal = async (summary: DeploymentSummary): Promise<DeploymentSignal> => {
+  const report = useCallback((value: unknown) => setError(value instanceof ApiError ? `${value.code}: ${value.message}` : String(value)), [])
+  const loadDeploymentSignal = useCallback(async (summary: DeploymentSummary): Promise<DeploymentSignal> => {
     try {
       const found = await client.deployment(summary.name); const definition = await client.definition(summary.name); const validation = await client.validateDeployment(summary.name, definition.yaml); const authored = definitionSpec(validation.preview); const applied: ConnectionSpec | null = found.snapshot?.spec ?? null; const spec = authored ?? applied
       return { summary, detail: found, spec, warnings: validation.warnings ?? [], error: authored ? null : applied ? 'Validated definition preview omitted the authored spec; checklist and connection signals fall back to the applied snapshot.' : 'Deployment spec is unavailable from the validated definition preview and applied snapshot.' }
     } catch (value) { return { summary, detail: null, spec: null, error: value instanceof ApiError ? `${value.code}: ${value.message}` : String(value) } }
-  }
-  const loadDeployments = async () => {
+  }, [client])
+  const loadDeployments = useCallback(async () => {
     setDeploymentsLoading(true); setDeploymentsUnavailable(false)
     try {
       const response = await client.deployments()
@@ -91,26 +92,26 @@ export default function App({ client = new ApiClient() }: { client?: ApiClient }
       if (response.deployments.length === 0) setView((current) => current === 'deployments' ? 'home' : current)
       setDeploymentSignals(await Promise.all(response.deployments.map(loadDeploymentSignal)))
     } catch (value) { setDeploymentsUnavailable(true); report(value) } finally { setDeploymentsLoading(false) }
-  }
-  const loadSources = async () => { setSourcesLoading(true); setSourcesUnavailable(false); try { setSources(await client.sources()) } catch (value) { setSourcesUnavailable(true); report(value) } finally { setSourcesLoading(false) } }
-  const loadDevices = async () => { setDevicesLoading(true); setDevicesUnavailable(false); try { setDevices(await client.devices()) } catch (value) { setDevicesUnavailable(true); report(value) } finally { setDevicesLoading(false) } }
-  const loadProfiles = async () => { setProfilesLoading(true); setProfilesUnavailable(false); try { const response = await client.profiles(); setProfiles(response.profiles); setProfileSourceErrors(response.sourceErrors) } catch (value) { setProfilesUnavailable(true); report(value) } finally { setProfilesLoading(false) } }
+  }, [client, loadDeploymentSignal, report])
+  const loadSources = useCallback(async () => { setSourcesLoading(true); setSourcesUnavailable(false); try { setSources(await client.sources()) } catch (value) { setSourcesUnavailable(true); report(value) } finally { setSourcesLoading(false) } }, [client, report])
+  const loadDevices = useCallback(async () => { setDevicesLoading(true); setDevicesUnavailable(false); try { setDevices(await client.devices()) } catch (value) { setDevicesUnavailable(true); report(value) } finally { setDevicesLoading(false) } }, [client, report])
+  const loadProfiles = useCallback(async () => { setProfilesLoading(true); setProfilesUnavailable(false); try { const response = await client.profiles(); setProfiles(response.profiles); setProfileSourceErrors(response.sourceErrors) } catch (value) { setProfilesUnavailable(true); report(value) } finally { setProfilesLoading(false) } }, [client, report])
   const loadRunActions = async () => { try { setRunActions(await client.runActions()) } catch (value) { report(value) } }
-  const loadOperations = async () => {
+  const loadOperations = useCallback(async () => {
     setOperationsLoading(true); setOperationsUnavailable(false)
     try {
       const response = await client.operations()
       setOperations((current) => response.operations.map((durable) => current.find((operation) => operation.id === durable.id && operation.result) ?? durable))
     } catch (value) { setOperationsUnavailable(true); report(value) } finally { setOperationsLoading(false) }
-  }
-  const loadSelected = async () => { if (!selected) return; const [nextDetail, nextRoutes] = await Promise.all([client.deployment(selected), client.routes(selected)]); setDetail(nextDetail); setRoutes(nextRoutes) }
+  }, [client, report])
+  const loadSelected = useCallback(async () => { if (!selected) return; const [nextDetail, nextRoutes] = await Promise.all([client.deployment(selected), client.routes(selected)]); setDetail(nextDetail); setRoutes(nextRoutes) }, [client, selected])
 
-  useEffect(() => { void client.project().then(setProject).catch(report); void loadDeployments(); void loadSources(); void loadDevices(); void loadProfiles(); void loadOperations(); void client.adapters().then(setAdapters).catch(report) }, [])
+  useEffect(() => { void client.project().then(setProject).catch(report); void loadDeployments(); void loadSources(); void loadDevices(); void loadProfiles(); void loadOperations(); void client.adapters().then(setAdapters).catch(report) }, [client, loadDeployments, loadDevices, loadOperations, loadProfiles, loadSources, report])
   useEffect(() => {
     setSelectedInstance('')
     if (!selected) { setDetail(null); setRoutes(null); return }
     void loadSelected().catch(report)
-  }, [selected])
+  }, [loadSelected, report, selected])
   useEffect(() => {
     setInstanceOperations([])
     if (!selected || !selectedInstance) return
@@ -221,7 +222,7 @@ function DeploymentView({ client, detail, routes, warnings, selectedInstance, on
     <div className="command-bar" aria-label="Deployment commands"><button className="primary" onClick={() => onAddInstance(detail.deployment)}>Add instance</button><button onClick={() => onCommand('validate')}>Validate</button><button onClick={() => onCommand('plan')}>Plan</button><button onClick={() => onCommand('status')}>Status</button><button disabled={Boolean(stopped)} title={stopped ? 'Start the deployment to view runtime logs' : undefined} onClick={() => onCommand('logs')}>Logs</button><button className="primary" onClick={() => onCommand('apply')}>Up</button><button className="danger" disabled={Boolean(stopped)} onClick={() => onCommand('down')}>Down</button><button className="danger" disabled={Boolean(stopped)} onClick={() => onCommand('cleanup')}>Cleanup</button></div>
     <PlannerWarnings warnings={warnings} />
     {stopped && <section className="stopped-callout" role="status"><div><h2>Deployment is stopped or cleaned up</h2><p>There is no running endpoint or live route topology for this deployment.</p><p><strong>Reconciliation:</strong> {stopped.message}</p></div><button className="primary" onClick={() => onCommand('apply')}>Run Up</button></section>}
-    <h2>Instances</h2><div className="instance-grid">{instances.map((instance) => { const identity = detail.sourceIdentities[instance.name]; const resources = instanceResources(detail, instance.name); const resource = resources[0]; const observedDevices = observedPlacement(detail, instance.name); return <article className="instance-card" data-selected={selectedInstance === instance.name || undefined} key={instance.name}><header><h3>{instance.name}</h3><span>{stopped ? 'not running' : resource?.state ?? 'state unknown'}</span><button aria-label={`Inspect ${instance.name}`} onClick={() => onSelectInstance(instance.name)}>Inspect</button><button disabled={Boolean(stopped)} aria-label={`Logs for ${instance.name}`} onClick={() => onCommand('logs', instance.name)}>Logs</button>{detail.snapshot?.spec?.managedProfiles?.[instance.name] && <button disabled={Boolean(stopped)} aria-label={`Open ${instance.name} in a managed browser profile`} onClick={() => onCommand('open', instance.name)}>Open</button>}</header><dl><dt>Authored placement</dt><dd className="mono">{instance.device ?? 'local'}</dd><dt>Observed placement</dt><dd className="mono">{observedDevices.length ? observedDevices.join(', ') : 'not observed'}</dd>{identity && <><dt>Path</dt><dd className="mono">{identity.path}</dd><dt>Ref</dt><dd className="mono">{identity.ref ?? 'detached'}</dd><dt>Commit</dt><dd className="mono">{short(identity.commit)} {identity.dirty ? <span className="dirty">● modified</span> : 'clean'}</dd></>}</dl>{!identity && <p>Source identity unavailable</p>}</article> })}</div>
+    <h2>Instances</h2><div className="instance-grid">{instances.map((instance) => { const identity = detail.sourceIdentities[instance.name]; const resources = instanceResources(detail, instance.name); const resource = resources[0]; const observedDevices = observedPlacement(detail, instance.name); return <article className="instance-card" data-selected={selectedInstance === instance.name || undefined} key={instance.name}><header><h3>{instance.name}</h3><span>{stopped ? 'not running' : resource?.state ?? 'state unknown'}</span><button aria-label={`Inspect ${instance.name}`} onClick={() => onSelectInstance(instance.name)}>Inspect</button><button disabled={Boolean(stopped)} aria-label={`Logs for ${instance.name}`} onClick={() => onCommand('logs', instance.name)}>Logs</button>{detail.snapshot?.spec?.managedProfiles?.[instance.name] && <button disabled={Boolean(stopped)} aria-label={`Open ${instance.name} in a managed Chromium profile`} onClick={() => onCommand('open', instance.name)}>Managed profile</button>}</header><dl><dt>Authored placement</dt><dd className="mono">{instance.device ?? 'local'}</dd><dt>Observed placement</dt><dd className="mono">{observedDevices.length ? observedDevices.join(', ') : 'not observed'}</dd>{identity && <><dt>Path</dt><dd className="mono">{identity.path}</dd><dt>Ref</dt><dd className="mono">{identity.ref ?? 'detached'}</dd><dt>Commit</dt><dd className="mono">{short(identity.commit)} {identity.dirty ? <span className="dirty">● modified</span> : 'clean'}</dd></>}</dl>{!identity && <p>Source identity unavailable</p>}</article> })}</div>
     {stopped ? <AuthoredConnections client={client} deployment={detail.deployment} onSaved={refresh} report={report} /> : <DeploymentWorkspace detail={detail} selectedInstance={selectedInstance} onSelectInstance={onSelectInstance} />}
     <h2>Active routes</h2>{stopped ? <p className="muted">No routes are active while the deployment is stopped.</p> : routes?.bindings.length ? <><table><thead><tr><th>Instance</th><th>Router</th><th>Desired</th><th>Observed</th><th>Previous</th><th>Transition</th><th>Status</th><th>Rollback</th></tr></thead><tbody>{routes.bindings.map((route) => { const history = bindingHistory(routes, route); return <tr key={`${route.router}-${route.binding}`}><td className="mono">{route.binding}</td><td className="mono">{route.router}</td><td className="mono">{routeVersion(route.desiredVersion)}</td><td className="mono">{routeVersion(route.observedVersion)}</td><td className="mono">{routeVersion(route.previousVersion)}</td><td>{routeTransition(route.transition)}</td><td>{route.status}{route.lastErrorCode ? ` · ${route.lastErrorCode}` : ''}</td><td>{rollbackDetail(route, history)}</td></tr> })}</tbody></table><h3>Route activation and rollback history</h3>{routes.bindings.some((route) => bindingHistory(routes, route).length) ? <table><thead><tr><th>Instance</th><th>Router</th><th>Version</th><th>Activation</th><th>Recorded timestamp</th><th>Operation</th></tr></thead><tbody>{routes.bindings.flatMap((route) => bindingHistory(routes, route).map((entry) => <tr key={entry.sequence}><td className="mono">{route.binding}</td><td className="mono">{route.router}</td><td className="mono">v{entry.version}</td><td>{entry.activationStatus}</td><td className="mono">{entry.recordedAt}</td><td className="mono">{entry.operationId ?? '—'}</td></tr>))}</tbody></table> : <p className="muted">No route activation or rollback history recorded.</p>}</> : <p className="muted">No active route versions recorded.</p>}
     <RoutingEditor client={client} deployment={detail.deployment} onSaved={refresh} onOperation={observe} report={report} />
@@ -242,7 +243,7 @@ function DeploymentInspector({ client, detail, routes, operations, profiles, sel
   }
   return <><p className="eyebrow">Deployment</p><h3>{detail.deployment}</h3><p className="muted">Select Inspect on an instance card or select an instance in the runtime patch bay for per-instance details.</p><dl><dt>State</dt><dd>{stopped ? 'Stopped / cleaned up' : 'Active'}</dd><dt>Definition</dt><dd className="mono">{short(detail.definitionHash)}</dd><dt>Resources</dt><dd className="mono">{short(detail.resourceHash)}</dd><dt>Drift</dt><dd>{detail.reconciliation.diagnostics.length ? `${detail.reconciliation.diagnostics.length} warnings` : 'Reconciled'}</dd></dl>
     {detail.reconciliation.diagnostics.length > 0 && <><h3>Reconciliation</h3><ul className="diagnostic-list">{detail.reconciliation.diagnostics.map((diagnostic) => <li key={`${diagnostic.code}-${diagnostic.path}`}><strong>{diagnostic.code}</strong><br />{diagnostic.message}</li>)}</ul></>}
-    <h3>Runtime domains</h3>{stopped ? <p className="muted">Unavailable while stopped</p> : detail.customDomains.length ? <ul>{detail.customDomains.map((domain) => <li className="mono" key={domain}>{domain}</li>)}</ul> : <p className="muted">None</p>}
+    <h3>Runtime domains</h3>{stopped ? <p className="muted">Unavailable while stopped</p> : detail.customDomains.length ? <ul>{detail.customDomains.map((domain) => { const links = detail.customDomainLinks?.filter((link) => link.domain === domain) ?? []; return <li className="mono" key={domain}>{links.length ? links.map((link) => <a href={link.url} key={link.url} target="_blank" rel="noreferrer" aria-label={`Open ${domain} in the default browser`}>{domain}</a>) : domain}</li> })}</ul> : <p className="muted">None</p>}
     <h3>{stopped ? 'Saved memberships' : 'Memberships'}</h3><dl>{Object.entries(detail.memberships).map(([instanceName, group]) => <div key={instanceName}><dt className="mono">{instanceName}</dt><dd>{group}</dd></div>)}</dl></>
 }
 

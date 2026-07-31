@@ -21,16 +21,18 @@ explicit route header, the request origin, or an isolated browser-profile proxy.
 
 ## Status
 
-The routing proof, the product MVP, and the browser control plane are complete; the team
-release is in progress. Verified per-phase detail is in [PROGRESS.md](PROGRESS.md), which
-is the authoritative record, with the checklist in
-[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+The routing proof, product MVP, browser control plane, and V2 release-usability work are
+complete. The team release is still blocked by the security remediation and acceptance
+evidence listed in [docs/unfinished-work.md](docs/unfinished-work.md). Verified per-phase
+detail is in [PROGRESS.md](PROGRESS.md); the historical implementation checklist remains
+in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 Alignment with the product vision in [docs/vision](docs/vision) is tracked in
 [docs/v2-roadmap.md](docs/v2-roadmap.md). V2 replaced the original capability, slot,
 binding, and direct-route topology with one model: an ordered group membership list whose
-members share one localhost, routed port-for-port. The final V2 part renames the product
-to **APM ProjectRunner** (`apmpr`); until then the tree uses the `switchyard` name.
+members share one localhost, routed port-for-port. The remaining V2 work is the full
+lifecycle gate for the vision sample and the final mechanical rename to **APM
+ProjectRunner** (`apmpr`); until then the tree uses the `switchyard` name.
 
 The implementation target is:
 

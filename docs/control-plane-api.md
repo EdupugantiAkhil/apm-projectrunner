@@ -114,6 +114,13 @@ stderr, and exit code remain available while an operation is active or retained 
 memory; terminal status and structured error data are durable in SQLite across restart.
 Raw output is deliberately not persisted because it can contain application secrets.
 
+Deployment list and detail records retain `customDomains` as the sorted set of names and
+also expose `customDomainLinks` as `{ domain, url }` pairs for applied HTTP and HTTPS
+listeners. The daemon derives each URL from the applied router listener, so nonstandard
+ports are included and standard HTTP/HTTPS ports are omitted. Non-browser protocols stay
+in `customDomains` but do not receive a link. The field is additive in `/api/v1`; clients
+that do not use it remain compatible.
+
 The operation list is ordered by `startedAt` descending and then `id` descending, and
 returns at most 50 records:
 

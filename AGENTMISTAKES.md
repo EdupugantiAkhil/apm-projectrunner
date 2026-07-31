@@ -1,5 +1,24 @@
 # Agent mistakes and lessons
 
+## 2026-07-31 — Complete hook dependencies require stable default objects
+
+- After adding the dependencies required by React hook lint, `App` still constructed its
+  default `ApiClient` in the function parameter. That creates a new client on every render;
+  effects correctly depending on `client` would then rerun after every state update.
+- Correction: keep one module-level default client. Lesson: clearing a dependency warning
+  includes proving each newly listed object or callback has stable identity, especially a
+  default prop that ordinary production rendering does not explicitly pass.
+
+## 2026-07-31 — A custom domain name is not a browser URL
+
+- The obvious dashboard change was to wrap each `customDomains` string in an anchor with
+  an assumed `http://` prefix. Generated host gateways intentionally bind deterministic
+  unprivileged ports, so that link would usually target the wrong socket.
+- Correction: preserve the existing name projection and add an API link projection from
+  the applied HTTP/HTTPS listener's protocol and port. Lesson: presentation code must not
+  reconstruct an endpoint from a display name when the runtime already owns the full
+  address.
+
 ## 2026-07-31 — A login service does not inherit an interactive shell's tool path
 
 - The first daemon service definitions used an exact `switchyard` executable but did not
@@ -1048,6 +1067,9 @@ audit shell startup files as well as the requested cache directories.
 - A TypeScript check was accidentally launched from the Rust workspace root. `npx` fetched the
   unrelated deprecated `tsc` package and failed instead of using the Web package's installed
   TypeScript compiler.
+- The mistake recurred in Part 6 when a chained verification command reached `npm` from the
+  workspace root. It failed immediately because there is no root `package.json`; the complete
+  Web gate was rerun from `packages/web`.
 - Correction: run `npx tsc -b` from `packages/web` and include the working directory in the
   verification command itself.
 - Lesson: an executable name resolving through `npx` is not enough evidence that the intended

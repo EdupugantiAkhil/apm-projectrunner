@@ -14,7 +14,7 @@ const deployment = {
   snapshot: { spec: { instances: [{ name: 'ui-feature', device: 'build-host', address: 'ui.comparison.localhost' }, { name: 'backend-a', block: 'java' }, { name: 'backend-b', block: 'java' }, { name: 'python-a', block: 'python' }, { name: 'python-b', block: 'python' }, { name: 'shared-db', block: 'database' }], blocks: connectionBlocks, groups: { base: { instances: ['backend-b', 'python-b', 'shared-db'] }, feature: { instances: ['ui-feature', 'backend-a', 'python-a'] } } } }, manifest: {},
   sourceIdentities: { 'ui-feature': { path: '/worktrees/ui-a', ref: 'feature/ui-redesign', commit: '35ad2abcdef', dirty: true } },
   reconciliation: { deployment: 'comparison', diagnostics: [] }, resources: [{ kind: 'container', id: 'one', name: 'comparison-ui-feature', labels: { 'dev.switchyard.instance': 'ui-feature' }, state: 'healthy', device: 'build-host' }],
-  customDomains: ['ui.comparison.localhost'], memberships: { 'ui-feature': 'feature', 'backend-a': 'feature', 'python-a': 'feature', 'backend-b': 'base', 'python-b': 'base', 'shared-db': 'base' },
+  customDomains: ['ui.comparison.localhost'], customDomainLinks: [{ domain: 'ui.comparison.localhost', url: 'http://ui.comparison.localhost:18432' }], memberships: { 'ui-feature': 'feature', 'backend-a': 'feature', 'python-a': 'feature', 'backend-b': 'base', 'python-b': 'base', 'shared-db': 'base' },
 }
 const source: SourceRecord = { source: { name: 'feature-ui', kind: 'managed', path: '/project/worktrees/ui-a', requestedRef: 'feature/ui-redesign' }, inspection: { identity: { path: '/project/worktrees/ui-a', repository: '/project/.switchyard/clones/monorepo', ref: 'feature/ui-redesign', commit: '35ad2abcdef', dirty: true }, linkedWorktree: true, branch: 'feature/ui-redesign', changes: { staged: 1, unstaged: 2, untracked: 3 }, ahead: 2, behind: 0, unknownCode: null } }
 const unmanagedSource = { source: { name: 'shared-app', kind: 'unmanaged' as const, path: '/code/shared-app' }, inspection: { identity: { path: '/code/shared-app', ref: 'main', commit: '123456789ab', dirty: true }, branch: 'main', changes: { staged: 4, unstaged: 5, untracked: 6 }, ahead: 0, behind: 0, unknownCode: null } }
@@ -79,6 +79,13 @@ describe('Switchyard GUI', () => {
   beforeEach(() => { MockEventSource.instances = []; vi.stubGlobal('EventSource', MockEventSource); installFetch() })
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
+  it('keeps the default API client stable across state-driven renders', async () => {
+    const fetchMock = vi.mocked(fetch)
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: 'comparison', level: 1 })).toBeInTheDocument()
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/project'))).toHaveLength(1)
+  })
+
   it('renders separate route versions, transition state, previous version, and typed rollback history', async () => {
     render(<App client={new ApiClient('test')} />)
     expect(await screen.findByRole('heading', { name: 'comparison', level: 1 })).toBeInTheDocument()
@@ -90,9 +97,28 @@ describe('Switchyard GUI', () => {
     expect(screen.getAllByText('Observed placement')).toHaveLength(6)
     expect(screen.getAllByText('build-host')).toHaveLength(2)
     expect(screen.getByText('ui.comparison.localhost')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Open ui.comparison.localhost in the default browser' })).toHaveAttribute('href', 'http://ui.comparison.localhost:18432')
     const activeRoutes = screen.getByRole('columnheader', { name: 'Desired' }).closest('table')!; const activeRow = within(activeRoutes).getByRole('cell', { name: 'ui-feature' }).closest('tr')!
     expect(within(activeRow).getByRole('cell', { name: 'v5' })).toBeInTheDocument(); expect(within(activeRow).getByRole('cell', { name: 'v4' })).toBeInTheDocument(); expect(within(activeRow).getByRole('cell', { name: 'v3' })).toBeInTheDocument(); expect(within(activeRow).getByRole('cell', { name: 'draining' })).toBeInTheDocument(); expect(within(activeRow).getByText('rollback recorded at v4 (timestamp 1700000000200)')).toBeInTheDocument()
     const history = screen.getByRole('columnheader', { name: 'Activation' }).closest('table')!; expect(within(history).getByRole('cell', { name: 'rolled_back' })).toBeInTheDocument(); expect(within(history).getByRole('cell', { name: '1700000000200' })).toBeInTheDocument(); expect(within(history).getByRole('cell', { name: 'op-rollback' })).toBeInTheDocument()
+  })
+
+  it('keeps normal domain links separate from the managed Chromium profile fallback', async () => {
+    const user = userEvent.setup(); const client = new ApiClient('test')
+    const managed = { ...deployment, snapshot: { spec: { ...deployment.snapshot.spec, managedProfiles: { 'ui-feature': { route: 'ui-feature', startUrl: 'http://ui.comparison.localhost:18432' } } } } }
+    const operation: Operation = { apiVersion: 'v1', id: 'op-open', deployment: 'comparison', instance: 'ui-feature', kind: 'open', destructive: false, status: 'running', startedAt: 10, finishedAt: null, error: null, result: null }
+    vi.spyOn(client, 'deployment').mockResolvedValue(managed)
+    const command = vi.spyOn(client, 'command').mockResolvedValue(operation)
+    vi.spyOn(client, 'pollOperation').mockResolvedValue({ ...operation, status: 'succeeded', finishedAt: 11, result: { exitCode: 0, stdout: '', stderr: '' } })
+    render(<App client={client} />)
+
+    const domain = await screen.findByRole('link', { name: 'Open ui.comparison.localhost in the default browser' })
+    expect(domain).toHaveAttribute('href', 'http://ui.comparison.localhost:18432')
+    expect(domain).toHaveAttribute('target', '_blank')
+    expect(command).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: 'Open ui-feature in a managed Chromium profile' }))
+    await waitFor(() => expect(command).toHaveBeenCalledWith('open', '.switchyard/generated/comparison/resolved-deployment.yaml', { instance: 'ui-feature' }))
   })
 
   it('shows one honest per-instance inspector with placement, services, connections, and instance-scoped operations', async () => {

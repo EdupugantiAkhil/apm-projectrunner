@@ -37,6 +37,7 @@ export interface DeploymentSummary {
   appliedAt: number | null
   lastOperation: { id: string; kind: string; status: OperationStatus; startedAt: number; finishedAt: number | null } | null
   customDomains: string[]
+  customDomainLinks?: Array<{ domain: string; url: string }>
   memberships: Record<string, string>
 }
 export interface ProjectInfo { apiVersion: string; name: string; root: string; registered: boolean }
@@ -51,6 +52,7 @@ export interface DeploymentDetail {
   reconciliation: { deployment: string; diagnostics: Array<{ code: string; path: string; message: string }> }
   resources: Array<{ kind: string; id: string; name: string; labels: Record<string, string>; state: string | null; device: string }>
   customDomains: string[]
+  customDomainLinks?: Array<{ domain: string; url: string }>
   memberships: Record<string, string>
 }
 export interface DeploymentSnapshot { spec?: {

@@ -1197,6 +1197,12 @@ YAML remains an inspectable escape hatch, not the intended final interaction. Th
 may retain equivalent workflows for headless use, but new local authoring work should
 not require it.
 
+Running HTTP and HTTPS custom domains are ordinary links in the deployment inspector.
+Their URLs are projected from the applied host-router listener, including its actual
+unprivileged port, and open through normal browser navigation. This path is separate from
+the instance card's **Managed profile** action, which runs the `open` operation and may
+require managed Chromium only when proxy identity is needed for fixed localhost calls.
+
 ### Visual direction
 
 The interface takes cues from lab equipment and rack labels without imitating a terminal.

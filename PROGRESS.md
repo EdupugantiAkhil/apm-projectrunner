@@ -2,6 +2,23 @@
 
 Updated: 2026-07-31
 
+## 2026-07-31 — V2 Part 6 release usability
+
+- Running HTTP/HTTPS custom domains in the dashboard are normal links. The daemon adds
+  an additive `customDomainLinks` v1 projection derived from each applied router
+  listener, preserving the correct scheme and nonstandard port while retaining the
+  existing `customDomains` field.
+- Normal links and managed profiles are visibly and behaviorally separate. A domain
+  uses browser-native navigation; the per-instance **Managed profile** button alone
+  starts the `open` operation and its Chromium-specific proxy-identity path.
+- Refreshed the root status and release backlog, and documented the API and GUI contract.
+- Replaced stale React effect captures with stable callbacks and complete dependency
+  lists. Web lint is warning-free without suppressions.
+- Verification passes: workspace formatting; all-target, all-feature Clippy with warnings
+  denied; 335 workspace tests with five declared reliability tests ignored; rustdoc with
+  warnings denied; 51 Web tests; TypeScript/Vite production build; and warning-free Web
+  lint.
+
 ## 2026-07-31 — V2 Part 5 daemon-as-service posture
 
 - Added `switchyard daemon install [project]`. It generates a per-user, per-project launchd

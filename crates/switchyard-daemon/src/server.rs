@@ -43,19 +43,20 @@ use tokio::{
 
 use crate::contract::{
     API_VERSION, ApiErrorV1, CloneSourceRequestV1, CommandKind, CommandRequestV1, CommandResultV1,
-    CreateDeploymentRequestV1, CreateWorktreeRequestV1, DaemonStatusV1, DeploymentDefinitionV1,
-    DeploymentDetailV1, DeploymentOperationSummaryV1, DeploymentRoutesV1, DeploymentSummaryV1,
-    DeploymentValidationV1, DeploymentsV1, DeviceEligibilityV1, DeviceKindV1, DevicePlacementV1,
-    DeviceReachabilityV1, DeviceV1, DiscoveryV1, EventKindV1, EventV1, ExecuteRunActionRequestV1,
-    GatewayExposureV1, ImportProfileRequestV1, MdnsCheckV1, MdnsPublicationV1, MdnsPublishedNameV1,
-    OperationStatusV1, OperationV1, OperationsV1, ProfileAdapterKindV1, ProfileDefinitionV1,
-    ProfileManifestReviewV1, ProfileOriginKindV1, ProfileOriginV1, ProfileSelectorV1,
-    ProfileServicePreviewV1, ProfileServiceV1, ProfileSourceErrorV1, ProfileTrustV1, ProfileV1,
-    ProfileValidationV1, ProfileVolumePreviewV1, ProfilesV1, ProjectV1, PutRunActionRequestV1,
-    RegisterDeviceRequestV1, RegisterSourceRequestV1, RemoveWorktreeRequestV1, RouteHistoryV1,
-    RouterBindingV1, RunActionDefinitionV1, RunActionExecutionV1, RunActionPreviewV1,
-    RunActionTargetV1, RunActionV1, RunActionsV1, TailscalePublicationV1, TransitionPolicyV1,
-    UpdateDeploymentDefinitionRequestV1, ValidateProfileRequestV1,
+    CreateDeploymentRequestV1, CreateWorktreeRequestV1, CustomDomainLinkV1, DaemonStatusV1,
+    DeploymentDefinitionV1, DeploymentDetailV1, DeploymentOperationSummaryV1, DeploymentRoutesV1,
+    DeploymentSummaryV1, DeploymentValidationV1, DeploymentsV1, DeviceEligibilityV1, DeviceKindV1,
+    DevicePlacementV1, DeviceReachabilityV1, DeviceV1, DiscoveryV1, EventKindV1, EventV1,
+    ExecuteRunActionRequestV1, GatewayExposureV1, ImportProfileRequestV1, MdnsCheckV1,
+    MdnsPublicationV1, MdnsPublishedNameV1, OperationStatusV1, OperationV1, OperationsV1,
+    ProfileAdapterKindV1, ProfileDefinitionV1, ProfileManifestReviewV1, ProfileOriginKindV1,
+    ProfileOriginV1, ProfileSelectorV1, ProfileServicePreviewV1, ProfileServiceV1,
+    ProfileSourceErrorV1, ProfileTrustV1, ProfileV1, ProfileValidationV1, ProfileVolumePreviewV1,
+    ProfilesV1, ProjectV1, PutRunActionRequestV1, RegisterDeviceRequestV1, RegisterSourceRequestV1,
+    RemoveWorktreeRequestV1, RouteHistoryV1, RouterBindingV1, RunActionDefinitionV1,
+    RunActionExecutionV1, RunActionPreviewV1, RunActionTargetV1, RunActionV1, RunActionsV1,
+    TailscalePublicationV1, TransitionPolicyV1, UpdateDeploymentDefinitionRequestV1,
+    ValidateProfileRequestV1,
 };
 
 const LOCK_TTL_MILLIS: i64 = 15_000;
@@ -2669,6 +2670,49 @@ fn snapshot_fields(snapshot: Option<&Value>) -> (Vec<String>, Value) {
     (domains, Value::Object(memberships))
 }
 
+fn snapshot_custom_domain_links(snapshot: Option<&Value>) -> Vec<CustomDomainLinkV1> {
+    let Some(config) = snapshot
+        .and_then(|value| value.pointer("/spec/hostRouter"))
+        .cloned()
+        .and_then(|value| serde_json::from_value::<router_config::RouterConfig>(value).ok())
+    else {
+        return Vec::new();
+    };
+    let mut links = config
+        .spec
+        .listeners
+        .iter()
+        .filter_map(|listener| {
+            let scheme = match listener.protocol {
+                router_config::Protocol::Http => "http",
+                router_config::Protocol::Https => "https",
+                _ => return None,
+            };
+            Some(listener.destinations.iter().filter_map(move |destination| {
+                let router_config::ListenerDestination::CustomDomain { domain, .. } = destination
+                else {
+                    return None;
+                };
+                let port = listener.bind.port;
+                let authority =
+                    if (scheme == "http" && port == 80) || (scheme == "https" && port == 443) {
+                        domain.clone()
+                    } else {
+                        format!("{domain}:{port}")
+                    };
+                Some(CustomDomainLinkV1 {
+                    domain: domain.clone(),
+                    url: format!("{scheme}://{authority}"),
+                })
+            }))
+        })
+        .flatten()
+        .collect::<Vec<_>>();
+    links.sort_by(|left, right| (&left.domain, &left.url).cmp(&(&right.domain, &right.url)));
+    links.dedup();
+    links
+}
+
 fn snapshot_gateway_exposure(snapshot: Option<&Value>) -> Option<GatewayExposureV1> {
     let config: router_config::RouterConfig =
         serde_json::from_value(snapshot?.pointer("/spec/hostRouter")?.clone()).ok()?;
@@ -3205,6 +3249,7 @@ async fn list_deployments(State(inner): State<Arc<Inner>>) -> Response {
                 .and_then(|value| serde_json::from_str::<Value>(value).ok());
             let manifest = read_manifest(&inner.config.project_root, &stored.deployment);
             let (custom_domains, memberships) = snapshot_fields(snapshot.as_ref());
+            let custom_domain_links = snapshot_custom_domain_links(snapshot.as_ref());
             let gateway_exposure = snapshot_gateway_exposure(snapshot.as_ref());
             let mdns_publication =
                 read_mdns_publication(&inner.config.project_root, &stored.deployment);
@@ -3229,6 +3274,7 @@ async fn list_deployments(State(inner): State<Arc<Inner>>) -> Response {
                     }
                 }),
                 custom_domains,
+                custom_domain_links,
                 memberships,
                 gateway_exposure,
                 mdns_publication,
@@ -3312,6 +3358,7 @@ async fn deployment_detail(
         }
     };
     let (custom_domains, memberships) = snapshot_fields(snapshot.as_ref());
+    let custom_domain_links = snapshot_custom_domain_links(snapshot.as_ref());
     let gateway_exposure = snapshot_gateway_exposure(snapshot.as_ref());
     let mdns_publication = read_mdns_publication(&inner.config.project_root, &deployment);
     let tailscale_publication = read_tailscale_publication(&inner.config.project_root, &deployment);
@@ -3327,6 +3374,7 @@ async fn deployment_detail(
         reconciliation,
         resources,
         custom_domains,
+        custom_domain_links,
         memberships,
         gateway_exposure,
         mdns_publication,
