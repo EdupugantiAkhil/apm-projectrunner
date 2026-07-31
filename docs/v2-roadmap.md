@@ -52,7 +52,7 @@ verification evidence.
 | ⬜ | 3 — Serving a whole group from one address (router) | |
 | ✅ | 4 — Vocabulary and documentation alignment | `db52a71` |
 | ✅ | 5 — Daemon-as-service posture | `08e86d1` |
-| ✅ | 6 — Release usability items | |
+| ✅ | 6 — Release usability items | `494f7a0` |
 | ⬜ | 7 — Rename to APM ProjectRunner (`apmpr`) | |
 
 Baseline after Part 2a: 307 Rust tests passing, 49 web tests passing, four known React
@@ -611,6 +611,8 @@ labeled per-instance action and is invoked only through the separate `open` oper
 The README now reports the completed MVP and the actual remaining V2 and team-release
 work. The Web hooks use stable callbacks and complete dependency lists; lint is clean
 without suppressions.
+
+Landed in `494f7a0`; 335 workspace tests and 51 Web tests pass.
 
 ---
 
