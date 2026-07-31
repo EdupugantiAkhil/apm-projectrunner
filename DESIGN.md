@@ -674,6 +674,8 @@ topology layer. When no advanced `hostRouter` configuration is supplied, it deri
 HTTP/HTTPS provider from each service whose HTTP probe port is also published, generates
 the loopback gateway on a deterministic unprivileged port, and derives browser localhost listeners
 from group membership. The bare custom domain has a direct route to the default member.
+Gateway allocation probes deterministically within its reserved range, skipping ports already
+claimed by generated browser listeners; planning fails if the range is exhausted.
 Each active browser-reachable member gets an `<instance>.<group-address>` custom domain,
 and the bare destination gets an explicit-header route for that member. Pingora evaluates
 that override per request on the loopback gateway, fails closed for unknown identity, and

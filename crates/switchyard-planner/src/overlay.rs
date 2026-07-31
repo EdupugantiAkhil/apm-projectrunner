@@ -474,7 +474,7 @@ pub fn plan_with_overlays_and_devices(
         return Err(load_errors);
     }
     let (resolved, mut resolution) = resolve(bundle, &overlays, options)?;
-    let resolved = crate::with_derived_host_routing(&resolved);
+    let resolved = crate::with_derived_host_routing(&resolved)?;
     let validation = validate(&resolved, devices)?;
     resolution.origins.sort_by(|left, right| {
         (&left.instance, &left.category, &left.key).cmp(&(

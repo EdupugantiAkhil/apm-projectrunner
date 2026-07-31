@@ -506,11 +506,13 @@ request**.
 The sample now validates, plans, and passes a live planner-to-router gate without authored
 `hostRouter` or `hostUpstreams`: both bare group domains select their distinct UI and Origin
 selects the matching backend, while the disabled canary is absent. The remaining full lifecycle
-gate needs a product choice before it can honestly be ticked: the sample invokes source commands
-inside plain `container` images, while the execution contract mounts source only for `script`.
+gate needs execution work outside the router before it can honestly be ticked: the sample invokes
+source commands inside plain `container` images, while the execution contract mounts source only
+for `script`.
 The fixture also needs local substitutes for its illustrative Git and external-service hosts.
-Changing the sample to `script` or broadening `container` source-mount semantics is not a router
-implementation detail and must be settled explicitly.
+Because the vision is authoritative, the implementation must converge on source-backed container
+execution unless the project owner explicitly changes that product decision. That work is not a
+router implementation detail.
 
 Uses the existing `router-config` direct-route and browser-route contracts and changes
 `router-pingora` so a trusted explicit identity can select a member on an otherwise static

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     net::{SocketAddr, TcpListener as StdTcpListener},
     os::unix::fs::PermissionsExt,
@@ -95,6 +96,7 @@ async fn vision_sample_routes_two_groups_without_authored_router_topology() {
     let planned = plan(&bundle).unwrap();
     let mut config: RouterConfig =
         serde_json::from_str(planned.host_router_config.as_deref().unwrap()).unwrap();
+    assert_unique_host_listener_binds(&config);
     let ui_1 = IdentityUpstream::start("ui-1").await;
     let ui_2 = IdentityUpstream::start("ui-2").await;
     let backend_1 = IdentityUpstream::start("backend-1").await;
@@ -126,9 +128,7 @@ async fn vision_sample_routes_two_groups_without_authored_router_topology() {
         .unwrap()
         .bind
         .port;
-    for listener in &mut config.spec.listeners {
-        listener.bind.port = unused_port();
-    }
+    rebind_listeners_to_distinct_test_ports(&mut config);
     let group_port = config
         .spec
         .listeners
@@ -220,6 +220,7 @@ async fn planned_fixture_serves_two_groups_from_their_bare_addresses() {
     let planned = plan(&bundle).unwrap();
     let mut config: RouterConfig =
         serde_json::from_str(planned.host_router_config.as_deref().unwrap()).unwrap();
+    assert_unique_host_listener_binds(&config);
     let ui_a = IdentityUpstream::start("ui-a").await;
     let ui_b = IdentityUpstream::start("ui-b").await;
     for provider in &mut config.spec.providers {
@@ -229,9 +230,7 @@ async fn planned_fixture_serves_two_groups_from_their_bare_addresses() {
             ui_b.address.port()
         };
     }
-    for listener in &mut config.spec.listeners {
-        listener.bind.port = unused_port();
-    }
+    rebind_listeners_to_distinct_test_ports(&mut config);
     let group_port = config
         .spec
         .listeners
@@ -357,6 +356,13 @@ async fn group_domain_uses_its_default_and_allows_an_explicit_member_override() 
     .await;
     assert!(unknown.starts_with("HTTP/1.1 403"));
     assert!(unknown.contains("unknown_route_identity"));
+    let malformed = http_request_bytes(
+        address,
+        b"GET / HTTP/1.1\r\nHost: feature.demo.localhost\r\nX-Switchyard-Route: \x80\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(malformed.starts_with("HTTP/1.1 400"));
+    assert!(malformed.contains("invalid_route_identity"));
 
     process.request_shutdown();
     process.wait().await.unwrap();
@@ -809,6 +815,30 @@ fn unused_port() -> u16 {
         .port()
 }
 
+fn assert_unique_host_listener_binds(config: &RouterConfig) {
+    let mut binds = BTreeSet::new();
+    for listener in &config.spec.listeners {
+        assert!(
+            binds.insert((listener.bind.host, listener.bind.port)),
+            "planned host listeners must not share a socket address"
+        );
+    }
+}
+
+fn rebind_listeners_to_distinct_test_ports(config: &mut RouterConfig) {
+    let reservations = (0..config.spec.listeners.len())
+        .map(|_| StdTcpListener::bind("127.0.0.1:0").unwrap())
+        .collect::<Vec<_>>();
+    let ports = reservations
+        .iter()
+        .map(|listener| listener.local_addr().unwrap().port())
+        .collect::<Vec<_>>();
+    for (listener, port) in config.spec.listeners.iter_mut().zip(ports) {
+        listener.bind.port = port;
+    }
+    drop(reservations);
+}
+
 async fn connect_retry(address: SocketAddr) -> TcpStream {
     timeout(IO_TIMEOUT, async {
         loop {
@@ -848,8 +878,12 @@ async fn read_until(stream: &mut TcpStream, needle: &[u8]) -> Vec<u8> {
 }
 
 async fn http_request(address: SocketAddr, request: &str) -> String {
+    http_request_bytes(address, request.as_bytes()).await
+}
+
+async fn http_request_bytes(address: SocketAddr, request: &[u8]) -> String {
     let mut stream = connect_retry(address).await;
-    stream.write_all(request.as_bytes()).await.unwrap();
+    stream.write_all(request).await.unwrap();
     let mut response = Vec::new();
     timeout(IO_TIMEOUT, stream.read_to_end(&mut response))
         .await

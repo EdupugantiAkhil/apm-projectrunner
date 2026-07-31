@@ -640,10 +640,11 @@ impl ProxyHttp for SwitchyardProxy {
         };
         let snapshot = self.engine.snapshot();
         let target = if let Some(consumer) = &self.listener.consumer {
+            let explicit_count = header_count(session.req_header(), &self.identity.explicit_header);
             let explicit = header_text(session.req_header(), &self.identity.explicit_header);
             let candidates = snapshot.browser_candidates(slot);
-            if explicit.is_some() && !candidates.is_empty() {
-                if header_count(session.req_header(), &self.identity.explicit_header) > 1 {
+            if explicit_count > 0 && !candidates.is_empty() {
+                if explicit_count > 1 {
                     return self
                         .reject_browser_route(
                             session,
@@ -655,6 +656,18 @@ impl ProxyHttp for SwitchyardProxy {
                         )
                         .await;
                 }
+                let Some(explicit) = explicit else {
+                    return self
+                        .reject_browser_route(
+                            session,
+                            ctx,
+                            400,
+                            "invalid_route_identity",
+                            "the routing identity header must contain valid visible text",
+                            &candidates,
+                        )
+                        .await;
+                };
                 if !self.listener.bind.host.is_loopback() {
                     return self
                         .reject_browser_route(
@@ -669,7 +682,7 @@ impl ProxyHttp for SwitchyardProxy {
                 }
                 match snapshot.lookup_browser(BrowserLookup {
                     destination: slot,
-                    explicit_header: explicit,
+                    explicit_header: Some(explicit),
                     origin: None,
                     proxy_listener: None,
                 }) {

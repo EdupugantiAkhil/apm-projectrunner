@@ -226,13 +226,17 @@ changing which UI and backend checkout each address opens.
 - **A front door.** No member of a group is designated the entry point. The group address reaches
   the group and routing decides which member answers.
 
-## Where today's schema differs
+## Where today's implementation differs
 
-The sample above is the intended shape. One deferred field differs from the current build:
+The sample above is the intended shape. Two current gaps remain in the implementation:
 
 1. **`scripts:` is not the current shape, and is deferred.** Run actions live in
    `.switchyard/run-scripts.yaml` as seven-field records. They are deliberately outside the V2
    roadmap until a shell action has a settled way to reach the deployment it is about.
+2. **Plain container execution does not yet mount the selected source.** The UI and backend
+   commands above intentionally run their selected checkout in the declared image. The current
+   container adapter starts only the image and command, so implementing that source-backed
+   container contract remains necessary before this sample can pass its full lifecycle gate.
 
 Address selection is generated without a hand-authored router topology. A bare group address
 uses its one active independently addressed member as the default; instance subdomains and trusted

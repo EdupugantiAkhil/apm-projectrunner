@@ -281,7 +281,7 @@ pub fn plan_with_devices(
     if !bundle.spec.overlays.is_empty() {
         return plan_with_overlays_and_devices(bundle, &OverlayOptions::default(), devices);
     }
-    let effective = with_derived_host_routing(bundle);
+    let effective = with_derived_host_routing(bundle)?;
     let validation = validate(&effective, devices)?;
     generate(
         &effective,
@@ -299,7 +299,7 @@ pub fn plan_with_devices(
     })
 }
 
-fn with_derived_host_routing(bundle: &Bundle) -> Bundle {
+fn with_derived_host_routing(bundle: &Bundle) -> Result<Bundle, Vec<Diagnostic>> {
     let mut effective = bundle.clone();
     let has_addresses = effective
         .spec
@@ -312,7 +312,7 @@ fn with_derived_host_routing(bundle: &Bundle) -> Bundle {
             .values()
             .any(|group| group.address.is_some());
     if effective.spec.host_router.is_some() || !has_addresses {
-        return effective;
+        return Ok(effective);
     }
     let browser_members = effective
         .spec
@@ -377,11 +377,17 @@ fn with_derived_host_routing(bundle: &Bundle) -> Bundle {
         }
     }
 
-    effective.spec.host_router = Some(derived_host_router(&effective));
-    effective
+    effective.spec.host_router = Some(derived_host_router(&effective).map_err(|message| {
+        vec![Diagnostic::new(
+            DiagnosticCode::ListenerConflict,
+            "spec.groups",
+            message,
+        )]
+    })?);
+    Ok(effective)
 }
 
-fn derived_host_router(bundle: &Bundle) -> router_config::RouterConfig {
+fn derived_host_router(bundle: &Bundle) -> Result<router_config::RouterConfig, String> {
     use router_config::{
         BrowserIdentity, BrowserRoute, ComponentId, ConfigMetadata, ConnectionTransitionPolicies,
         ConnectionTransitionPolicy, HealthCheck, HealthCheckProtocol, IdentityPolicy, InstanceId,
@@ -448,20 +454,6 @@ fn derived_host_router(bundle: &Bundle) -> router_config::RouterConfig {
             .insert((upstream.instance.clone(), upstream.port), provider.clone());
     }
 
-    let gateway_digest = Sha256::digest(bundle.metadata.name.as_bytes());
-    let gateway_port = 18_000 + u16::from_be_bytes([gateway_digest[0], gateway_digest[1]]) % 2_000;
-    let mut listeners = vec![Listener {
-        consumer: Some(InstanceId::from("gateway")),
-        bind: SocketAddress {
-            host: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-            port: gateway_port,
-        },
-        protocol: Protocol::Http,
-        tls: None,
-        destinations: Vec::new(),
-        proxy_identity: None,
-        proxy_authentication: None,
-    }];
     let mut browser_routes = Vec::new();
     let instances = bundle
         .spec
@@ -517,6 +509,32 @@ fn derived_host_router(bundle: &Bundle) -> router_config::RouterConfig {
             }
         }
     }
+    const FIRST_GATEWAY_PORT: u16 = 18_000;
+    const GATEWAY_PORT_COUNT: u16 = 2_000;
+    let gateway_digest = Sha256::digest(bundle.metadata.name.as_bytes());
+    let gateway_offset =
+        u16::from_be_bytes([gateway_digest[0], gateway_digest[1]]) % GATEWAY_PORT_COUNT;
+    let gateway_port = (0..GATEWAY_PORT_COUNT)
+        .map(|offset| FIRST_GATEWAY_PORT + (gateway_offset + offset) % GATEWAY_PORT_COUNT)
+        .find(|port| !browser_ports.contains(port))
+        .ok_or_else(|| {
+            format!(
+                "all generated host-gateway ports {FIRST_GATEWAY_PORT}-{} conflict with browser listener ports",
+                FIRST_GATEWAY_PORT + GATEWAY_PORT_COUNT - 1
+            )
+        })?;
+    let mut listeners = vec![Listener {
+        consumer: Some(InstanceId::from("gateway")),
+        bind: SocketAddress {
+            host: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            port: gateway_port,
+        },
+        protocol: Protocol::Http,
+        tls: None,
+        destinations: Vec::new(),
+        proxy_identity: None,
+        proxy_authentication: None,
+    }];
     for port in browser_ports {
         listeners.push(Listener {
             consumer: None,
@@ -535,7 +553,7 @@ fn derived_host_router(bundle: &Bundle) -> router_config::RouterConfig {
         });
     }
 
-    RouterConfig {
+    Ok(RouterConfig {
         api_version: router_config::API_VERSION.into(),
         kind: router_config::KIND.into(),
         metadata: ConfigMetadata {
@@ -565,7 +583,7 @@ fn derived_host_router(bundle: &Bundle) -> router_config::RouterConfig {
             transparent_proxy: None,
             identity: IdentityPolicy::default(),
         },
-    }
+    })
 }
 
 /// Validates a reusable block with the same contracts used by deployment planning.

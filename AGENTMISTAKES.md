@@ -1,5 +1,21 @@
 # Agent mistakes and lessons
 
+## 2026-07-31 — Review recommendations must preserve the vision as product truth
+
+- The Part 3 handoff recommended changing the vision sample from `container` to `script` because
+  that matched the current execution architecture. Repository policy says the opposite: the
+  implementation and `DESIGN.md` converge on vision unless the project owner changes the decision.
+- Correction: record source-backed container execution as the remaining implementation gap and
+  change the sample only if the owner explicitly changes the product contract.
+
+## 2026-07-31 — Live planner tests must retain generated topology invariants
+
+- The first vision-sample router gate replaced every planned listener port independently. That
+  bypassed the invariant that generated host listeners must own distinct sockets, and the helper
+  could return the same released ephemeral port more than once.
+- Correction: assert uniqueness before test rebinding and reserve all replacement sockets
+  simultaneously so their ports are distinct. Keep runtime-only endpoint substitution explicit.
+
 ## 2026-07-31 — Derived compatibility data must be gated by the feature that needs it
 
 - The first automatic host-routing pass inferred host-upstream records for every HTTP-probed

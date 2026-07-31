@@ -63,6 +63,47 @@ fn vision_sample_validates_and_plans_without_compatibility_router_fields() {
 }
 
 #[test]
+fn generated_gateway_skips_a_browser_listener_on_its_preferred_port() {
+    let yaml = vision_sample_without_deferred_scripts();
+    let deployment_path = repository_path("docs/vision/vision-sample-deployment.yaml");
+    let initial = switchyard_planner::load_bundle_from_str(&yaml, &deployment_path).unwrap();
+    let initial_plan = plan(&initial).unwrap();
+    let initial_host: router_config::RouterConfig =
+        serde_json::from_str(initial_plan.host_router_config.as_deref().unwrap()).unwrap();
+    let preferred_gateway_port = initial_host
+        .spec
+        .listeners
+        .iter()
+        .find(|listener| listener.consumer.is_some())
+        .unwrap()
+        .bind
+        .port;
+
+    let colliding_yaml = yaml.replace("5173", &preferred_gateway_port.to_string());
+    let colliding =
+        switchyard_planner::load_bundle_from_str(&colliding_yaml, &deployment_path).unwrap();
+    let generated = plan(&colliding).expect("the gateway should move off a browser port");
+    let host: router_config::RouterConfig =
+        serde_json::from_str(generated.host_router_config.as_deref().unwrap()).unwrap();
+    let mut binds = BTreeSet::new();
+    for listener in &host.spec.listeners {
+        assert!(
+            binds.insert((listener.bind.host, listener.bind.port)),
+            "generated host listeners must have unique socket addresses"
+        );
+    }
+    let gateway_port = host
+        .spec
+        .listeners
+        .iter()
+        .find(|listener| listener.consumer.is_some())
+        .unwrap()
+        .bind
+        .port;
+    assert_ne!(gateway_port, preferred_gateway_port);
+}
+
+#[test]
 fn legacy_workspace_fixture_expands_through_generic_planner_contracts() {
     let deployment = repository_path("examples/jas-base/deployment.yaml");
     let bundle = load_bundle(&deployment).expect("legacy-shape fixture should load");

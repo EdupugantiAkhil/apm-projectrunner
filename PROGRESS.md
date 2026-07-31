@@ -27,13 +27,19 @@ Updated: 2026-07-31
   router configurations retain their advanced merge path.
 - The executable vision-sample test extracts the YAML in `docs/vision/sample-config.md`, removes
   only deferred `scripts:`, and proves it validates and plans without compatibility fields. A
-  live planner-to-Pingora gate opens both group domains, observes different UIs and backends,
-  and verifies that the disabled canary has no generated domain.
+  live planner-to-Pingora gate resolves the planned providers to test upstreams, first verifies
+  that generated listener sockets are unique, then safely rebinds them to distinct test ports. It
+  opens both group domains, observes different UIs and backends, and verifies that the disabled
+  canary has no generated domain.
 - The final full-lifecycle sample gate remains open. Its UI/backend profiles invoke source-tree
   commands in plain `container` images, but the settled execution contract mounts source only
   for `script`; its illustrative Git and external hosts also need local fixture replacements.
-  Choosing script-backed sample profiles versus broadening container source semantics is a
-  product decision, not router work, and has not been guessed here.
+  The vision controls this mismatch, so source-backed container execution remains implementation
+  work unless the project owner explicitly changes the product decision.
+- Follow-up review made generated gateway allocation collision-safe within its reserved range and
+  made malformed explicit route headers fail closed. Regression coverage forces the preferred
+  gateway port to collide with a browser listener and sends a non-text route identity through the
+  live group listener.
 
 Verification passes: full workspace tests with the five declared reliability ignores; all-target,
 all-feature Clippy with warnings denied; rustdoc with warnings denied; formatting and diff checks;
